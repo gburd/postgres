@@ -378,12 +378,13 @@ _bt_getroot(Relation rel, Relation heaprel, int access)
 		rootlevel = metad->btm_fastlevel;
 
 		/*
-		 * This is the hottest buffer lookup in the system for an
-		 * index-driven workload: every descent of this index starts by
-		 * reading this one block.  If we have nailed it, we already hold a
-		 * pin and can skip the buffer mapping table entirely.
+		 * Every descent of this index reads this one block, and every backend
+		 * reads the same buffer, so pinning it is a cross-CPU atomic on a
+		 * shared cache line.  If we hold a base pin on it from earlier in
+		 * this transaction we can pin it again from backend-local state and
+		 * skip the buffer mapping table.
 		 */
-		rootbuf = FindNailedBuffer(rel->rd_locator, MAIN_FORKNUM, rootblkno);
+		rootbuf = GetXactPinnedBlock(rel, MAIN_FORKNUM, rootblkno);
 		if (BufferIsValid(rootbuf))
 			LockBuffer(rootbuf, BT_READ);
 		else
@@ -404,14 +405,16 @@ _bt_getroot(Relation rel, Relation heaprel, int access)
 			P_RIGHTMOST(rootopaque))
 		{
 			/*
-			 * Accept the cached page as the root.  Now that it has passed the
-			 * checks above, take a second pin and hand it to the nail array so
-			 * that the next descent can skip the lookup.  If the array is full
-			 * or the feature is off this does nothing, and we simply behave as
-			 * before.
+			 * OK, accept cached page as the root.  Offer it for a base pin so
+			 * that the next descent in this transaction can find it locally.
+			 *
+			 * Only internal pages: VACUUM takes a cleanup lock on every leaf,
+			 * a cleanup lock requires being the sole pinner, and a base pin
+			 * would block it forever.  A one-page index has no root
+			 * contention to relieve in any case.
 			 */
-			if (max_nailed_buffers > 0)
-				NailBuffer(rootbuf);
+			if (!P_ISLEAF(rootopaque))
+				PinBlockForXact(rel, MAIN_FORKNUM, rootblkno, rootbuf);
 
 			return rootbuf;
 		}

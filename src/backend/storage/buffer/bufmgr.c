@@ -64,6 +64,9 @@
 #include "storage/read_stream.h"
 #include "storage/smgr.h"
 #include "storage/standby.h"
+#include "catalog/catalog.h"
+#include "utils/inval.h"
+#include "utils/memutils.h"
 #include "utils/memdebug.h"
 #include "utils/memutils.h"
 #include "utils/ps_status.h"
@@ -5200,6 +5203,274 @@ CallBufferDropCallbacks(Oid dbOid, const RelFileLocator *rlocator)
 {
 	for (int i = 0; i < NumBufferDropCallbacks; i++)
 		BufferDropCallbacks[i] (dbOid, rlocator);
+}
+
+/*
+ * Transaction-lifetime base pins.
+ *
+ * Some blocks are read on a very large fraction of a backend's queries: a
+ * btree fast root is read once per descent, and every backend reads the same
+ * one.  Each scan pins it (refcount 0 to 1) and unpins it (1 to 0), and both
+ * are atomic read-modify-writes on the buffer's state word, so that one cache
+ * line migrates between CPUs and limits read scaling.
+ *
+ * A base pin is one extra pin, held for the rest of the transaction, that
+ * exists to stop that migration.  While it is held this backend has a private
+ * refcount entry for the buffer, so every later pin of it increments only
+ * backend-local state: PinBuffer() takes its "we already have a pin" branch
+ * and does not touch the shared word at all.  The shared cache line then
+ * moves twice per transaction rather than twice per scan.
+ *
+ * The cache is only a hint.  GetXactPinnedBlock() re-checks the buffer tag
+ * through ReadRecentBuffer(), and the caller still applies whatever checks it
+ * would normally apply, so a stale entry can only cause a fallback to the
+ * ordinary path.
+ *
+ * A base pin is a pin that nothing else will release for us, and both
+ * InvalidateBuffer() and LockBufferForCleanup() wait for the refcount to
+ * fall.  Four rules keep that safe, and a caller must respect the first:
+ *
+ *	1. Do not base-pin a block that anyone takes a cleanup lock on.  A cleanup
+ *	   lock requires being the sole pinner, so a base pin would block it
+ *	   forever.  For btree that means internal pages only, never leaves,
+ *	   because VACUUM takes a cleanup lock on every leaf.  bufmgr cannot check
+ *	   this; it is the caller's contract.
+ *	2. Never base-pin a system catalog.  VACUUM FULL, CLUSTER and REINDEX can
+ *	   reclaim catalog buffers in this same backend, and catalog locks are not
+ *	   held to end of transaction, so a long-lived pin can deadlock on a
+ *	   buffer pin with no deadlock detection.  Enforced here.
+ *	3. Release on relcache invalidation, so a dropped or rebuilt relation
+ *	   cannot leave a pin on a stale buffer.
+ *	4. Release on buffer drop.  Relcache invalidation does not always come
+ *	   first: TRUNCATE of a table created in the same transaction truncates
+ *	   the files in place, and rolling back a savepoint deletes the files of a
+ *	   relation created after it.  In those cases InvalidateBuffer() would
+ *	   fail on our pin inside a critical section, which is a PANIC.
+ *
+ * The pin belongs to TopTransactionResourceOwner and is released by an
+ * end-of-transaction callback, which runs before ResourceOwnerRelease() and
+ * so leaves the owner nothing to warn about.  Transaction scope is not a
+ * choice: CheckForBufferLeaks() requires the private refcount array to be
+ * empty at commit, and a base pin is an entry in it.
+ */
+typedef struct XactPinnedBlock
+{
+	Oid			relid;			/* for relcache invalidation */
+	RelFileLocator rlocator;	/* for buffer-drop invalidation */
+	ForkNumber	forkNum;
+	BlockNumber blockNum;
+	Buffer		buffer;			/* InvalidBuffer if the slot is free */
+} XactPinnedBlock;
+
+int			max_pinned_blocks = 0;
+
+static XactPinnedBlock *XactPinnedBlocks = NULL;
+static int	XactPinnedBlockClock = 0;
+static bool XactPinnedBlockCallbacksSet = false;
+
+/*
+ * Release one base pin.  The pin belongs to TopTransactionResourceOwner, so
+ * release it against that owner whatever the current one happens to be.
+ */
+static void
+ForgetXactPinnedBlock(XactPinnedBlock *entry)
+{
+	if (!BufferIsValid(entry->buffer))
+		return;
+
+	if (TopTransactionResourceOwner != NULL)
+	{
+		ResourceOwner save = CurrentResourceOwner;
+
+		CurrentResourceOwner = TopTransactionResourceOwner;
+		ReleaseBuffer(entry->buffer);
+		CurrentResourceOwner = save;
+	}
+
+	entry->buffer = InvalidBuffer;
+	entry->relid = InvalidOid;
+}
+
+/*
+ * End-of-transaction callback: drop every base pin.  Runs for each event, and
+ * a second pass over an already-cleared slot does nothing.
+ */
+static void
+AtEOXact_XactPinnedBlocks(XactEvent event, void *arg)
+{
+	for (int i = 0; i < max_pinned_blocks; i++)
+		ForgetXactPinnedBlock(&XactPinnedBlocks[i]);
+}
+
+/*
+ * Relcache callback: drop base pins on one relation, or on all of them when
+ * relid is InvalidOid.
+ */
+static void
+InvalidateXactPinnedBlocks(Datum arg, Oid relid)
+{
+	for (int i = 0; i < max_pinned_blocks; i++)
+	{
+		XactPinnedBlock *entry = &XactPinnedBlocks[i];
+
+		if (BufferIsValid(entry->buffer) &&
+			(relid == InvalidOid || relid == entry->relid))
+			ForgetXactPinnedBlock(entry);
+	}
+}
+
+/*
+ * Buffer-drop callback: drop base pins on buffers this backend is about to
+ * drop.  See rule 4 above.
+ */
+static void
+DropXactPinnedBlocks(Oid dbOid, const RelFileLocator *rlocator)
+{
+	for (int i = 0; i < max_pinned_blocks; i++)
+	{
+		XactPinnedBlock *entry = &XactPinnedBlocks[i];
+
+		if (!BufferIsValid(entry->buffer))
+			continue;
+
+		if (rlocator != NULL ?
+			RelFileLocatorEquals(entry->rlocator, *rlocator) :
+			entry->rlocator.dbOid == dbOid)
+			ForgetXactPinnedBlock(entry);
+	}
+}
+
+/*
+ * Find the slot holding a base pin for a block, or NULL.
+ */
+static XactPinnedBlock *
+LookupXactPinnedBlock(Relation rel, ForkNumber forkNum, BlockNumber blockNum)
+{
+	if (XactPinnedBlocks == NULL)
+		return NULL;
+
+	for (int i = 0; i < max_pinned_blocks; i++)
+	{
+		XactPinnedBlock *entry = &XactPinnedBlocks[i];
+
+		if (BufferIsValid(entry->buffer) &&
+			entry->blockNum == blockNum &&
+			entry->forkNum == forkNum &&
+			RelFileLocatorEquals(entry->rlocator, rel->rd_locator))
+			return entry;
+	}
+
+	return NULL;
+}
+
+/*
+ * PinBlockForXact -- hold an extra pin on a block for the rest of the
+ * transaction, so that later pins of it do not write to shared state.
+ *
+ * The caller must already hold a pin on the buffer, and keeps it: this takes
+ * a reference of its own.  Because the caller's pin means a private refcount
+ * entry already exists, taking ours does not touch the shared state word.
+ *
+ * The caller is responsible for rule 1 above: do not offer a block that
+ * anything takes a cleanup lock on.
+ *
+ * Returns true if the block is base-pinned (or already was).
+ */
+bool
+PinBlockForXact(Relation rel, ForkNumber forkNum, BlockNumber blockNum,
+				Buffer buffer)
+{
+	XactPinnedBlock *entry;
+	ResourceOwner save;
+	int			slot = -1;
+
+	if (max_pinned_blocks == 0 || !BufferIsValid(buffer) ||
+		BufferIsLocal(buffer))
+		return false;
+
+	/* A base pin has to have the transaction-lifetime owner to belong to. */
+	if (TopTransactionResourceOwner == NULL)
+		return false;
+
+	/* Rule 2. */
+	if (IsCatalogRelation(rel))
+		return false;
+
+	Assert(BufferIsPinned(buffer));
+
+	if (XactPinnedBlocks == NULL)
+	{
+		XactPinnedBlocks = MemoryContextAllocZero(TopMemoryContext,
+												  max_pinned_blocks *
+												  sizeof(XactPinnedBlock));
+		for (int i = 0; i < max_pinned_blocks; i++)
+			XactPinnedBlocks[i].buffer = InvalidBuffer;
+	}
+
+	if (!XactPinnedBlockCallbacksSet)
+	{
+		RegisterXactCallback(AtEOXact_XactPinnedBlocks, NULL);
+		CacheRegisterRelcacheCallback(InvalidateXactPinnedBlocks, (Datum) 0);
+		RegisterBufferDropCallback(DropXactPinnedBlocks);
+		XactPinnedBlockCallbacksSet = true;
+	}
+
+	entry = LookupXactPinnedBlock(rel, forkNum, blockNum);
+	if (entry != NULL)
+		return true;
+
+	for (int i = 0; i < max_pinned_blocks; i++)
+	{
+		if (!BufferIsValid(XactPinnedBlocks[i].buffer))
+		{
+			slot = i;
+			break;
+		}
+	}
+	if (slot < 0)
+	{
+		/* Full: evict in round-robin order. */
+		slot = XactPinnedBlockClock;
+		XactPinnedBlockClock = (XactPinnedBlockClock + 1) % max_pinned_blocks;
+		ForgetXactPinnedBlock(&XactPinnedBlocks[slot]);
+	}
+	entry = &XactPinnedBlocks[slot];
+
+	save = CurrentResourceOwner;
+	CurrentResourceOwner = TopTransactionResourceOwner;
+	IncrBufferRefCount(buffer);
+	CurrentResourceOwner = save;
+
+	entry->relid = RelationGetRelid(rel);
+	entry->rlocator = rel->rd_locator;
+	entry->forkNum = forkNum;
+	entry->blockNum = blockNum;
+	entry->buffer = buffer;
+
+	return true;
+}
+
+/*
+ * GetXactPinnedBlock -- pin a base-pinned block without a mapping-table
+ * lookup.
+ *
+ * Returns an ordinary pinned buffer, which the caller releases as usual, or
+ * InvalidBuffer if this block has no base pin.  The saving is not the pin, it
+ * is that the pin is backend-local and that we skip BufTableLookup().
+ */
+Buffer
+GetXactPinnedBlock(Relation rel, ForkNumber forkNum, BlockNumber blockNum)
+{
+	XactPinnedBlock *entry;
+
+	entry = LookupXactPinnedBlock(rel, forkNum, blockNum);
+	if (entry == NULL)
+		return InvalidBuffer;
+
+	if (!ReadRecentBuffer(rel->rd_locator, forkNum, blockNum, entry->buffer))
+		return InvalidBuffer;	/* stale hint; caller uses the normal path */
+
+	return entry->buffer;
 }
 
 /* ---------------------------------------------------------------------

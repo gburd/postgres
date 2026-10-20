@@ -140,6 +140,7 @@
 #huge_page_size = 0                     # zero for system default
                                         # (change requires restart)
 #max_nailed_buffers = 0                 # 0-64; 0 disables
+#max_pinned_blocks = 0                  # 0-1024; 0 disables
 #temp_buffers = 8MB                     # min 800kB
 #max_prepared_transactions = 0          # zero disables the feature
                                         # (change requires restart)
