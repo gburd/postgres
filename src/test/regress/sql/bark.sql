@@ -561,7 +561,11 @@ INSERT INTO bark_par
 SET min_parallel_table_scan_size = 0;
 SET max_parallel_maintenance_workers = 4;
 SET maintenance_work_mem = '1MB';				-- force a disk-spilling sort
+-- The planner gives a build no workers below 32MB of maintenance_work_mem
+-- each, unless the table's parallel_workers says how many.
+ALTER TABLE bark_par SET (parallel_workers = 4);
 CREATE INDEX bark_par_idx ON bark_par USING bark (a);	-- parallel build
+ALTER TABLE bark_par RESET (parallel_workers);
 SET max_parallel_maintenance_workers = 0;
 CREATE INDEX bark_ser_idx ON bark_par USING bark (a);	-- serial build
 -- The two builds index the same rows: scans over either must agree, and must
@@ -1133,6 +1137,27 @@ INSERT INTO bark_big SELECT 100 + g,
   'K' || lpad(g::text, 6, '0') || bark_bigstr(g, 5000)
   FROM generate_series(1, 30) g;
 CREATE INDEX bark_big_idx ON bark_big USING bark (k);
+
+-- A parallel build defers the oversized keys too: the participant that meets
+-- one says so in the shared state, and the leader inserts them after the load,
+-- so the index is the serial build's.  With no worker launched
+-- (max_parallel_workers = 0) the build falls back to a serial one.  The
+-- parallel_workers reloption grants the workers whatever the table's size.
+ALTER TABLE bark_big SET (parallel_workers = 2);
+SET max_parallel_maintenance_workers = 2;
+CREATE INDEX bark_big_par ON bark_big USING bark (k);
+SET max_parallel_workers = 0;
+CREATE INDEX bark_big_noworkers ON bark_big USING bark (k);
+RESET max_parallel_workers;
+RESET max_parallel_maintenance_workers;
+ALTER TABLE bark_big RESET (parallel_workers);
+SELECT pg_relation_size('bark_big_par') = pg_relation_size('bark_big_idx')
+         AS par_same_size,
+       pg_relation_size('bark_big_noworkers') = pg_relation_size('bark_big_idx')
+         AS noworkers_same_size;
+SELECT bark_index_check('bark_big_par', true),
+       bark_index_check('bark_big_noworkers', true);
+DROP INDEX bark_big_par, bark_big_noworkers;
 
 -- Insert more oversized keys into the built index, forcing leaf splits of
 -- pages that hold oversized entries (and oversized pivots on internal pages).
