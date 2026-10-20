@@ -162,7 +162,11 @@ indexam_property(FunctionCallInfo fcinfo,
 	/* Try to convert property name to enum (no error if not known) */
 	prop = lookup_prop_name(propname);
 
-	/* If we have an index OID, look up the AM, and get # of columns too */
+	/*
+	 * If we have an index OID, look up the AM, and get # of columns too.  An
+	 * index's and its columns' properties are those of the code implementing
+	 * it, which may be another AM than the one it names (pg_index.indimplam).
+	 */
 	if (OidIsValid(index_oid))
 	{
 		HeapTuple	tuple;
@@ -181,6 +185,13 @@ indexam_property(FunctionCallInfo fcinfo,
 		}
 		amoid = rd_rel->relam;
 		natts = rd_rel->relnatts;
+		ReleaseSysCache(tuple);
+
+		tuple = SearchSysCache1(INDEXRELID, ObjectIdGetDatum(index_oid));
+		if (!HeapTupleIsValid(tuple))
+			PG_RETURN_NULL();
+		if (OidIsValid(((Form_pg_index) GETSTRUCT(tuple))->indimplam))
+			amoid = ((Form_pg_index) GETSTRUCT(tuple))->indimplam;
 		ReleaseSysCache(tuple);
 	}
 
