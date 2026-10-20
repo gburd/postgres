@@ -2189,6 +2189,11 @@ table_index_build_range_scan(Relation table_rel,
  * See validate_index() for an explanation.  A table AM whose locator is
  * versioned sets index_info->ii_VersionTag before each index_insert() it
  * makes, as for table_index_build_range_scan().
+ *
+ * state->tuplesort holds what the index contains: TIDs, or, if
+ * state->versioned, (TID, tag) pairs; see ValidateIndexState.  A row
+ * version visible to `snapshot` is missing from the index if no collected
+ * entry is valid for it.
  */
 static inline void
 table_index_validate_scan(Relation table_rel,
