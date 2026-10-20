@@ -29,6 +29,7 @@
 #include "access/genam.h"
 #include "access/reloptions.h"
 #include "access/xloginsert.h"
+#include "catalog/pg_am_d.h"
 #include "commands/vacuum.h"
 #include "miscadmin.h"
 #include "optimizer/optimizer.h"
@@ -1784,6 +1785,15 @@ barkendscan(IndexScanDesc scan)
  * the btree AM's), it stores the heap-TID locator, and it answers ordered-
  * operator (KNN) scans -- ORDER BY col <~> const -- over its scalar key
  * (amcanorderbyop; see barkknn.c).
+ *
+ * It can also implement btree indexes (amimplements): with
+ * default_btree_implementation = bark, or a table AM that asks for it, an
+ * index created USING btree is stored and searched by this code
+ * (pg_index.indimplam).  Such an index has btree's operator classes, whose
+ * families are btree's, so every column takes BARK's scalar path: no
+ * procedure past 6, no extracted column (bark_opfamily_is_own is false).
+ * amsupport 15 and amstrategies 0 are what BARK's own families need; core
+ * accepts both for an implementation ("Implementing btree" in the README).
  */
 Datum
 barkhandler(PG_FUNCTION_ARGS)
@@ -1816,6 +1826,7 @@ barkhandler(PG_FUNCTION_ARGS)
 		.amparallelvacuumoptions =
 		VACUUM_OPTION_PARALLEL_BULKDEL | VACUUM_OPTION_PARALLEL_COND_CLEANUP,
 		.amkeytype = InvalidOid,
+		.amimplements = BTREE_AM_OID,
 
 		.ambuild = barkbuild,
 		.ambuildempty = barkbuildempty,
