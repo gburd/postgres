@@ -3192,6 +3192,7 @@ bark_insert(Relation index, Datum *values, bool *isnull, ItemPointer ht_ctid,
 	bool		checkingunique = false;
 	bool		result = false; /* significant only for UNIQUE_CHECK_PARTIAL */
 
+	bark_check_tid_offset(index, ht_ctid, state->keyinfo->tidstride);
 	if (state->extracted > 0)
 		return bark_insert_row_keys(index, state, values, isnull, ht_ctid,
 									heapRel, checkUnique, indexUnchanged,
