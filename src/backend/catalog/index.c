@@ -130,6 +130,9 @@ static void IndexCheckExclusion(Relation heapRelation,
 								Relation indexRelation,
 								IndexInfo *indexInfo);
 static bool validate_index_callback(ItemPointer itemptr, void *opaque);
+static IndexEntryVerdict validate_index_version_callback(ItemPointer itemptr,
+														 IndexVersionTag tag,
+														 void *opaque);
 static bool ReindexIsCurrentlyProcessingIndex(Oid indexOid);
 static void SetReindexProcessing(Oid heapOid, Oid indexOid);
 static void ResetReindexProcessing(void);
@@ -3606,18 +3609,48 @@ validate_index(Oid heapId, Oid indexId, Snapshot snapshot)
 	ivinfo.num_heap_tuples = heapRelation->rd_rel->reltuples;
 	ivinfo.strategy = NULL;
 	ivinfo.version_callback = NULL;
-	ivinfo.version_state = NULL;
+	ivinfo.version_state = NULL;	/* see below */
 
 	/*
 	 * Encode TIDs as int8 values for the sort, rather than directly sorting
 	 * item pointers.  This can be significantly faster, primarily because TID
 	 * is a pass-by-reference type on all platforms, whereas int8 is
 	 * pass-by-value on most platforms.
+	 *
+	 * If the index names row versions, collect (TID, tag) pairs instead; see
+	 * ValidateIndexState.
 	 */
-	state.tuplesort = tuplesort_begin_datum(INT8OID, Int8LessOperator,
-											InvalidOid, false,
-											maintenance_work_mem,
-											NULL, TUPLESORT_NONE);
+	state.versioned = table_locator_is_versioned(heapRelation) &&
+		indexRelation->rd_indam->amcanversion;
+	state.tupdesc = NULL;
+	state.slot = NULL;
+	if (!state.versioned)
+		state.tuplesort = tuplesort_begin_datum(INT8OID, Int8LessOperator,
+												InvalidOid, false,
+												maintenance_work_mem,
+												NULL, TUPLESORT_NONE);
+	else
+	{
+		AttrNumber	attnums[2] = {1, 2};
+		Oid			sortops[2] = {Int8LessOperator, Int8LessOperator};
+		Oid			collations[2] = {InvalidOid, InvalidOid};
+		bool		nullsfirst[2] = {false, false};
+
+		state.tupdesc = CreateTemplateTupleDesc(2);
+		TupleDescInitBuiltinEntry(state.tupdesc, (AttrNumber) 1, "tid",
+								  INT8OID, -1, 0);
+		TupleDescInitBuiltinEntry(state.tupdesc, (AttrNumber) 2, "tag",
+								  INT8OID, -1, 0);
+		TupleDescFinalize(state.tupdesc);
+		state.tuplesort = tuplesort_begin_heap(state.tupdesc, 2, attnums,
+											   sortops, collations,
+											   nullsfirst,
+											   maintenance_work_mem,
+											   NULL, TUPLESORT_NONE);
+		state.slot = MakeSingleTupleTableSlot(state.tupdesc, &TTSOpsVirtual);
+		ivinfo.version_callback = validate_index_version_callback;
+		ivinfo.version_state = &state;
+	}
 	state.htups = state.itups = state.tups_inserted = 0;
 
 	/* ambulkdelete updates progress metrics */
@@ -3653,6 +3686,11 @@ validate_index(Oid heapId, Oid indexId, Snapshot snapshot)
 
 	/* Done with tuplesort object */
 	tuplesort_end(state.tuplesort);
+	if (state.versioned)
+	{
+		ExecDropSingleTupleTableSlot(state.slot);
+		FreeTupleDesc(state.tupdesc);
+	}
 
 	/* Make sure to release resources cached in indexInfo (if needed). */
 	index_insert_cleanup(indexRelation, indexInfo);
@@ -3684,6 +3722,26 @@ validate_index_callback(ItemPointer itemptr, void *opaque)
 	tuplesort_putdatum(state->tuplesort, Int64GetDatum(encoded), false);
 	state->itups += 1;
 	return false;				/* never actually delete anything */
+}
+
+/*
+ * validate_index_version_callback - the same, collecting (TID, tag) pairs
+ */
+static IndexEntryVerdict
+validate_index_version_callback(ItemPointer itemptr, IndexVersionTag tag,
+								void *opaque)
+{
+	ValidateIndexState *state = (ValidateIndexState *) opaque;
+	TupleTableSlot *slot = state->slot;
+
+	ExecClearTuple(slot);
+	slot->tts_values[0] = Int64GetDatum(itemptr_encode(itemptr));
+	slot->tts_values[1] = Int64GetDatum((int64) tag);
+	slot->tts_isnull[0] = slot->tts_isnull[1] = false;
+	ExecStoreVirtualTuple(slot);
+	tuplesort_puttupleslot(state->tuplesort, slot);
+	state->itups += 1;
+	return INDEX_ENTRY_LIVE;	/* never actually delete anything */
 }
 
 /*
