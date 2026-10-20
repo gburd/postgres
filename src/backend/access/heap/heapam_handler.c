@@ -245,7 +245,8 @@ heapam_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 					CommandId cid, uint32 options,
 					Snapshot snapshot, Snapshot crosscheck,
 					bool wait, TM_FailureData *tmfd, LockTupleMode *lockmode,
-					const Bitmapset *modified_idx_attrs, TU_UpdateIndexes *update_indexes)
+					const Bitmapset *modified_idx_attrs, TU_UpdateIndexes *update_indexes,
+					IndexVersionTag *version_tag)
 {
 	bool		shouldFree = true;
 	HeapTuple	tuple = ExecFetchSlotHeapTuple(slot, true, &shouldFree);
@@ -255,6 +256,8 @@ heapam_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 	HeapTupleFailureData hfd;
 
 	tmfd->retargeted = false;
+	/* heap's locator is not versioned; TABLE_UPDATE_MAY_KEEP_LOCATOR is moot */
+	*version_tag = InvalidIndexVersionTag;
 
 	Assert(ItemPointerIsValid(otid));
 

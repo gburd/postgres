@@ -2917,26 +2917,30 @@ apply_concurrent_update(Relation rel, TupleTableSlot *spilled_tuple,
 	LockTupleMode lockmode;
 	TM_FailureData tmfd;
 	TU_UpdateIndexes update_indexes;
+	IndexVersionTag version_tag;
 	TM_Result	res;
 	Bitmapset  *modified_idx_attrs;
+	uint32		options = TABLE_UPDATE_NO_LOGICAL;
 
 	modified_idx_attrs = ExecUpdateModifiedIdxAttrs(chgcxt->cc_rri,
 													ondisk_tuple,
 													spilled_tuple,
 													chgcxt->cc_estate);
+	if (ExecUpdateMayKeepLocator(chgcxt->cc_rri, modified_idx_attrs))
+		options |= TABLE_UPDATE_MAY_KEEP_LOCATOR;
 
 	/*
 	 * Carry out the update, skipping logical decoding for it.
 	 */
 	res = table_tuple_update(rel, &(ondisk_tuple->tts_tid), spilled_tuple,
 							 GetCurrentCommandId(true),
-							 TABLE_UPDATE_NO_LOGICAL,
+							 options,
 							 InvalidSnapshot,
 							 InvalidSnapshot,
 							 false,
 							 &tmfd, &lockmode,
-							 modified_idx_attrs, &update_indexes);
-	bms_free(modified_idx_attrs);
+							 modified_idx_attrs, &update_indexes,
+							 &version_tag);
 	if (res != TM_Ok)
 		ereport(ERROR,
 				errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
@@ -2949,12 +2953,16 @@ apply_concurrent_update(Relation rel, TupleTableSlot *spilled_tuple,
 
 		if (update_indexes == TU_Summarizing)
 			flags |= EIIT_ONLY_SUMMARIZING;
-		ExecInsertIndexTuples(chgcxt->cc_rri,
+		else if (update_indexes == TU_Affected)
+			flags |= EIIT_ONLY_AFFECTED;
+		ExecUpdateIndexTuples(chgcxt->cc_rri,
 							  chgcxt->cc_estate,
 							  flags,
 							  spilled_tuple,
+							  version_tag, modified_idx_attrs,
 							  NIL, NULL);
 	}
+	bms_free(modified_idx_attrs);
 
 	pgstat_progress_incr_param(PROGRESS_REPACK_HEAP_TUPLES_UPDATED, 1);
 }

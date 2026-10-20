@@ -319,13 +319,17 @@ simple_table_tuple_delete(Relation rel, ItemPointer tid, Snapshot snapshot)
  * the target tuple are not expected (for example, because we have a lock
  * on the relation associated with the tuple).  Any failure is reported
  * via ereport().  otid is taken to name the latest version of the row.
+ * options are passed on to table_tuple_update(), with
+ * TABLE_UPDATE_LOCKED_VERSION added.
  */
 void
 simple_table_tuple_update(Relation rel, ItemPointer otid,
 						  TupleTableSlot *slot,
 						  Snapshot snapshot,
 						  const Bitmapset *modified_idx_attrs,
-						  TU_UpdateIndexes *update_indexes)
+						  uint32 options,
+						  TU_UpdateIndexes *update_indexes,
+						  IndexVersionTag *version_tag)
 {
 	TM_Result	result;
 	TM_FailureData tmfd;
@@ -333,12 +337,12 @@ simple_table_tuple_update(Relation rel, ItemPointer otid,
 
 	result = table_tuple_update(rel, otid, slot,
 								GetCurrentCommandId(true),
-								TABLE_UPDATE_LOCKED_VERSION,
+								options | TABLE_UPDATE_LOCKED_VERSION,
 								snapshot, InvalidSnapshot,
 								true /* wait for commit */ ,
 								&tmfd, &lockmode,
 								modified_idx_attrs,
-								update_indexes);
+								update_indexes, version_tag);
 
 	switch (result)
 	{
