@@ -1,0 +1,1053 @@
+--
+-- BARK as the implementation of btree indexes: with
+-- default_btree_implementation = bark, an index created USING btree keeps
+-- btree's operator classes and semantics but is stored and searched by
+-- BARK's code (pg_index.indimplam).  Each case checks the implementation,
+-- compares the index's answers with a sequential scan, and checks the index
+-- with bark_index_check(heapallindexed).
+--
+SET client_min_messages = warning;
+CREATE EXTENSION IF NOT EXISTS amcheck;
+CREATE EXTENSION IF NOT EXISTS pageinspect;
+CREATE EXTENSION IF NOT EXISTS pgstattuple;
+RESET client_min_messages;
+-- The implementation of an index, '-' for its own AM.
+CREATE FUNCTION implam(idx regclass) RETURNS name
+LANGUAGE sql AS $$
+  SELECT coalesce((SELECT amname FROM pg_am WHERE oid = i.indimplam), '-')
+  FROM pg_index i WHERE i.indexrelid = idx
+$$;
+-- Every index of a table, its AM, implementation, and amcheck's verdict.
+CREATE FUNCTION checked(tab regclass)
+RETURNS TABLE (idx name, am name, impl name, ok bool)
+LANGUAGE plpgsql AS $$
+DECLARE r record;
+BEGIN
+  FOR r IN SELECT c.oid, c.relname, a.amname
+           FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+           JOIN pg_am a ON a.oid = c.relam
+           WHERE i.indrelid = tab ORDER BY c.relname
+  LOOP
+    idx := r.relname; am := r.amname; impl := implam(r.oid);
+    PERFORM bark_index_check(r.oid, true);
+    ok := true;
+    RETURN NEXT;
+  END LOOP;
+END $$;
+-- The rows of query q (an int-valued select list, as text) under a forced
+-- plan: 'seq', 'index', 'ios' or 'bitmap'.  Returns them in their order.
+CREATE FUNCTION run(q text, how text) RETURNS text
+LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+  PERFORM set_config('enable_seqscan', (how = 'seq')::text, true);
+  PERFORM set_config('enable_indexscan', (how = 'index')::text, true);
+  PERFORM set_config('enable_indexonlyscan', (how IN ('ios', 'index'))::text, true);
+  PERFORM set_config('enable_bitmapscan', (how = 'bitmap')::text, true);
+  PERFORM set_config('enable_sort', (how = 'seq')::text, true);
+  EXECUTE format('SELECT string_agg(x::text, '','' ORDER BY n) FROM '
+                 '(SELECT row_number() OVER () n, x FROM (%s) s(x)) w', q)
+    INTO r;
+  RETURN r;
+END $$;
+-- Does each forced plan agree with the sequential scan, row for row for an
+-- ordered query, or as a multiset (ordered = false)?
+CREATE FUNCTION agrees(q text, ordered bool DEFAULT true,
+                       hows text[] DEFAULT '{index,ios,bitmap}')
+RETURNS TABLE (how text, same bool)
+LANGUAGE plpgsql AS $$
+DECLARE
+  sq text := CASE WHEN ordered THEN q
+             ELSE format('SELECT x FROM (%s) s(x) ORDER BY x::text', q) END;
+  seq text := run(sq, 'seq');
+BEGIN
+  FOREACH how IN ARRAY hows LOOP
+    IF ordered THEN
+      same := run(q, how) IS NOT DISTINCT FROM seq;
+    ELSE
+      same := (SELECT string_agg(v, ',' ORDER BY v)
+               FROM unnest(string_to_array(run(q, how), ',')) v)
+              IS NOT DISTINCT FROM seq;
+    END IF;
+    RETURN NEXT;
+  END LOOP;
+END $$;
+-- The plan's node types and index names, to show which index served it.
+CREATE FUNCTION plan_of(q text) RETURNS text
+LANGUAGE plpgsql AS $$
+DECLARE r text; l text;
+BEGIN
+  r := '';
+  FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+    r := r || l || E'\n';
+  END LOOP;
+  RETURN r;
+END $$;
+SET default_btree_implementation = bark;
+-- The setting picks BARK; the index is a btree index in every catalog
+-- answer but its implementation.
+CREATE TABLE t (id int, a int, b text, c int, d numeric);
+INSERT INTO t SELECT g, g % 500, 'v' || (g % 1000), g, round((g % 7) / 3.0, g % 3)
+FROM generate_series(1, 20000) g;
+UPDATE t SET a = NULL WHERE id % 97 = 0;
+UPDATE t SET b = NULL WHERE id % 89 = 0;
+CREATE INDEX t_a ON t (a);
+CREATE INDEX t_ab ON t (a, b);
+CREATE INDEX t_b_desc ON t (b DESC NULLS FIRST, a);
+CREATE UNIQUE INDEX t_c ON t (c) INCLUDE (b);
+CREATE INDEX t_expr ON t ((a * 2 + 1));
+CREATE INDEX t_part ON t (c) WHERE a < 50;
+CREATE INDEX t_d ON t (d);
+ALTER TABLE t ADD PRIMARY KEY (id);
+SELECT * FROM checked('t');
+   idx    |  am   | impl | ok 
+----------+-------+------+----
+ t_a      | btree | bark | t
+ t_ab     | btree | bark | t
+ t_b_desc | btree | bark | t
+ t_c      | btree | bark | t
+ t_d      | btree | bark | t
+ t_expr   | btree | bark | t
+ t_part   | btree | bark | t
+ t_pkey   | btree | bark | t
+(8 rows)
+
+SELECT pg_get_indexdef('t_ab'::regclass);
+                 pg_get_indexdef                  
+--------------------------------------------------
+ CREATE INDEX t_ab ON public.t USING btree (a, b)
+(1 row)
+
+\d t_ab
+         Index "public.t_ab"
+ Column |  Type   | Key? | Definition 
+--------+---------+------+------------
+ a      | integer | yes  | a
+ b      | text    | yes  | b
+btree, for table "public.t", implemented by bark
+
+SELECT amname FROM pg_am a JOIN pg_class c ON c.relam = a.oid
+WHERE c.relname = 't_a';
+ amname 
+--------
+ btree
+(1 row)
+
+-- Every btree index property; the implementation's routine answers
+-- index-level ones, as BARK's do.
+SELECT p, pg_index_has_property('t_a', p) AS idx,
+       pg_index_column_has_property('t_a', 1, p) AS col
+FROM unnest('{clusterable,index_scan,bitmap_scan,backward_scan,asc,desc,nulls_first,nulls_last,orderable,distance_orderable,returnable,search_array,search_nulls}'::text[]) p;
+         p          | idx | col 
+--------------------+-----+-----
+ clusterable        | t   | 
+ index_scan         | t   | 
+ bitmap_scan        | t   | 
+ backward_scan      | t   | 
+ asc                |     | t
+ desc               |     | f
+ nulls_first        |     | f
+ nulls_last         |     | t
+ orderable          |     | t
+ distance_orderable |     | t
+ returnable         |     | t
+ search_array       |     | t
+ search_nulls       |     | t
+(13 rows)
+
+-- nbtree's tools refuse it; BARK's read it.
+SELECT bt_index_check('t_a');
+ERROR:  expected "btree" index as targets for verification
+DETAIL:  Index "t_a" is implemented by access method "bark".
+SELECT bt_index_parent_check('t_a');
+ERROR:  expected "btree" index as targets for verification
+DETAIL:  Index "t_a" is implemented by access method "bark".
+SELECT bt_metap('t_a');
+ERROR:  "t_a" is not a btree index
+SELECT pgstatindex('t_a');
+ERROR:  relation "t_a" is not a btree index
+SELECT bark_index_parent_check('t_a', true);
+ bark_index_parent_check 
+-------------------------
+ 
+(1 row)
+
+SELECT magic, root > 0 AS has_root FROM bark_metap('t_a');
+   magic    | has_root 
+------------+----------
+ 1380008523 | t
+(1 row)
+
+SELECT count(*) > 0 AS has_items FROM bark_page_items('t_a', 1);
+ has_items 
+-----------
+ t
+(1 row)
+
+SELECT leaf_pages > 0 AS has_leaves FROM pgstatbarkindex('t_a');
+ has_leaves 
+------------
+ t
+(1 row)
+
+ANALYZE t;
+-- Equality, ranges, NULLs, IN lists (SAOP), on each kind of scan.
+SELECT * FROM agrees('SELECT id FROM t WHERE a = 7 ORDER BY a, id', false);
+  how   | same 
+--------+------
+ index  | t
+ ios    | t
+ bitmap | t
+(3 rows)
+
+SELECT * FROM agrees('SELECT a FROM t WHERE a BETWEEN 10 AND 20 ORDER BY a');
+  how   | same 
+--------+------
+ index  | t
+ ios    | t
+ bitmap | t
+(3 rows)
+
+SELECT * FROM agrees('SELECT a FROM t WHERE a > 480 ORDER BY a DESC');
+  how   | same 
+--------+------
+ index  | t
+ ios    | t
+ bitmap | t
+(3 rows)
+
+SELECT * FROM agrees('SELECT id FROM t WHERE a IS NULL', false);
+  how   | same 
+--------+------
+ index  | t
+ ios    | t
+ bitmap | t
+(3 rows)
+
+SELECT * FROM agrees('SELECT id FROM t WHERE a IS NOT NULL AND a < 3', false);
+  how   | same 
+--------+------
+ index  | t
+ ios    | t
+ bitmap | t
+(3 rows)
+
+SELECT * FROM agrees('SELECT a FROM t WHERE a = ANY (''{3,77,499,600}'') ORDER BY a');
+  how   | same 
+--------+------
+ index  | t
+ ios    | t
+ bitmap | t
+(3 rows)
+
+SELECT * FROM agrees('SELECT a FROM t WHERE a = ANY (''{3,77,NULL}'') ORDER BY a DESC');
+  how   | same 
+--------+------
+ index  | t
+ ios    | t
+ bitmap | t
+(3 rows)
+
+SELECT * FROM agrees('SELECT a FROM t WHERE a < ANY (''{3,5}'') ORDER BY a');
+  how   | same 
+--------+------
+ index  | t
+ ios    | t
+ bitmap | t
+(3 rows)
+
+-- Multicolumn, with a condition on the second column only (skip scan).
+SELECT * FROM agrees('SELECT a FROM t WHERE b = ''v77'' ORDER BY a', true, '{index,ios}');
+  how  | same 
+-------+------
+ index | t
+ ios   | t
+(2 rows)
+
+SELECT plan_of('SELECT a FROM t WHERE b = ''v77'' ORDER BY a') ~ 't_ab|t_b_desc' AS uses_index;
+ uses_index 
+------------
+ t
+(1 row)
+
+SELECT * FROM agrees('SELECT a FROM t WHERE a BETWEEN 5 AND 9 AND b > ''v8'' ORDER BY a, b', true, '{index,ios}');
+  how  | same 
+-------+------
+ index | t
+ ios   | t
+(2 rows)
+
+-- DESC NULLS FIRST, forward and backward.
+SELECT * FROM agrees('SELECT c FROM t WHERE b < ''v2'' OR b IS NULL ORDER BY b DESC NULLS FIRST, a, c', true, '{index}');
+  how  | same 
+-------+------
+ index | t
+(1 row)
+
+SELECT * FROM agrees('SELECT c FROM t WHERE b < ''v2'' OR b IS NULL ORDER BY b ASC NULLS LAST, a DESC, c', true, '{index}');
+  how  | same 
+-------+------
+ index | t
+(1 row)
+
+-- INCLUDE, expression and partial indexes.
+SELECT * FROM agrees('SELECT c FROM t WHERE c BETWEEN 100 AND 140 ORDER BY c');
+  how   | same 
+--------+------
+ index  | t
+ ios    | t
+ bitmap | t
+(3 rows)
+
+SELECT * FROM agrees('SELECT id FROM t WHERE a * 2 + 1 = 15', false);
+  how   | same 
+--------+------
+ index  | t
+ ios    | t
+ bitmap | t
+(3 rows)
+
+SELECT * FROM agrees('SELECT c FROM t WHERE a < 50 AND c < 3000 ORDER BY c');
+  how   | same 
+--------+------
+ index  | t
+ ios    | t
+ bitmap | t
+(3 rows)
+
+SELECT plan_of('SELECT c FROM t WHERE a < 50 AND c < 3000 ORDER BY c') ~ 't_part' AS uses_partial;
+ uses_partial 
+--------------
+ t
+(1 row)
+
+-- numeric has no equalimage: 1, 1.0 and 1.00 are equal but stored
+-- differently, so their entries do not coalesce, and an index-only scan
+-- returns each row's own image.
+SELECT count(DISTINCT d::text) FROM t WHERE d = 1;
+ count 
+-------
+     3
+(1 row)
+
+SELECT * FROM agrees('SELECT d::text FROM t WHERE d = 1', false, '{ios,index}');
+  how  | same 
+-------+------
+ ios   | t
+ index | t
+(2 rows)
+
+SELECT plan_of('SELECT d::text FROM t WHERE d = 1') ~ 'Index Only Scan using t_d' AS ios;
+ ios 
+-----
+ f
+(1 row)
+
+-- Backward scans and scroll cursors.
+BEGIN;
+SET LOCAL enable_seqscan = off;
+SET LOCAL enable_bitmapscan = off;
+DECLARE cur SCROLL CURSOR FOR SELECT a FROM t WHERE a BETWEEN 10 AND 12 ORDER BY a;
+FETCH FORWARD 5 FROM cur;
+ a  
+----
+ 10
+ 10
+ 10
+ 10
+ 10
+(5 rows)
+
+FETCH BACKWARD 3 FROM cur;
+ a  
+----
+ 10
+ 10
+ 10
+(3 rows)
+
+FETCH LAST FROM cur;
+ a  
+----
+ 12
+(1 row)
+
+FETCH ABSOLUTE 41 FROM cur;
+ a  
+----
+ 11
+(1 row)
+
+FETCH RELATIVE -40 FROM cur;
+ a  
+----
+ 10
+(1 row)
+
+COMMIT;
+-- Mark and restore: a merge join over duplicates on both sides.
+CREATE TABLE u (a int);
+INSERT INTO u SELECT g % 50 FROM generate_series(1, 300) g;
+CREATE INDEX u_a ON u (a);
+ANALYZE u;
+BEGIN;
+SET LOCAL enable_hashjoin = off;
+SET LOCAL enable_nestloop = off;
+SET LOCAL enable_sort = off;
+SET LOCAL enable_seqscan = off;
+SET LOCAL enable_bitmapscan = off;
+SELECT plan_of('SELECT count(*) FROM t JOIN u USING (a) WHERE t.a < 50') ~ 'Merge Join' AS merge;
+ merge 
+-------
+ t
+(1 row)
+
+SELECT count(*) FROM t JOIN u USING (a) WHERE t.a < 50;
+ count 
+-------
+ 11892
+(1 row)
+
+COMMIT;
+SELECT count(*) FROM t JOIN u USING (a) WHERE t.a < 50;
+ count 
+-------
+ 11892
+(1 row)
+
+-- WHERE CURRENT OF through an index scan.
+BEGIN;
+SET LOCAL enable_seqscan = off;
+SET LOCAL enable_bitmapscan = off;
+DECLARE wc CURSOR FOR SELECT id, c FROM t WHERE c BETWEEN 5000 AND 5005 ORDER BY c FOR UPDATE;
+FETCH 3 FROM wc;
+  id  |  c   
+------+------
+ 5000 | 5000
+ 5001 | 5001
+ 5002 | 5002
+(3 rows)
+
+UPDATE t SET b = 'current' WHERE CURRENT OF wc;
+COMMIT;
+SELECT c FROM t WHERE b = 'current';
+  c   
+------
+ 5002
+(1 row)
+
+SELECT * FROM checked('t');
+   idx    |  am   | impl | ok 
+----------+-------+------+----
+ t_a      | btree | bark | t
+ t_ab     | btree | bark | t
+ t_b_desc | btree | bark | t
+ t_c      | btree | bark | t
+ t_d      | btree | bark | t
+ t_expr   | btree | bark | t
+ t_part   | btree | bark | t
+ t_pkey   | btree | bark | t
+(8 rows)
+
+-- KNN through BARK's <~> operators, which live in btree's integer_ops
+-- family: a capability of the implementation.  The nbtree-implemented index
+-- on the same column gets a Sort.
+CREATE TABLE k (a int, b int);
+INSERT INTO k SELECT (g * 7919) % 1000, g FROM generate_series(1, 5000) g;
+INSERT INTO k VALUES (NULL, 0), (NULL, -1);
+CREATE INDEX k_bark ON k (a);
+RESET default_btree_implementation;
+CREATE TABLE kn (a int, b int);
+INSERT INTO kn SELECT * FROM k;
+CREATE INDEX kn_btree ON kn (a);
+SET default_btree_implementation = bark;
+ANALYZE k, kn;
+SELECT implam('k_bark'), implam('kn_btree');
+ implam | implam 
+--------+--------
+ bark   | -
+(1 row)
+
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+EXPLAIN (COSTS OFF) SELECT a FROM k ORDER BY a <~> 500 LIMIT 5;
+               QUERY PLAN                
+-----------------------------------------
+ Limit
+   ->  Index Only Scan using k_bark on k
+         Order By: (a <~> 500)
+(3 rows)
+
+EXPLAIN (COSTS OFF) SELECT a FROM kn ORDER BY a <~> 500 LIMIT 5;
+                    QUERY PLAN                    
+--------------------------------------------------
+ Limit
+   ->  Sort
+         Sort Key: ((a <~> 500))
+         ->  Index Only Scan using kn_btree on kn
+(4 rows)
+
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+-- Distances, with ties broken by b, then the NULLs last; LIMIT and the
+-- whole result.
+CREATE FUNCTION knn(tab text, lim int) RETURNS text
+LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+  EXECUTE format('SELECT string_agg(coalesce(d::text, ''-''), '','') FROM '
+                 '(SELECT a <~> 500 AS d FROM %I ORDER BY a <~> 500 LIMIT %s) s',
+                 tab, lim) INTO r;
+  RETURN r;
+END $$;
+CREATE FUNCTION knn_agrees(lim int) RETURNS bool
+LANGUAGE plpgsql AS $$
+DECLARE i text; s text;
+BEGIN
+  SET LOCAL enable_seqscan = off;
+  SET LOCAL enable_bitmapscan = off;
+  i := knn('k', lim);
+  SET LOCAL enable_seqscan = on;
+  SET LOCAL enable_indexscan = off;
+  SET LOCAL enable_indexonlyscan = off;
+  s := knn('k', lim);
+  RETURN i = s;
+END $$;
+SELECT knn_agrees(1), knn_agrees(17), knn_agrees(5002);
+ knn_agrees | knn_agrees | knn_agrees 
+------------+------------+------------
+ t          | t          | t
+(1 row)
+
+SELECT knn('k', 9);
+        knn        
+-------------------
+ 0,0,0,0,0,1,1,1,1
+(1 row)
+
+-- The rows tied at one distance are the same rows, whatever their order.
+SELECT array_agg(a ORDER BY a) FROM (SELECT a FROM k ORDER BY a <~> 500 LIMIT 15) s;
+                           array_agg                           
+---------------------------------------------------------------
+ {499,499,499,499,499,500,500,500,500,500,501,501,501,501,501}
+(1 row)
+
+-- Backward: a scroll cursor over a KNN scan materializes.
+BEGIN;
+SET LOCAL enable_seqscan = off;
+SET LOCAL enable_bitmapscan = off;
+DECLARE kc SCROLL CURSOR FOR SELECT a <~> 500 FROM k ORDER BY a <~> 500 LIMIT 6;
+FETCH 6 FROM kc;
+ ?column? 
+----------
+        0
+        0
+        0
+        0
+        0
+        1
+(6 rows)
+
+FETCH BACKWARD 3 FROM kc;
+ ?column? 
+----------
+        0
+        0
+        0
+(3 rows)
+
+COMMIT;
+SELECT * FROM checked('k');
+  idx   |  am   | impl | ok 
+--------+-------+------+----
+ k_bark | btree | bark | t
+(1 row)
+
+-- Unique, primary key, deferrable unique, NULLS NOT DISTINCT, ON CONFLICT.
+CREATE TABLE uq (id int PRIMARY KEY, v int UNIQUE, w int,
+                 x int UNIQUE DEFERRABLE INITIALLY DEFERRED,
+                 n int, CONSTRAINT uq_n UNIQUE NULLS NOT DISTINCT (n));
+INSERT INTO uq SELECT g, g, g, g, g FROM generate_series(1, 1000) g;
+SELECT * FROM checked('uq');
+   idx    |  am   | impl | ok 
+----------+-------+------+----
+ uq_n     | btree | bark | t
+ uq_pkey  | btree | bark | t
+ uq_v_key | btree | bark | t
+ uq_x_key | btree | bark | t
+(4 rows)
+
+INSERT INTO uq VALUES (1, 0, 0, 0, 0);
+ERROR:  duplicate key value violates unique constraint "uq_pkey"
+DETAIL:  Key (id)=(1) already exists.
+INSERT INTO uq VALUES (0, 1, 0, 0, 0);
+ERROR:  duplicate key value violates unique constraint "uq_v_key"
+DETAIL:  Key (v)=(1) already exists.
+INSERT INTO uq VALUES (0, 0, 0, 0, 1);
+ERROR:  duplicate key value violates unique constraint "uq_n"
+DETAIL:  Key (n)=(1) already exists.
+INSERT INTO uq VALUES (0, 0, 0, 0, NULL);
+INSERT INTO uq VALUES (-1, -1, 0, -1, NULL);
+ERROR:  duplicate key value violates unique constraint "uq_n"
+DETAIL:  Key (n)=(null) already exists.
+-- deferred: a transient duplicate is fine, a lasting one fails at COMMIT.
+BEGIN;
+UPDATE uq SET x = x + 1 WHERE id <= 1000;
+COMMIT;
+BEGIN;
+UPDATE uq SET x = 5 WHERE id = 10;
+COMMIT;
+ERROR:  duplicate key value violates unique constraint "uq_x_key"
+DETAIL:  Key (x)=(5) already exists.
+SELECT min(x), max(x) FROM uq;
+ min | max  
+-----+------
+   1 | 1001
+(1 row)
+
+-- ON CONFLICT on the primary key, on v, and on a unique index inferred.
+INSERT INTO uq VALUES (5, 2000, 0, 2000, 2000)
+  ON CONFLICT (id) DO UPDATE SET w = uq.w + 100;
+INSERT INTO uq VALUES (2001, 6, 0, 2001, 2001)
+  ON CONFLICT (v) DO NOTHING;
+INSERT INTO uq VALUES (2002, 2002, 0, 2002, 2002), (7, 7, 0, 7, 7)
+  ON CONFLICT ON CONSTRAINT uq_pkey DO UPDATE SET w = -excluded.w - 1;
+SELECT id, v, w FROM uq WHERE id IN (5, 7, 2001, 2002) ORDER BY id;
+  id  |  v   |  w  
+------+------+-----
+    5 |    5 | 105
+    7 |    7 |  -1
+ 2002 | 2002 |   0
+(3 rows)
+
+SELECT * FROM agrees('SELECT v FROM uq WHERE v BETWEEN 1 AND 30 ORDER BY v');
+  how   | same 
+--------+------
+ index  | t
+ ios    | t
+ bitmap | t
+(3 rows)
+
+SELECT * FROM checked('uq');
+   idx    |  am   | impl | ok 
+----------+-------+------+----
+ uq_n     | btree | bark | t
+ uq_pkey  | btree | bark | t
+ uq_v_key | btree | bark | t
+ uq_x_key | btree | bark | t
+(4 rows)
+
+-- Foreign keys: the RI fast path probes the referenced BARK index.
+CREATE TABLE fk (id int PRIMARY KEY, ref int REFERENCES uq (v), refn int);
+INSERT INTO fk SELECT g, g, g FROM generate_series(1, 500) g;
+INSERT INTO fk VALUES (501, 99999, 0);
+ERROR:  insert or update on table "fk" violates foreign key constraint "fk_ref_fkey"
+DETAIL:  Key (ref)=(99999) is not present in table "uq".
+DELETE FROM uq WHERE v = 3;
+ERROR:  update or delete on table "uq" violates foreign key constraint "fk_ref_fkey" on table "fk"
+DETAIL:  Key (v)=(3) is still referenced from table "fk".
+UPDATE uq SET v = v + 10000 WHERE v = 4;
+ERROR:  update or delete on table "uq" violates foreign key constraint "fk_ref_fkey" on table "fk"
+DETAIL:  Key (v)=(4) is still referenced from table "fk".
+DELETE FROM uq WHERE v = 2000;
+SELECT count(*) FROM fk WHERE NOT EXISTS (SELECT 1 FROM uq WHERE uq.v = fk.ref);
+ count 
+-------
+     0
+(1 row)
+
+-- composite, ON DELETE CASCADE
+CREATE TABLE pk2 (a int, b int, PRIMARY KEY (a, b));
+INSERT INTO pk2 SELECT g % 10, g FROM generate_series(1, 200) g;
+CREATE TABLE fk2 (a int, b int, FOREIGN KEY (a, b) REFERENCES pk2 ON DELETE CASCADE);
+INSERT INTO fk2 SELECT a, b FROM pk2;
+INSERT INTO fk2 VALUES (1, 2);
+ERROR:  insert or update on table "fk2" violates foreign key constraint "fk2_a_b_fkey"
+DETAIL:  Key (a, b)=(1, 2) is not present in table "pk2".
+DELETE FROM pk2 WHERE a = 3;
+SELECT count(*), count(*) FILTER (WHERE a = 3) FROM fk2;
+ count | count 
+-------+-------
+   180 |     0
+(1 row)
+
+SELECT * FROM checked('pk2');
+   idx    |  am   | impl | ok 
+----------+-------+------+----
+ pk2_pkey | btree | bark | t
+(1 row)
+
+-- Exclusion constraint with btree's = operator.
+CREATE TABLE ex (a int, b int, EXCLUDE USING btree (a WITH =));
+INSERT INTO ex SELECT g, g FROM generate_series(1, 100) g;
+INSERT INTO ex VALUES (5, 0);
+ERROR:  conflicting key value violates exclusion constraint "ex_a_excl"
+DETAIL:  Key (a)=(5) conflicts with existing key (a)=(5).
+SELECT * FROM checked('ex');
+    idx    |  am   | impl | ok 
+-----------+-------+------+----
+ ex_a_excl | btree | bark | t
+(1 row)
+
+-- deduplicate_items: on (default), equal keys share LIST and POSTING
+-- entries; off, every row is a SINGLE, also after ALTER INDEX for new rows.
+CREATE TABLE dd (a int);
+INSERT INTO dd SELECT g % 10 FROM generate_series(1, 2000) g;
+CREATE INDEX dd_on ON dd (a);
+CREATE INDEX dd_off ON dd (a)
+  WITH (deduplicate_items = off, vacuum_cleanup_index_scale_factor = 0.1);
+CREATE FUNCTION shapes(idx regclass) RETURNS TABLE (shape text, n bigint, tids bigint)
+LANGUAGE sql AS $$
+  SELECT i.shape, count(*), sum(i.ntids)
+  FROM generate_series(1, pg_relation_size(idx) / 8192 - 1) b,
+       bark_page_items(idx::text, b) i
+  WHERE i.shape <> 'PIVOT' GROUP BY 1 ORDER BY 1
+$$;
+SELECT * FROM shapes('dd_on');
+ shape | n  | tids 
+-------+----+------
+ LIST  | 20 | 2000
+(1 row)
+
+SELECT * FROM shapes('dd_off');
+ shape  |  n   | tids 
+--------+------+------
+ SINGLE | 2000 | 2000
+(1 row)
+
+SELECT reloptions FROM pg_class WHERE relname = 'dd_off';
+                          reloptions                           
+---------------------------------------------------------------
+ {deduplicate_items=off,vacuum_cleanup_index_scale_factor=0.1}
+(1 row)
+
+ALTER INDEX dd_on SET (deduplicate_items = off);
+INSERT INTO dd SELECT g % 10 FROM generate_series(1, 100) g;
+SELECT * FROM shapes('dd_on');
+ shape  |  n  | tids 
+--------+-----+------
+ LIST   |  20 | 2000
+ SINGLE | 100 |  100
+(2 rows)
+
+SELECT * FROM shapes('dd_off');
+ shape  |  n   | tids 
+--------+------+------
+ SINGLE | 2100 | 2100
+(1 row)
+
+ALTER INDEX dd_off SET (deduplicate_items = on);
+REINDEX INDEX dd_off;
+SELECT * FROM shapes('dd_off');
+ shape | n  | tids 
+-------+----+------
+ LIST  | 20 | 2100
+(1 row)
+
+SELECT * FROM agrees('SELECT a FROM dd WHERE a IN (3, 4) ORDER BY a');
+  how   | same 
+--------+------
+ index  | t
+ ios    | t
+ bitmap | t
+(3 rows)
+
+SELECT * FROM checked('dd');
+  idx   |  am   | impl | ok 
+--------+-------+------+----
+ dd_off | btree | bark | t
+ dd_on  | btree | bark | t
+(2 rows)
+
+-- BARK's own parameters, and btree's range checks.
+CREATE INDEX dd_pc ON dd (a) WITH (prefix_compression = on, fillfactor = 50);
+CREATE INDEX dd_bad ON dd (a) WITH (fillfactor = 5);
+ERROR:  value 5 out of bounds for option "fillfactor"
+DETAIL:  Valid values are between "10" and "100".
+CREATE INDEX dd_bad ON dd (a) WITH (deduplicate_items = 3);
+ERROR:  invalid value for boolean option "deduplicate_items": 3
+CREATE INDEX dd_bad ON dd (a) WITH (no_such_option = 1);
+ERROR:  unrecognized parameter "no_such_option"
+-- Parallel CREATE INDEX and parallel index scans.
+CREATE TABLE par (a int, b int) WITH (parallel_workers = 2);
+INSERT INTO par SELECT g % 3000, g FROM generate_series(1, 120000) g;
+SET max_parallel_maintenance_workers = 2;
+SET maintenance_work_mem = '64MB';
+CREATE INDEX par_a ON par (a);
+RESET max_parallel_maintenance_workers;
+RESET maintenance_work_mem;
+ANALYZE par;
+BEGIN;
+SET LOCAL parallel_setup_cost = 0;
+SET LOCAL parallel_tuple_cost = 0;
+SET LOCAL min_parallel_index_scan_size = 0;
+SET LOCAL min_parallel_table_scan_size = 0;
+SET LOCAL enable_seqscan = off;
+SET LOCAL enable_bitmapscan = off;
+SET LOCAL max_parallel_workers_per_gather = 2;
+SELECT plan_of('SELECT count(*), sum(b) FROM par WHERE a BETWEEN 100 AND 2000') ~ 'Parallel Index' AS parallel;
+ parallel 
+----------
+ t
+(1 row)
+
+SELECT count(*), sum(b) FROM par WHERE a BETWEEN 100 AND 2000;
+ count |    sum     
+-------+------------
+ 76040 | 4528182000
+(1 row)
+
+SELECT count(*), sum(a) FROM par WHERE a = ANY ('{5,500,2999}');
+ count |  sum   
+-------+--------
+   120 | 140160
+(1 row)
+
+COMMIT;
+SELECT count(*), sum(b) FROM par WHERE a BETWEEN 100 AND 2000;
+ count |    sum     
+-------+------------
+ 76040 | 4528182000
+(1 row)
+
+SELECT count(*), sum(a) FROM par WHERE a = ANY ('{5,500,2999}');
+ count |  sum   
+-------+--------
+   120 | 140160
+(1 row)
+
+SELECT * FROM checked('par');
+  idx  |  am   | impl | ok 
+-------+-------+------+----
+ par_a | btree | bark | t
+(1 row)
+
+-- CIC and REINDEX CONCURRENTLY keep the implementation.
+CREATE INDEX CONCURRENTLY t_cic ON t (c, a);
+REINDEX INDEX CONCURRENTLY t_a;
+REINDEX TABLE CONCURRENTLY uq;
+REINDEX TABLE t;
+SELECT * FROM checked('t');
+   idx    |  am   | impl | ok 
+----------+-------+------+----
+ t_a      | btree | bark | t
+ t_ab     | btree | bark | t
+ t_b_desc | btree | bark | t
+ t_c      | btree | bark | t
+ t_cic    | btree | bark | t
+ t_d      | btree | bark | t
+ t_expr   | btree | bark | t
+ t_part   | btree | bark | t
+ t_pkey   | btree | bark | t
+(9 rows)
+
+SELECT * FROM checked('uq');
+   idx    |  am   | impl | ok 
+----------+-------+------+----
+ uq_n     | btree | bark | t
+ uq_pkey  | btree | bark | t
+ uq_v_key | btree | bark | t
+ uq_x_key | btree | bark | t
+(4 rows)
+
+SELECT * FROM agrees('SELECT c FROM t WHERE c BETWEEN 7000 AND 7100 AND a < 100 ORDER BY c, a', true, '{index,ios}');
+  how  | same 
+-------+------
+ index | t
+ ios   | t
+(2 rows)
+
+-- An nbtree index whose setting is reset keeps nbtree; a BARK one stays
+-- BARK whatever the setting says now.
+RESET default_btree_implementation;
+REINDEX TABLE t;
+ALTER TABLE t ALTER COLUMN c TYPE bigint;
+SELECT idx, impl FROM checked('t') WHERE impl <> 'bark';
+ idx | impl 
+-----+------
+(0 rows)
+
+SELECT implam('kn_btree');
+ implam 
+--------
+ -
+(1 row)
+
+SET default_btree_implementation = bark;
+-- REPACK and CLUSTER on a BARK-implemented index, by sorting and by an
+-- index scan, give a correctly ordered table.
+CREATE TABLE rp (a int, b text);
+INSERT INTO rp SELECT (g * 7919) % 10007, md5(g::text) FROM generate_series(1, 10000) g;
+CREATE INDEX rp_a ON rp (a);
+CREATE INDEX rp_b ON rp (b DESC);
+-- Is the table stored in col's order (ascending, or descending when desc)?
+CREATE FUNCTION physically_ordered(tab text, col text, descending bool DEFAULT false)
+RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE r bool;
+BEGIN
+  EXECUTE format('SELECT coalesce(bool_and(CASE WHEN %L THEN prev >= v ELSE prev <= v END), true) '
+                 'FROM (SELECT %I AS v, lag(%I) OVER (ORDER BY ctid) AS prev FROM %I) s '
+                 'WHERE prev IS NOT NULL', descending, col, col, tab) INTO r;
+  RETURN r;
+END $$;
+SELECT physically_ordered('rp', 'a') AS before;
+ before 
+--------
+ f
+(1 row)
+
+\set VERBOSITY terse
+SET client_min_messages = info;
+SET enable_indexscan = off;
+REPACK (VERBOSE) rp USING INDEX rp_a;
+INFO:  repacking "public.rp" using sequential scan and sort
+INFO:  "public.rp": found 0 removable, 10000 nonremovable row versions in 84 pages
+RESET enable_indexscan;
+RESET client_min_messages;
+SELECT physically_ordered('rp', 'a') AS sorted;
+ sorted 
+--------
+ t
+(1 row)
+
+SET client_min_messages = info;
+SET enable_sort = off;
+REPACK (VERBOSE) rp USING INDEX rp_b;
+INFO:  repacking "public.rp" using index scan on "rp_b"
+INFO:  "public.rp": found 0 removable, 10000 nonremovable row versions in 84 pages
+RESET enable_sort;
+RESET client_min_messages;
+\set VERBOSITY default
+SELECT physically_ordered('rp', 'b', true) AS scanned;
+ scanned 
+---------
+ t
+(1 row)
+
+CLUSTER rp USING rp_a;
+SELECT physically_ordered('rp', 'a') AS clustered;
+ clustered 
+-----------
+ t
+(1 row)
+
+SELECT count(*), count(DISTINCT a) FROM rp;
+ count | count 
+-------+-------
+ 10000 | 10000
+(1 row)
+
+SELECT * FROM checked('rp');
+ idx  |  am   | impl | ok 
+------+-------+------+----
+ rp_a | btree | bark | t
+ rp_b | btree | bark | t
+(2 rows)
+
+-- VACUUM after deletes; inserts reuse the freed space.
+DELETE FROM t WHERE id % 3 = 0;
+VACUUM t;
+SELECT * FROM agrees('SELECT a FROM t WHERE a BETWEEN 100 AND 110 ORDER BY a');
+  how   | same 
+--------+------
+ index  | t
+ ios    | t
+ bitmap | t
+(3 rows)
+
+INSERT INTO t SELECT g, g % 500, 'w' || g, g, 1 FROM generate_series(30000, 31000) g;
+SELECT * FROM checked('t');
+   idx    |  am   | impl | ok 
+----------+-------+------+----
+ t_a      | btree | bark | t
+ t_ab     | btree | bark | t
+ t_b_desc | btree | bark | t
+ t_c      | btree | bark | t
+ t_cic    | btree | bark | t
+ t_d      | btree | bark | t
+ t_expr   | btree | bark | t
+ t_part   | btree | bark | t
+ t_pkey   | btree | bark | t
+(9 rows)
+
+-- Partitions: each partition's index is BARK's; the partitioned index has
+-- none.
+CREATE TABLE pt (a int, b int) PARTITION BY RANGE (a);
+CREATE TABLE pt1 PARTITION OF pt FOR VALUES FROM (0) TO (1000);
+CREATE TABLE pt2 PARTITION OF pt FOR VALUES FROM (1000) TO (2000);
+CREATE INDEX pt_b ON pt (b);
+ALTER TABLE pt ADD PRIMARY KEY (a);
+INSERT INTO pt SELECT g, g % 77 FROM generate_series(0, 1999) g;
+SELECT c.relname, c.relkind, implam(c.oid) FROM pg_class c
+WHERE c.relname ~ '^pt[0-9]?_' ORDER BY 1;
+  relname  | relkind | implam 
+-----------+---------+--------
+ pt1_b_idx | i       | bark
+ pt1_pkey  | i       | bark
+ pt2_b_idx | i       | bark
+ pt2_pkey  | i       | bark
+ pt_b      | I       | -
+ pt_pkey   | I       | -
+(6 rows)
+
+SELECT * FROM agrees('SELECT a FROM pt WHERE b = 5 ORDER BY a', false);
+  how   | same 
+--------+------
+ index  | t
+ ios    | t
+ bitmap | t
+(3 rows)
+
+-- Temporary and unlogged tables.
+CREATE TEMP TABLE tmp (a int PRIMARY KEY);
+INSERT INTO tmp SELECT generate_series(1, 1000);
+CREATE UNLOGGED TABLE unl (a int PRIMARY KEY);
+INSERT INTO unl SELECT generate_series(1, 1000);
+SELECT * FROM checked('tmp');
+   idx    |  am   | impl | ok 
+----------+-------+------+----
+ tmp_pkey | btree | bark | t
+(1 row)
+
+SELECT * FROM checked('unl');
+   idx    |  am   | impl | ok 
+----------+-------+------+----
+ unl_pkey | btree | bark | t
+(1 row)
+
+SELECT * FROM agrees('SELECT a FROM unl WHERE a > 990 ORDER BY a');
+  how   | same 
+--------+------
+ index  | t
+ ios    | t
+ bitmap | t
+(3 rows)
+
+-- Catalog and TOAST indexes keep nbtree.
+CREATE TABLE toasty (a int, b text);
+SELECT count(*) FROM pg_index WHERE indimplam <> 0 AND indexrelid < 16384;
+ count 
+-------
+     0
+(1 row)
+
+SELECT implam(i.indexrelid) FROM pg_index i
+WHERE i.indrelid = (SELECT reltoastrelid FROM pg_class WHERE relname = 'toasty');
+ implam 
+--------
+ -
+(1 row)
+
+-- pg_amcheck-style selection skips BARK-implemented btree indexes; the
+-- server's own check tells why.
+SELECT bt_index_check(c.oid) FROM pg_class c WHERE c.relname = 'kn_btree';
+ bt_index_check 
+----------------
+ 
+(1 row)
+
+RESET default_btree_implementation;
+DROP TABLE t, u, k, kn, uq, fk, pk2, fk2, ex, dd, par, rp, pt, toasty, unl;
+DROP FUNCTION implam(regclass), checked(regclass), run(text, text),
+  agrees(text, bool, text[]), plan_of(text), knn(text, int), knn_agrees(int),
+  shapes(regclass), physically_ordered(text, text, bool);
