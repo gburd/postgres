@@ -1884,8 +1884,8 @@ capability of the implementation. btree's
 <code>deduplicate_items</code> (off: SINGLEs only, through
 bark_index_coalesces) and <code>vacuum_cleanup_index_scale_factor</code>
 (ignored) are BARK reloptions too. bt_* tools refuse such an index,
-bark_index_check and pageinspect's bark_* accept it; pg_amcheck skips
-it. REPACK sorts on it (tuplesort_begin_cluster reads only opclass
+bark_index_check and pageinspect's bark_* accept it; pg_amcheck checks
+it as a BARK index (by pg_index.indimplam). REPACK sorts on it (tuplesort_begin_cluster reads only opclass
 data). Multikey classes still need <code>USING bark</code>. Run with
 <code>default_btree_implementation = bark</code> cluster-wide, the core
 regression and isolation suites show no wrong result or crash; their

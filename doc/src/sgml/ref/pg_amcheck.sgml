@@ -43,9 +43,11 @@ PostgreSQL documentation
   <para>
    Only ordinary and TOAST table relations, materialized views, sequences,
    btree indexes, and (with <application>amcheck</application> version 1.7
-   or later) <literal>bark</literal> indexes are currently supported.  Other
-   relation types, and btree indexes implemented by another access method
-   (see <xref linkend="index-implementations"/>), are silently skipped.
+   or later) <literal>bark</literal> indexes are currently supported.  A
+   btree index implemented by <literal>bark</literal> (see
+   <xref linkend="index-implementations"/>) is checked as a
+   <literal>bark</literal> index.  Other relation types, and btree indexes
+   implemented by another access method, are silently skipped.
   </para>
 
   <para>
