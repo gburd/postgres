@@ -358,7 +358,11 @@ typedef struct xl_bark_overwrite
  * bark_entry_add_tid on the entry at offnum, as the primary did, and
  * overwrites the entry with the result, as nbtree's XLOG_BTREE_INSERT_POST
  * logs the new item and has redo re-form the posting list.  The result
- * depends only on the entry and the TID, so both sides build the same bytes.
+ * depends only on the entry, the TID and the index's TID stride, so both
+ * sides build the same bytes.  Redo cannot read the stride from the meta
+ * page, so an index whose stride is not MaxHeapTuplesPerPage (a table whose
+ * locator offsets exceed heap's) appends it to the main data as a uint16;
+ * a record without it means MaxHeapTuplesPerPage (bark_xlog_tid_stride).
  *
  * Backup Blk 0: leaf page
  */
@@ -377,6 +381,7 @@ typedef struct xl_bark_add_tid
  * offnum + 1, as nbtree's posting-list split (XLOG_BTREE_INSERT_POST with a
  * postingoff) rewrites the posting list and adds the new item.  Only the TID
  * is logged: redo calls bark_entry_swap_tid on the entry, as the primary did.
+ * The TID stride follows as for xl_bark_add_tid.
  *
  * Backup Blk 0: leaf page
  */

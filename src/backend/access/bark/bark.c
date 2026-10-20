@@ -685,7 +685,8 @@ bark_vacuum_page(BarkVacState *vstate, BlockNumber scanblkno)
 					palloc(ntids * sizeof(ItemPointerData));
 				int			nlive = 0;
 
-				ntids = bark_entry_get_tids(itup, tids, ntids);
+				ntids = bark_entry_get_tids(itup, tids, ntids,
+											bark_index_tid_stride(index));
 				for (int i = 0; i < ntids; i++)
 				{
 					if (!callback(&tids[i], callback_state))

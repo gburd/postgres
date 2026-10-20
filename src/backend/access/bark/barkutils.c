@@ -34,6 +34,7 @@
 #include "access/heaptoast.h"
 #include "access/htup_details.h"
 #include "access/itup.h"
+#include "access/tableam.h"
 #include "access/toast_internals.h"
 #include "access/xloginsert.h"
 #include "catalog/pg_amop.h"
@@ -142,6 +143,17 @@ bark_translate_cmptype(CompareType cmptype, Oid opfamily)
 BarkKeyInfo *
 bark_build_keyinfo(Relation index)
 {
+	return bark_build_keyinfo_stride(index, bark_index_tid_stride(index));
+}
+
+/*
+ * bark_build_keyinfo for an index whose TID stride is `stride`: CREATE
+ * INDEX's, whose meta page is not written yet, takes the heap's
+ * (bark_heap_tid_stride).
+ */
+BarkKeyInfo *
+bark_build_keyinfo_stride(Relation index, uint16 stride)
+{
 	int			nkeys = IndexRelationGetNumberOfKeyAttributes(index);
 	BarkKeyInfo *keyinfo;
 
@@ -149,6 +161,7 @@ bark_build_keyinfo(Relation index)
 									  nkeys * sizeof(BarkKeyColumn));
 	keyinfo->heaprel = NULL;	/* writers set it */
 	keyinfo->nkeys = nkeys;
+	keyinfo->tidstride = stride;
 
 	for (int i = 0; i < nkeys; i++)
 	{
@@ -448,6 +461,50 @@ bark_set_nkeys(Relation index, uint64 nkeys)
 		END_CRIT_SECTION();
 	}
 	UnlockReleaseBuffer(metabuf);
+}
+
+/*
+ * The TID stride of the index: the largest locator offset its TID mappings
+ * (bark_tid_to_key, a coded LIST's) are laid out for, which CREATE INDEX
+ * stored in the meta page from the heap's LocatorDesc (bark_heap_tid_stride).
+ * A meta page from before the field, or with 0 in it, means
+ * MaxHeapTuplesPerPage, heap's bound, which was the only one.  The value
+ * changes only with the relfilenode, which drops rd_amcache, so it is read
+ * once per relcache entry.
+ */
+uint16
+bark_index_tid_stride(Relation index)
+{
+	BarkAmCache *cache = bark_get_amcache(index);
+
+	if (cache->tidstride == 0)
+	{
+		Buffer		metabuf = ReadBuffer(index, BARK_METAPAGE);
+		Page		metapage;
+		BarkMetaPageData *meta;
+		uint16		stride = 0;
+
+		LockBuffer(metabuf, BUFFER_LOCK_SHARE);
+		metapage = BufferGetPage(metabuf);
+		meta = BarkPageGetMeta(metapage);
+		if (((PageHeader) metapage)->pd_lower >=
+			((char *) &meta->bark_tid_stride + sizeof(meta->bark_tid_stride)) -
+			(char *) metapage)
+			stride = meta->bark_tid_stride;
+		UnlockReleaseBuffer(metabuf);
+		cache->tidstride = stride != 0 ? stride : MaxHeapTuplesPerPage;
+	}
+	return cache->tidstride;
+}
+
+/*
+ * The TID stride an index of `heap` is built with: its locators' largest
+ * offset, which for heap is MaxHeapTuplesPerPage.
+ */
+uint16
+bark_heap_tid_stride(Relation heap)
+{
+	return RelationGetLocatorDesc(heap)->max_offset;
 }
 
 /* qsort_arg comparator for one column's keys, in the column's index order. */
@@ -1258,7 +1315,8 @@ bark_pivot_heap_tid(IndexTuple pivot)
  * the sbm minimum and maximum of a POSTING.
  */
 void
-bark_entry_tid_range(IndexTuple itup, ItemPointer lo, ItemPointer hi)
+bark_entry_tid_range(IndexTuple itup, ItemPointer lo, ItemPointer hi,
+					 uint16 stride)
 {
 	switch (BarkEntryGetShape(itup))
 	{
@@ -1285,8 +1343,8 @@ bark_entry_tid_range(IndexTuple itup, ItemPointer lo, ItemPointer hi)
 			{
 				Sbm		   *map = bark_posting_open(itup);
 
-				bark_key_to_tid(sbm_minimum(map), lo);
-				bark_key_to_tid(sbm_maximum(map), hi);
+				bark_key_to_tid(sbm_minimum(map), lo, stride);
+				bark_key_to_tid(sbm_maximum(map), hi, stride);
 				sbm_free(map);
 				break;
 			}
@@ -1330,7 +1388,7 @@ bark_compare_itups_tid(BarkKeyInfo *keyinfo, Relation index, IndexTuple key,
 		return ItemPointerCompare(scantid, ptid);
 	}
 
-	bark_entry_tid_range(itup, &lo, &hi);
+	bark_entry_tid_range(itup, &lo, &hi, keyinfo->tidstride);
 	if (ItemPointerCompare(scantid, &lo) < 0)
 		return -1;
 	if (ItemPointerCompare(scantid, &hi) > 0)
@@ -1386,35 +1444,49 @@ bark_form_list(TupleDesc tupdesc, IndexTuple key, ItemPointer tids, int ntids)
 
 /*
  * Delta+varbyte coding of a LIST's locators, as GIN codes a posting list
- * (ginpostinglist.c).  A heap TID maps to a 48-bit integer whose low 11 bits
- * are the offset number and whose next bits are the block number; the
- * locators are stored as the varbyte encoding of the ascending differences of
- * those integers, which for a clustered or duplicate-heavy index is one to a
- * few bytes each rather than the six a raw ItemPointerData takes.  The mapping
- * and encoding are GIN's; sharing them keeps BARK's coded LIST the same size
- * as GIN's posting list on the same locators (the V6 benchmark).
+ * (ginpostinglist.c).  A heap TID maps to an integer whose low
+ * BARK_TID_OFFSET_BITS (11) bits are the offset number and whose next bits
+ * are the block number; the locators are stored as the varbyte encoding of
+ * the ascending differences of those integers, which for a clustered or
+ * duplicate-heavy index is one to a few bytes each rather than the six a raw
+ * ItemPointerData takes.  The mapping and encoding are GIN's; sharing them
+ * keeps BARK's coded LIST the same size as GIN's posting list on the same
+ * locators (the V6 benchmark).
+ *
+ * An index whose TID stride (bark_index_tid_stride) does not fit 11 bits, a
+ * table whose locator offsets go past 2047, gives the offset as many bits as
+ * the stride needs (12 for MaxOffsetNumber at BLCKSZ 8192), so the integer
+ * still holds the block and offset apart; heap's stride fits 11, so a heap
+ * index codes as GIN does.
  */
 #define BARK_TID_OFFSET_BITS	11
-#define BARK_VARBYTE_MAX		7	/* bytes a 48-bit integer takes at most */
+#define BARK_VARBYTE_MAX		7	/* bytes a 49-bit integer takes at most */
 
 StaticAssertDecl(MaxHeapTuplesPerPage < (1 << BARK_TID_OFFSET_BITS),
 				 "BARK_TID_OFFSET_BITS too small for MaxHeapTuplesPerPage");
 
+/* The offset's bits in a coded LIST of an index of TID stride `stride`. */
+static inline int
+bark_vb_offset_bits(uint16 stride)
+{
+	return Max(BARK_TID_OFFSET_BITS, pg_leftmost_one_pos32(stride) + 1);
+}
+
 static inline uint64
-bark_tid_to_vb(ItemPointer tid)
+bark_tid_to_vb(ItemPointer tid, int offbits)
 {
 	uint64		val = ItemPointerGetBlockNumberNoCheck(tid);
 
-	val <<= BARK_TID_OFFSET_BITS;
+	val <<= offbits;
 	val |= ItemPointerGetOffsetNumberNoCheck(tid);
 	return val;
 }
 
 static inline void
-bark_vb_to_tid(uint64 val, ItemPointer tid)
+bark_vb_to_tid(uint64 val, ItemPointer tid, int offbits)
 {
-	OffsetNumber off = (OffsetNumber) (val & ((1 << BARK_TID_OFFSET_BITS) - 1));
-	BlockNumber blk = (BlockNumber) (val >> BARK_TID_OFFSET_BITS);
+	OffsetNumber off = (OffsetNumber) (val & ((UINT64CONST(1) << offbits) - 1));
+	BlockNumber blk = (BlockNumber) (val >> offbits);
 
 	ItemPointerSet(tid, blk, off);
 }
@@ -1460,14 +1532,15 @@ bark_decode_varbyte(unsigned char **ptr)
  * stored raw, so it contributes no delta.)
  */
 static Size
-bark_coded_deltas_size(ItemPointer tids, int ntids)
+bark_coded_deltas_size(ItemPointer tids, int ntids, uint16 stride)
 {
-	uint64		prev = bark_tid_to_vb(&tids[0]);
+	int			offbits = bark_vb_offset_bits(stride);
+	uint64		prev = bark_tid_to_vb(&tids[0], offbits);
 	Size		nbytes = 0;
 
 	for (int i = 1; i < ntids; i++)
 	{
-		uint64		val = bark_tid_to_vb(&tids[i]);
+		uint64		val = bark_tid_to_vb(&tids[i], offbits);
 		uint64		delta = val - prev;
 
 		do
@@ -1500,11 +1573,13 @@ bark_coded_list_size(Size keysz, Size nbytes)
  * coded to fit the old slot (bark_reform_list).  See the coding note above.
  */
 static IndexTuple
-bark_form_coded_list(IndexTuple key, ItemPointer tids, int ntids, bool force)
+bark_form_coded_list(IndexTuple key, ItemPointer tids, int ntids, bool force,
+					 uint16 stride)
 {
+	int			offbits = bark_vb_offset_bits(stride);
 	Size		keysz = IndexTupleSize(key);
 	Size		bodyoff = MAXALIGN(keysz);
-	Size		nbytes = bark_coded_deltas_size(tids, ntids);
+	Size		nbytes = bark_coded_deltas_size(tids, ntids, stride);
 	Size		plainsz = MAXALIGN(bodyoff + (Size) ntids * sizeof(ItemPointerData));
 	Size		total = bark_coded_list_size(keysz, nbytes);
 	BarkCodedListHdr *hdr;
@@ -1536,10 +1611,10 @@ bark_form_coded_list(IndexTuple key, ItemPointer tids, int ntids, bool force)
 	*BarkCodedListGetFirst(entry) = tids[0];
 
 	ptr = BarkCodedListGetDeltas(entry);
-	prev = bark_tid_to_vb(&tids[0]);
+	prev = bark_tid_to_vb(&tids[0], offbits);
 	for (int i = 1; i < ntids; i++)
 	{
-		uint64		val = bark_tid_to_vb(&tids[i]);
+		uint64		val = bark_tid_to_vb(&tids[i], offbits);
 
 		Assert(val > prev);
 		bark_encode_varbyte(val - prev, &ptr);
@@ -1554,8 +1629,10 @@ bark_form_coded_list(IndexTuple key, ItemPointer tids, int ntids, bool force)
  * maxout).  Returns the number written.
  */
 static int
-bark_coded_list_get_tids(IndexTuple itup, ItemPointer out, int maxout)
+bark_coded_list_get_tids(IndexTuple itup, ItemPointer out, int maxout,
+						 uint16 stride)
 {
+	int			offbits = bark_vb_offset_bits(stride);
 	int			n = BarkListGetCount(itup);
 	BarkCodedListHdr *hdr = BarkCodedListGetHdr(itup);
 	unsigned char *ptr = BarkCodedListGetDeltas(itup);
@@ -1564,12 +1641,12 @@ bark_coded_list_get_tids(IndexTuple itup, ItemPointer out, int maxout)
 
 	Assert(maxout >= n);
 	out[0] = *BarkCodedListGetFirst(itup);
-	val = bark_tid_to_vb(&out[0]);
+	val = bark_tid_to_vb(&out[0], offbits);
 	for (int i = 1; i < n; i++)
 	{
 		Assert(ptr < endptr);
 		val += bark_decode_varbyte(&ptr);
-		bark_vb_to_tid(val, &out[i]);
+		bark_vb_to_tid(val, &out[i], offbits);
 	}
 	Assert(ptr == endptr);
 	return n;
@@ -1582,12 +1659,12 @@ bark_coded_list_get_tids(IndexTuple itup, ItemPointer out, int maxout)
  */
 IndexTuple
 bark_form_list_best(TupleDesc tupdesc, IndexTuple key, ItemPointer tids,
-					int ntids)
+					int ntids, uint16 stride)
 {
 	IndexTuple	coded = NULL;
 
 	if (ntids >= 2)
-		coded = bark_form_coded_list(key, tids, ntids, false);
+		coded = bark_form_coded_list(key, tids, ntids, false, stride);
 	if (coded != NULL)
 		return coded;
 	return bark_form_list(tupdesc, key, tids, ntids);
@@ -1606,16 +1683,17 @@ bark_form_list_best(TupleDesc tupdesc, IndexTuple key, ItemPointer tids,
  */
 IndexTuple
 bark_reform_list(TupleDesc tupdesc, IndexTuple key, ItemPointer tids,
-				 int ntids, bool wascoded)
+				 int ntids, bool wascoded, uint16 stride)
 {
 	if (wascoded && ntids >= 2)
 	{
-		IndexTuple	coded = bark_form_coded_list(key, tids, ntids, true);
+		IndexTuple	coded = bark_form_coded_list(key, tids, ntids, true,
+												 stride);
 
 		if (coded != NULL)
 			return coded;
 	}
-	return bark_form_list_best(tupdesc, key, tids, ntids);
+	return bark_form_list_best(tupdesc, key, tids, ntids, stride);
 }
 
 /* Number of heap locators a leaf entry holds (SINGLE = 1, LIST/POSTING = set). */
@@ -1646,7 +1724,8 @@ bark_entry_count_tids(IndexTuple itup)
  * sbm (ascending by construction).
  */
 int
-bark_entry_get_tids(IndexTuple itup, ItemPointer out, int maxout)
+bark_entry_get_tids(IndexTuple itup, ItemPointer out, int maxout,
+					uint16 stride)
 {
 	switch (BarkEntryGetShape(itup))
 	{
@@ -1663,14 +1742,15 @@ bark_entry_get_tids(IndexTuple itup, ItemPointer out, int maxout)
 				int			n = BarkListGetCount(itup);
 
 				if (BarkListIsCoded(itup))
-					return bark_coded_list_get_tids(itup, out, maxout);
+					return bark_coded_list_get_tids(itup, out, maxout,
+													stride);
 				Assert(maxout >= n);
 				memcpy(out, BarkListGetTIDArray(itup),
 					   n * sizeof(ItemPointerData));
 				return n;
 			}
 		case BARK_SHAPE_POSTING:
-			return bark_posting_get_tids(itup, out, maxout);
+			return bark_posting_get_tids(itup, out, maxout, stride);
 		default:
 			elog(ERROR, "BARK leaf entry has unexpected shape %d",
 				 (int) BarkEntryGetShape(itup));
@@ -1706,24 +1786,27 @@ bark_single_from_list(Relation index, IndexTuple entry, ItemPointer tid)
  */
 
 /*
- * Reversible, block-clustered TID <-> uint64 mapping.  A run of heap TIDs on
- * one block maps to a contiguous run of sbm indexes, which the sbm encodes
- * densely.  offset is 1-based on a heap page, so it is biased by one.
+ * Reversible, block-clustered TID <-> uint64 mapping for an index of TID
+ * stride `stride` (bark_index_tid_stride), which no offset exceeds.  A run
+ * of heap TIDs on one block maps to a contiguous run of sbm indexes, which
+ * the sbm encodes densely.  offset is 1-based on a heap page, so it is
+ * biased by one.
  */
 uint64
-bark_tid_to_key(ItemPointer tid)
+bark_tid_to_key(ItemPointer tid, uint16 stride)
 {
 	BlockNumber blk = ItemPointerGetBlockNumberNoCheck(tid);
 	OffsetNumber off = ItemPointerGetOffsetNumberNoCheck(tid);
 
-	return (uint64) blk * MaxHeapTuplesPerPage + (off - 1);
+	Assert(off >= 1 && off <= stride);
+	return (uint64) blk * stride + (off - 1);
 }
 
 void
-bark_key_to_tid(uint64 key, ItemPointer tid)
+bark_key_to_tid(uint64 key, ItemPointer tid, uint16 stride)
 {
-	BlockNumber blk = (BlockNumber) (key / MaxHeapTuplesPerPage);
-	OffsetNumber off = (OffsetNumber) (key % MaxHeapTuplesPerPage) + 1;
+	BlockNumber blk = (BlockNumber) (key / stride);
+	OffsetNumber off = (OffsetNumber) (key % stride) + 1;
 
 	ItemPointerSet(tid, blk, off);
 }
@@ -1773,7 +1856,8 @@ bark_posting_from_map(IndexTuple key, Sbm *map, Size total)
  * page-split re-forms.
  */
 IndexTuple
-bark_form_posting(TupleDesc tupdesc, IndexTuple key, ItemPointer tids, int ntids)
+bark_form_posting(TupleDesc tupdesc, IndexTuple key, ItemPointer tids, int ntids,
+				  uint16 stride)
 {
 	Size		keysz = IndexTupleSize(key);
 	Size		listsz;
@@ -1792,13 +1876,14 @@ bark_form_posting(TupleDesc tupdesc, IndexTuple key, ItemPointer tids, int ntids
 	 */
 	keys = palloc_array(uint64, ntids);
 	for (int i = 0; i < ntids; i++)
-		keys[i] = bark_tid_to_key(&tids[i]);
+		keys[i] = bark_tid_to_key(&tids[i], stride);
 	total = BarkPostingEntrySize(keysz, sbm_removal_bound_sorted(keys, ntids));
 	listsz = MAXALIGN(MAXALIGN(keysz) + ntids * sizeof(ItemPointerData));
 	if (ntids >= 2 && ntids <= BARK_LIST_MAX_COUNT)
 		listsz = Min(listsz,
 					 bark_coded_list_size(keysz,
-										  bark_coded_deltas_size(tids, ntids)));
+										  bark_coded_deltas_size(tids, ntids,
+																 stride)));
 	if (total >= listsz || total > INDEX_SIZE_MASK)
 	{
 		pfree(keys);
@@ -1850,6 +1935,7 @@ typedef struct BarkTidSink
 	ItemPointer out;
 	int			n;
 	int			maxout;
+	uint16		stride;
 } BarkTidSink;
 
 /*
@@ -1864,7 +1950,7 @@ bark_posting_collect(uint64 vec[], size_t n, void *aux)
 
 	Assert(sink->n + n <= (size_t) sink->maxout);
 	for (size_t i = 0; i < n; i++)
-		bark_key_to_tid(vec[i], &sink->out[sink->n++]);
+		bark_key_to_tid(vec[i], &sink->out[sink->n++], sink->stride);
 }
 
 /*
@@ -1873,7 +1959,8 @@ bark_posting_collect(uint64 vec[], size_t n, void *aux)
  * the block-clustered mapping turns back into ascending TID order.
  */
 int
-bark_posting_get_tids(IndexTuple itup, ItemPointer out, int maxout)
+bark_posting_get_tids(IndexTuple itup, ItemPointer out, int maxout,
+					  uint16 stride)
 {
 	Sbm		   *map = bark_posting_open(itup);
 	BarkTidSink sink;
@@ -1881,6 +1968,7 @@ bark_posting_get_tids(IndexTuple itup, ItemPointer out, int maxout)
 	sink.out = out;
 	sink.n = 0;
 	sink.maxout = maxout;
+	sink.stride = stride;
 	sbm_scan(map, bark_posting_collect, 0, &sink);
 	sbm_free(map);
 	return sink.n;
@@ -1901,13 +1989,13 @@ bark_posting_get_tids(IndexTuple itup, ItemPointer out, int maxout)
  */
 IndexTuple
 bark_posting_add_tid(IndexTuple key, IndexTuple posting,
-					 ItemPointer newtid, Size maxsz)
+					 ItemPointer newtid, Size maxsz, uint16 stride)
 {
 	Sbm		   *map = bark_posting_open(posting);
 	Size		total;
 	IndexTuple	entry;
 
-	if (sbm_add_grow(&map, bark_tid_to_key(newtid)) == SBM_IDX_MAX)
+	if (sbm_add_grow(&map, bark_tid_to_key(newtid, stride)) == SBM_IDX_MAX)
 		elog(ERROR, "sbm_add_grow failed extending BARK posting entry");
 
 	total = BarkPostingEntrySize(IndexTupleSize(key), sbm_removal_bound(map));
@@ -1954,7 +2042,8 @@ bark_entry_key_part(IndexTuple entry)
  * value that compares equal (bark_index_may_coalesce).
  */
 IndexTuple
-bark_entry_add_tid(IndexTuple entry, ItemPointer tid, Size maxsz)
+bark_entry_add_tid(IndexTuple entry, ItemPointer tid, Size maxsz,
+				   uint16 stride)
 {
 	if (BarkEntryGetShape(entry) == BARK_SHAPE_LIST && BarkListIsCoded(entry))
 	{
@@ -1976,7 +2065,7 @@ bark_entry_add_tid(IndexTuple entry, ItemPointer tid, Size maxsz)
 			pfree(tids);
 			return NULL;
 		}
-		bark_entry_get_tids(entry, tids, ncur);
+		bark_entry_get_tids(entry, tids, ncur, stride);
 		for (ins = ncur; ins > 0 && ItemPointerCompare(&tids[ins - 1], tid) > 0;)
 			ins--;
 		if (ins > 0 && ItemPointerEquals(&tids[ins - 1], tid))
@@ -1989,7 +2078,7 @@ bark_entry_add_tid(IndexTuple entry, ItemPointer tid, Size maxsz)
 		tids[ins] = *tid;
 
 		key = bark_entry_key_part(entry);
-		ext = bark_form_list_best(NULL, key, tids, ncur + 1);
+		ext = bark_form_list_best(NULL, key, tids, ncur + 1, stride);
 		pfree(key);
 		pfree(tids);
 		if (MAXALIGN(IndexTupleSize(ext)) > maxsz)
@@ -2056,7 +2145,7 @@ bark_entry_add_tid(IndexTuple entry, ItemPointer tid, Size maxsz)
 		IndexTuple	ext;
 
 		Assert(BarkEntryGetShape(entry) == BARK_SHAPE_POSTING);
-		ext = bark_posting_add_tid(key, entry, tid, maxsz);
+		ext = bark_posting_add_tid(key, entry, tid, maxsz, stride);
 		pfree(key);
 		return ext;
 	}
@@ -2066,7 +2155,7 @@ bark_entry_add_tid(IndexTuple entry, ItemPointer tid, Size maxsz)
  * Is `tid` one of the heap TIDs of the leaf entry `itup`?
  */
 bool
-bark_entry_has_tid(IndexTuple itup, ItemPointer tid)
+bark_entry_has_tid(IndexTuple itup, ItemPointer tid, uint16 stride)
 {
 	switch (BarkEntryGetShape(itup))
 	{
@@ -2083,12 +2172,12 @@ bark_entry_has_tid(IndexTuple itup, ItemPointer tid)
 					bool		found = false;
 
 					/* Outside the range is a cheap no without decoding. */
-					bark_entry_tid_range(itup, &lorange, &hirange);
+					bark_entry_tid_range(itup, &lorange, &hirange, stride);
 					if (ItemPointerCompare(tid, &lorange) < 0 ||
 						ItemPointerCompare(tid, &hirange) > 0)
 						return false;
 					tids = palloc_array(ItemPointerData, hi);
-					bark_coded_list_get_tids(itup, tids, hi);
+					bark_coded_list_get_tids(itup, tids, hi, stride);
 					for (int i = 0; i < hi; i++)
 					{
 						if (ItemPointerEquals(&tids[i], tid))
@@ -2119,7 +2208,9 @@ bark_entry_has_tid(IndexTuple itup, ItemPointer tid)
 		case BARK_SHAPE_POSTING:
 			{
 				Sbm		   *map = bark_posting_open(itup);
-				bool		found = sbm_contains(map, bark_tid_to_key(tid), NULL);
+				bool		found = sbm_contains(map,
+													 bark_tid_to_key(tid, stride),
+													 NULL);
 
 				sbm_free(map);
 				return found;
@@ -2129,7 +2220,7 @@ bark_entry_has_tid(IndexTuple itup, ItemPointer tid)
 				ItemPointerData lo;
 				ItemPointerData hi;
 
-				bark_entry_tid_range(itup, &lo, &hi);
+				bark_entry_tid_range(itup, &lo, &hi, stride);
 				return ItemPointerEquals(&lo, tid);
 			}
 	}
@@ -2142,7 +2233,7 @@ bark_entry_has_tid(IndexTuple itup, ItemPointer tid)
  * exceed BarkMaxItemSize.
  */
 IndexTuple
-bark_form_entry(IndexTuple key, ItemPointer tids, int n)
+bark_form_entry(IndexTuple key, ItemPointer tids, int n, uint16 stride)
 {
 	IndexTuple	entry;
 
@@ -2154,9 +2245,9 @@ bark_form_entry(IndexTuple key, ItemPointer tids, int n)
 	}
 
 	/* bark_form_posting returns NULL unless it beats both LIST forms. */
-	entry = bark_form_posting(NULL, key, tids, n);
+	entry = bark_form_posting(NULL, key, tids, n, stride);
 	if (entry == NULL && n <= BARK_LIST_MAX_COUNT)
-		entry = bark_form_list_best(NULL, key, tids, n);
+		entry = bark_form_list_best(NULL, key, tids, n, stride);
 	if (entry != NULL && MAXALIGN(IndexTupleSize(entry)) > BarkMaxItemSize)
 	{
 		pfree(entry);
@@ -2192,7 +2283,7 @@ bark_form_entry(IndexTuple key, ItemPointer tids, int n)
  */
 void
 bark_entry_swap_tid(IndexTuple entry, ItemPointer tid, IndexTuple *left,
-					IndexTuple *right)
+					IndexTuple *right, uint16 stride)
 {
 	IndexTuple	key = bark_entry_key_part(entry);
 	int			n = bark_entry_count_tids(entry);
@@ -2200,7 +2291,7 @@ bark_entry_swap_tid(IndexTuple entry, ItemPointer tid, IndexTuple *left,
 	int			ins;
 	int			cuts[3];
 
-	n = bark_entry_get_tids(entry, tids, n);
+	n = bark_entry_get_tids(entry, tids, n, stride);
 	for (ins = 0; ins < n; ins++)
 	{
 		if (ItemPointerCompare(&tids[ins], tid) >= 0)
@@ -2217,8 +2308,8 @@ bark_entry_swap_tid(IndexTuple entry, ItemPointer tid, IndexTuple *left,
 	cuts[2] = ins;
 	for (int i = 0; i < lengthof(cuts); i++)
 	{
-		*left = bark_form_entry(key, tids, cuts[i]);
-		*right = bark_form_entry(key, tids + cuts[i], n - cuts[i]);
+		*left = bark_form_entry(key, tids, cuts[i], stride);
+		*right = bark_form_entry(key, tids + cuts[i], n - cuts[i], stride);
 		if (*left != NULL && *right != NULL)
 		{
 			pfree(tids);
@@ -2252,7 +2343,7 @@ bark_entry_swap_tid(IndexTuple entry, ItemPointer tid, IndexTuple *left,
  */
 bool
 bark_entry_cut(IndexTuple entry, ItemPointer tid, Size leftmax,
-			   IndexTuple *left, IndexTuple *right)
+			   IndexTuple *left, IndexTuple *right, uint16 stride)
 {
 	IndexTuple	key = bark_entry_key_part(entry);
 	int			n = bark_entry_count_tids(entry);
@@ -2260,7 +2351,7 @@ bark_entry_cut(IndexTuple entry, ItemPointer tid, Size leftmax,
 	int			lo = 0;
 	int			hi;
 
-	n = bark_entry_get_tids(entry, tids, n);
+	n = bark_entry_get_tids(entry, tids, n, stride);
 	Assert(n > 0 && ItemPointerCompare(&tids[n - 1], tid) < 0);
 	tids[n] = *tid;
 
@@ -2277,7 +2368,7 @@ bark_entry_cut(IndexTuple entry, ItemPointer tid, Size leftmax,
 	while (lo < hi)
 	{
 		int			mid = lo + (hi - lo + 1) / 2;
-		IndexTuple	probe = bark_form_entry(key, tids, mid);
+		IndexTuple	probe = bark_form_entry(key, tids, mid, stride);
 
 		if (probe != NULL && MAXALIGN(IndexTupleSize(probe)) <= leftmax)
 			lo = mid;
@@ -2298,14 +2389,14 @@ bark_entry_cut(IndexTuple entry, ItemPointer tid, Size leftmax,
 	*left = *right = NULL;
 	if (lo > 0 && lo < n && BarkEntryGetShape(entry) == BARK_SHAPE_LIST)
 	{
-		*left = lo == 1 ? bark_form_entry(key, tids, 1) :
-			bark_form_list_best(NULL, key, tids, lo);
-		*right = bark_form_list_best(NULL, key, tids + lo, n + 1 - lo);
+		*left = lo == 1 ? bark_form_entry(key, tids, 1, stride) :
+			bark_form_list_best(NULL, key, tids, lo, stride);
+		*right = bark_form_list_best(NULL, key, tids + lo, n + 1 - lo, stride);
 	}
 	else if (lo > 0 && lo < n)
 	{
-		*left = bark_form_entry(key, tids, lo);
-		*right = bark_form_entry(key, tids + lo, n + 1 - lo);
+		*left = bark_form_entry(key, tids, lo, stride);
+		*right = bark_form_entry(key, tids + lo, n + 1 - lo, stride);
 	}
 	pfree(tids);
 	pfree(key);

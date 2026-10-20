@@ -1361,7 +1361,8 @@ bark_wildcard_entries(PG_FUNCTION_ARGS)
 				if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED)
 					full = bark_fetch_oversized(rel, itup);
 				key = index_getattr(full, attno, itupdesc, &keynull);
-				ntids = bark_entry_get_tids(itup, tids, ntids);
+				ntids = bark_entry_get_tids(itup, tids, ntids,
+											bark_index_tid_stride(rel));
 				for (int i = 0; i < ntids; i++)
 				{
 					Datum		values[3];

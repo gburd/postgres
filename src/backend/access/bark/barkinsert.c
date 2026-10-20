@@ -317,13 +317,13 @@ bark_truncate_pivot(Relation index, BarkKeyInfo *keyinfo, IndexTuple lastleft,
 		return bark_make_pivot(index, keyinfo->heaprel, firstright, keepnatts,
 							   NULL);
 
-	bark_entry_tid_range(firstright, &lo, &hi);
+	bark_entry_tid_range(firstright, &lo, &hi, keyinfo->tidstride);
 #ifdef USE_ASSERT_CHECKING
 	{
 		ItemPointerData llo;
 		ItemPointerData lhi;
 
-		bark_entry_tid_range(lastleft, &llo, &lhi);
+		bark_entry_tid_range(lastleft, &llo, &lhi, keyinfo->tidstride);
 		Assert(ItemPointerCompare(&lhi, &lo) < 0);
 	}
 #endif
@@ -689,12 +689,15 @@ bark_add_tid_entry(Relation index, Buffer buf, OffsetNumber off,
 	if (RelationNeedsWAL(index))
 	{
 		xl_bark_add_tid xlrec;
+		uint16		stride = bark_index_tid_stride(index);
 
 		xlrec.offnum = off;
 		xlrec.tid = *tid;
 
 		XLogBeginInsert();
 		XLogRegisterData(&xlrec, SizeOfBarkAddTid);
+		if (stride != MaxHeapTuplesPerPage)
+			XLogRegisterData(&stride, sizeof(uint16));
 		XLogRegisterBuffer(0, buf, REGBUF_STANDARD);
 
 		recptr = XLogInsert(RM_BARK_ID, XLOG_BARK_ADD_TID);
@@ -765,12 +768,15 @@ bark_swap_tid_entry(Relation index, Buffer buf, OffsetNumber off,
 	if (RelationNeedsWAL(index))
 	{
 		xl_bark_insert_swap xlrec;
+		uint16		stride = bark_index_tid_stride(index);
 
 		xlrec.offnum = off;
 		xlrec.tid = *tid;
 
 		XLogBeginInsert();
 		XLogRegisterData(&xlrec, SizeOfBarkInsertSwap);
+		if (stride != MaxHeapTuplesPerPage)
+			XLogRegisterData(&stride, sizeof(uint16));
 		XLogRegisterBuffer(0, buf, REGBUF_STANDARD);
 
 		recptr = XLogInsert(RM_BARK_ID, XLOG_BARK_INSERT_SWAP);
@@ -1835,7 +1841,7 @@ bark_check_unique(Relation index, BarkKeyInfo *keyinfo, IndexTuple itup,
 								RelationGetRelationName(index), cblk, off),
 						 errhint("REINDEX the index.")));
 			}
-			bark_entry_get_tids(curitup, &htid, 1);
+			bark_entry_get_tids(curitup, &htid, 1, keyinfo->tidstride);
 
 			/* The tuple we are checking is itself, not a conflict. */
 			if (checkUnique == UNIQUE_CHECK_EXISTING &&
@@ -2035,10 +2041,10 @@ bark_coalesce_list(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 		bark_compare_itups(keyinfo, index, key, cur) != 0)
 		return BARK_COALESCE_NONE;
 
-	bark_entry_tid_range(cur, &lo, &hi);
+	bark_entry_tid_range(cur, &lo, &hi, keyinfo->tidstride);
 	Assert(ItemPointerCompare(&lo, newtid) <= 0);
 	inside = ItemPointerCompare(newtid, &hi) <= 0;
-	if (inside && bark_entry_has_tid(cur, newtid))
+	if (inside && bark_entry_has_tid(cur, newtid, keyinfo->tidstride))
 		elog(ERROR, "heap TID (%u,%u) already in BARK entry at offset %u of block %u in index \"%s\"",
 			 ItemPointerGetBlockNumber(newtid),
 			 ItemPointerGetOffsetNumber(newtid), eqoff,
@@ -2061,7 +2067,8 @@ bark_coalesce_list(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 		BarkEntryGetShape(cur) == BARK_SHAPE_POSTING)
 	{
 		IndexTuple	ext = bark_entry_add_tid(cur, newtid,
-											 Min((Size) BarkMaxItemSize, room));
+											 Min((Size) BarkMaxItemSize, room),
+											 keyinfo->tidstride);
 
 		if (ext != NULL && bark_coded_size(page, ext) <= room)
 		{
@@ -2106,7 +2113,7 @@ bark_coalesce_list(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 		IndexTuple	curkey;
 		IndexTuple	posting;
 
-		nold = bark_entry_get_tids(cur, all, nold);
+		nold = bark_entry_get_tids(cur, all, nold, keyinfo->tidstride);
 		for (ins = nold; ins > 0 && ItemPointerCompare(&all[ins - 1], newtid) > 0;)
 			ins--;
 		memmove(&all[ins + 1], &all[ins], (nold - ins) * sizeof(ItemPointerData));
@@ -2119,12 +2126,12 @@ bark_coalesce_list(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 		 */
 		curkey = bark_single_from_list(index, cur, NULL);
 		posting = bark_form_posting(RelationGetDescr(index), curkey, all,
-									nold + 1);
+									nold + 1, keyinfo->tidstride);
 		if (posting != NULL)
 			newentry = posting;
 		else if (nold + 1 <= BARK_LIST_MAX_COUNT)
 			newentry = bark_form_list_best(RelationGetDescr(index), curkey, all,
-										   nold + 1);
+										   nold + 1, keyinfo->tidstride);
 		else
 			newentry = NULL;
 		pfree(curkey);
@@ -2150,7 +2157,7 @@ swap:
 	 * around it.  In place when both parts and the new part's line pointer
 	 * fit (bark_swap_tid_entry decides, on the coded parts), else in a split.
 	 */
-	bark_entry_swap_tid(cur, newtid, &left, &right);
+	bark_entry_swap_tid(cur, newtid, &left, &right, keyinfo->tidstride);
 	if (bark_swap_tid_entry(index, buf, eqoff, left, right, newtid))
 	{
 		pfree(left);
@@ -2671,7 +2678,7 @@ bark_marker_present(Relation index, BarkKeyInfo *keyinfo, IndexTuple marker,
 	cur = BarkPageGetItem(page, OffsetNumberPrev(off), &ibuf);
 	if (!BarkEntryIsLeafData(cur))
 		return false;
-	bark_entry_tid_range(cur, &lo, &hi);
+	bark_entry_tid_range(cur, &lo, &hi, keyinfo->tidstride);
 	return ItemPointerEquals(&hi, &marker->t_tid) &&
 		bark_compare_itups(keyinfo, index, marker, cur) == 0;
 }

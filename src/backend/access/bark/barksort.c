@@ -889,6 +889,7 @@ bark_finish(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *leaf)
 	meta->bark_allequalimage = bs->allequalimage;
 	meta->bark_flags = bs->multikey ? BARK_META_MULTIKEY : 0;
 	meta->bark_nkeys = (uint64) bs->indtuples;
+	meta->bark_tid_stride = bs->keyinfo->tidstride;
 	((PageHeader) metabuf)->pd_lower =
 		((char *) meta + sizeof(BarkMetaPageData)) - (char *) metabuf;
 
@@ -901,9 +902,9 @@ bark_finish(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *leaf)
  */
 static IndexTuple
 bark_build_posting(TupleDesc tupdesc, IndexTuple key, ItemPointer tids,
-				   int ntids)
+				   int ntids, uint16 stride)
 {
-	IndexTuple	entry = bark_form_posting(tupdesc, key, tids, ntids);
+	IndexTuple	entry = bark_form_posting(tupdesc, key, tids, ntids, stride);
 
 	if (entry != NULL && IndexTupleSize(entry) > BARK_BUILD_MAX_ENTRY_SIZE)
 	{
@@ -954,18 +955,21 @@ bark_build_form_entry(BarkBuildState *bs, IndexTuple key, ItemPointer tids,
 	}
 
 	n = Min(ntids, nlist);
-	entry = bark_build_posting(tupdesc, key, tids, n);
+	entry = bark_build_posting(tupdesc, key, tids, n,
+								   bs->keyinfo->tidstride);
 	if (entry == NULL)
 	{
 		*nused = n;
-		return bark_form_list_best(tupdesc, key, tids, n);
+		return bark_form_list_best(tupdesc, key, tids, n,
+								   bs->keyinfo->tidstride);
 	}
 
 	if (ntids > n)
 	{
 		int			lo = n;		/* fits */
 		int			hi = Min(ntids, BARK_BUILD_MAX_ENTRY_TIDS);
-		IndexTuple	probe = bark_build_posting(tupdesc, key, tids, hi);
+		IndexTuple	probe = bark_build_posting(tupdesc, key, tids, hi,
+								   bs->keyinfo->tidstride);
 
 		if (probe != NULL)
 		{
@@ -978,7 +982,8 @@ bark_build_form_entry(BarkBuildState *bs, IndexTuple key, ItemPointer tids,
 		{
 			int			mid = lo + (hi - lo + 1) / 2;
 
-			probe = bark_build_posting(tupdesc, key, tids, mid);
+			probe = bark_build_posting(tupdesc, key, tids, mid,
+								   bs->keyinfo->tidstride);
 			if (probe != NULL)
 			{
 				pfree(entry);
@@ -1340,7 +1345,7 @@ bark_parallel_scan_and_sort(Relation heap, Relation index,
 	memset(&bs, 0, sizeof(bs));
 	bs.heap = heap;
 	bs.index = index;
-	bs.keyinfo = bark_build_keyinfo(index);
+	bs.keyinfo = bark_build_keyinfo_stride(index, bark_heap_tid_stride(heap));
 	bs.keyinfo->heaprel = heap;
 	bs.nkeyatts = IndexRelationGetNumberOfKeyAttributes(index);
 	bs.isunique = false;		/* leader enforces uniqueness during load */
@@ -1752,7 +1757,7 @@ bark_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	memset(&bs, 0, sizeof(bs));
 	bs.heap = heap;
 	bs.index = index;
-	bs.keyinfo = bark_build_keyinfo(index);
+	bs.keyinfo = bark_build_keyinfo_stride(index, bark_heap_tid_stride(heap));
 	bs.keyinfo->heaprel = heap;
 	bs.nkeyatts = IndexRelationGetNumberOfKeyAttributes(index);
 	bs.nblocks = 1;				/* block 0 is reserved for the meta page */
@@ -1864,6 +1869,13 @@ bark_buildempty(Relation index)
 	BulkWriteBuffer metabuf;
 	BarkMetaPageData *meta;
 	BarkPageOpaque opaque;
+	Relation	heap;
+	uint16		stride;
+
+	/* index_build, the only caller, holds a lock on the table. */
+	heap = table_open(index->rd_index->indrelid, NoLock);
+	stride = bark_heap_tid_stride(heap);
+	table_close(heap, NoLock);
 
 	bulk = smgr_bulk_start_rel(index, INIT_FORKNUM);
 	metabuf = smgr_bulk_get_buf(bulk);
@@ -1883,6 +1895,7 @@ bark_buildempty(Relation index)
 	meta->bark_root = BARK_P_NONE;
 	meta->bark_level = 0;
 	meta->bark_allequalimage = bark_allequalimage(index);
+	meta->bark_tid_stride = stride;
 	((PageHeader) metabuf)->pd_lower =
 		((char *) meta + sizeof(BarkMetaPageData)) - (char *) metabuf;
 
