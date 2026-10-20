@@ -36,6 +36,7 @@ SUBDIRS = \
 		  test_extensions \
 		  test_ginpostinglist \
 		  test_index_impl \
+		  test_versioned_tableam \
 		  test_int128 \
 		  test_integerset \
 		  test_json_parser \
