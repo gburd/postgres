@@ -35,6 +35,7 @@ tests += {
       'bark_multikey_ginscan',
       'bark_multikey_ginco',
       'bark_multikey_sim',
+      'bark_locator',
     ],
     'regress_args': ['--load-extension=amcheck'],
   },
