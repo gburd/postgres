@@ -2080,6 +2080,15 @@
   max => 'MAX_PARALLEL_WORKER_LIMIT',
 },
 
+{ name => 'max_pinned_blocks', type => 'int', context => 'PGC_USERSET', group => 'RESOURCES_MEM',
+  short_desc => 'Sets the maximum number of blocks a session may keep pinned for the duration of a transaction.',
+  long_desc => 'Repeatedly read blocks, such as btree root pages, can be held pinned so that later reads of them do not modify shared buffer state.  0 disables this.',
+  variable => 'max_pinned_blocks',
+  boot_val => '0',
+  min => '0',
+  max => '1024',
+},
+
 { name => 'max_pred_locks_per_page', type => 'int', context => 'PGC_SIGHUP', group => 'LOCK_MANAGEMENT',
   short_desc => 'Sets the maximum number of predicate-locked tuples per page.',
   long_desc => 'If more than this number of tuples on the same page are locked by a connection, those locks are replaced by a page-level lock.',
