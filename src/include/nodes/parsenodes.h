@@ -3541,6 +3541,10 @@ typedef struct IndexStmt
 	SubTransactionId oldCreateSubid;	/* rd_createSubid of oldNumber */
 	SubTransactionId oldFirstRelfilelocatorSubid;	/* rd_firstRelfilelocatorSubid
 													 * of oldNumber */
+	List	   *oldImplRels;	/* when re-creating an index: OIDs of the
+								 * tables its leaf indexes are on ... */
+	List	   *oldImplAms;		/* ... and each one's indimplam, which the
+								 * re-created index keeps */
 	bool		unique;			/* is index unique? */
 	bool		nulls_not_distinct; /* null treatment for UNIQUE constraints */
 	bool		primary;		/* is index a primary key? */

@@ -677,6 +677,7 @@ static void RebuildConstraintComment(AlteredTableInfo *tab, AlterTablePass pass,
 									 Oid objid, Relation rel, List *domname,
 									 const char *conname);
 static void TryReuseIndex(Oid oldId, IndexStmt *stmt);
+static void RememberIndexImplementations(Oid oldId, IndexStmt *stmt);
 static void TryReuseForeignKey(Oid oldId, Constraint *con);
 static ObjectAddress ATExecAlterColumnGenericOptions(Relation rel, const char *colName,
 													 List *options, LOCKMODE lockmode);
@@ -16378,6 +16379,7 @@ ATPostAlterTypeParse(Oid oldId, Oid oldRelId, Oid refRelId, Oid ownerId,
 
 			if (!rewrite)
 				TryReuseIndex(oldId, stmt);
+			RememberIndexImplementations(oldId, stmt);
 			stmt->reset_default_tblspc = true;
 			/* keep the index's comment */
 			stmt->idxcomment = GetComment(oldId, RelationRelationId, 0);
@@ -16407,6 +16409,7 @@ ATPostAlterTypeParse(Oid oldId, Oid oldRelId, Oid refRelId, Oid ownerId,
 
 					if (!rewrite)
 						TryReuseIndex(indoid, indstmt);
+					RememberIndexImplementations(indoid, indstmt);
 					/* keep any comment on the index */
 					indstmt->idxcomment = GetComment(indoid,
 													 RelationRelationId, 0);
@@ -16580,6 +16583,28 @@ TryReuseIndex(Oid oldId, IndexStmt *stmt)
 			stmt->oldFirstRelfilelocatorSubid = irel->rd_firstRelfilelocatorSubid;
 		}
 		index_close(irel, NoLock);
+	}
+}
+
+/*
+ * Subroutine for ATPostAlterTypeParse().  Record the implementation of the
+ * index being re-created and, if it is partitioned, of its partitions'
+ * indexes, so that the new indexes keep them rather than choosing afresh.
+ * That matters most when TryReuseIndex() has handed the new index the old
+ * one's storage, which only the old implementation can read.
+ */
+static void
+RememberIndexImplementations(Oid oldId, IndexStmt *stmt)
+{
+	/* the tables are locked already; their indexes go with them */
+	foreach_oid(indoid, find_all_inheritors(oldId, NoLock, NULL))
+	{
+		if (get_rel_relkind(indoid) != RELKIND_INDEX)
+			continue;
+		stmt->oldImplRels = lappend_oid(stmt->oldImplRels,
+										IndexGetRelation(indoid, false));
+		stmt->oldImplAms = lappend_oid(stmt->oldImplAms,
+									   get_index_implam(indoid));
 	}
 }
 

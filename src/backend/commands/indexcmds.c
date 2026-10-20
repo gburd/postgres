@@ -83,6 +83,10 @@ typedef struct CIEN_context
 /* non-export function prototypes */
 static bool CompareOpclassOptions(const Datum *opts1, const Datum *opts2, int natts);
 static void CheckPredicate(Expr *predicate);
+static Oid	ChooseIndexImplementation(Relation rel, Oid accessMethodId,
+									  const IndexAmRoutine *amRoutine,
+									  const IndexStmt *stmt,
+									  int numberOfKeyAttributes);
 static void ComputeIndexAttrs(ParseState *pstate,
 							  IndexInfo *indexInfo,
 							  Oid *typeOids,
@@ -573,6 +577,7 @@ DefineIndex(ParseState *pstate,
 	Oid		   *opclassIds;
 	Datum	   *opclassOptions;
 	Oid			accessMethodId;
+	Oid			implAmId;
 	Oid			namespaceId;
 	Oid			tablespaceId;
 	Oid			createdConstraintId = InvalidOid;
@@ -877,9 +882,6 @@ DefineIndex(ParseState *pstate,
 	accessMethodId = accessMethodForm->oid;
 	amRoutine = GetIndexAmRoutine(accessMethodForm->amhandler);
 
-	pgstat_progress_update_param(PROGRESS_CREATEIDX_ACCESS_METHOD_OID,
-								 accessMethodId);
-
 	if (stmt->unique && !stmt->iswithoutoverlaps && !amRoutine->amcanunique)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
@@ -913,6 +915,25 @@ DefineIndex(ParseState *pstate,
 	ReleaseSysCache(tuple);
 
 	/*
+	 * Choose the code that will implement the index.  The index stays an
+	 * index of accessMethodId as far as operator classes, the planner and its
+	 * definition are concerned, but another index AM's code may store and
+	 * search it.  Its reloptions are parsed by that code at relcache load, so
+	 * validate them with it.  A partitioned index has no storage; each
+	 * partition's index chooses for itself.
+	 */
+	implAmId = InvalidOid;
+	if (!partitioned)
+		implAmId = ChooseIndexImplementation(rel, accessMethodId, amRoutine,
+											 stmt, numberOfKeyAttributes);
+	if (OidIsValid(implAmId))
+		amoptions = GetIndexAmRoutineByAmId(implAmId, false)->amoptions;
+
+	/* Phase names come from the code that builds the index. */
+	pgstat_progress_update_param(PROGRESS_CREATEIDX_ACCESS_METHOD_OID,
+								 OidIsValid(implAmId) ? implAmId : accessMethodId);
+
+	/*
 	 * Validate predicate, if given
 	 */
 	if (stmt->whereClause)
@@ -942,6 +963,7 @@ DefineIndex(ParseState *pstate,
 							  concurrent,
 							  amissummarizing,
 							  stmt->iswithoutoverlaps);
+	indexInfo->ii_ImplAm = implAmId;
 
 	typeIds = palloc_array(Oid, numberOfAttributes);
 	collationIds = palloc_array(Oid, numberOfAttributes);
@@ -1545,6 +1567,9 @@ DefineIndex(ParseState *pstate,
 														parentIndex,
 														attmap,
 														NULL);
+					/* a re-created index's partitions keep theirs, too */
+					childStmt->oldImplRels = stmt->oldImplRels;
+					childStmt->oldImplAms = stmt->oldImplAms;
 
 					/*
 					 * Recurse as the starting user ID.  Callee will use that
@@ -1892,6 +1917,112 @@ CheckPredicate(Expr *predicate)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
 				 errmsg("functions in index predicate must be marked IMMUTABLE")));
+}
+
+/*
+ * ChooseIndexImplementation
+ *		Choose the index AM whose code will implement a new index of
+ *		accessMethodId on rel, and check that it can.
+ *
+ * Returns InvalidOid when the index is implemented by accessMethodId itself.
+ * The choice is made once, here, and recorded in pg_index.indimplam:
+ *
+ * - An index re-created from an old one (ALTER TABLE ... ALTER COLUMN TYPE,
+ *   SET EXPRESSION) keeps the old one's implementation, or lack of one,
+ *   since it may reuse its storage; see stmt->oldImplRels.
+ * - System catalog and TOAST indexes never get one.
+ * - Otherwise the table's access method is asked first, then
+ *   default_btree_implementation for btree indexes.  In binary-upgrade mode
+ *   the table AM is not asked: pg_dump states every index's implementation,
+ *   because pg_upgrade keeps the index's files.
+ */
+static Oid
+ChooseIndexImplementation(Relation rel, Oid accessMethodId,
+						  const IndexAmRoutine *amRoutine,
+						  const IndexStmt *stmt, int numberOfKeyAttributes)
+{
+	Oid			implAmId = InvalidOid;
+	const IndexAmRoutine *impl;
+	const char *detail = NULL;
+	bool		recreated = false;
+	ListCell   *lr,
+			   *la;
+
+	forboth(lr, stmt->oldImplRels, la, stmt->oldImplAms)
+	{
+		if (lfirst_oid(lr) == RelationGetRelid(rel))
+		{
+			implAmId = lfirst_oid(la);
+			recreated = true;
+			break;
+		}
+	}
+
+	if (recreated)
+		;						/* keep it, checked below */
+	else if (IsSystemRelation(rel))
+		return InvalidOid;
+	else
+	{
+		if (!IsBinaryUpgrade &&
+			rel->rd_tableam != NULL &&
+			rel->rd_tableam->index_implementation != NULL)
+			implAmId = rel->rd_tableam->index_implementation(rel,
+															 accessMethodId);
+		if (!OidIsValid(implAmId) &&
+			accessMethodId == BTREE_AM_OID &&
+			default_btree_implementation[0] != '\0')
+			implAmId = get_index_am_oid(default_btree_implementation, false);
+	}
+
+	if (!OidIsValid(implAmId) || implAmId == accessMethodId)
+		return InvalidOid;
+
+	impl = GetIndexAmRoutineByAmId(implAmId, false);
+	if (impl->amimplements != accessMethodId)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("access method \"%s\" cannot implement %s indexes",
+						get_am_name(implAmId), get_am_name(accessMethodId))));
+	/* see the shortcut at amimplements */
+	if (accessMethodId != BTREE_AM_OID)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("access method \"%s\" cannot implement %s indexes",
+						get_am_name(implAmId), get_am_name(accessMethodId)),
+				 errdetail("Only btree indexes can be implemented by another access method.")));
+
+	/*
+	 * The catalogs, relcache and planner take these from the implementation's
+	 * routine, so it must agree with the implemented AM's.  The rest of what
+	 * the implementation promises (see amimplements) is checked as far as
+	 * this index needs it.
+	 */
+	if (impl->amstrategies != amRoutine->amstrategies ||
+		impl->amsupport != amRoutine->amsupport ||
+		impl->amoptsprocnum != amRoutine->amoptsprocnum ||
+		impl->amkeytype != amRoutine->amkeytype ||
+		impl->amsummarizing != amRoutine->amsummarizing ||
+		(amRoutine->amcanorder && !impl->amcanorder))
+		detail = _("Its operator class numbering or ordering properties differ from those of the access method it implements.");
+	else if (stmt->unique && !stmt->iswithoutoverlaps && !impl->amcanunique)
+		detail = _("It does not support unique indexes.");
+	else if (stmt->indexIncludingParams != NIL && !impl->amcaninclude)
+		detail = _("It does not support included columns.");
+	else if (numberOfKeyAttributes > 1 && !impl->amcanmulticol)
+		detail = _("It does not support multicolumn indexes.");
+	else if ((stmt->excludeOpNames || stmt->iswithoutoverlaps) &&
+			 impl->amgettuple == NULL)
+		detail = _("It does not support exclusion constraints.");
+
+	if (detail)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("access method \"%s\" cannot implement this %s index",
+						get_am_name(implAmId), get_am_name(accessMethodId)),
+				 errdetail_internal("%s", detail)));
+
+	return implAmId;
 }
 
 /*
@@ -4114,7 +4245,7 @@ ReindexRelationConcurrently(const ReindexStmt *stmt, Oid relationOid, const Rein
 #endif
 
 		idx->tableId = RelationGetRelid(heapRel);
-		idx->amId = indexRel->rd_rel->relam;
+		idx->amId = IndexRelationGetImplAm(indexRel);
 
 		/* This function shouldn't be called for temporary relations. */
 		if (indexRel->rd_rel->relpersistence == RELPERSISTENCE_TEMP)

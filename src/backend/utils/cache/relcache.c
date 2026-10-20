@@ -1442,6 +1442,7 @@ RelationInitIndexAccessInfo(Relation relation)
 {
 	HeapTuple	tuple;
 	Form_pg_am	aform;
+	Oid			implam;
 	Datum		indcollDatum;
 	Datum		indclassDatum;
 	Datum		indoptionDatum;
@@ -1472,13 +1473,16 @@ RelationInitIndexAccessInfo(Relation relation)
 	ReleaseSysCache(tuple);
 
 	/*
-	 * Look up the index's access method, save the OID of its handler function
+	 * Look up the access method whose code implements the index, normally the
+	 * index's own (relam), and save the OID of its handler function.  System
+	 * catalog indexes, the only ones in the relcache init file, never have a
+	 * separate implementation.
 	 */
 	Assert(relation->rd_rel->relam != InvalidOid);
-	tuple = SearchSysCache1(AMOID, ObjectIdGetDatum(relation->rd_rel->relam));
+	implam = IndexRelationGetImplAm(relation);
+	tuple = SearchSysCache1(AMOID, ObjectIdGetDatum(implam));
 	if (!HeapTupleIsValid(tuple))
-		elog(ERROR, "cache lookup failed for access method %u",
-			 relation->rd_rel->relam);
+		elog(ERROR, "cache lookup failed for access method %u", implam);
 	aform = (Form_pg_am) GETSTRUCT(tuple);
 	relation->rd_amhandler = aform->amhandler;
 	ReleaseSysCache(tuple);

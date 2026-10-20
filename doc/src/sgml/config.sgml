@@ -10440,6 +10440,34 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
       </listitem>
      </varlistentry>
 
+     <varlistentry id="guc-default-btree-implementation" xreflabel="default_btree_implementation">
+      <term><varname>default_btree_implementation</varname> (<type>string</type>)
+      <indexterm>
+       <primary><varname>default_btree_implementation</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        This parameter names an index access method whose code implements
+        new <literal>btree</literal> indexes, including those created for
+        <literal>PRIMARY KEY</literal> and <literal>UNIQUE</literal>
+        constraints, when the table's access method does not choose one
+        itself.  The access method must declare that it can implement
+        <literal>btree</literal> indexes; see
+        <xref linkend="index-implementations"/>.  The indexes remain
+        <literal>btree</literal> indexes: they use <literal>btree</literal>
+        operator classes and are shown as <literal>USING btree</literal>.
+        The choice is recorded in
+        <structname>pg_index</structname>.<structfield>indimplam</structfield>
+        when an index is created and is kept when it is rebuilt.
+        The default is an empty string, which means
+        <literal>btree</literal> itself; <literal>btree</literal> means the
+        same.  Indexes on system catalogs and TOAST tables are never
+        affected.
+       </para>
+      </listitem>
+     </varlistentry>
+
      <varlistentry id="guc-default-tablespace" xreflabel="default_tablespace">
       <term><varname>default_tablespace</varname> (<type>string</type>)
       <indexterm>

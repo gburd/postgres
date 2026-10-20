@@ -176,6 +176,25 @@ my_tableam_handler(PG_FUNCTION_ARGS)
   its implementation.
  </para>
 
+ <para>
+  A table access method can choose the code that implements each new index
+  on its tables with the optional <function>index_implementation</function>
+  callback.  It is given the table and the index's access method, and
+  returns the OID of an index access method that implements indexes of that
+  access method (see <xref linkend="index-implementations"/>), or
+  <literal>InvalidOid</literal> for no preference, in which case
+  <xref linkend="guc-default-btree-implementation"/> applies.  This lets a
+  table access method use, for example, a <literal>btree</literal>
+  implementation that stores versioned entries for its tables, while the
+  indexes stay ordinary <literal>btree</literal> indexes to the planner and
+  to users.  The choice is recorded when the index is created and is not
+  revisited, so it survives rebuilds, dump and restore with the same table
+  access method, and changes to the table's access method; it is not
+  consulted for indexes on system catalogs or TOAST tables, nor while
+  <application>pg_upgrade</application> restores a dump, which states every
+  index's implementation itself.
+ </para>
+
  <sect1 id="tableam-locator">
   <title>Row Locators</title>
 
