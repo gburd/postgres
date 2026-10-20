@@ -358,6 +358,7 @@ BufferCacheOsPagesContext
 BufferCacheOsPagesRec
 BufferDesc
 BufferDescPadded
+BufferDropCallback
 BufferHeapTupleTableSlot
 BufferLockMode
 BufferLookupEnt

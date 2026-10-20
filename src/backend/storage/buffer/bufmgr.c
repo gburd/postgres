@@ -4769,6 +4769,44 @@ BufferGetLSNAtomic(Buffer buffer)
 #endif
 }
 
+/*
+ * Buffer drop callbacks.  See RegisterBufferDropCallback().
+ */
+#define MAX_BUFFER_DROP_CALLBACKS	4
+
+static BufferDropCallback BufferDropCallbacks[MAX_BUFFER_DROP_CALLBACKS];
+static int	NumBufferDropCallbacks = 0;
+
+/*
+ * RegisterBufferDropCallback
+ *
+ * Register a function that this backend calls before it drops the buffers of
+ * a relation or a database.  A module that keeps its own long-lived pins (for
+ * example the nbtree root pin cache) uses this to release them, because
+ * InvalidateBuffer() fails on a buffer that this backend has pinned.
+ *
+ * Registrations last for the life of the backend.
+ */
+void
+RegisterBufferDropCallback(BufferDropCallback callback)
+{
+	if (NumBufferDropCallbacks >= MAX_BUFFER_DROP_CALLBACKS)
+		elog(FATAL, "out of buffer drop callback slots");
+
+	BufferDropCallbacks[NumBufferDropCallbacks++] = callback;
+}
+
+/*
+ * Call every registered buffer drop callback.  rlocator NULL means all
+ * relations of database dbOid.
+ */
+static void
+CallBufferDropCallbacks(Oid dbOid, const RelFileLocator *rlocator)
+{
+	for (int i = 0; i < NumBufferDropCallbacks; i++)
+		BufferDropCallbacks[i] (dbOid, rlocator);
+}
+
 /* ---------------------------------------------------------------------
  *		DropRelationBuffers
  *
@@ -4801,6 +4839,9 @@ DropRelationBuffers(SMgrRelation smgr_reln, ForkNumber *forkNum,
 	uint64		nBlocksToInvalidate = 0;
 
 	rlocator = smgr_reln->smgr_rlocator;
+
+	/* Let modules release pins that this backend keeps on these buffers. */
+	CallBufferDropCallbacks(rlocator.locator.dbOid, &rlocator.locator);
 
 	/* If it's a local relation, it's localbuf.c's problem. */
 	if (RelFileLocatorBackendIsTemp(rlocator))
@@ -4924,6 +4965,11 @@ DropRelationsAllBuffers(SMgrRelation *smgr_reln, int nlocators)
 
 	if (nlocators == 0)
 		return;
+
+	/* Let modules release pins that this backend keeps on these buffers. */
+	for (i = 0; i < nlocators; i++)
+		CallBufferDropCallbacks(smgr_reln[i]->smgr_rlocator.locator.dbOid,
+								&smgr_reln[i]->smgr_rlocator.locator);
 
 	rels = palloc_array(SMgrRelation, nlocators);	/* non-local relations */
 
@@ -5144,6 +5190,9 @@ void
 DropDatabaseBuffers(Oid dbid)
 {
 	int			i;
+
+	/* Let modules release pins that this backend keeps on these buffers. */
+	CallBufferDropCallbacks(dbid, NULL);
 
 	/*
 	 * We needn't consider local buffers, since by assumption the target
