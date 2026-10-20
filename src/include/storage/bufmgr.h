@@ -284,6 +284,17 @@ extern bool BufferIsLockedByMeInMode(Buffer buffer, BufferLockMode mode);
 extern bool BufferIsDirty(Buffer buffer);
 extern void MarkBufferDirty(Buffer buffer);
 extern void IncrBufferRefCount(Buffer buffer);
+
+/*
+ * Backend-local nailed buffers.  See NailBuffer() in bufmgr.c.
+ */
+extern PGDLLIMPORT int max_nailed_buffers;
+
+extern bool NailBuffer(Buffer buffer);
+extern Buffer FindNailedBuffer(RelFileLocator rlocator, ForkNumber forkNum,
+							   BlockNumber blockNum);
+extern void ReleaseNailedBuffers(void);
+extern void ReleaseNailedBuffersOfRelation(RelFileLocator rlocator);
 extern void CheckBufferIsPinnedOnce(Buffer buffer);
 extern Buffer ReleaseAndReadBuffer(Buffer buffer, Relation relation,
 								   BlockNumber blockNum);

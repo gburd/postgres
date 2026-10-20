@@ -377,7 +377,17 @@ _bt_getroot(Relation rel, Relation heaprel, int access)
 		Assert(rootblkno != P_NONE);
 		rootlevel = metad->btm_fastlevel;
 
-		rootbuf = _bt_getbuf(rel, rootblkno, BT_READ);
+		/*
+		 * This is the hottest buffer lookup in the system for an
+		 * index-driven workload: every descent of this index starts by
+		 * reading this one block.  If we have nailed it, we already hold a
+		 * pin and can skip the buffer mapping table entirely.
+		 */
+		rootbuf = FindNailedBuffer(rel->rd_locator, MAIN_FORKNUM, rootblkno);
+		if (BufferIsValid(rootbuf))
+			LockBuffer(rootbuf, BT_READ);
+		else
+			rootbuf = _bt_getbuf(rel, rootblkno, BT_READ);
 		rootpage = BufferGetPage(rootbuf);
 		rootopaque = BTPageGetOpaque(rootpage);
 
@@ -393,7 +403,16 @@ _bt_getroot(Relation rel, Relation heaprel, int access)
 			P_LEFTMOST(rootopaque) &&
 			P_RIGHTMOST(rootopaque))
 		{
-			/* OK, accept cached page as the root */
+			/*
+			 * Accept the cached page as the root.  Now that it has passed the
+			 * checks above, take a second pin and hand it to the nail array so
+			 * that the next descent can skip the lookup.  If the array is full
+			 * or the feature is off this does nothing, and we simply behave as
+			 * before.
+			 */
+			if (max_nailed_buffers > 0)
+				NailBuffer(rootbuf);
+
 			return rootbuf;
 		}
 		_bt_relbuf(rel, rootbuf);

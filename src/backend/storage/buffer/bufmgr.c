@@ -65,6 +65,7 @@
 #include "storage/smgr.h"
 #include "storage/standby.h"
 #include "utils/memdebug.h"
+#include "utils/memutils.h"
 #include "utils/ps_status.h"
 #include "utils/rel.h"
 #include "utils/resowner.h"
@@ -223,6 +224,37 @@ int			io_max_combine_limit = DEFAULT_IO_COMBINE_LIMIT;
 int			checkpoint_flush_after = DEFAULT_CHECKPOINT_FLUSH_AFTER;
 int			bgwriter_flush_after = DEFAULT_BGWRITER_FLUSH_AFTER;
 int			backend_flush_after = DEFAULT_BACKEND_FLUSH_AFTER;
+
+/*
+ * Backend-local nailed buffers.
+ *
+ * A nail is a buffer pin that deliberately outlives the statement that took
+ * it, so that a page a backend reads on a very large fraction of its queries
+ * -- in practice a btree fast-root -- can be found without going through the
+ * buffer mapping table at all.  The pin is owned by this array rather than by
+ * a ResourceOwner, and is not recorded in the backend's resource accounting,
+ * which is what lets it span statements.
+ *
+ * This is purely a lookup optimisation.  It is NOT a way to keep a page
+ * resident: the clock sweep already declines to evict any buffer whose
+ * refcount is nonzero, so a page under continuous access was never a
+ * candidate in the first place.  What a nail removes is the BufTableLookup(),
+ * the pin/unpin pair and the private-refcount bookkeeping on each access.
+ *
+ * Because a nail is a real pin, it has to be droppable on demand: both
+ * InvalidateBuffer() and LockBufferForCleanup() wait for the refcount to fall,
+ * and would wait forever otherwise.  Nails are therefore released at the end
+ * of every transaction (before CheckForBufferLeaks() runs) and whenever the
+ * relation they belong to is invalidated.
+ */
+typedef struct NailedBuffer
+{
+	Buffer		buffer;			/* InvalidBuffer if the slot is free */
+	BufferTag	tag;			/* identity this nail was taken for */
+} NailedBuffer;
+
+static NailedBuffer *NailedBuffers = NULL;
+static int	NumNailedBuffers = 0;
 
 /* local state for LockBufferForCleanup */
 static BufferDesc *PinCountWaitBuf = NULL;
@@ -4231,11 +4263,244 @@ SyncOneBuffer(int buf_id, bool skip_recently_used, WritebackContext *wb_context)
 void
 AtEOXact_Buffers(bool isCommit)
 {
+	/*
+	 * Nails are pins this backend holds on purpose across statements, so they
+	 * have to go before CheckForBufferLeaks(), which would otherwise report
+	 * every one of them as a leak.
+	 */
+	ReleaseNailedBuffers();
+
+
 	CheckForBufferLeaks();
 
 	AtEOXact_LocalBuffers(isCommit);
 
 	Assert(PrivateRefCountOverflowed == 0);
+}
+
+/*
+ * NailAddRef -- take an untracked reference on a buffer descriptor.
+ *
+ * This bumps the refcount in the shared state word without creating a
+ * PrivateRefCountEntry and without telling any ResourceOwner about it.  That
+ * is the whole point: a reference that no ResourceOwner knows about is not
+ * released when the statement ends, which is what lets a nail span
+ * statements.  The flip side is that nothing will clean it up for us, so
+ * every nail must be released explicitly -- see ReleaseNailedBuffers().
+ */
+static void
+NailAddRef(BufferDesc *desc)
+{
+	uint64		old_buf_state;
+
+	old_buf_state = pg_atomic_read_u64(&desc->state);
+	for (;;)
+	{
+		uint64		buf_state;
+
+		if (unlikely(old_buf_state & BM_LOCKED))
+		{
+			old_buf_state = WaitBufHdrUnlocked(desc);
+			continue;
+		}
+
+		buf_state = old_buf_state + BUF_REFCOUNT_ONE;
+
+		if (pg_atomic_compare_exchange_u64(&desc->state, &old_buf_state,
+										   buf_state))
+			break;
+	}
+}
+
+/*
+ * NailDropRef -- release a reference taken by NailAddRef().
+ */
+static void
+NailDropRef(BufferDesc *desc)
+{
+	uint64		old_buf_state;
+
+	old_buf_state = pg_atomic_read_u64(&desc->state);
+	for (;;)
+	{
+		uint64		buf_state;
+
+		if (unlikely(old_buf_state & BM_LOCKED))
+		{
+			old_buf_state = WaitBufHdrUnlocked(desc);
+			continue;
+		}
+
+		Assert(BUF_STATE_GET_REFCOUNT(old_buf_state) > 0);
+		buf_state = old_buf_state - BUF_REFCOUNT_ONE;
+
+		if (pg_atomic_compare_exchange_u64(&desc->state, &old_buf_state,
+										   buf_state))
+			break;
+	}
+}
+
+/*
+ * NailBuffer -- keep a buffer resident in this backend's nail array.
+ *
+ * The caller must hold a pin, which is used only to guarantee that the
+ * buffer's identity cannot change while we record it; the caller keeps that
+ * pin and releases it as usual.  The nail takes a reference of its own.
+ *
+ * Returns true if the buffer is nailed (or already was), false if it could not
+ * be, in which case the caller simply carries on as before.
+ */
+bool
+NailBuffer(Buffer buffer)
+{
+	BufferDesc *desc;
+	int			slot = -1;
+
+	if (max_nailed_buffers == 0 || BufferIsLocal(buffer) ||
+		!BufferIsValid(buffer))
+		return false;
+
+	/* The caller's pin is what makes the tag we record trustworthy. */
+	Assert(BufferIsPinned(buffer));
+
+	if (NailedBuffers == NULL)
+	{
+		NailedBuffers = MemoryContextAllocZero(TopMemoryContext,
+											   max_nailed_buffers *
+											   sizeof(NailedBuffer));
+		for (int i = 0; i < max_nailed_buffers; i++)
+			NailedBuffers[i].buffer = InvalidBuffer;
+	}
+
+	for (int i = 0; i < max_nailed_buffers; i++)
+	{
+		if (NailedBuffers[i].buffer == buffer)
+			return true;		/* already nailed */
+		if (slot < 0 && NailedBuffers[i].buffer == InvalidBuffer)
+			slot = i;
+	}
+
+	if (slot < 0)
+		return false;			/* array full */
+
+	desc = GetBufferDescriptor(buffer - 1);
+
+	NailAddRef(desc);
+
+	NailedBuffers[slot].buffer = buffer;
+	NailedBuffers[slot].tag = desc->tag;
+	NumNailedBuffers++;
+
+	return true;
+}
+
+/*
+ * FindNailedBuffer -- look for a nailed buffer holding a given page.
+ *
+ * On success returns an ordinary pinned buffer, pinned and tracked exactly as
+ * ReadBuffer() would have done, so the caller releases it in the usual way.
+ * What has been saved is the buffer mapping table lookup.
+ *
+ * Returns InvalidBuffer if this page is not nailed.
+ */
+Buffer
+FindNailedBuffer(RelFileLocator rlocator, ForkNumber forkNum,
+				 BlockNumber blockNum)
+{
+	BufferTag	tag;
+
+	if (NailedBuffers == NULL)
+		return InvalidBuffer;
+
+	InitBufferTag(&tag, &rlocator, forkNum, blockNum);
+
+	for (int i = 0; i < max_nailed_buffers; i++)
+	{
+		Buffer		buffer = NailedBuffers[i].buffer;
+		BufferDesc *desc;
+
+		if (buffer == InvalidBuffer)
+			continue;
+		if (!BufferTagsEqual(&NailedBuffers[i].tag, &tag))
+			continue;
+
+		desc = GetBufferDescriptor(buffer - 1);
+
+		/*
+		 * The nail holds a reference, so the buffer cannot have been
+		 * repurposed under us; re-checking the tag costs one comparison and
+		 * makes that reasoning checkable rather than assumed.
+		 */
+		if (!BufferTagsEqual(&desc->tag, &tag))
+			continue;
+
+		/*
+		 * Same preparation every other pin site does: room in the resource
+		 * owner, and a free private-refcount slot for PinBuffer() to use.
+		 */
+		ResourceOwnerEnlarge(CurrentResourceOwner);
+		ReservePrivateRefCountEntry();
+
+		if (!PinBuffer(desc, NULL, true))
+		{
+			/* Not valid after all; fall back to the normal path. */
+			UnpinBuffer(desc);
+			return InvalidBuffer;
+		}
+
+		return buffer;
+	}
+
+	return InvalidBuffer;
+}
+
+/*
+ * ReleaseNailedBuffers -- drop every nail held by this backend.
+ */
+void
+ReleaseNailedBuffers(void)
+{
+	if (NailedBuffers == NULL)
+		return;
+
+	for (int i = 0; i < max_nailed_buffers; i++)
+	{
+		if (NailedBuffers[i].buffer == InvalidBuffer)
+			continue;
+
+		NailDropRef(GetBufferDescriptor(NailedBuffers[i].buffer - 1));
+		NailedBuffers[i].buffer = InvalidBuffer;
+		NumNailedBuffers--;
+	}
+
+	Assert(NumNailedBuffers == 0);
+}
+
+/*
+ * ReleaseNailedBuffersOfRelation -- drop nails belonging to one relation.
+ *
+ * Called when a relation is invalidated, so that a nail can never be the
+ * reason InvalidateBuffer() or LockBufferForCleanup() waits: both of those
+ * spin until the refcount falls, and a nail's reference is not attached to
+ * any transaction that might end.
+ */
+void
+ReleaseNailedBuffersOfRelation(RelFileLocator rlocator)
+{
+	if (NailedBuffers == NULL)
+		return;
+
+	for (int i = 0; i < max_nailed_buffers; i++)
+	{
+		if (NailedBuffers[i].buffer == InvalidBuffer)
+			continue;
+		if (!BufTagMatchesRelFileLocator(&NailedBuffers[i].tag, &rlocator))
+			continue;
+
+		NailDropRef(GetBufferDescriptor(NailedBuffers[i].buffer - 1));
+		NailedBuffers[i].buffer = InvalidBuffer;
+		NumNailedBuffers--;
+	}
 }
 
 /*
