@@ -58,6 +58,7 @@ typedef enum IndexAMProperty
 	AMPROP_CAN_EXCLUDE,
 	AMPROP_CAN_INCLUDE,
 	AMPROP_CAN_VAR_LOCATOR,
+	AMPROP_CAN_VERSION,
 } IndexAMProperty;
 
 /*
@@ -312,6 +313,14 @@ typedef struct IndexAmRoutine
 	 * only a table whose locator is fixed-width and fits in one.
 	 */
 	bool		amcanvarlocator;
+
+	/*
+	 * Can this AM store a version tag with each entry?  An AM that sets this
+	 * stores, orders and returns the IndexVersionTag of each entry it is
+	 * given, but never interprets it; see "Versioned locators" in
+	 * amlocator.h.
+	 */
+	bool		amcanversion;
 	/* OR of parallel vacuum flags.  See vacuum.h for flags. */
 	uint8		amparallelvacuumoptions;
 	/* type of data stored in index, or InvalidOid if variable */
