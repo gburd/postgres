@@ -345,6 +345,16 @@ extern void DropDatabaseBuffers(Oid dbid);
 typedef void (*BufferDropCallback) (Oid dbOid, const RelFileLocator *rlocator);
 extern void RegisterBufferDropCallback(BufferDropCallback callback);
 
+/*
+ * Transaction-lifetime base pins.  See PinBlockForXact().
+ */
+extern PGDLLIMPORT int max_pinned_blocks;
+
+extern bool PinBlockForXact(Relation rel, ForkNumber forkNum,
+							BlockNumber blockNum, Buffer buffer);
+extern Buffer GetXactPinnedBlock(Relation rel, ForkNumber forkNum,
+								 BlockNumber blockNum);
+
 #define RelationGetNumberOfBlocks(reln) \
 	RelationGetNumberOfBlocksInFork(reln, MAIN_FORKNUM)
 
