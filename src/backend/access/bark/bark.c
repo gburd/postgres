@@ -1704,6 +1704,12 @@ barkcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 
 /*
  * Parse and validate the index's reloptions into a BarkOptions.
+ *
+ * deduplicate_items and vacuum_cleanup_index_scale_factor are btree's, so
+ * that a btree index BARK implements (pg_index.indimplam) takes every
+ * option a btree index takes.  deduplicate_items = off stops equal keys from
+ * sharing entries (bark_index_coalesces); vacuum_cleanup_index_scale_factor
+ * is accepted and ignored, as nbtree has ignored it since PostgreSQL 14.
  */
 static bytea *
 barkoptions(Datum reloptions, bool validate)
@@ -1712,6 +1718,10 @@ barkoptions(Datum reloptions, bool validate)
 		{"fillfactor", RELOPT_TYPE_INT, offsetof(BarkOptions, fillfactor)},
 		{"prefix_compression", RELOPT_TYPE_BOOL,
 		offsetof(BarkOptions, prefix_compression)},
+		{"deduplicate_items", RELOPT_TYPE_BOOL,
+		offsetof(BarkOptions, deduplicate_items)},
+		{"vacuum_cleanup_index_scale_factor", RELOPT_TYPE_REAL,
+		offsetof(BarkOptions, vacuum_cleanup_index_scale_factor)},
 	};
 
 	return (bytea *) build_reloptions(reloptions, validate,

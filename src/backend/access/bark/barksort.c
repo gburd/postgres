@@ -160,7 +160,7 @@ typedef struct BarkBuildState
 	bool		isunique;		/* enforce uniqueness during load */
 	bool		nullsnotdistinct;	/* unique index: NULLS NOT DISTINCT */
 	bool		allequalimage;	/* bark_allequalimage(index), for the meta page */
-	bool		coalesce;		/* non-unique and bark_index_may_coalesce */
+	bool		coalesce;		/* bark_index_coalesces */
 	bool		has_oversized;	/* saw a key too large to sort/load inline */
 	Size		sizebound;		/* row-independent part of the size bound */
 	bool		sizevaries;		/* any variable-width attribute? */
@@ -1759,7 +1759,7 @@ bark_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	bs.isunique = indexInfo->ii_Unique;
 	bs.nullsnotdistinct = indexInfo->ii_NullsNotDistinct;
 	bs.allequalimage = bark_allequalimage(index);
-	bs.coalesce = !bs.isunique && bark_index_may_coalesce(index);
+	bs.coalesce = bark_index_coalesces(index, bs.isunique);
 	bs.indexInfo = indexInfo;	/* for the oversized second-pass insert */
 	bs.prefix = bark_prefix_enabled(index);
 	bs.prefixnext = true;
