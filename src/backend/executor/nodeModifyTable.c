@@ -141,6 +141,8 @@ typedef struct UpdateContext
 {
 	bool		crossPartUpdate;	/* was it a cross-partition update? */
 	TU_UpdateIndexes updateIndexes; /* Which index updates are required? */
+	IndexVersionTag versionTag; /* the new version's tag, if it has one */
+	Bitmapset  *modifiedIdxAttrs;	/* see ExecUpdateModifiedIdxAttrs */
 
 	/*
 	 * Lock mode to acquire on the latest tuple version before performing
@@ -2849,6 +2851,7 @@ ExecUpdateAct(ModifyTableContext *context, ResultRelInfo *resultRelInfo,
 
 	/* The set of modified indexed attributes that trigger new index entries */
 	Bitmapset  *modified_idx_attrs = NULL;
+	uint32		options;
 
 	updateCxt->crossPartUpdate = false;
 
@@ -2978,6 +2981,10 @@ lreplace:
 	modified_idx_attrs = ExecUpdateModifiedIdxAttrs(resultRelInfo, oldSlot, slot,
 													estate);
 
+	options = context->rowLocked ? TABLE_UPDATE_LOCKED_VERSION : 0;
+	if (ExecUpdateMayKeepLocator(resultRelInfo, modified_idx_attrs))
+		options |= TABLE_UPDATE_MAY_KEEP_LOCATOR;
+
 	/*
 	 * Call into the table AM to update the heap tuple.
 	 *
@@ -2988,16 +2995,22 @@ lreplace:
 	 * transactions.
 	 */
 	result = table_tuple_update(resultRelationDesc, tupleid, slot,
-								estate->es_output_cid,
-								context->rowLocked ?
-								TABLE_UPDATE_LOCKED_VERSION : 0,
+								estate->es_output_cid, options,
 								estate->es_snapshot,
 								estate->es_crosscheck_snapshot,
 								true /* wait for commit */ ,
 								&context->tmfd, &updateCxt->lockmode,
 								modified_idx_attrs,
-								&updateCxt->updateIndexes);
-	bms_free(modified_idx_attrs);
+								&updateCxt->updateIndexes,
+								&updateCxt->versionTag);
+
+	/* TU_Affected's index entries depend on it; see ExecUpdateEpilogue */
+	bms_free(updateCxt->modifiedIdxAttrs);
+	updateCxt->modifiedIdxAttrs = NULL;
+	if (result == TM_Ok && updateCxt->updateIndexes == TU_Affected)
+		updateCxt->modifiedIdxAttrs = modified_idx_attrs;
+	else
+		bms_free(modified_idx_attrs);
 
 	return result;
 }
@@ -3024,14 +3037,21 @@ ExecUpdateEpilogue(ModifyTableContext *context, UpdateContext *updateCxt,
 
 		if (updateCxt->updateIndexes == TU_Summarizing)
 			flags |= EIIT_ONLY_SUMMARIZING;
-		recheckIndexes = ExecInsertIndexTuples(resultRelInfo, context->estate,
-											   flags, slot, NIL,
-											   NULL);
+		else if (updateCxt->updateIndexes == TU_Affected)
+			flags |= EIIT_ONLY_AFFECTED;
+		recheckIndexes = ExecUpdateIndexTuples(resultRelInfo, context->estate,
+											   flags, slot,
+											   updateCxt->versionTag,
+											   updateCxt->modifiedIdxAttrs,
+											   NIL, NULL);
 	}
+	bms_free(updateCxt->modifiedIdxAttrs);
+	updateCxt->modifiedIdxAttrs = NULL;
 
 	/*
-	 * If no non-summarizing index got an entry, check the exclusion
-	 * constraints whose entries the row kept although their values changed.
+	 * If no non-summarizing index got an entry, or the row kept its locator
+	 * (TU_Affected), check the exclusion constraints whose entries the row
+	 * kept although their values changed.
 	 */
 	if (updateCxt->updateIndexes != TU_All &&
 		resultRelInfo->ri_HotExclusionCheck != NULL)

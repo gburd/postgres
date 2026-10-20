@@ -955,6 +955,7 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 	{
 		List	   *recheckIndexes = NIL;
 		TU_UpdateIndexes update_indexes;
+		IndexVersionTag version_tag;
 		List	   *conflictindexes;
 		bool		conflict = false;
 
@@ -983,8 +984,11 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 			ExecMaterializeSlot(searchslot);
 
 		simple_table_tuple_update_ext(rel, tid, slot, estate->es_snapshot,
-									  modified_idx_attrs, &update_indexes);
-		bms_free(modified_idx_attrs);
+									  modified_idx_attrs,
+									  ExecUpdateMayKeepLocator(resultRelInfo,
+															   modified_idx_attrs) ?
+									  TABLE_UPDATE_MAY_KEEP_LOCATOR : 0,
+									  &update_indexes, &version_tag);
 
 		conflictindexes = resultRelInfo->ri_onConflictArbiterIndexes;
 
@@ -996,16 +1000,21 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 				flags |= EIIT_NO_DUPE_ERROR;
 			if (update_indexes == TU_Summarizing)
 				flags |= EIIT_ONLY_SUMMARIZING;
-			recheckIndexes = ExecInsertIndexTuples(resultRelInfo,
-												   estate, flags,
-												   slot, conflictindexes,
+			else if (update_indexes == TU_Affected)
+				flags |= EIIT_ONLY_AFFECTED;
+			recheckIndexes = ExecUpdateIndexTuples(resultRelInfo,
+												   estate, flags, slot,
+												   version_tag,
+												   modified_idx_attrs,
+												   conflictindexes,
 												   &conflict);
 		}
+		bms_free(modified_idx_attrs);
 
 		/*
-		 * If no non-summarizing index got an entry, check the exclusion
-		 * constraints whose entries the row kept although their values
-		 * changed.
+		 * If no non-summarizing index got an entry, or the row kept its
+		 * locator (TU_Affected), check the exclusion constraints whose
+		 * entries the row kept although their values changed.
 		 */
 		if (update_indexes != TU_All)
 			recheckIndexes =
