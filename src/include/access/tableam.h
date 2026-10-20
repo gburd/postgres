@@ -1013,6 +1013,7 @@ RelationGetLocatorDesc(Relation rel)
 			.name = "tid",
 			.stable = false,
 			.old_version_retained = true,
+			.versioned = false,
 			.bitmap_and_inexact = NULL,
 			.bitmap_or_inexact = NULL,
 		};
@@ -1042,6 +1043,16 @@ static inline bool
 table_locator_old_version_retained(Relation rel)
 {
 	return RelationGetLocatorDesc(rel)->old_version_retained;
+}
+
+/*
+ * Do this relation's index entries name a row version as (locator, tag)?
+ * See the versioned field in amlocator.h.
+ */
+static inline bool
+table_locator_is_versioned(Relation rel)
+{
+	return RelationGetLocatorDesc(rel)->versioned;
 }
 
 /*
