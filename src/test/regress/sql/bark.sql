@@ -1762,7 +1762,16 @@ ALTER INDEX bark_ff50_idx RESET (fillfactor);
 SELECT reloptions FROM pg_class WHERE relname = 'bark_ff50_idx';
 CREATE INDEX bark_ff_bad ON bark_ff USING bark (a) WITH (fillfactor = 5);
 CREATE INDEX bark_ff_bad ON bark_ff USING bark (a) WITH (fillfactor = 101);
-CREATE INDEX bark_ff_bad ON bark_ff USING bark (a) WITH (deduplicate_items = off);
+-- btree's other parameters are accepted, so that BARK can implement btree
+-- indexes (bark_btree_impl in src/test/modules/bark tests what
+-- deduplicate_items = off stores).
+CREATE INDEX bark_ff_dd ON bark_ff USING bark (a)
+  WITH (deduplicate_items = off, vacuum_cleanup_index_scale_factor = 0.5);
+SELECT reloptions FROM pg_class WHERE relname = 'bark_ff_dd';
+SELECT bark_index_check('bark_ff_dd', true);
+DROP INDEX bark_ff_dd;
+CREATE INDEX bark_ff_bad ON bark_ff USING bark (a) WITH (deduplicate_items = 2);
+CREATE INDEX bark_ff_bad ON bark_ff USING bark (a) WITH (vacuum_cleanup_index_scale_factor = -1);
 -- A low fillfactor with wide keys still puts at least two entries on each
 -- page: 200 incompressible ~1kB keys at fillfactor 10 must take fewer than
 -- 200 pages, internal levels and meta page included.

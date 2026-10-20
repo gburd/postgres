@@ -2327,7 +2327,7 @@ bark_fastpath_leaf(Relation index, BarkKeyInfo *keyinfo, IndexTuple itup,
 typedef struct BarkInsertState
 {
 	BarkKeyInfo *keyinfo;
-	bool		coalesce;		/* non-unique and bark_index_may_coalesce */
+	bool		coalesce;		/* bark_index_coalesces */
 	bool		ginrule;		/* coalesce, though the extracted column is
 								 * not equalimage: GIN's key rule */
 	int			extracted;		/* bark_index_extracted_column, or 0 */
@@ -2345,8 +2345,7 @@ bark_insert_state(Relation index, IndexInfo *indexInfo)
 
 		state = palloc_object(BarkInsertState);
 		state->keyinfo = bark_build_keyinfo(index);
-		state->coalesce = !indexInfo->ii_Unique &&
-			bark_index_may_coalesce(index);
+		state->coalesce = bark_index_coalesces(index, indexInfo->ii_Unique);
 		state->extracted = bark_index_extracted_column(index);
 		state->ginrule = state->coalesce && state->extracted > 0 &&
 			!bark_allequalimage(index);
