@@ -40,6 +40,7 @@ tests += {
       'check_btree',
       'check_gin',
       'check_heap',
+      'check_subattr',
     ],
   },
   'tap': {

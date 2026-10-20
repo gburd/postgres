@@ -505,6 +505,24 @@ typedef struct ResultRelInfo
 	IndexInfo **ri_IndexRelationInfo;
 
 	/*
+	 * For UPDATE, the table attributes each index references through
+	 * expressions or its predicate, and directly if its access method has
+	 * amcomparedatums, offset by FirstLowInvalidHeapAttributeNumber.  Built
+	 * on first use; NULL until then.
+	 */
+	Bitmapset **ri_IndexExprAttrs;
+
+	/*
+	 * For UPDATE, per index, the table attributes (offset as above) that the
+	 * statement's SET expressions provably cannot change any part of that the
+	 * index reads, as long as the attribute is not null before or after.
+	 * Worked out when ri_UpdateCount, which counts updated rows up to then,
+	 * reaches 2; NULL if nothing was proven.
+	 */
+	Bitmapset **ri_IndexUntouchedAttrs;
+	int			ri_UpdateCount;
+
+	/*
 	 * For UPDATE/DELETE/MERGE result relations, the attribute number of the
 	 * row identity junk attribute in the source plan's output tuples
 	 */
