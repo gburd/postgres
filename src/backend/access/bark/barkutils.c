@@ -507,6 +507,21 @@ bark_heap_tid_stride(Relation heap)
 	return RelationGetLocatorDesc(heap)->max_offset;
 }
 
+/* The error of bark_check_tid_offset. */
+void
+bark_tid_offset_error(Relation index, ItemPointer tid, uint16 stride)
+{
+	ereport(ERROR,
+			(errcode(ERRCODE_INDEX_CORRUPTED),
+			 errmsg("heap TID (%u,%u) exceeds the largest offset %u of BARK index \"%s\"",
+					ItemPointerGetBlockNumberNoCheck(tid),
+					ItemPointerGetOffsetNumberNoCheck(tid), (unsigned int) stride,
+					RelationGetRelationName(index)),
+			 errdetail("The index was built for a table whose locator offsets go up to %u.",
+					   (unsigned int) stride),
+			 errhint("REINDEX the index.")));
+}
+
 /* qsort_arg comparator for one column's keys, in the column's index order. */
 static int
 bark_key_cmp(const void *a, const void *b, void *arg)

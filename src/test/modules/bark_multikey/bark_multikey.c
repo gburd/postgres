@@ -1404,12 +1404,10 @@ bark_multikey_sim_triconsistent(PG_FUNCTION_ARGS)
 }
 
 /*
- * bark_test_bigoffset: heap, declaring locator offsets up to MaxOffsetNumber.
- * It exists only to reach bark_build's refusal of a table whose offsets exceed
- * MaxHeapTuplesPerPage (bark_locator.sql), and is good for nothing else:
- * heap's index build scan refuses a routine that is not heap's, so only BARK,
- * which refuses first, may be asked to index such a table, and it must have
- * no column that needs a TOAST table.
+ * bark_test_bigoffset: heap, declaring locator offsets up to MaxOffsetNumber,
+ * so that a BARK index of it is built with that TID stride while its real
+ * offsets stay heap's (bark_locator.sql).  It must have no column that needs
+ * a TOAST table.
  */
 static const LocatorDesc bigoffset_locator = {
 	.width = sizeof(ItemPointerData),
@@ -1426,6 +1424,95 @@ bigoffset_relation_locator(Relation rel)
 }
 
 PG_FUNCTION_INFO_V1(bark_test_bigoffset_handler);
+PG_FUNCTION_INFO_V1(bark_test_tid_stride);
+PG_FUNCTION_INFO_V1(bark_test_meta_stride);
+
+/* bark_test_tid_stride(index): bark_index_tid_stride. */
+Datum
+bark_test_tid_stride(PG_FUNCTION_ARGS)
+{
+	Relation	rel = open_bark_index(PG_GETARG_TEXT_PP(0));
+	int32		stride = bark_index_tid_stride(rel);
+
+	relation_close(rel, AccessShareLock);
+	PG_RETURN_INT32(stride);
+}
+
+/* bark_test_meta_stride(index): the meta page's bark_tid_stride as stored. */
+Datum
+bark_test_meta_stride(PG_FUNCTION_ARGS)
+{
+	Relation	rel = open_bark_index(PG_GETARG_TEXT_PP(0));
+	Buffer		buf = ReadBuffer(rel, BARK_METAPAGE);
+	int32		stride;
+
+	LockBuffer(buf, BUFFER_LOCK_SHARE);
+	stride = BarkPageGetMeta(BufferGetPage(buf))->bark_tid_stride;
+	UnlockReleaseBuffer(buf);
+	relation_close(rel, AccessShareLock);
+	PG_RETURN_INT32(stride);
+}
+
+/*
+ * heap_getnext, which heap's index build and validate scans read the table
+ * with, refuses a relation whose routine is not heap's, so these run them
+ * with heap's routine in the relation; the TIDs are heap's, as they are.
+ */
+static double
+bigoffset_index_build_range_scan(Relation table_rel, Relation index_rel,
+								 IndexInfo *index_info, bool allow_sync,
+								 bool anyvisible, bool progress,
+								 BlockNumber start_blockno,
+								 BlockNumber numblocks,
+								 IndexBuildCallback callback,
+								 void *callback_state, TableScanDesc scan)
+{
+	const TableAmRoutine *saved = table_rel->rd_tableam;
+	double		result;
+
+	table_rel->rd_tableam = GetHeapamTableAmRoutine();
+	PG_TRY();
+	{
+		result = table_rel->rd_tableam->index_build_range_scan(table_rel,
+															   index_rel,
+															   index_info,
+															   allow_sync,
+															   anyvisible,
+															   progress,
+															   start_blockno,
+															   numblocks,
+															   callback,
+															   callback_state,
+															   scan);
+	}
+	PG_FINALLY();
+	{
+		table_rel->rd_tableam = saved;
+	}
+	PG_END_TRY();
+	return result;
+}
+
+static void
+bigoffset_index_validate_scan(Relation table_rel, Relation index_rel,
+							  IndexInfo *index_info, Snapshot snapshot,
+							  ValidateIndexState *state)
+{
+	const TableAmRoutine *saved = table_rel->rd_tableam;
+
+	table_rel->rd_tableam = GetHeapamTableAmRoutine();
+	PG_TRY();
+	{
+		table_rel->rd_tableam->index_validate_scan(table_rel, index_rel,
+												   index_info, snapshot,
+												   state);
+	}
+	PG_FINALLY();
+	{
+		table_rel->rd_tableam = saved;
+	}
+	PG_END_TRY();
+}
 
 Datum
 bark_test_bigoffset_handler(PG_FUNCTION_ARGS)
@@ -1436,6 +1523,8 @@ bark_test_bigoffset_handler(PG_FUNCTION_ARGS)
 	{
 		methods = *GetHeapamTableAmRoutine();
 		methods.relation_locator = bigoffset_relation_locator;
+		methods.index_build_range_scan = bigoffset_index_build_range_scan;
+		methods.index_validate_scan = bigoffset_index_validate_scan;
 	}
 	PG_RETURN_POINTER(&methods);
 }

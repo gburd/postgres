@@ -1202,6 +1202,21 @@ extern void bark_set_multikey(Relation index);
 extern void bark_set_nkeys(Relation index, uint64 nkeys);
 extern uint16 bark_index_tid_stride(Relation index);
 extern uint16 bark_heap_tid_stride(Relation heap);
+pg_noreturn extern void bark_tid_offset_error(Relation index, ItemPointer tid,
+											  uint16 stride);
+
+/*
+ * Refuse a heap TID whose offset exceeds the index's TID stride, which no
+ * mapping of the index can hold: the table's locators changed without a
+ * rebuild.  Every TID enters an index through CREATE INDEX or aminsert,
+ * which check it here.
+ */
+static inline void
+bark_check_tid_offset(Relation index, ItemPointer tid, uint16 stride)
+{
+	if (unlikely(ItemPointerGetOffsetNumberNoCheck(tid) > stride))
+		bark_tid_offset_error(index, tid, stride);
+}
 
 /*
  * The entries one row has in an index with an extracted column: procedure
