@@ -42,8 +42,9 @@ PostgreSQL documentation
 
   <para>
    Only ordinary and TOAST table relations, materialized views, sequences, and
-   btree indexes are currently supported.  Other relation types are silently
-   skipped.
+   btree indexes are currently supported.  Other relation types, and btree
+   indexes implemented by another access method (see
+   <xref linkend="index-implementations"/>), are silently skipped.
   </para>
 
   <para>

@@ -182,12 +182,25 @@ index_checkable(Relation rel, Oid am_id)
 	amhandler = ((Form_pg_am) GETSTRUCT(amtup))->amhandler;
 	ReleaseSysCache(amtup);
 
+	/*
+	 * rd_amhandler is the handler of the code implementing the index, which
+	 * for an index with pg_index.indimplam set is not relam's.
+	 */
 	if (rel->rd_amhandler != amhandler)
+	{
+		if (OidIsValid(rel->rd_index->indimplam))
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("expected \"%s\" index as targets for verification", get_am_name(am_id)),
+					 errdetail("Index \"%s\" is implemented by access method \"%s\".",
+							   RelationGetRelationName(rel),
+							   get_am_name(rel->rd_index->indimplam))));
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("expected \"%s\" index as targets for verification", get_am_name(am_id)),
 				 errdetail("Relation \"%s\" is a %s index.",
 						   RelationGetRelationName(rel), get_am_name(rel->rd_rel->relam))));
+	}
 
 	if (RELATION_IS_OTHER_TEMP(rel))
 		ereport(ERROR,
