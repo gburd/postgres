@@ -375,3 +375,123 @@ CREATE INDEX hash_f8_index2 ON hash_f8_heap USING hash (random float8_ops)
 	WITH (fillfactor=101);
 ERROR:  value 101 out of bounds for option "fillfactor"
 DETAIL:  Valid values are between "10" and "100".
+--
+-- An UPDATE to a value with the same hash code is HOT: the index stores
+-- only the code, and scans recheck the heap tuple.
+--
+CREATE TABLE hash_hot (id int, n numeric) WITH (fillfactor = 10);
+CREATE INDEX hash_hot_n ON hash_hot USING hash (n);
+CREATE INDEX hash_hot_n2 ON hash_hot USING hash ((n * 2));
+INSERT INTO hash_hot SELECT g, g FROM generate_series(1, 50) g;
+CREATE FUNCTION hash_hot_count(OUT updated bigint, OUT hot bigint)
+LANGUAGE sql AS $$
+  SELECT pg_stat_get_xact_tuples_updated('hash_hot'::regclass),
+         pg_stat_get_xact_tuples_hot_updated('hash_hot'::regclass) $$;
+BEGIN;
+-- numeric hashes ignore the display scale, in the column and in the
+-- expression: HOT
+UPDATE hash_hot SET n = n + 0.00;
+SELECT * FROM hash_hot_count();
+ updated | hot 
+---------+-----
+      50 |  50
+(1 row)
+
+-- a different value: not HOT
+UPDATE hash_hot SET n = n + 100 WHERE id <= 5;
+SELECT * FROM hash_hot_count();
+ updated | hot 
+---------+-----
+      55 |  50
+(1 row)
+
+COMMIT;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+EXPLAIN (COSTS OFF) SELECT id, n FROM hash_hot WHERE n = 7;
+               QUERY PLAN                
+-----------------------------------------
+ Index Scan using hash_hot_n on hash_hot
+   Index Cond: (n = '7'::numeric)
+(2 rows)
+
+SELECT id, n FROM hash_hot WHERE n = 7;
+ id |  n   
+----+------
+  7 | 7.00
+(1 row)
+
+SELECT id, n FROM hash_hot WHERE n = 7.000;
+ id |  n   
+----+------
+  7 | 7.00
+(1 row)
+
+SELECT id, n FROM hash_hot WHERE n = 3;
+ id | n 
+----+---
+(0 rows)
+
+SELECT id, n FROM hash_hot WHERE n = 103;
+ id |   n    
+----+--------
+  3 | 103.00
+(1 row)
+
+SELECT id, n FROM hash_hot WHERE n * 2 = 14;
+ id |  n   
+----+------
+  7 | 7.00
+(1 row)
+
+RESET enable_bitmapscan;
+SET enable_indexscan = off;
+SELECT count(*) FROM hash_hot h WHERE n = (SELECT n FROM hash_hot WHERE id = h.id);
+ count 
+-------
+    50
+(1 row)
+
+RESET enable_indexscan;
+RESET enable_seqscan;
+DROP TABLE hash_hot;
+-- An exclusion constraint is checked on the values, so a change to a value
+-- with the same hash code must still make a new entry and be checked.
+-- hashint8 folds the high half into the low, so 1 and 2^32 collide.
+SELECT hashint8(1) = hashint8(4294967296) AS same_hash;
+ same_hash 
+-----------
+ t
+(1 row)
+
+CREATE TABLE hash_hot (id int, k int8, EXCLUDE USING hash (k WITH =))
+  WITH (fillfactor = 10);
+INSERT INTO hash_hot VALUES (1, 1), (2, 4294967296);
+UPDATE hash_hot SET k = 4294967296 WHERE id = 1;
+ERROR:  conflicting key value violates exclusion constraint "hash_hot_k_excl"
+DETAIL:  Key (k)=(4294967296) conflicts with existing key (k)=(4294967296).
+-- without a conflict, the update is checked and is not HOT
+SELECT pg_stat_force_next_flush();
+ pg_stat_force_next_flush 
+--------------------------
+ 
+(1 row)
+
+BEGIN;
+DELETE FROM hash_hot WHERE id = 2;
+UPDATE hash_hot SET k = 4294967296 WHERE id = 1;
+SELECT * FROM hash_hot_count();
+ updated | hot 
+---------+-----
+       1 |   0
+(1 row)
+
+COMMIT;
+SELECT * FROM hash_hot;
+ id |     k      
+----+------------
+  1 | 4294967296
+(1 row)
+
+DROP TABLE hash_hot;
+DROP FUNCTION hash_hot_count;

@@ -46,6 +46,7 @@ tests += {
       'check_bark',
       'check_bark_unique',
       'check_heap',
+      'check_subattr',
     ],
   },
   'tap': {
