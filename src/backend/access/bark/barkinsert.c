@@ -89,7 +89,7 @@ bark_leaf_page_entry(Relation index, Relation heaprel, IndexTuple full,
 /*
  * Free space on the leaf `page` that an insert may take.  A split inside a
  * run of equal keys gives the left half a high key with a heap TID, which is
- * MAXALIGN(sizeof(ItemPointerData)) bytes larger than a high key without one,
+ * BarkPivotSuffixReserve bytes larger than a high key without one,
  * or than the item a rightmost page's last insert left room for.  Keeping
  * that much back means the left half can then still hold every entry it had:
  * coalescing fills a page a few bytes at a time, to the last byte, and
@@ -101,8 +101,7 @@ bark_leaf_free_space(Page page)
 {
 	Size		free = PageGetFreeSpace(page);
 
-	return free > MAXALIGN(sizeof(ItemPointerData)) ?
-		free - MAXALIGN(sizeof(ItemPointerData)) : 0;
+	return free > BarkPivotSuffixReserve ? free - BarkPivotSuffixReserve : 0;
 }
 
 /*
@@ -218,7 +217,7 @@ bark_make_pivot(Relation index, Relation heaprel, IndexTuple key,
 	Datum		values[INDEX_MAX_KEYS];
 	bool		isnull[INDEX_MAX_KEYS];
 	Size		fulllen;
-	Size		tidsz = heaptid ? MAXALIGN(sizeof(ItemPointerData)) : 0;
+	Size		tidsz = heaptid ? BarkPivotSuffixReserve : 0;
 	IndexTuple	full;
 	IndexTuple	pivot;
 

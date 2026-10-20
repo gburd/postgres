@@ -678,7 +678,7 @@ bark_merge_page(Relation index, BarkKeyInfo *keyinfo, Buffer buf,
 	Assert(BarkPageIsLeaf(opaque));
 
 	/* The bytes bark_leaf_free_space must gain to hold the new entry */
-	need = (int) newitemsz + (int) MAXALIGN(sizeof(ItemPointerData)) -
+	need = (int) newitemsz + (int) BarkPivotSuffixReserve -
 		(int) PageGetFreeSpace(page);
 	tids = palloc_array(ItemPointerData, tidsalloc);
 

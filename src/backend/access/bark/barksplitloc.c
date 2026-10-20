@@ -101,7 +101,7 @@ bark_split_hikeysz(Relation index, IndexTuple firstright)
 	{
 		if (shape == BARK_SHAPE_LIST || shape == BARK_SHAPE_POSTING)
 			sz = BarkEntryGetBodyOffset(firstright);
-		sz = MAXALIGN(sz) + MAXALIGN(sizeof(ItemPointerData));
+		sz = MAXALIGN(sz) + BarkPivotSuffixReserve;
 	}
 	return MAXALIGN(sz) + sizeof(ItemIdData);
 }
