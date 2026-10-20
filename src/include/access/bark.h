@@ -419,12 +419,19 @@ typedef struct BarkOptions
 	int32		vl_len_;		/* varlena header (do not touch directly!) */
 	int			fillfactor;		/* leaf page fill factor in percent (10..100) */
 	bool		prefix_compression; /* code leaf keys against a page prefix? */
+	bool		deduplicate_items;	/* may equal keys share an entry? */
+	double		vacuum_cleanup_index_scale_factor;	/* btree's; ignored */
 } BarkOptions;
 
 #define BarkGetPrefixCompression(relation) \
 	(AssertMacro(bark_relation_is_bark(relation)), \
 	 (relation)->rd_options ? \
 	 ((BarkOptions *) (relation)->rd_options)->prefix_compression : false)
+
+#define BarkGetDeduplicateItems(relation) \
+	(AssertMacro(bark_relation_is_bark(relation)), \
+	 (relation)->rd_options ? \
+	 ((BarkOptions *) (relation)->rd_options)->deduplicate_items : true)
 
 #define BarkGetFillFactor(relation) \
 	(AssertMacro(bark_relation_is_bark(relation)), \
@@ -1174,6 +1181,7 @@ extern int	bark_index_extracted_column(Relation index);
 extern bool bark_index_gin_query(Relation index);
 extern bool bark_opfamily_is_own(Oid opfamily);
 extern bool bark_relation_is_bark(Relation rel);
+extern bool bark_index_coalesces(Relation index, bool unique);
 extern bool bark_opfamily_extracts(Oid opfamily, Oid opcintype);
 extern bool bark_property(Oid index_oid, int attno, IndexAMProperty prop,
 						  const char *propname, bool *res, bool *isnull);
