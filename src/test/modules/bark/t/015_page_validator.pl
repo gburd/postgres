@@ -153,6 +153,39 @@ like($err, $far, 'far fault, periodic: a later full check reports it');
 ok(@n && $n[-1] <= 32,
 	'far fault, periodic: within 32 changes (' . ($n[-1] // 'none') . ')');
 
+# Faults the validator finds in the other pages a change writes: the meta
+# page's version (VACUUM stores the index's key count there,
+# bark_set_nkeys) and an overflow page's left link (an OVERSIZED key's
+# chain).
+($rc, $out, $err) = $node->psql(
+	'postgres', q[
+	CREATE TABLE t_meta (a int) WITH (autovacuum_enabled = off);
+	CREATE INDEX t_meta_idx ON t_meta USING bark (a);
+	INSERT INTO t_meta SELECT g FROM generate_series(1, 100) g;
+	SELECT injection_points_attach('bark-verify-fault-meta', 'notice');
+	VACUUM t_meta;]);
+like($err,
+	qr/ERROR:  BARK index "t_meta_idx" has a meta page 0 with magic number 5241424B and version 0/,
+	'meta fault: reported by the change that wrote the meta page');
+like($err, qr/CONTEXT:  BARK page validator, block 0 after bark_set_nkeys/,
+	'meta fault: the context names the meta-page writer');
+$node->safe_psql('postgres',
+	"SELECT injection_points_detach('bark-verify-fault-meta')");
+($rc, $out, $err) = $node->psql(
+	'postgres', q[
+	CREATE TABLE t_ovf (k text);
+	ALTER TABLE t_ovf ALTER COLUMN k SET STORAGE EXTERNAL;
+	CREATE INDEX t_ovf_idx ON t_ovf USING bark (k);
+	SELECT injection_points_attach('bark-verify-fault-overflow', 'notice');
+	INSERT INTO t_ovf SELECT string_agg(md5(g::text), '') FROM generate_series(1, 400) g;]);
+like($err,
+	qr/ERROR:  BARK index "t_ovf_idx" has an overflow page \d+ that does not have the overflow-page layout/,
+	'overflow fault: reported by the chain write');
+like($err, qr/CONTEXT:  BARK page validator, block \d+ after bark_write_overflow_chain/,
+	'overflow fault: the context names the chain write');
+$node->safe_psql('postgres',
+	"SELECT injection_points_detach('bark-verify-fault-overflow')");
+
 # Unfaulted, the same inserts pass the validator and amcheck.
 setup($node, 't_clean');
 $node->safe_psql('postgres', 'INSERT INTO t_clean VALUES (5), (5), (11)');
