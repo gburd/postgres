@@ -1253,6 +1253,18 @@ CREATE INDEX orders_customer_idx ON orders (customer);
  </itemizedlist>
 
  <para>
+  In a server built with assertions enabled
+  (<option>--enable-cassert</option>), every change to a BARK page is
+  followed by checks that <function>bark_index_check</function> makes of
+  a page by itself, on the entries the change touched or on the whole
+  page, so that a fault is reported by the statement that caused it; WAL
+  replay checks the structure of the pages it replays.  The developer
+  option <varname>bark_verify_pages</varname>
+  (<type>boolean</type>, superuser, default <literal>on</literal>), which
+  exists only in such builds, turns this off.
+ </para>
+
+ <para>
   For example:
 <programlisting>
 SELECT bark_index_check('orders_customer_idx', true);
