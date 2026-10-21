@@ -3643,7 +3643,8 @@ bark_drop_lock_and_maybe_pin(BarkScanOpaque so)
  * BufferBeginSetHintBits, which can refuse (another backend is writing the
  * page out), and are not WAL-logged, so bark_mask masks them; with
  * checksums or wal_log_hints the first hint after a checkpoint logs a page
- * image (MarkBufferDirtyHint).
+ * image (MarkBufferDirtyHint).  An insert that would split the page deletes
+ * the marked entries (bark_simple_delete).
  *
  * An entry is found by its offset as read and its heap TIDs, never by offset
  * alone.  A scan that kept its pin since the read (!dropPin) blocked
@@ -3657,7 +3658,9 @@ bark_drop_lock_and_maybe_pin(BarkScanOpaque so)
  * be marked, whichever row of a multikey index's it was returned for.
  *
  * SINGLE and OVERSIZED entries have one TID, so a kill marks them.  Scans
- * skip a marked OVERSIZED entry without reading its overflow chain.  A LIST or POSTING entry is marked only when every one of its
+ * skip a marked OVERSIZED entry without reading its overflow chain; simple
+ * deletion leaves it, as bottom-up deletion does, for VACUUM, which frees
+ * the chain.  A LIST or POSTING entry is marked only when every one of its
  * TIDs was killed by this scan, as nbtree requires of a posting list tuple:
  * one live member keeps the entry, for that member's sake.  A marker names
  * no row and is never killed; pivots are never in items[].  A page with an
@@ -3710,8 +3713,8 @@ bark_killitems(IndexScanDesc scan)
 	maxoff = PageGetMaxOffsetNumber(page);
 
 	/*
-	 * A held pin does not keep the leaf alive: bottom-up deletion empties a
-	 * leaf under an exclusive lock, and VACUUM deletes an empty leaf
+	 * A held pin does not keep the leaf alive: simple and bottom-up deletion
+	 * empty a leaf under an exclusive lock, and VACUUM deletes an empty leaf
 	 * without a cleanup lock (bark_delete_empty_leaf).  It cannot have been
 	 * reused, since this scan's snapshot holds back its safexid.
 	 */
