@@ -2,6 +2,7 @@
 
 bark_multikey_sources = files(
   'bark_multikey.c',
+  'bark_wideblock.c',
 )
 
 if host_system == 'windows'
@@ -36,6 +37,7 @@ tests += {
       'bark_multikey_ginco',
       'bark_multikey_sim',
       'bark_locator',
+      'bark_wideblock',
       'bark_multikey_hot',
     ],
     'regress_args': ['--load-extension=amcheck'],
@@ -53,6 +55,7 @@ tests += {
     },
     'tests': [
       't/001_crash_and_standby.pl',
+      't/002_wideblock_recovery.pl',
     ],
   },
 }
