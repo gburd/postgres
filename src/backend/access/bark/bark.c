@@ -436,7 +436,7 @@ bark_delitems_vacuum(Relation index, Buffer buf,
 
 	for (int i = 0; i < nupdated; i++)
 	{
-		if (!PageIndexTupleOverwrite(page, updatedoffsets[i], updated[i],
+		if (!BarkPageOverwriteEntry(page, updatedoffsets[i], updated[i],
 									 IndexTupleSize(updated[i])))
 			elog(PANIC, "failed to rewrite BARK leaf entry at offset %u of block %u of index \"%s\"",
 				 updatedoffsets[i], BufferGetBlockNumber(buf),
@@ -445,6 +445,7 @@ bark_delitems_vacuum(Relation index, Buffer buf,
 	if (ndeletable > 0)
 		PageIndexMultiDelete(page, deletable, ndeletable);
 	BarkPageGetOpaque(page)->bark_cycleid = 0;
+	BarkPageGetOpaque(page)->bark_flags &= ~BARK_HAS_GARBAGE;	/* a hint */
 
 	MarkBufferDirty(buf);
 
