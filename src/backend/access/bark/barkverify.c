@@ -42,6 +42,7 @@
 
 #include "access/bark.h"
 #include "access/genam.h"
+#include "access/xlogreader.h"
 #include "lib/sbm.h"
 #include "lib/stringinfo.h"
 #include "miscadmin.h"
@@ -701,3 +702,40 @@ bark_verify_plant_fault(Page page, OffsetNumber off)
 }
 
 #endif							/* USE_INJECTION_POINTS */
+
+/*
+ * In WAL redo, check `buf`, block `block_id` of the record just replayed into
+ * it, while it is still locked: SHAPES only, since redo has no relcache
+ * entry, so no comparator and no catalog access.  A failure is a PANIC:
+ * redo cannot leave a page half-trusted, and a standby that went on would
+ * serve the corrupt page.  It runs in cassert builds whenever
+ * bark_verify_pages is on in the process doing the redo; by then the
+ * primary's validator has checked the page in full, so a failure here means
+ * redo built a page the primary did not (which wal_consistency_checking
+ * would also report, but only on records that carry an image).
+ */
+void
+bark_verify_redo(XLogReaderState *record, uint8 block_id, Buffer buf)
+{
+#ifdef USE_ASSERT_CHECKING
+	RelFileLocator rlocator;
+	BlockNumber blkno;
+	char		relname[NAMEDATALEN];
+	Page		page;
+
+	if (!bark_verify_pages || !BufferIsValid(buf))
+		return;
+	XLogRecGetBlockTag(record, block_id, &rlocator, NULL, &blkno);
+	snprintf(relname, sizeof(relname), "%u", rlocator.relNumber);
+	page = BufferGetPage(buf);
+	if (PageIsNew(page))
+		elog(PANIC, "BARK index \"%s\" left page %u new in redo",
+			 relname, blkno);
+	else if (BarkPageIsMeta(BarkPageGetOpaque(page)) ||
+			 BarkPageIsOverflow(BarkPageGetOpaque(page)))
+		bark_verify_other_page(page, relname, blkno, PANIC);
+	else
+		bark_page_verify(NULL, NULL, relname, page, blkno,
+						 BARK_VERIFY_SHAPES, PANIC);
+#endif
+}
