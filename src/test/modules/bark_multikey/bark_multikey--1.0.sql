@@ -432,6 +432,14 @@ AS 'MODULE_PATHNAME' LANGUAGE C;
 CREATE ACCESS METHOD bark_test_bigoffset TYPE TABLE
     HANDLER bark_test_bigoffset_handler;
 
+-- Heap with every TID translated so that seven heap blocks make one block
+-- and offsets reach 7 * MaxHeapTuplesPerPage (bark_wideblock.c).
+CREATE FUNCTION bark_test_wideblock_handler(internal)
+RETURNS table_am_handler
+AS 'MODULE_PATHNAME' LANGUAGE C;
+CREATE ACCESS METHOD bark_test_wideblock TYPE TABLE
+    HANDLER bark_test_wideblock_handler;
+
 -- A BARK index's TID stride (bark_index_tid_stride), and the meta page's
 -- field as stored, 0 for an index built before it existed.
 CREATE FUNCTION bark_test_tid_stride(text) RETURNS int4
