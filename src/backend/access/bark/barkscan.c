@@ -3413,9 +3413,9 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 		 * the scan started in recovery (ignore_killed_tuples is false): a
 		 * primary marks by its own horizon, which a standby's snapshots are
 		 * not part of.  It is skipped without comparing its keys, except the
-		 * page's last entry in the scan's direction, whose keys may still
-		 * end the scan here rather than on the next page, as nbtree's
-		 * backward scan tests its first tuple.
+		 * page's last entry in the scan's direction, whose keys may still end
+		 * the scan here rather than on the next page, as nbtree's backward
+		 * scan tests its first tuple.
 		 */
 		dead = scan->ignore_killed_tuples &&
 			ItemIdIsDead(PageGetItemId(page, offnum));
@@ -3633,8 +3633,8 @@ bark_drop_lock_and_maybe_pin(BarkScanOpaque so)
 
 	/*
 	 * Without the pin, VACUUM may remove the page's entries and the heap
-	 * reuse their TIDs before bark_killitems runs; it checks this LSN to
-	 * tell whether the page changed since.
+	 * reuse their TIDs before bark_killitems runs; it checks this LSN to tell
+	 * whether the page changed since.
 	 */
 	so->currPos.lsn = BufferGetLSNAtomic(so->currPos.buf);
 	UnlockReleaseBuffer(so->currPos.buf);
