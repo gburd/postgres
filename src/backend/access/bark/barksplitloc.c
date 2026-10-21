@@ -86,7 +86,7 @@ bark_split_itemsz(Size sz)
  * assumed to keep a heap TID.
  */
 static int
-bark_split_hikeysz(Relation index, IndexTuple firstright)
+bark_split_hikeysz(Relation index, BarkKeyInfo *keyinfo, IndexTuple firstright)
 {
 	BarkEntryShape shape = BarkEntryGetShape(firstright);
 	Size		sz = IndexTupleSize(firstright);
@@ -99,9 +99,10 @@ bark_split_hikeysz(Relation index, IndexTuple firstright)
 	}
 	else if (shape != BARK_SHAPE_PIVOT)
 	{
-		if (shape == BARK_SHAPE_LIST || shape == BARK_SHAPE_POSTING)
+		if (shape == BARK_SHAPE_LIST || shape == BARK_SHAPE_POSTING ||
+			BarkEntryIsAltTID(firstright))
 			sz = BarkEntryGetBodyOffset(firstright);
-		sz = MAXALIGN(sz) + BarkPivotSuffixReserve;
+		sz = MAXALIGN(sz) + BarkPivotSuffixReserve(keyinfo);
 	}
 	return MAXALIGN(sz) + sizeof(ItemIdData);
 }
@@ -222,7 +223,7 @@ bark_findsplitloc(Relation index, BarkKeyInfo *keyinfo, IndexTuple *items,
 		int			rightfree;
 
 		leftbytes += bark_split_itemsz(sizes[i - 1]);
-		leftfree = leftspace - leftbytes - bark_split_hikeysz(index, items[i]);
+		leftfree = leftspace - leftbytes - bark_split_hikeysz(index, keyinfo, items[i]);
 		rightfree = rightspace - (totalbytes - leftbytes);
 		if (leftfree < 0 || rightfree < 0)
 			continue;
@@ -424,7 +425,7 @@ bark_singleval_cut(Relation index, BarkKeyInfo *keyinfo, Page page,
 		used -= bark_split_itemsz(MAXALIGN(ItemIdGetLength(PageGetItemId(page,
 																		 BARK_P_HIKEY))));
 	leftmax = leftspace - leftspace * (100 - BARK_SINGLEVAL_FILLFACTOR) / 100 -
-		used - bark_split_hikeysz(index, last) - (int) sizeof(ItemIdData);
+		used - bark_split_hikeysz(index, keyinfo, last) - (int) sizeof(ItemIdData);
 	if (leftmax <= 0)
 		return false;
 

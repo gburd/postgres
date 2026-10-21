@@ -73,6 +73,9 @@ static void bark_verify_chain(BarkVerify *v, OffsetNumber off,
 							  IndexTuple itup);
 static void bark_verify_marker(BarkVerify *v, OffsetNumber off,
 							   IndexTuple itup);
+static void bark_verify_tag(BarkVerify *v, OffsetNumber off, IndexTuple itup);
+static void bark_verify_pivot_tag(BarkVerify *v, OffsetNumber off,
+								  IndexTuple itup);
 #if defined(USE_ASSERT_CHECKING) && defined(USE_INJECTION_POINTS)
 static void bark_verify_plant_page_fault(Page page);
 #endif
@@ -99,8 +102,8 @@ bark_verify_fail(BarkVerify *v, const char *fmt,...)
 
 /*
  * Compare the leaf entry `itup`, taken at its lowest heap TID (or its highest
- * when `high`), with the pivot or leaf entry `other`, in the tree's order of
- * (key, heap TID): bark_compare_itups_tid.
+ * when `high`) and its version tag, with the pivot or leaf entry `other`, in
+ * the tree's order of (key, heap TID, tag): bark_compare_itups_tid.
  */
 static int
 bark_verify_compare_leaf(BarkVerify *v, IndexTuple itup, bool high,
@@ -111,7 +114,7 @@ bark_verify_compare_leaf(BarkVerify *v, IndexTuple itup, bool high,
 
 	bark_entry_tid_range(itup, &lo, &hi, v->tidstride);
 	return bark_compare_itups_tid(v->keyinfo, v->rel, itup, high ? &hi : &lo,
-								  other);
+								  BarkEntryGetTag(itup), other);
 }
 
 static void bark_page_verify_range(Relation index, BarkKeyInfo *keyinfo,
@@ -264,6 +267,7 @@ bark_page_verify_range(Relation index, BarkKeyInfo *keyinfo,
 		if (hikeynatts < 1 || hikeynatts > nkeys)
 			bark_verify_fail(&v, "BARK index \"%s\" has a high key with %d key attributes on page %u",
 							 v.relname, hikeynatts, blkno);
+		bark_verify_pivot_tag(&v, BARK_P_HIKEY, hikey);
 	}
 
 	/* ORDER compares each touched item with the ones next to it. */
@@ -300,10 +304,13 @@ bark_page_verify_range(Relation index, BarkKeyInfo *keyinfo,
 
 			/*
 			 * Insert and CREATE INDEX both store a row too large to stay
-			 * inline as an OVERSIZED entry, so a SINGLE never is one.
+			 * inline as an OVERSIZED entry, so a SINGLE's key never is one.
+			 * Without keyinfo (redo) the index's reserve is not known, and
+			 * the smaller one is tested.
 			 */
 			if (BarkEntryGetShape(itup) == BARK_SHAPE_SINGLE &&
-				bark_len_is_oversized(IndexTupleSize(itup)))
+				MAXALIGN(BarkSingleKeySize(itup)) > BarkMaxItemSize -
+				BarkPivotSuffixReserveFor(keyinfo != NULL && keyinfo->versioned))
 				bark_verify_fail(&v, "BARK index \"%s\" has a %zu-byte SINGLE entry on page %u at offset %u that should be OVERSIZED",
 								 v.relname, IndexTupleSize(itup), blkno, off);
 
@@ -323,7 +330,11 @@ bark_page_verify_range(Relation index, BarkKeyInfo *keyinfo,
 				bark_verify_list(&v, off, itup);
 			else if (BarkEntryGetShape(itup) == BARK_SHAPE_POSTING)
 				bark_verify_posting(&v, off, itup);
+			bark_verify_tag(&v, off, itup);
 		}
+		else if (!BarkPageIsLeaf(opaque) &&
+				 (!OffsetNumberIsValid(lo) || (off >= lo && off <= hi)))
+			bark_verify_pivot_tag(&v, off, itup);
 
 		/*
 		 * An OVERSIZED entry's chain, leaf entry, downlink or high key, and
@@ -381,6 +392,104 @@ bark_page_verify_range(Relation index, BarkKeyInfo *keyinfo,
 		prev = itup;
 		cur = 1 - cur;
 	}
+}
+
+/*
+ * Validate a leaf entry's version tag, if it has one (see "Version tags" in
+ * bark.h).  A tagged SINGLE has BARK_HAS_TAG as its only status bit, zero
+ * low offset bits, and its trailer at the MAXALIGNed end of its key, ending
+ * the entry; a tagged OVERSIZED entry is its ref and one MAXALIGNed tag.
+ * The tag is never 0, and only an index built for tags
+ * (BARK_META_VERSIONED) holds one; redo, which has no relcache entry, does
+ * not test that.
+ */
+static void
+bark_verify_tag(BarkVerify *v, OffsetNumber off, IndexTuple itup)
+{
+	Size		size = IndexTupleSize(itup);
+	OffsetNumber status = ItemPointerGetOffsetNumberNoCheck(&itup->t_tid);
+
+	if (!BarkEntryIsAltTID(itup))
+		return;
+	if (BarkEntryGetShape(itup) == BARK_SHAPE_SINGLE)
+	{
+		Size		trailoff = BarkEntryGetBodyOffset(itup);
+
+		if (status != BARK_HAS_TAG ||
+			trailoff < IndexInfoFindDataOffset(itup->t_info) ||
+			trailoff != MAXALIGN(trailoff) ||
+			trailoff + BARK_TAG_TRAILER_SIZE != size)
+			bark_verify_fail(v, "BARK index \"%s\" has a malformed tagged entry on page %u at offset %u",
+							 v->relname, v->blkno, off);
+	}
+	else if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED)
+	{
+		Size		refend = MAXALIGN(IndexInfoFindDataOffset(itup->t_info)) +
+			MAXALIGN(sizeof(BarkOverflowRef));
+
+		if (size != refend + (BarkEntryHasTag(itup) ?
+							  MAXALIGN(sizeof(IndexVersionTag)) : 0))
+			bark_verify_fail(v, "BARK index \"%s\" has a malformed oversized entry on page %u at offset %u",
+							 v->relname, v->blkno, off);
+	}
+	else if ((status & BARK_HAS_TAG) != 0)
+		bark_verify_fail(v, "BARK index \"%s\" has a tagged LIST or POSTING entry on page %u at offset %u",
+						 v->relname, v->blkno, off);
+
+	if (!BarkEntryHasTag(itup))
+		return;
+	if (BarkEntryGetTag(itup) == InvalidIndexVersionTag)
+		bark_verify_fail(v, "BARK index \"%s\" has a tagged entry with tag 0 on page %u at offset %u",
+						 v->relname, v->blkno, off);
+	if (v->keyinfo != NULL && !v->keyinfo->versioned)
+		bark_verify_fail(v, "BARK index \"%s\" has a tagged entry on page %u at offset %u but is not built for tags",
+						 v->relname, v->blkno, off);
+}
+
+/*
+ * Validate a pivot's version tag: a pivot keeps one only when it separates
+ * two entries equal on every key attribute and on heap TID, so only a pivot
+ * with every key attribute and a heap TID has one, and only in an index
+ * built for tags.  Its tag is never 0.
+ */
+static void
+bark_verify_pivot_tag(BarkVerify *v, OffsetNumber off, IndexTuple itup)
+{
+	IndexVersionTag tag;
+	bool		hastag;
+
+	if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED)
+	{
+		hastag = BarkEntryHasTag(itup);
+		tag = BarkEntryGetTag(itup);
+	}
+	else if (BarkEntryGetShape(itup) == BARK_SHAPE_PIVOT)
+	{
+		hastag = (ItemPointerGetOffsetNumberNoCheck(&itup->t_tid) &
+				  BARK_PIVOT_TAG) != 0;
+		tag = BarkPivotGetTag(itup);
+		if (hastag && BarkPivotGetHeapTID(itup) != NULL &&
+			IndexTupleSize(itup) < IndexInfoFindDataOffset(itup->t_info) +
+			BarkPivotSuffixReserveFor(true))
+			bark_verify_fail(v, "BARK index \"%s\" has a pivot too short for its version tag on page %u at offset %u",
+							 v->relname, v->blkno, off);
+	}
+	else
+		return;
+
+	if (!hastag)
+		return;
+	if (bark_pivot_heap_tid(itup) == NULL ||
+		(v->keyinfo != NULL &&
+		 BarkEntryGetPivotNAtts(itup) != v->keyinfo->nkeys))
+		bark_verify_fail(v, "BARK index \"%s\" has a pivot with a version tag but not every key attribute and a heap TID on page %u at offset %u",
+						 v->relname, v->blkno, off);
+	if (tag == InvalidIndexVersionTag)
+		bark_verify_fail(v, "BARK index \"%s\" has a pivot with version tag 0 on page %u at offset %u",
+						 v->relname, v->blkno, off);
+	if (v->keyinfo != NULL && !v->keyinfo->versioned)
+		bark_verify_fail(v, "BARK index \"%s\" has a pivot with a version tag on page %u at offset %u but is not built for tags",
+						 v->relname, v->blkno, off);
 }
 
 /*
@@ -605,6 +714,10 @@ bark_verify_other_page(Page page, const char *relname, BlockNumber blkno,
 			bark_verify_fail(&v, "BARK index \"%s\" has a meta page %u with magic number %08X and version %u",
 							 relname, blkno, meta->bark_magic,
 							 meta->bark_version);
+		if (meta->bark_version < 3 &&
+			(meta->bark_flags & BARK_META_VERSIONED) != 0)
+			bark_verify_fail(&v, "BARK index \"%s\" has a version %u meta page %u built for version tags",
+							 relname, meta->bark_version, blkno);
 	}
 	else if (BarkPageIsOverflow(opaque))
 	{

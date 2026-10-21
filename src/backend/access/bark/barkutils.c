@@ -39,6 +39,7 @@
 #include "access/xloginsert.h"
 #include "catalog/pg_amop.h"
 #include "catalog/pg_type.h"
+#include "common/int.h"
 #include "lib/qunique.h"
 #include "lib/sbm.h"
 #include "miscadmin.h"
@@ -143,16 +144,18 @@ bark_translate_cmptype(CompareType cmptype, Oid opfamily)
 BarkKeyInfo *
 bark_build_keyinfo(Relation index)
 {
-	return bark_build_keyinfo_stride(index, bark_index_tid_stride(index));
+	return bark_build_keyinfo_stride(index, bark_index_tid_stride(index),
+									 bark_index_versioned(index));
 }
 
 /*
- * bark_build_keyinfo for an index whose TID stride is `stride`: CREATE
- * INDEX's, whose meta page is not written yet, takes the heap's
- * (bark_heap_tid_stride).
+ * bark_build_keyinfo for an index whose TID stride is `stride` and whose
+ * entries may carry tags when `versioned`: CREATE INDEX's, whose meta page
+ * is not written yet, takes the heap's (bark_heap_tid_stride,
+ * bark_heap_versioned).
  */
 BarkKeyInfo *
-bark_build_keyinfo_stride(Relation index, uint16 stride)
+bark_build_keyinfo_stride(Relation index, uint16 stride, bool versioned)
 {
 	int			nkeys = IndexRelationGetNumberOfKeyAttributes(index);
 	BarkKeyInfo *keyinfo;
@@ -162,6 +165,7 @@ bark_build_keyinfo_stride(Relation index, uint16 stride)
 	keyinfo->heaprel = NULL;	/* writers set it */
 	keyinfo->nkeys = nkeys;
 	keyinfo->tidstride = stride;
+	keyinfo->versioned = versioned;
 
 	for (int i = 0; i < nkeys; i++)
 	{
@@ -529,6 +533,44 @@ bark_index_tid_stride(Relation index)
 }
 
 /*
+ * May the index hold version tags?  Its meta page's BARK_META_VERSIONED,
+ * which a version 2 meta page never has.  Fixed for the relfilenode, so it
+ * is read once per relcache entry, as the TID stride is.
+ */
+bool
+bark_index_versioned(Relation index)
+{
+	BarkAmCache *cache = bark_get_amcache(index);
+
+	if (cache->versioned < 0)
+	{
+		Buffer		metabuf = ReadBuffer(index, BARK_METAPAGE);
+		Page		metapage;
+		BarkMetaPageData *meta;
+		bool		versioned = false;
+
+		LockBuffer(metabuf, BUFFER_LOCK_SHARE);
+		metapage = BufferGetPage(metabuf);
+		meta = BarkPageGetMeta(metapage);
+		if (meta->bark_version >= 3 &&
+			((PageHeader) metapage)->pd_lower >=
+			((char *) &meta->bark_flags + sizeof(meta->bark_flags)) -
+			(char *) metapage)
+			versioned = (meta->bark_flags & BARK_META_VERSIONED) != 0;
+		UnlockReleaseBuffer(metabuf);
+		cache->versioned = versioned ? 1 : 0;
+	}
+	return cache->versioned > 0;
+}
+
+/* Is an index of `heap` built to hold tags (BARK_META_VERSIONED)? */
+bool
+bark_heap_versioned(Relation heap)
+{
+	return table_locator_is_versioned(heap);
+}
+
+/*
  * The TID stride an index of `heap` is built with: its locators' largest
  * offset, which for heap is MaxHeapTuplesPerPage.
  */
@@ -660,7 +702,8 @@ bark_extract_row_keys(Relation index, BarkKeyInfo *keyinfo, Datum value,
  * marker too large for a page is refused.
  */
 IndexTuple
-bark_form_marker(Relation index, Datum key, Size *fulllen)
+bark_form_marker(Relation index, BarkKeyInfo *keyinfo, Datum key,
+				 Size *fulllen)
 {
 	int			attno = bark_index_extracted_column(index);
 	Datum		values[INDEX_MAX_KEYS] = {0};
@@ -678,7 +721,7 @@ bark_form_marker(Relation index, Datum key, Size *fulllen)
 	 * A marker is a SINGLE entry, so readers can tell it by its TID alone; an
 	 * OVERSIZED entry keeps its TID elsewhere.
 	 */
-	if (bark_len_is_oversized(*fulllen))
+	if (bark_len_is_oversized(keyinfo, *fulllen))
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg("marker key of BARK index \"%s\" is too large",
@@ -1355,10 +1398,34 @@ bark_pivot_heap_tid(IndexTuple pivot)
 }
 
 /*
+ * The version tag of a pivot of either shape, or InvalidIndexVersionTag
+ * when it has none: minus infinity on the tag.
+ */
+IndexVersionTag
+bark_pivot_tag(IndexTuple pivot)
+{
+	if (BarkEntryGetShape(pivot) == BARK_SHAPE_OVERSIZED)
+		return BarkEntryGetTag(pivot);
+	return BarkPivotGetTag(pivot);
+}
+
+/*
+ * Compare two version tags as the tree orders them: as raw uint32 values, a
+ * total order in which untagged (0) comes first.  Only the table AM gives
+ * tags a meaning (modular, say); the index needs an order that never
+ * changes.
+ */
+int
+bark_compare_tag(IndexVersionTag a, IndexVersionTag b)
+{
+	return pg_cmp_u32(a, b);
+}
+
+/*
  * The lowest and highest heap TIDs of a leaf entry, the range the entry
- * occupies in the order of a run of equal keys: its t_tid for a SINGLE, its
- * ref's locator for an OVERSIZED entry, the first and last members of a LIST,
- * the sbm minimum and maximum of a POSTING.
+ * occupies in the order of a run of equal keys: its heap TID for a SINGLE or
+ * an OVERSIZED entry (BarkEntryGetHeapTid), the first and last members of a
+ * LIST, the sbm minimum and maximum of a POSTING.
  */
 void
 bark_entry_tid_range(IndexTuple itup, ItemPointer lo, ItemPointer hi,
@@ -1367,7 +1434,7 @@ bark_entry_tid_range(IndexTuple itup, ItemPointer lo, ItemPointer hi,
 	switch (BarkEntryGetShape(itup))
 	{
 		case BARK_SHAPE_SINGLE:
-			*lo = *hi = itup->t_tid;
+			*lo = *hi = *BarkEntryGetHeapTid(itup);
 			break;
 		case BARK_SHAPE_OVERSIZED:
 			Assert(BarkOverflowIsLeaf(itup));
@@ -1401,20 +1468,28 @@ bark_entry_tid_range(IndexTuple itup, ItemPointer lo, ItemPointer hi,
 }
 
 /*
- * Compare `key` and, when `scantid` is not NULL, the heap TID `scantid` with
- * `itup`, a pivot or a leaf entry, in the order of the tree: by key first
- * (bark_compare_itups), then, within a key, by heap TID.  This is the
- * comparison of nbtree's insertion scan key with a scantid (_bt_compare).
+ * Compare `key` and, when `scantid` is not NULL, the heap TID `scantid` and
+ * version tag `scantag` with `itup`, a pivot or a leaf entry, in the order of
+ * the tree: by key first (bark_compare_itups), then, within a key, by heap
+ * TID, then, within a heap TID, by tag (bark_compare_tag).  This is the
+ * comparison of nbtree's insertion scan key with a scantid (_bt_compare),
+ * extended by the tag.
  *
- * Against a pivot equal on every key attribute, the pivot's heap TID decides,
- * and a pivot without one is minus infinity, so the search key sorts after
- * it.  (A pivot truncated on key attributes never ties: bark_compare_itups
- * sorts the shorter one first.)  Against a leaf entry, 0 means scantid lies
- * inside the entry's TID range, which an insert of that TID must go into.
+ * Against a pivot equal on every key attribute, the pivot's heap TID
+ * decides, then its tag; a pivot without a heap TID is minus infinity on it,
+ * and one with a heap TID but no tag minus infinity on the tag, so the search
+ * key sorts after it.  (A pivot truncated on key attributes never ties:
+ * bark_compare_itups sorts the shorter one first.)  Against a leaf entry, 0
+ * means (scantid, scantag) lies inside the entry's range: inside a LIST or
+ * POSTING entry's TID range, whose members are untagged, so that (scantid,
+ * scantag) sorts between two of its members (an untagged insert of a TID
+ * there must go into it); or exactly a SINGLE's or OVERSIZED entry's (TID,
+ * tag).
  */
 int
 bark_compare_itups_tid(BarkKeyInfo *keyinfo, Relation index, IndexTuple key,
-					   ItemPointer scantid, IndexTuple itup)
+					   ItemPointer scantid, IndexVersionTag scantag,
+					   IndexTuple itup)
 {
 	int			cmp = bark_compare_itups(keyinfo, index, key, itup);
 	ItemPointerData lo;
@@ -1431,15 +1506,66 @@ bark_compare_itups_tid(BarkKeyInfo *keyinfo, Relation index, IndexTuple key,
 
 		if (ptid == NULL)
 			return 1;
-		return ItemPointerCompare(scantid, ptid);
+		cmp = ItemPointerCompare(scantid, ptid);
+		if (cmp != 0)
+			return cmp;
+		return bark_compare_tag(scantag, bark_pivot_tag(itup));
 	}
 
 	bark_entry_tid_range(itup, &lo, &hi, keyinfo->tidstride);
 	if (ItemPointerCompare(scantid, &lo) < 0)
 		return -1;
-	if (ItemPointerCompare(scantid, &hi) > 0)
-		return 1;
-	return 0;
+	cmp = ItemPointerCompare(scantid, &hi);
+	if (BarkEntryGetShape(itup) == BARK_SHAPE_LIST ||
+		BarkEntryGetShape(itup) == BARK_SHAPE_POSTING)
+	{
+		/* Its members are untagged: (key, hi, 0) is below (key, hi, t). */
+		if (cmp > 0 || (cmp == 0 && scantag != InvalidIndexVersionTag))
+			return 1;
+		return 0;
+	}
+	if (cmp != 0)
+		return cmp;
+	return bark_compare_tag(scantag, BarkEntryGetTag(itup));
+}
+
+/*
+ * Form a tagged SINGLE (see "Version tags" in bark.h) from `key`, a SINGLE-
+ * shape key tuple or the key part of an entry, its key `IndexTupleSize`
+ * bytes: the key, padded to MAXALIGN, then the trailer of heap TID `tid` and
+ * `tag`.  `tag` 0 forms a plain SINGLE.  Returns a palloc'd entry.
+ */
+IndexTuple
+bark_form_tagged(IndexTuple key, ItemPointer tid, IndexVersionTag tag)
+{
+	Size		keysz = BarkSingleKeySize(key);
+	Size		trailoff = MAXALIGN(keysz);
+	Size		total = trailoff + BARK_TAG_TRAILER_SIZE;
+	IndexTuple	entry;
+	BarkTagTrailer *trailer;
+
+	if (tag == InvalidIndexVersionTag)
+	{
+		entry = (IndexTuple) palloc(keysz);
+		memcpy(entry, key, keysz);
+		entry->t_info = (entry->t_info & ~(INDEX_SIZE_MASK |
+										   INDEX_AM_RESERVED_BIT)) |
+			(uint16) keysz;
+		entry->t_tid = *tid;
+		return entry;
+	}
+
+	Assert(total <= INDEX_SIZE_MASK);
+	entry = (IndexTuple) palloc0(total);
+	memcpy(entry, key, keysz);
+	entry->t_info = (entry->t_info & ~INDEX_SIZE_MASK) |
+		INDEX_AM_RESERVED_BIT | (uint16) total;
+	ItemPointerSetBlockNumber(&entry->t_tid, (BlockNumber) trailoff);
+	ItemPointerSetOffsetNumber(&entry->t_tid, (OffsetNumber) BARK_HAS_TAG);
+	trailer = BarkSingleGetTrailer(entry);
+	trailer->htid = *tid;
+	memcpy(&trailer->tag, &tag, sizeof(tag));
+	return entry;
 }
 
 /* ----------------------------------------------------------------------------
@@ -1777,7 +1903,7 @@ bark_entry_get_tids(IndexTuple itup, ItemPointer out, int maxout,
 	{
 		case BARK_SHAPE_SINGLE:
 			Assert(maxout >= 1);
-			out[0] = itup->t_tid;
+			out[0] = *BarkEntryGetHeapTid(itup);
 			return 1;
 		case BARK_SHAPE_OVERSIZED:
 			Assert(maxout >= 1);
@@ -2508,11 +2634,14 @@ bark_prefix_canonical(const char *val)
 		VARSIZE(val) - VARHDRSZ + VARHDRSZ_SHORT > VARATT_SHORT_MAX;
 }
 
-/* End of a leaf entry's key: the body offset of a LIST or POSTING. */
+/*
+ * End of a leaf entry's key: the body offset of a LIST or POSTING, the
+ * trailer offset of a tagged SINGLE, both kept in the t_tid block field.
+ */
 static Size
 bark_entry_keyend(IndexTuple itup)
 {
-	if (BarkEntryGetShape(itup) == BARK_SHAPE_SINGLE)
+	if (!BarkEntryIsAltTID(itup))
 		return IndexTupleSize(itup);
 	return BarkEntryGetBodyOffset(itup);
 }
@@ -2713,7 +2842,7 @@ bark_prefix_encode(Page page, IndexTuple itup)
 
 	((IndexTuple) coded)->t_info =
 		(itup->t_info & ~INDEX_SIZE_MASK) | (unsigned short) plan.total;
-	if (BarkEntryGetShape(itup) != BARK_SHAPE_SINGLE)
+	if (BarkEntryIsAltTID(itup))
 		BarkEntrySetBodyOffset((IndexTuple) coded, (uint16) plan.codedkeyend);
 
 #ifdef USE_ASSERT_CHECKING
@@ -2851,7 +2980,7 @@ bark_prefix_decode(Page page, IndexTuple itup, BarkItemBuf *buf)
 
 	((IndexTuple) out)->t_info = (itup->t_info & ~INDEX_SIZE_MASK) |
 		(unsigned short) (keyend + (size - codedkeyend));
-	if (BarkEntryGetShape(itup) != BARK_SHAPE_SINGLE)
+	if (BarkEntryIsAltTID(itup))
 		BarkEntrySetBodyOffset((IndexTuple) out, (uint16) keyend);
 	return (IndexTuple) out;
 
@@ -3168,14 +3297,16 @@ bark_form_full_tuple(TupleDesc tupleDescriptor, const Datum *values,
 /*
  * True when a leaf entry of `fulllen` bytes cannot sit inline on a page.  As
  * nbtree's BTMaxItemSize does, the limit keeps room under the item ceiling
- * for the heap TID a pivot formed from the entry may have to carry (see
- * bark_truncate_pivot), so a pivot is never oversized when its leaf entry is
- * not.
+ * for the heap TID (and, in a versioned index, the tag) a pivot formed from
+ * the entry may have to carry (see bark_truncate_pivot), so a pivot is never
+ * oversized when its leaf entry is not.  The same room holds a tagged
+ * SINGLE's trailer, so a key that fits inline untagged fits tagged too.
  */
 bool
-bark_len_is_oversized(Size fulllen)
+bark_len_is_oversized(BarkKeyInfo *keyinfo, Size fulllen)
 {
-	return MAXALIGN(fulllen) > BarkMaxItemSize - BarkPivotSuffixReserve;
+	return MAXALIGN(fulllen) > BarkMaxItemSize -
+		BarkPivotSuffixReserve(keyinfo);
 }
 
 /* Overflow pages a full tuple of `fulllen` bytes occupies (at least one). */
@@ -3214,14 +3345,18 @@ bark_init_overflow_page(Page page, const char *chunk, Size len,
 /*
  * Form the small fixed-size OVERSIZED entry referencing an overflow chain that
  * begins at `firstblk`.  `locator` is the heap TID (leaf) or the downlink block
- * as a TID (pivot); for a pivot pass is_leaf=false and the natts count.
+ * as a TID (pivot); for a pivot pass is_leaf=false and the natts count.  A
+ * non-zero `tag` is kept after the ref (BarkOverflowGetTagPtr): a leaf
+ * entry's version tag, or a pivot's.
  */
 IndexTuple
 bark_form_oversized_entry(ItemPointer locator, Size fulllen,
-						  BlockNumber firstblk, bool is_leaf, uint16 natts)
+						  BlockNumber firstblk, bool is_leaf, uint16 natts,
+						  IndexVersionTag tag)
 {
 	Size		bodyoff = MAXALIGN(sizeof(IndexTupleData));
-	Size		total = bodyoff + MAXALIGN(sizeof(BarkOverflowRef));
+	Size		total = bodyoff + MAXALIGN(sizeof(BarkOverflowRef)) +
+		(tag != InvalidIndexVersionTag ? MAXALIGN(sizeof(IndexVersionTag)) : 0);
 	IndexTuple	entry;
 	BarkOverflowRef *ref;
 
@@ -3247,6 +3382,13 @@ bark_form_oversized_entry(ItemPointer locator, Size fulllen,
 	ref->locator = *locator;
 	ref->natts = is_leaf ? BARK_OVERFLOW_LEAF : natts;
 	ItemPointerSetInvalid(&ref->pivottid);
+	if (tag != InvalidIndexVersionTag)
+	{
+		ItemPointerSetOffsetNumber(&entry->t_tid,
+								   (OffsetNumber) (BARK_IS_OVERFLOW |
+												   BARK_HAS_TAG));
+		memcpy(BarkOverflowGetTagPtr(entry), &tag, sizeof(tag));
+	}
 	return entry;
 }
 

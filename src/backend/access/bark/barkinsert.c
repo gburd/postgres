@@ -79,7 +79,8 @@ bark_leaf_page_entry(Relation index, Relation heaprel, IndexTuple full,
 	firstblk = bark_write_overflow_chain(index, heaprel, full, fulllen);
 	{
 		IndexTuple	entry = bark_form_oversized_entry(&full->t_tid, fulllen,
-														 firstblk, true /* leaf */ , 0);
+														 firstblk, true /* leaf */ , 0,
+														 InvalidIndexVersionTag);
 
 		bark_set_oversized_prefix(entry, index, full);
 		return entry;
@@ -97,11 +98,12 @@ bark_leaf_page_entry(Relation index, Relation heaprel, IndexTuple full,
  * LIST or POSTING entry, up to a third of the page, to the right half.
  */
 Size
-bark_leaf_free_space(Page page)
+bark_leaf_free_space(BarkKeyInfo *keyinfo, Page page)
 {
 	Size		free = PageGetFreeSpace(page);
+	Size		reserve = BarkPivotSuffixReserve(keyinfo);
 
-	return free > BarkPivotSuffixReserve ? free - BarkPivotSuffixReserve : 0;
+	return free > reserve ? free - reserve : 0;
 }
 
 /*
@@ -135,7 +137,8 @@ bark_leaf_insert_off_from(Relation index, BarkKeyInfo *keyinfo,
 		BarkItemBuf ibuf;
 		IndexTuple	mitup = BarkPageGetItem(page, mid, &ibuf);
 
-		if (bark_compare_itups_tid(keyinfo, index, key, scantid, mitup) >= 0)
+		if (bark_compare_itups_tid(keyinfo, index, key, scantid,
+								   InvalidIndexVersionTag, mitup) >= 0)
 			low = OffsetNumberNext(mid);
 		else
 			high = mid;
@@ -190,12 +193,14 @@ bark_strip_to_key(Relation index, IndexTuple src, bool *allocated)
 
 /*
  * Build a high key from the leaf entry `key`, keeping its first `keepnatts`
- * key attributes and, when `heaptid` is not NULL, that heap TID.  Non-key
- * INCLUDE attributes and the key attributes after the first keepnatts are
- * physically removed: pivots only route by key.  A heap TID is kept only
- * with every key attribute (see bark_truncate_pivot); it goes after the key
- * data, as the last ItemPointerData of the MAXALIGNed tuple, as in nbtree's
- * _bt_truncate.
+ * key attributes and, when `heaptid` is not NULL, that heap TID, and when
+ * `tag` is not 0, that version tag too.  Non-key INCLUDE attributes and the
+ * key attributes after the first keepnatts are physically removed: pivots
+ * only route by key.  A heap TID is kept only with every key attribute, and
+ * a tag only with a heap TID (see bark_truncate_pivot); the heap TID goes
+ * after the key data, as the last ItemPointerData of the MAXALIGNed tuple,
+ * as in nbtree's _bt_truncate, and the tag just before it
+ * (BarkPivotGetTag).
  *
  * When the truncated key (with its heap TID) still exceeds the item ceiling,
  * the pivot is an OVERSIZED pivot: its full key is written to a fresh
@@ -209,7 +214,7 @@ bark_strip_to_key(Relation index, IndexTuple src, bool *allocated)
  */
 static IndexTuple
 bark_make_pivot(Relation index, Relation heaprel, IndexTuple key,
-				int keepnatts, ItemPointer heaptid)
+				int keepnatts, ItemPointer heaptid, IndexVersionTag tag)
 {
 	bool		allocated;
 	IndexTuple	src = bark_strip_to_key(index, key, &allocated);
@@ -217,12 +222,14 @@ bark_make_pivot(Relation index, Relation heaprel, IndexTuple key,
 	Datum		values[INDEX_MAX_KEYS];
 	bool		isnull[INDEX_MAX_KEYS];
 	Size		fulllen;
-	Size		tidsz = heaptid ? BarkPivotSuffixReserve : 0;
+	Size		tidsz = !heaptid ? 0 :
+		BarkPivotSuffixReserveFor(tag != InvalidIndexVersionTag);
 	IndexTuple	full;
 	IndexTuple	pivot;
 
 	Assert(heaptid == NULL ||
 		   keepnatts == IndexRelationGetNumberOfKeyAttributes(index));
+	Assert(tag == InvalidIndexVersionTag || heaptid != NULL);
 
 	/*
 	 * Form the truncated key with bark_form_full_tuple (no 8191 cap) so an
@@ -254,7 +261,8 @@ bark_make_pivot(Relation index, Relation heaprel, IndexTuple key,
 		ItemPointerSetBlockNumber(&locator, BARK_P_NONE);
 		ItemPointerSetOffsetNumber(&locator, InvalidOffsetNumber);
 		pivot = bark_form_oversized_entry(&locator, fulllen, firstblk,
-										  false /* pivot */ , (uint16) keepnatts);
+										  false /* pivot */ , (uint16) keepnatts,
+										  tag);
 		bark_set_oversized_prefix(pivot, index, full);
 		if (heaptid)
 			BarkOverflowGetRef(pivot)->pivottid = *heaptid;
@@ -278,8 +286,14 @@ bark_make_pivot(Relation index, Relation heaprel, IndexTuple key,
 	{
 		ItemPointerSetOffsetNumber(&pivot->t_tid,
 								   ItemPointerGetOffsetNumberNoCheck(&pivot->t_tid) |
-								   BARK_PIVOT_HEAP_TID);
+								   BARK_PIVOT_HEAP_TID |
+								   (tag != InvalidIndexVersionTag ?
+									BARK_PIVOT_TAG : 0));
 		*BarkPivotGetHeapTID(pivot) = *heaptid;
+		if (tag != InvalidIndexVersionTag)
+			memcpy((char *) BarkPivotGetHeapTID(pivot) - sizeof(tag), &tag,
+				   sizeof(tag));
+		Assert(BarkPivotGetTag(pivot) == tag);
 	}
 	return pivot;
 }
@@ -293,9 +307,11 @@ bark_make_pivot(Relation index, Relation heaprel, IndexTuple key,
  * no later than firstright.  Two items equal on every key attribute keep them
  * all and firstright's lowest heap TID, which lies above every heap TID of
  * lastleft, since a run of equal keys is in heap TID order: an insert of the
- * key with a heap TID below it goes left, any other right.  The README
- * section "Suffix truncation" explains why the result separates the two
- * pages.
+ * key with a heap TID below it goes left, any other right.  Two items equal
+ * on every key attribute and on heap TID (entries of one row with different
+ * version tags, which are SINGLE or OVERSIZED) keep firstright's tag too,
+ * which is above lastleft's.  The README section "Suffix truncation"
+ * explains why the result separates the two pages.
  *
  * CREATE INDEX forms its leaf high keys here too (barksort.c).  Its items are
  * never OVERSIZED, and the inline limit for a leaf entry leaves room for the
@@ -311,22 +327,25 @@ bark_truncate_pivot(Relation index, BarkKeyInfo *keyinfo, IndexTuple lastleft,
 	int			keepnatts = bark_keep_natts(index, keyinfo, lastleft, firstright);
 	ItemPointerData lo;
 	ItemPointerData hi;
+	ItemPointerData llo;
+	ItemPointerData lhi;
+	IndexVersionTag tag = InvalidIndexVersionTag;
 
 	if (keepnatts <= nkeyatts)
 		return bark_make_pivot(index, keyinfo->heaprel, firstright, keepnatts,
-							   NULL);
+							   NULL, InvalidIndexVersionTag);
 
 	bark_entry_tid_range(firstright, &lo, &hi, keyinfo->tidstride);
-#ifdef USE_ASSERT_CHECKING
+	bark_entry_tid_range(lastleft, &llo, &lhi, keyinfo->tidstride);
+	if (ItemPointerEquals(&lhi, &lo))
 	{
-		ItemPointerData llo;
-		ItemPointerData lhi;
-
-		bark_entry_tid_range(lastleft, &llo, &lhi, keyinfo->tidstride);
-		Assert(ItemPointerCompare(&lhi, &lo) < 0);
+		tag = BarkEntryGetTag(firstright);
+		Assert(bark_compare_tag(BarkEntryGetTag(lastleft), tag) < 0);
 	}
-#endif
-	return bark_make_pivot(index, keyinfo->heaprel, firstright, nkeyatts, &lo);
+	else
+		Assert(ItemPointerCompare(&lhi, &lo) < 0);
+	return bark_make_pivot(index, keyinfo->heaprel, firstright, nkeyatts, &lo,
+						   tag);
 }
 
 /*
@@ -2122,7 +2141,7 @@ bark_coalesce_list(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 			 ItemPointerGetOffsetNumber(newtid), eqoff,
 			 BufferGetBlockNumber(buf), RelationGetRelationName(index));
 
-	room = bark_leaf_free_space(page) + MAXALIGN(ItemIdGetLength(iid));
+	room = bark_leaf_free_space(keyinfo, page) + MAXALIGN(ItemIdGetLength(iid));
 
 	/*
 	 * Fast path: add the one new locator to the existing LIST or POSTING
@@ -2296,7 +2315,8 @@ bark_belongs_on_leaf(Relation index, BarkKeyInfo *keyinfo, IndexTuple itup,
 	if (BarkPageRightmost(BarkPageGetOpaque(page)))
 		return true;
 	hikey = (IndexTuple) PageGetItem(page, PageGetItemId(page, BARK_P_HIKEY));
-	return bark_compare_itups_tid(keyinfo, index, itup, scantid, hikey) <
+	return bark_compare_itups_tid(keyinfo, index, itup, scantid,
+								  InvalidIndexVersionTag, hikey) <
 		(scantid != NULL ? 0 : 1);
 }
 
@@ -2375,14 +2395,15 @@ bark_fastpath_leaf(Relation index, BarkKeyInfo *keyinfo, IndexTuple itup,
 			if (BarkPageIsLeaf(opaque) && !BarkPageIgnore(opaque) &&
 				(opaque->bark_flags & BARK_INCOMPLETE_SPLIT) == 0 &&
 				BarkPageRightmost(opaque) &&
-				bark_leaf_free_space(page) >= bark_coded_size(page, itup) &&
+				bark_leaf_free_space(keyinfo, page) >= bark_coded_size(page, itup) &&
 				PageGetMaxOffsetNumber(page) >= firstdata)
 			{
 				BarkItemBuf ibuf;
 
 				if (bark_compare_itups_tid(keyinfo, index, itup, scantid,
+										   InvalidIndexVersionTag,
 										   BarkPageGetItem(page, firstdata,
-													   &ibuf)) > 0)
+														   &ibuf)) > 0)
 					return buf;
 			}
 		}
@@ -2477,7 +2498,7 @@ bark_insert_key(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 {
 	Page		page = BufferGetPage(buf);
 	OffsetNumber off = *offp;
-	bool		oversized = bark_len_is_oversized(fulllen);
+	bool		oversized = bark_len_is_oversized(keyinfo, fulllen);
 	IndexTuple	replace = NULL;
 	IndexTuple	newitem = NULL;
 	BarkPlaceResult result = BARK_PLACE_ONPAGE;
@@ -2583,7 +2604,7 @@ bark_insert_key(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 												 oversized, fulllen);
 
 		/* The page footprint: the entry coded for the page, if it codes. */
-		if (bark_leaf_free_space(page) >= bark_coded_size(page, entry))
+		if (bark_leaf_free_space(keyinfo, page) >= bark_coded_size(page, entry))
 			bark_insert_entry(index, buf, entry, off, InvalidBuffer);
 		else if (fastpath)
 		{
@@ -2707,7 +2728,7 @@ bark_plan_multi(Relation index, BarkKeyInfo *keyinfo, bool coalesce,
 {
 	Page		page = BufferGetPage(buf);
 	OffsetNumber firstdata = BarkPageFirstDataKey(BarkPageGetOpaque(page));
-	Size		room = bark_leaf_free_space(page);
+	Size		room = bark_leaf_free_space(keyinfo, page);
 	Size		used = 0;
 	int			n;
 
@@ -2716,12 +2737,13 @@ bark_plan_multi(Relation index, BarkKeyInfo *keyinfo, bool coalesce,
 		IndexTuple	itup = itups[n];
 		Size		itemsz;
 
-		if (bark_len_is_oversized(fulllens[n]))
+		if (bark_len_is_oversized(keyinfo, fulllens[n]))
 			break;
 		if (n > 0)
 		{
 			/* The offsets and the coalesce test rely on this; see above. */
 			Assert(bark_compare_itups_tid(keyinfo, index, itup, &itup->t_tid,
+										  InvalidIndexVersionTag,
 										  itups[n - 1]) > 0);
 			if (checkkeys != NULL && checkkeys[n])
 				break;
@@ -2877,14 +2899,14 @@ retry:
 
 	buf = InvalidBuffer;
 	stack = NULL;
-	if (i == 0 && !markers && !bark_len_is_oversized(fulllens[i]))
+	if (i == 0 && !markers && !bark_len_is_oversized(keyinfo, fulllens[i]))
 		buf = bark_fastpath_leaf(index, keyinfo, itup,
 								 checking ? NULL : &itup->t_tid);
 	fastpath = BufferIsValid(buf);
 	if (!fastpath)
 		buf = bark_search(index, keyinfo, itup,
-						  checking ? NULL : &itup->t_tid, true,
-						  !checking, &stack);
+						  checking ? NULL : &itup->t_tid,
+						  InvalidIndexVersionTag, true, !checking, &stack);
 
 	if (buf == InvalidBuffer)
 	{
@@ -3123,7 +3145,8 @@ bark_insert_markers(Relation index, BarkInsertState *state, BarkRowKeys *rk,
 	{
 		if (bark_marker_cached(index, state->keyinfo, rk->markers[i]))
 			continue;
-		itups[n] = bark_form_marker(index, rk->markers[i], &fulllens[n]);
+		itups[n] = bark_form_marker(index, state->keyinfo, rk->markers[i],
+									 &fulllens[n]);
 		n++;
 	}
 	if (n == 0)
@@ -3164,9 +3187,9 @@ bark_index_has_marker(Relation index, Datum key)
 		found = true;
 	else
 	{
-		marker = bark_form_marker(index, key, &fulllen);
-		buf = bark_search(index, keyinfo, marker, &marker->t_tid, false, true,
-						  NULL);
+		marker = bark_form_marker(index, keyinfo, key, &fulllen);
+		buf = bark_search(index, keyinfo, marker, &marker->t_tid,
+						  InvalidIndexVersionTag, false, true, NULL);
 		if (BufferIsValid(buf))
 		{
 			Page		page = BufferGetPage(buf);
@@ -3258,7 +3281,7 @@ bark_insert_row_keys(Relation index, BarkInsertState *state, Datum *values,
 		knulls[attno - 1] = rk.nulls[i];
 		itups[n] = bark_form_full_tuple(tupdesc, kvalues, knulls,
 										&fulllens[n]);
-		if (oversizedonly && !bark_len_is_oversized(fulllens[n]))
+		if (oversizedonly && !bark_len_is_oversized(state->keyinfo, fulllens[n]))
 			continue;
 		itups[n]->t_tid = *ht_ctid;
 		if (checkkeys != NULL)
@@ -3416,12 +3439,13 @@ bark_entries_same(Relation index, BarkInsertState *state, int attnum,
 	for (int i = 0; i < rk[1].nmarkers; i++)
 	{
 		Size		len;
-		IndexTuple	newm = bark_form_marker(index, rk[1].markers[i], &len);
+		IndexTuple	newm = bark_form_marker(index, state->keyinfo,
+										   rk[1].markers[i], &len);
 		bool		found = false;
 
 		for (int j = 0; !found && j < rk[0].nmarkers; j++)
 			found = bark_compare_itups(state->keyinfo, index, newm,
-									   bark_form_marker(index,
+									   bark_form_marker(index, state->keyinfo,
 														rk[0].markers[j],
 														&len)) == 0;
 		if (!found)

@@ -421,11 +421,14 @@ bark_compare_itups_tid.
 A pivot between two entries equal on every key attribute keeps the right
 entry's lowest TID after its key data, as the last ItemPointerData of the
 MAXALIGNed tuple, with BARK_PIVOT_HEAP_TID set in its status nibble (the bit
-BARK_IS_DELETE_MARKED has on a leaf entry, which a pivot never has); an
+BARK_HAS_TAG has on a leaf entry, which a plain pivot never has); an
 OVERSIZED pivot keeps it in BarkOverflowRef.pivottid.  A pivot without one
 is minus infinity on the TID.  To leave room for it, a leaf entry is stored
-inline only up to BarkMaxItemSize less 8 bytes, as nbtree's BTMaxItemSize
-does, and a split sizes a leaf's new high key with it.
+inline only up to BarkMaxItemSize less the pivot suffix reserve
+(BarkPivotSuffixReserve: 8 bytes, or 16 in an index built for version tags),
+as nbtree's BTMaxItemSize does, and a split sizes a leaf's new high key with
+it.  Entries equal on (key, TID), which only version tags make possible, are
+ordered by tag; see "Version tags".
 
 An insert descends with (key, TID), moving right past a high key whose
 (key, TID) is <= its own (an equal TID belongs right, since the high key's
@@ -474,6 +477,10 @@ for want of 8 bytes, leaving that much free on the left for good.
 Indexes built before heap TID order (version 1) are refused with a hint to
 REINDEX them: the meta page's version is checked in bark_get_root, which
 every descent reaches on a root-cache miss, and by bark_index_check.
+Version 3 adds version tags (see "Version tags"); a version 2 index has
+none, its pages are laid out as version 3 lays out an index on a heap
+table, and it is read and written as it is.  Only a build (CREATE INDEX,
+REINDEX, any rewrite) writes version 3.
 
 Block 0 is always the meta page (BarkMetaPageData): a magic number
 (BARK_MAGIC), the on-disk version (BARK_VERSION), the current root block and
@@ -1093,8 +1100,7 @@ never passed.  In a unique index those rows are sorted apart, and bark_load
 merges them into the live rows' order without checking them, as nbtsort.c's
 _bt_load merges spool2; the oversized pass inserts them with
 UNIQUE_CHECK_NO.  The fact is transient: it lives only in the build's sorts
-and is never recorded on a page (no entry bit, and in particular not
-BARK_IS_DELETE_MARKED, which belongs to the delete-marking protocol).  Each
+and is never recorded on a page (no entry bit).  Each
 entry is the same entry insert would have made for the row.  The build's
 index_tuples count includes them, as nbtree's does; the table AM's
 reltuples does not.
@@ -2072,16 +2078,74 @@ INSERT_SWAP redo) already takes the key from the stored entry.  The meta
 page's bark_allequalimage keeps its meaning (the plain test), so it reads
 false for such an index although its keys coalesce.
 
-Delete marking (the C-DELETE contract)
---------------------------------------
+Version tags
+------------
 
-BARK_IS_DELETE_MARKED (0x4000 in the status region) is reserved for marking
-a leaf entry of any shape as logically deleted but kept, so that an UNDO
-rollback can restore it, rather than removing it and leaving it for VACUUM
-(the C-DELETE contract in BARK-Design.mediawiki).  Nothing sets or tests it
-yet: there is no delete-marking interface in the tree, and nbtree has no
-such bit either; the bit is kept free for it.  On a pivot the same bit is
-BARK_PIVOT_HEAP_TID, so it can only ever mark a leaf entry.
+A table AM whose locator is versioned (see "Versioned locators" in
+access/amlocator.h) hands each index entry a 4-byte version tag, and an
+entry names a row version as (key, TID, tag); 0 means untagged.  BARK
+stores, orders and returns tags, and never interprets them.
+
+Which indexes.  The meta page's BARK_META_VERSIONED says the table's
+locator was versioned when the index was built; CREATE INDEX and every
+rebuild (REINDEX, the rewrite of ALTER TABLE ... SET ACCESS METHOD) set it
+from the table's LocatorDesc, and nothing else changes it.  Only such an
+index holds tags.  Its pivot suffix reserve (BarkPivotSuffixReserve) is 16
+bytes, room for a pivot's heap TID and tag (6 + 4, MAXALIGNed); every other
+index keeps the 8-byte reserve, so an index of a heap table is laid out
+byte for byte as before tags existed.  The design text had the reserve grow
+to 16 for every index; per index keeps heap's indexes unchanged, which a
+page-dump comparison of every block of the R3.1 workload confirms (only the
+meta pages differ, in their version word).
+
+Shapes.  t = 0 is never stored: every untagged entry is byte-identical to
+the entry of the same shape without tags.  A tagged entry is a SINGLE or an
+OVERSIZED entry, never a LIST or POSTING: tagged entries never coalesce.
+
+  tagged SINGLE    the alt-TID bit with BARK_HAS_TAG (0x4000) as the only
+                   status bit and zero low offset bits; the t_tid block field
+                   holds the trailer offset, the MAXALIGNed end of the key (as
+                   a LIST's holds its body offset), and the trailer
+                   (BarkTagTrailer) is the heap TID then the tag:
+                   MAXALIGN(key) + 16 bytes.  Prefix coding codes its key as
+                   a LIST's, with the trailer kept as a body.
+  tagged OVERSIZED BARK_HAS_TAG with BARK_IS_OVERFLOW, and the tag after the
+                   BarkOverflowRef in a MAXALIGNed 8-byte trailer.  The ref
+                   itself has no free bytes (56 bytes with 3 of padding at its
+                   end), and a trailer leaves untagged OVERSIZED entries the
+                   size they were; the design text had the tag inside the ref.
+  tagged pivot     a plain pivot with a heap TID sets BARK_PIVOT_TAG (0x0800,
+                   above every attribute count in the low offset bits; the
+                   status nibble has no free bit for a pivot) and keeps the
+                   tag in the 4 bytes before its heap TID.  An OVERSIZED pivot
+                   keeps it as a tagged OVERSIZED leaf entry does.
+
+Every reader of a SINGLE's or OVERSIZED entry's heap TID goes through
+BarkEntryGetHeapTid, and of a tag through BarkEntryGetTag, which is 0 for
+every untagged shape.
+
+Order.  Entries are ordered by (key, TID, tag), the tag compared as a raw
+uint32 (bark_compare_tag): a total order that never changes, untagged
+first; only the table AM reads tags modularly, if it likes.  A LIST or
+POSTING entry's members are untagged.  bark_compare_itups_tid compares a
+(key, TID, tag) with an entry or a pivot.
+
+Pivots.  Suffix truncation keeps a tag only where it separates: when
+lastleft and firstright are equal on every key attribute and on heap TID
+(two entries of one row), the high key keeps firstright's TID and tag;
+otherwise a pivot has no tag, which is minus infinity on it.  A pivot with
+a tag has every key attribute and a heap TID.
+
+Version 2.  An index without BARK_META_VERSIONED, every version 2 index
+among them, never holds a tag.
+
+The page validator and amcheck check the shapes (BARK_HAS_TAG only on a
+SINGLE or OVERSIZED entry, the trailer at the MAXALIGNed end of the key and
+ending the entry, a tag never 0, no tag in an index not built for tags), the
+pivot rule (a tagged pivot has every key attribute and a heap TID), the
+(key, TID, tag) order on a page and against the high key and across
+downlinks, and that a version 2 meta page does not claim
+BARK_META_VERSIONED.  pageinspect's bark_page_items shows a tag column.
 
 Invariants
 ----------
@@ -2101,9 +2165,11 @@ Invariants
     one key have disjoint TID ranges in ascending order, across pages too.
   * The alt-TID status bits are mutually exclusive in what they encode: an
     entry is exactly one of SINGLE, LIST, POSTING, OVERSIZED, or PIVOT;
-    BARK_IS_DELETE_MARKED is an independent flag that may accompany a leaf
-    shape but never a PIVOT, where the same bit is BARK_PIVOT_HEAP_TID
-    (nothing sets it yet; see "Delete marking").
+    BARK_HAS_TAG alone is a tagged SINGLE, with BARK_IS_OVERFLOW a tagged
+    OVERSIZED entry, and on a PIVOT the same bit is BARK_PIVOT_HEAP_TID
+    (see "Version tags").
+  * Leaf entries are in (key, TID, tag) order; only a SINGLE or OVERSIZED
+    entry of an index with BARK_META_VERSIONED has a tag, never 0.
   * An OVERSIZED entry's full tuple lives on a chain of BARK_OVERFLOW pages
     (bark_flags has BARK_OVERFLOW, not BARK_LEAF): each page holds up to
     BarkOverflowChunkSize raw bytes of the tuple and links to the next chunk
