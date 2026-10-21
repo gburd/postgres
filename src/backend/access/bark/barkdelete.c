@@ -560,7 +560,7 @@ bark_delete_pass(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 	pfree(firstid);
 	pfree(nids);
 
-	return bark_leaf_free_space(page) >= newitemsz;
+	return bark_leaf_free_space(keyinfo, page) >= newitemsz;
 }
 
 /*
@@ -680,7 +680,7 @@ bark_merge_page(Relation index, BarkKeyInfo *keyinfo, Buffer buf,
 	Assert(BarkPageIsLeaf(opaque));
 
 	/* The bytes bark_leaf_free_space must gain to hold the new entry */
-	need = (int) newitemsz + (int) BarkPivotSuffixReserve -
+	need = (int) newitemsz + (int) BarkPivotSuffixReserve(keyinfo) -
 		(int) PageGetFreeSpace(page);
 	tids = palloc_array(ItemPointerData, tidsalloc);
 
@@ -784,5 +784,5 @@ bark_merge_page(Relation index, BarkKeyInfo *keyinfo, Buffer buf,
 		pfree(updated[i]);
 	pfree(tids);
 
-	return bark_leaf_free_space(page) >= newitemsz;
+	return bark_leaf_free_space(keyinfo, page) >= newitemsz;
 }

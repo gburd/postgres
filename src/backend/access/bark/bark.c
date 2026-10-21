@@ -73,7 +73,8 @@ bark_find_parent_downlink(Relation index, BarkKeyInfo *keyinfo,
 	 * on the recorded stack (or just right of it).
 	 */
 	{
-		Buffer		lbuf = bark_search(index, keyinfo, childhikey, NULL, false, false,
+		Buffer		lbuf = bark_search(index, keyinfo, childhikey, NULL,
+									   InvalidIndexVersionTag, false, false,
 									   &stack);
 
 		if (lbuf != InvalidBuffer)
@@ -664,7 +665,7 @@ bark_vacuum_page(BarkVacState *vstate, Buffer buf)
 				continue;
 			if (BarkEntryGetShape(itup) == BARK_SHAPE_SINGLE)
 			{
-				if (callback(&itup->t_tid, callback_state))
+				if (callback(BarkEntryGetHeapTid(itup), callback_state))
 				{
 					todelete[ndelete++] = off;
 					ndelete_single++;

@@ -41,7 +41,7 @@ PG_FUNCTION_INFO_V1(bark_page_items);
 PG_FUNCTION_INFO_V1(bark_page_items_bytea);
 
 #define BARK_PAGE_STATS_COLS	12
-#define BARK_PAGE_ITEMS_COLS	10
+#define BARK_PAGE_ITEMS_COLS	11
 
 /*
  * Does the meta page hold `field`?  pd_lower marks the end of the
@@ -465,12 +465,21 @@ bark_check_entry_bounds(IndexTuple itup, BarkEntryShape shape, OffsetNumber off)
 			break;
 		case BARK_SHAPE_OVERSIZED:
 			ok = ok && MAXALIGN(dataoff) + sizeof(BarkOverflowRef) <= size;
+			ok = ok && (!BarkEntryHasTag(itup) ||
+						MAXALIGN(dataoff) + MAXALIGN(sizeof(BarkOverflowRef)) +
+						sizeof(IndexVersionTag) <= size);
 			break;
 		case BARK_SHAPE_PIVOT:
 			ok = ok && (BarkPivotGetHeapTID(itup) == NULL ||
 						dataoff + MAXALIGN(sizeof(ItemPointerData)) <= size);
+			ok = ok && (BarkPivotGetTag(itup) == InvalidIndexVersionTag ||
+						dataoff + BarkPivotSuffixReserveFor(true) <= size);
 			break;
 		case BARK_SHAPE_SINGLE:
+			ok = ok && (!BarkEntryIsAltTID(itup) ||
+						(BarkEntryGetBodyOffset(itup) >= dataoff &&
+						 BarkEntryGetBodyOffset(itup) +
+						 sizeof(BarkTagTrailer) <= size));
 			break;
 	}
 	if (!ok)
@@ -598,8 +607,8 @@ bark_page_items_internal(FunctionCallInfo fcinfo, Page page, uint16 stride)
 		{
 			case BARK_SHAPE_SINGLE:
 				ntids = 1;
-				htid = &itup->t_tid;
-				dlen = IndexTupleSize(itup) - dataoff;
+				htid = BarkEntryGetHeapTid(itup);
+				dlen = BarkSingleKeySize(itup) - dataoff;
 				break;
 			case BARK_SHAPE_LIST:
 			case BARK_SHAPE_POSTING:
@@ -622,7 +631,8 @@ bark_page_items_internal(FunctionCallInfo fcinfo, Page page, uint16 stride)
 				htid = BarkPivotGetHeapTID(itup);
 				dlen = IndexTupleSize(itup) - dataoff;
 				if (htid)
-					dlen -= MAXALIGN(sizeof(ItemPointerData));
+					dlen -= BarkPivotSuffixReserveFor(BarkPivotGetTag(itup) !=
+													  InvalidIndexVersionTag);
 				break;
 		}
 
@@ -671,6 +681,18 @@ bark_page_items_internal(FunctionCallInfo fcinfo, Page page, uint16 stride)
 		else
 			nulls[j] = true;
 		j++;
+
+		/* tag: a leaf entry's or a pivot's version tag, NULL for none */
+		{
+			IndexVersionTag tag = shape == BARK_SHAPE_PIVOT ?
+				BarkPivotGetTag(itup) : BarkEntryGetTag(itup);
+
+			if (tag != InvalidIndexVersionTag)
+				values[j] = Int64GetDatum((int64) tag);
+			else
+				nulls[j] = true;
+			j++;
+		}
 
 		/* data */
 		if (dlen >= 0)
