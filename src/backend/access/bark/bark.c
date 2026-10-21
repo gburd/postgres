@@ -39,6 +39,7 @@
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
 #include "storage/procarray.h"
+#include "storage/read_stream.h"
 #include "utils/fmgrprotos.h"
 #include "utils/injection_point.h"
 #include "utils/lsyscache.h"
@@ -552,9 +553,13 @@ typedef struct BarkVacState
  * page but not yet returned, and the heap cannot reuse that TID's line pointer
  * under the scan.  The page is first examined under a share lock, since
  * pages that are not live leaves need no cleanup lock.
+ *
+ * `buf` is block scanblkno, pinned by bark_vacuum_scan's read stream, as
+ * btvacuumpage gets its buffer since nbtree's c5c239e26e3; the pages a
+ * backtrack reaches are off the stream's order and are read here.
  */
 static void
-bark_vacuum_page(BarkVacState *vstate, BlockNumber scanblkno)
+bark_vacuum_page(BarkVacState *vstate, Buffer buf)
 {
 	IndexVacuumInfo *info = vstate->info;
 	IndexBulkDeleteResult *stats = vstate->stats;
@@ -562,11 +567,11 @@ bark_vacuum_page(BarkVacState *vstate, BlockNumber scanblkno)
 	void	   *callback_state = vstate->callback_state;
 	BarkCycleId	cycleid = vstate->cycleid;
 	Relation	index = info->index;
+	BlockNumber scanblkno = BufferGetBlockNumber(buf);
 	BlockNumber blkno = scanblkno;
 
 	for (;;)
 	{
-		Buffer		buf;
 		Page		page;
 		BarkPageOpaque opaque;
 		OffsetNumber maxoff;
@@ -582,8 +587,9 @@ bark_vacuum_page(BarkVacState *vstate, BlockNumber scanblkno)
 		bool		clearcycleid;
 		BlockNumber backtrack_to = BARK_P_NONE;
 
-		buf = ReadBufferExtended(index, MAIN_FORKNUM, blkno, RBM_NORMAL,
-								 info->strategy);
+		if (blkno != scanblkno)
+			buf = ReadBufferExtended(index, MAIN_FORKNUM, blkno, RBM_NORMAL,
+									 info->strategy);
 		LockBuffer(buf, BUFFER_LOCK_SHARE);
 		page = BufferGetPage(buf);
 
@@ -913,8 +919,9 @@ bark_vacuum_scan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	Relation	index = info->index;
 	BarkVacState vstate;
 	bool		needLock = !RELATION_IS_LOCAL(index);
-	BlockNumber blkno = BARK_METAPAGE + 1;
 	BlockNumber npages;
+	BlockRangeReadStreamPrivate p;
+	ReadStream *stream;
 	BarkKeyInfo *keyinfo;
 	BarkPendingFSM *pending;
 	int			npending = 0;
@@ -955,7 +962,24 @@ bark_vacuum_scan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 		 * not counted yet or already locked by the backend adding it (which
 		 * extends with EB_LOCK_FIRST), so we never see it uninitialized and
 		 * unlocked.  This is btvacuumscan's loop.
+		 *
+		 * The blocks come from a read stream over [first data block,
+		 * npages), re-armed for the blocks added since each pass, as
+		 * btvacuumscan does since nbtree's c5c239e26e3 (also suggested by
+		 * the RethinkDB review, whose parallel traversal prefetches each
+		 * level).  block_range_read_stream_cb takes no locks, so batch mode
+		 * is safe.
 		 */
+		p.current_blocknum = BARK_METAPAGE + 1;
+		stream = read_stream_begin_relation(READ_STREAM_MAINTENANCE |
+											READ_STREAM_FULL |
+											READ_STREAM_USE_BATCHING,
+											info->strategy,
+											index,
+											MAIN_FORKNUM,
+											block_range_read_stream_cb,
+											&p,
+											0);
 		for (;;)
 		{
 			if (needLock)
@@ -964,15 +988,30 @@ bark_vacuum_scan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 			if (needLock)
 				UnlockRelationForExtension(index, ExclusiveLock);
 
-			if (blkno >= npages)
+			if (p.current_blocknum >= npages)
 				break;
+			p.last_exclusive = npages;
 
-			for (; blkno < npages; blkno++)
+			for (;;)
 			{
+				Buffer		buf;
+
+				/* Not while holding a buffer lock */
 				vacuum_delay_point(false);
-				bark_vacuum_page(&vstate, blkno);
+
+				buf = read_stream_next_buffer(stream, NULL);
+				if (!BufferIsValid(buf))
+					break;
+				bark_vacuum_page(&vstate, buf);
 			}
+
+			/*
+			 * After returning InvalidBuffer the stream calls the callback
+			 * again only once it is reset.
+			 */
+			read_stream_reset(stream);
 		}
+		read_stream_end(stream);
 	}
 	PG_END_ENSURE_ERROR_CLEANUP(bark_end_vacuum_callback, (Datum) 0);
 	if (callback != NULL)
