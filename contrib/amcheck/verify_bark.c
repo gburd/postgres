@@ -1374,9 +1374,10 @@ bark_fingerprint_leaves(Relation rel, BarkCheckState *state)
 				 * verify_nbtree.c: its rows are dead to every snapshot, so
 				 * the heap scan's snapshot sees none of them, and a row it
 				 * does see whose only entry is marked was marked wrongly.
-				 * Not so for a transaction that started in recovery, as a
-				 * scan's ignore_killed_tuples is not: a standby gets the
-				 * primary's marks in page images, set by the primary's
+				 *
+				 * In a transaction that started in recovery the marks count
+				 * for nothing, as for a scan's ignore_killed_tuples: a
+				 * standby gets them in page images, set by the primary's
 				 * horizon, which its own snapshots are not part of.
 				 */
 				if (!state->inrecovery &&

@@ -437,7 +437,7 @@ bark_delitems_vacuum(Relation index, Buffer buf,
 	for (int i = 0; i < nupdated; i++)
 	{
 		if (!BarkPageOverwriteEntry(page, updatedoffsets[i], updated[i],
-									 IndexTupleSize(updated[i])))
+									IndexTupleSize(updated[i])))
 			elog(PANIC, "failed to rewrite BARK leaf entry at offset %u of block %u of index \"%s\"",
 				 updatedoffsets[i], BufferGetBlockNumber(buf),
 				 RelationGetRelationName(index));
