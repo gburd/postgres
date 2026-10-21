@@ -76,8 +76,11 @@ SELECT count(*) FROM (SELECT a FROM lpd WHERE a BETWEEN 50 AND 350
   ORDER BY a DESC) x;
 SELECT array_agg(a ORDER BY a DESC) FROM (SELECT a FROM lpd
   WHERE a BETWEEN 95 AND 305 ORDER BY a DESC) x;
--- A KNN scan skips them as well; it marks none itself.
+-- A KNN scan skips them as well; it marks none itself.  Its cursor walks
+-- from 200 out over every marked entry, in both directions.
 SELECT array_agg(a) FROM (SELECT a FROM lpd ORDER BY a <~> 200 LIMIT 4) x;
+SELECT array_agg(a) FROM (SELECT a FROM lpd WHERE a BETWEEN 1 AND 400
+  ORDER BY a <~> 200 LIMIT 2) x;
 RESET enable_seqscan;
 RESET enable_bitmapscan;
 -- amcheck accepts the marks, and heapallindexed does not look for the dead
@@ -143,6 +146,49 @@ SELECT * FROM lpd_count('SELECT * FROM lpdl WHERE k = 5');
 SELECT bark_index_check('lpdl_k', true);
 DROP TABLE lpdl;
 
+-- A TID inside a marked LIST's range: the insert deletes the marked entries
+-- first (simple deletion) rather than add the TID to the dead LIST and make
+-- it live again.  Key 2's rows are on heap pages 0 and 2; once they are
+-- deleted, a new key 2 row goes on a page the scan pruned, below the LIST's
+-- last TID.
+CREATE TEMP TABLE lpdi (k int, pad text);
+INSERT INTO lpdi SELECT 2, repeat('x', 1000) FROM generate_series(1, 7);
+INSERT INTO lpdi SELECT 9, repeat('x', 1000) FROM generate_series(1, 7);
+INSERT INTO lpdi SELECT 2, repeat('x', 1000) FROM generate_series(1, 7);
+CREATE INDEX lpdi_k ON lpdi USING bark (k);
+DELETE FROM lpdi WHERE k = 9;
+VACUUM lpdi;
+DELETE FROM lpdi WHERE k = 2;
+SELECT * FROM lpd_count('SELECT * FROM lpdi WHERE k = 2');
+SELECT * FROM lpd_dead('lpdi_k', 1);
+SELECT tids[1] AS lo, tids[ntids] AS hi FROM bark_page_items('lpdi_k', 1) \gset
+INSERT INTO lpdi VALUES (2, 'new');
+SELECT ctid > :'lo'::tid AND ctid < :'hi'::tid AS inside_dead_list FROM lpdi;
+SELECT itemoffset, shape, ntids FROM bark_page_items('lpdi_k', 1);
+SELECT * FROM lpd_count('SELECT * FROM lpdi WHERE k = 2');
+SELECT bark_index_check('lpdi_k', true);
+DROP TABLE lpdi;
+
+-- A kill whose entry moved right on the page before the scan left it: an
+-- index-only scan keeps its pin, so the page may change under it; the
+-- cursor reads the leaf, kills the dead rows, and an insert of a lower key
+-- moves their entries one offset right before the scan marks them.
+CREATE TEMP TABLE lpdr (a int);
+CREATE UNIQUE INDEX lpdr_a ON lpdr USING bark (a);
+INSERT INTO lpdr SELECT g * 10 FROM generate_series(1, 50) g;
+DELETE FROM lpdr WHERE a BETWEEN 100 AND 200;
+BEGIN;
+SET LOCAL enable_seqscan = off;
+SET LOCAL enable_bitmapscan = off;
+DECLARE c CURSOR FOR SELECT a FROM lpdr WHERE a > 0;
+FETCH 12 FROM c;
+INSERT INTO lpdr VALUES (5);
+FETCH ALL FROM c \g /dev/null
+COMMIT;
+SELECT * FROM lpd_dead('lpdr_a', 1);
+SELECT bark_index_check('lpdr_a', true);
+DROP TABLE lpdr;
+
 -- Coded LIST and POSTING entries: the same rule.  Keys 1 to 3 have ten
 -- rows each, consecutive on one heap page, so each is a coded LIST; key 4's
 -- 2000 rows are POSTING entries.
@@ -181,6 +227,12 @@ SELECT * FROM lpd_count('SELECT * FROM lpdo WHERE k > ''''');
 SELECT shape, count(*) FROM lpd_dead('lpdo_k', 1) GROUP BY shape;
 SELECT * FROM lpd_count('SELECT * FROM lpdo WHERE k > ''''');
 SELECT bark_index_check('lpdo_k', true);
+-- An insert that would split the leaf finds only marked OVERSIZED entries,
+-- which simple deletion does not offer, so it splits.
+SELECT pg_relation_size('lpdo_k') / 8192 AS pages_before;
+INSERT INTO lpdo SELECT g, 'small' || g FROM generate_series(1, 300) g;
+SELECT pg_relation_size('lpdo_k') / 8192 > 2 AS split;
+SELECT * FROM lpd_count('SELECT * FROM lpdo WHERE k > ''''');
 VACUUM lpdo;
 SELECT * FROM lpd_page('lpdo_k', 1);
 SELECT bark_index_check('lpdo_k', true);
@@ -200,6 +252,13 @@ DELETE FROM lpdm WHERE id <= 20;
 SELECT * FROM lpd_count('SELECT * FROM lpdm WHERE a && ARRAY[5, 1005, 30]');
 SELECT lpd_ndead('lpdm_a');
 SELECT * FROM lpd_count('SELECT * FROM lpdm WHERE a && ARRAY[5, 1005, 30]');
+-- Simple deletion offers each TID of the leaf once, though a row has two
+-- entries there, known deletable if either is marked.
+SELECT * FROM lpd_count('SELECT * FROM lpdm WHERE a && ARRAY[1, 2, 3, 4, 6]');
+SELECT lpd_ndead('lpdm_a');
+INSERT INTO lpdm SELECT g, ARRAY[g, g + 1000] FROM generate_series(201, 600) g;
+SELECT lpd_ndead('lpdm_a');
+SELECT * FROM lpd_count('SELECT * FROM lpdm WHERE a && ARRAY[1, 1001, 300]');
 DROP TABLE lpdm;
 
 -- A BARK-implemented btree index marks its entries the same way, from a
