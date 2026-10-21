@@ -221,6 +221,8 @@ bark_delitems_delete(Relation index, Buffer buf, bool merge,
 
 	END_CRIT_SECTION();
 
+	bark_verify_page_change(index, buf);
+
 	if (updatedbuf != NULL)
 		pfree(updatedbuf);
 }

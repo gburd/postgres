@@ -526,6 +526,10 @@ bark_insert_entry(Relation index, Buffer buf, IndexTuple itup,
 
 	END_CRIT_SECTION();
 
+	bark_verify_page_change(index, buf);
+	if (BufferIsValid(cbuf))
+		bark_verify_page_change(index, cbuf);
+
 	if (coded != itup)
 		pfree(coded);
 }
@@ -607,6 +611,8 @@ bark_insert_multi(Relation index, Buffer buf, IndexTuple *itups, int n,
 
 	END_CRIT_SECTION();
 
+	bark_verify_page_change(index, buf);
+
 	pfree(data);
 }
 
@@ -655,6 +661,8 @@ bark_overwrite_entry(Relation index, Buffer buf, OffsetNumber off,
 	PageSetLSN(page, recptr);
 
 	END_CRIT_SECTION();
+
+	bark_verify_page_change(index, buf);
 
 	if (coded != itup)
 		pfree(coded);
@@ -707,6 +715,12 @@ bark_add_tid_entry(Relation index, Buffer buf, OffsetNumber off,
 	PageSetLSN(page, recptr);
 
 	END_CRIT_SECTION();
+
+	/* The page validator's tests corrupt the entry here (barkverify.c). */
+#ifdef USE_INJECTION_POINTS
+	bark_verify_plant_fault(page, off);
+#endif
+	bark_verify_page_change(index, buf);
 
 	if (coded != ext)
 		pfree(coded);
@@ -786,6 +800,8 @@ bark_swap_tid_entry(Relation index, Buffer buf, OffsetNumber off,
 	PageSetLSN(page, recptr);
 
 	END_CRIT_SECTION();
+
+	bark_verify_page_change(index, buf);
 
 	if (lcoded != left)
 		pfree(lcoded);
@@ -882,6 +898,9 @@ bark_create_root_leaf(Relation index, Relation heaprel)
 	PageSetLSN(metapage, recptr);
 
 	END_CRIT_SECTION();
+
+	bark_verify_page_change(index, leafbuf);
+	bark_verify_page_change(index, metabuf);
 
 	UnlockReleaseBuffer(leafbuf);
 	UnlockReleaseBuffer(metabuf);
@@ -1239,6 +1258,13 @@ bark_split(Relation index, Relation heaprel, BarkKeyInfo *keyinfo,
 
 	END_CRIT_SECTION();
 
+	bark_verify_page_change(index, buf);
+	bark_verify_page_change(index, rbuf);
+	if (BufferIsValid(sbuf))
+		bark_verify_page_change(index, sbuf);
+	if (BufferIsValid(cbuf))
+		bark_verify_page_change(index, cbuf);
+
 	pfree(leftpage);
 	pfree(rightpage);
 	pfree(lhikey);
@@ -1379,6 +1405,10 @@ bark_new_root(Relation index, Relation heaprel, Buffer metabuf, Buffer lbuf,
 	PageSetLSN(metapage, recptr);
 
 	END_CRIT_SECTION();
+
+	bark_verify_page_change(index, rootbuf);
+	bark_verify_page_change(index, lbuf);
+	bark_verify_page_change(index, metabuf);
 
 	pfree(leftdown);
 	UnlockReleaseBuffer(lbuf);

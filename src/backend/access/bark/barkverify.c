@@ -44,6 +44,9 @@
 #include "access/genam.h"
 #include "lib/sbm.h"
 #include "lib/stringinfo.h"
+#include "miscadmin.h"
+#include "storage/bufmgr.h"
+#include "utils/injection_point.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "varatt.h"
@@ -551,3 +554,172 @@ bark_verify_chain(BarkVerify *v, OffsetNumber off, IndexTuple itup)
 	}
 	pfree(full);
 }
+
+/* ----------------------------------------------------------------------------
+ * The page validator: the checks above, after every change to a BARK page
+ * ----------------------------------------------------------------------------
+ */
+
+#ifdef USE_ASSERT_CHECKING
+
+/*
+ * Check a page bark_page_verify skips: the meta page's magic number and
+ * version, and an overflow page's layout (one chunk of 1 to
+ * BarkOverflowChunkSize bytes, BARK_OVERFLOW its only flag, no left link).
+ */
+static void
+bark_verify_other_page(Page page, const char *relname, BlockNumber blkno,
+					   int elevel)
+{
+	BarkVerify	v = {.relname = relname, .blkno = blkno, .elevel = elevel};
+	BarkPageOpaque opaque = BarkPageGetOpaque(page);
+
+	if (BarkPageIsMeta(opaque))
+	{
+		BarkMetaPageData *meta = BarkPageGetMeta(page);
+
+		if (meta->bark_magic != BARK_MAGIC ||
+			meta->bark_version < BARK_MIN_VERSION ||
+			meta->bark_version > BARK_VERSION)
+			bark_verify_fail(&v, "BARK index \"%s\" has a meta page %u with magic number %08X and version %u",
+							 relname, blkno, meta->bark_magic,
+							 meta->bark_version);
+	}
+	else if (BarkPageIsOverflow(opaque))
+	{
+		Size		len = ((PageHeader) page)->pd_lower -
+			MAXALIGN(SizeOfPageHeaderData);
+
+		if (opaque->bark_flags != BARK_OVERFLOW ||
+			opaque->bark_prev != BARK_P_NONE ||
+			((PageHeader) page)->pd_lower <= MAXALIGN(SizeOfPageHeaderData) ||
+			len > BarkOverflowChunkSize)
+			bark_verify_fail(&v, "BARK index \"%s\" has an overflow page %u that does not have the overflow-page layout",
+							 relname, blkno);
+	}
+}
+
+/*
+ * bark_verify_pages (a developer option, PGC_SUSET, only in cassert builds,
+ * where it is on by default): check every BARK page right after a change to
+ * it.  The idea is RethinkDB's: in debug builds, leaf::validate runs the
+ * node's full fsck after every mutation (src/btree/leaf_node.cc), so a fault
+ * is reported by the call that made it, not by a later reader, or by nobody.
+ */
+bool		bark_verify_pages = true;
+
+/* What the error context names: the function that changed the page. */
+typedef struct BarkVerifyContext
+{
+	const char *caller;
+	BlockNumber blkno;
+} BarkVerifyContext;
+
+static void
+bark_verify_errcontext(void *arg)
+{
+	BarkVerifyContext *ctx = (BarkVerifyContext *) arg;
+
+	errcontext("BARK page validator, block %u after %s",
+			   ctx->blkno, ctx->caller);
+}
+
+/*
+ * Check the page in `buf`, which `caller` has just changed and still holds
+ * exclusive-locked, after its critical section (palloc is not allowed in
+ * one, and a comparator may allocate): SHAPES and ORDER.  CONTENTS is not
+ * run: an OVERSIZED entry's chain is written and freed apart from the page
+ * that references it, under locks of its own, and the marker rules cost a
+ * catalog lookup per entry.  COMPLETE is not run: a page just split carries
+ * BARK_INCOMPLETE_SPLIT until its downlink is in.
+ *
+ * A failure is an ERROR, not a PANIC.  The change is already WAL-logged, so
+ * the page stays corrupt either way, on the primary and on every standby.
+ * The ERROR fails the statement that made the change, at the call site,
+ * with the page in the message and the caller in its context, and leaves the
+ * page for amcheck to report again.  A PANIC, which is what RethinkDB's
+ * rassert amounts to, would only add a restart that replays the same record
+ * into the same page, and would abort every other test of the run.  Redo,
+ * where an ERROR cannot be contained, checks with bark_verify_redo instead.
+ *
+ * shortcut: every change is checked (no sampling); README "Page validator"
+ * has the measured cassert cost.  Sample per backend if it grows too slow.
+ */
+void
+bark_verify_page_change_impl(Relation index, Buffer buf, const char *caller)
+{
+	Page		page;
+	BarkVerifyContext ctx;
+	ErrorContextCallback errcb;
+
+	if (!bark_verify_pages)
+		return;
+	Assert(CritSectionCount == 0);
+	Assert(BufferIsLockedByMeInMode(buf, BUFFER_LOCK_EXCLUSIVE));
+
+	page = BufferGetPage(buf);
+	ctx.caller = caller;
+	ctx.blkno = BufferGetBlockNumber(buf);
+	errcb.callback = bark_verify_errcontext;
+	errcb.arg = &ctx;
+	errcb.previous = error_context_stack;
+	error_context_stack = &errcb;
+
+	if (PageIsNew(page))
+		elog(ERROR, "BARK index \"%s\" left page %u new after changing it",
+			 RelationGetRelationName(index), ctx.blkno);
+	else if (BarkPageIsMeta(BarkPageGetOpaque(page)) ||
+			 BarkPageIsOverflow(BarkPageGetOpaque(page)))
+		bark_verify_other_page(page, RelationGetRelationName(index),
+							   ctx.blkno, ERROR);
+	else if (BarkPageIsDeleted(BarkPageGetOpaque(page)))
+		bark_page_verify(index, NULL, NULL, page, ctx.blkno,
+						 BARK_VERIFY_SHAPES, ERROR);
+	else
+	{
+		BarkKeyInfo *keyinfo = bark_build_keyinfo(index);
+
+		bark_page_verify(index, keyinfo, NULL, page, ctx.blkno,
+						 BARK_VERIFY_SHAPES | BARK_VERIFY_ORDER, ERROR);
+		pfree(keyinfo);
+	}
+
+	error_context_stack = errcb.previous;
+}
+
+#endif							/* USE_ASSERT_CHECKING */
+
+#ifdef USE_INJECTION_POINTS
+
+/*
+ * Plant a fault in the entry at `off` of the exclusive-locked leaf `page`,
+ * whose change is already logged, for the page validator's tests: with
+ * bark-verify-fault-count attached, set a LIST entry's count to 1 (a SHAPES
+ * check reports it); with bark-verify-fault-order, swap the entry's line
+ * pointer with the one before it (an ORDER check reports it).  The page is
+ * then corrupt on this server only, as a buggy change would leave it.
+ */
+void
+bark_verify_plant_fault(Page page, OffsetNumber off)
+{
+	if (IS_INJECTION_POINT_ATTACHED("bark-verify-fault-count"))
+	{
+		IndexTuple	itup = (IndexTuple) PageGetItem(page,
+													PageGetItemId(page, off));
+
+		if (BarkEntryGetShape(itup) == BARK_SHAPE_LIST)
+			ItemPointerSetOffsetNumber(&itup->t_tid,
+									   (ItemPointerGetOffsetNumberNoCheck(&itup->t_tid) &
+										~BARK_OFFSET_MASK) | 1);
+	}
+	if (IS_INJECTION_POINT_ATTACHED("bark-verify-fault-order") &&
+		off > BarkPageFirstDataKey(BarkPageGetOpaque(page)))
+	{
+		ItemIdData	tmp = *PageGetItemId(page, off);
+
+		*PageGetItemId(page, off) = *PageGetItemId(page, off - 1);
+		*PageGetItemId(page, off - 1) = tmp;
+	}
+}
+
+#endif							/* USE_INJECTION_POINTS */
