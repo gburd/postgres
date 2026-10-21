@@ -345,7 +345,7 @@ BarkPageIsRecyclable(Page page, Relation heaprel)
 /*
  * Overwrite the leaf entry at `off` on `page` with `item` (`size` bytes), as
  * PageIndexTupleOverwrite does, and clear an LP_DEAD mark the entry had
- * (see "Dead-entry hints" in the README): the new entry
+ * (see "Dead-entry hints and simple deletion" in the README): the new entry
  * may hold a live heap TID, which a marked entry would hide from scans, and
  * the mark is only a hint, so dropping it is always safe.  Every in-place
  * rewrite of a leaf entry goes through here, on the primary and in redo.
@@ -1538,6 +1538,9 @@ extern BlockNumber bark_free_oversized(Relation index, IndexTuple entry);
  * leaf's equal-key entries before a split (barkdelete.c).
  */
 extern Size bark_leaf_free_space(Page page);
+extern bool bark_simple_delete(Relation index, Relation heapRel,
+							   BarkKeyInfo *keyinfo, Buffer buf,
+							   IndexTuple newitem, Size newitemsz);
 extern bool bark_bottomup_delete(Relation index, Relation heapRel,
 								 BarkKeyInfo *keyinfo, Buffer buf,
 								 IndexTuple newitem, Size newitemsz);
