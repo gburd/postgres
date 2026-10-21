@@ -219,6 +219,10 @@ $res = $psql_standby->query_safe(
 	'SELECT count(*) FROM lpd WHERE a BETWEEN 251 AND 300');
 like($res, qr/^50$/m,
 	"$sect: the standby snapshot still sees the rows through the index");
+$res = $psql_standby->query_safe(
+	'SELECT array_agg(a) FROM (SELECT a FROM lpd ORDER BY a <~> 275 LIMIT 3) x');
+like($res, qr/^\{275,276,274\}$/m,
+	"$sect: so does a KNN scan over the marked entries");
 
 $log_location = -s $node_standby->logfile;
 $lsn0 = lsn();

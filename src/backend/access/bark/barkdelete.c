@@ -635,13 +635,16 @@ bark_merge_form(Page page, IndexTuple key, ItemPointer tids, int n,
  * entry that does not fit starts the next group.  Equal-key entries are in
  * heap TID order with disjoint ranges, so the members of a group, read in
  * order, are already ascending.  SINGLE entries fold in like the rest;
- * OVERSIZED ones, markers and entries marked LP_DEAD are left alone, and end
- * a group: a merged entry is live, and would hide the mark.  A group never
- * spans newitemoff: the merged entry's TID range would then hold the new
- * TID, and the new entry could not go next to it.  A group that would save nothing (a
- * single entry, or alignment eating the gain) is left as it is.  The pass
- * stops after the group that frees enough for the new entry, so a page is
- * not rewritten further than the insert needs.
+ * OVERSIZED ones and markers are left alone, and end a group.  The pass runs
+ * after simple deletion has deleted the entries marked LP_DEAD; one merged
+ * all the same (an insert with no heap relation, or an entry past
+ * PG_INT16_MAX TIDs) only loses its mark, since BarkPageOverwriteEntry
+ * writes the merged entry.  A group never spans newitemoff: the merged
+ * entry's TID range would then hold the new TID, and the new entry could not
+ * go next to it.  A group that would save nothing (a single entry, or
+ * alignment eating the gain) is left as it is.  The pass stops after the
+ * group that frees enough for the new entry, so a page is not rewritten
+ * further than the insert needs.
  *
  * The first entry of each group is overwritten with the merged entry and the
  * rest are deleted, in one XLOG_BARK_MERGE record (bark_delitems_delete).  No
@@ -693,8 +696,7 @@ bark_merge_page(Relation index, BarkKeyInfo *keyinfo, Buffer buf,
 
 		off = OffsetNumberNext(off);
 		if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED ||
-			BarkEntryIsMarker(itup) ||
-			ItemIdIsDead(PageGetItemId(page, first)))
+			BarkEntryIsMarker(itup))
 			continue;
 
 		/*
@@ -706,7 +708,6 @@ bark_merge_page(Relation index, BarkKeyInfo *keyinfo, Buffer buf,
 		next = BarkPageGetItem(page, off, &nbuf);
 		if (BarkEntryGetShape(next) == BARK_SHAPE_OVERSIZED ||
 			BarkEntryIsMarker(next) ||
-			ItemIdIsDead(PageGetItemId(page, off)) ||
 			bark_compare_itups(keyinfo, index, itup, next) != 0)
 			continue;
 
@@ -730,7 +731,6 @@ bark_merge_page(Relation index, BarkKeyInfo *keyinfo, Buffer buf,
 
 			if (BarkEntryGetShape(cur) == BARK_SHAPE_OVERSIZED ||
 				BarkEntryIsMarker(cur) ||
-				ItemIdIsDead(PageGetItemId(page, off)) ||
 				bark_compare_itups(keyinfo, index, key, cur) != 0)
 				break;
 			n = bark_entry_count_tids(cur);
