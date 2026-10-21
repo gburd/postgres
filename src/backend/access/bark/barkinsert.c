@@ -3454,10 +3454,14 @@ bark_entries_same(Relation index, BarkInsertState *state, int attnum,
  * equal key meets them and its check (table_fetch_tid follows the chain)
  * reports the conflict, as it would against new entries; and the updated
  * row shares no key with another row that it did not share before.  The
- * index of an exclusion constraint is refused, since its check runs on the
- * values when an entry is inserted, and values with the same entries need
- * not have the same conflicts.  So is an index that is not ready or not
- * valid.
+ * index of an exclusion constraint is answered like any other.  Its check
+ * runs on the values, and values with the same entries need not have the
+ * same conflicts, so core checks the constraint itself after an update that
+ * keeps the entries (ExecCheckHotExclusion), and does not ask about a
+ * deferrable one.  An extracted column cannot be in an exclusion constraint
+ * (bark_check_multikey_index), so for one true means the same images, and
+ * the check finds what an insert's would.  An index that is not ready or
+ * not valid is refused.
  *
  * Nothing here locks a buffer or writes the index.  The statement's insert
  * state (BarkInsertState, in ii_AmCache) is reused; the keys are allocated
@@ -3473,8 +3477,7 @@ barkcomparedatums(Relation index, IndexInfo *indexInfo, int attnum,
 	BarkInsertState *state;
 	bool		same;
 
-	if (!index->rd_index->indisready || !index->rd_index->indisvalid ||
-		indexInfo->ii_ExclusionOps != NULL)
+	if (!index->rd_index->indisready || !index->rd_index->indisvalid)
 		return false;
 
 	state = bark_insert_state(index, indexInfo);

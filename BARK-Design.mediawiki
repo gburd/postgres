@@ -1898,9 +1898,13 @@ procedure 1 and by image, NULL keys alike; every marker of the new value
 must be among the old value's, since a new marker is an insert the index
 needs and markers are never removed. A GIN-interface column that is not
 equalimage and coalesces compares by procedure 1 only: its entries keep
-the first row's image of an equal key, as GIN's do. Not-ready, invalid
-and exclusion-constraint indexes answer no; unique indexes are answered
-like any other (the HOT chain keeps the old entries pointing at the live
+the first row's image of an equal key, as GIN's do. Not-ready and
+invalid indexes answer no. Exclusion-constraint indexes are answered
+like any other since CF 5556 v42, which checks an immediate constraint
+after an update that keeps its entries and does not ask about a
+deferrable one; only a scalar column can be in a BARK exclusion
+constraint, so a yes there means the same image. Unique indexes are
+answered like any other (the HOT chain keeps the old entries pointing at the live
 version, so later inserts still conflict), though core asks only about a
 partial one. An optional opclass procedure that answers without
 extracting (CF 5556's "keys-changed") is not used yet; its number would

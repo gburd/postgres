@@ -945,8 +945,12 @@ index using the column says yes, the update may be HOT and no index gets
 an entry for the new version.  So yes must mean that no scan, unique
 check, VACUUM pass or amcheck probe could tell the old entries from those
 an insert of the new value would make.  BARK answers no for an index that
-is not ready or not valid, and for an exclusion constraint's index, whose
-check runs on the values.
+is not ready or not valid.  An exclusion constraint's index is answered like
+any other: its check runs on the values, so after an update that keeps its
+entries the executor checks the constraint itself (ExecCheckHotExclusion),
+and it does not ask about a deferrable one.  Only scalar columns can be in
+a BARK exclusion constraint (bark_check_multikey_index), where yes means
+the same bytes.
 
 A column that is not extracted, a scalar key or an INCLUDE column, is
 stored as given and returned by index-only scans, so yes means the same

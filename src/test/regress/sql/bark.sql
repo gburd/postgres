@@ -4571,3 +4571,56 @@ SELECT array_agg(id ORDER BY id) FROM bark_hot
   WHERE w = ANY (ARRAY(SELECT w FROM bark_hot WHERE id IN (5, 6)));
 DROP TABLE bark_hot;
 DROP FUNCTION bark_hot_count;
+
+-- An exclusion constraint on a scalar BARK column is answered like any other
+-- index, by image: an update that writes a compressed value back in plain
+-- form keeps the entries and is HOT, and core then checks the constraint on
+-- the new values (ExecCheckHotExclusion).  A changed value is not HOT and
+-- conflicts as an insert would.  A deferrable constraint's index is not
+-- asked, so even the plain rewrite is not HOT; it is still checked at
+-- commit.  bark_excl_hot (isolation) has a concurrent insertion.
+CREATE TABLE bark_excl (id int, t text, EXCLUDE USING bark (t WITH =))
+  WITH (fillfactor = 10);
+CREATE TABLE bark_excl_d (id int, t text,
+    EXCLUDE USING bark (t WITH =) DEFERRABLE INITIALLY DEFERRED)
+  WITH (fillfactor = 10);
+INSERT INTO bark_excl SELECT g, repeat('e', 3000) || g FROM generate_series(1, 4) g;
+INSERT INTO bark_excl_d SELECT id, t FROM bark_excl;
+SELECT bool_and(pg_column_compression(t) IS NOT NULL) AS compressed FROM bark_excl;
+CREATE FUNCTION bark_excl_count(rel regclass, OUT upd bigint, OUT hot bigint)
+LANGUAGE sql AS $$
+  SELECT pg_stat_get_xact_tuples_updated(rel),
+         pg_stat_get_xact_tuples_hot_updated(rel) $$;
+BEGIN;
+UPDATE bark_excl SET t = t || '';
+SELECT 'immediate, same value' AS step, * FROM bark_excl_count('bark_excl');
+UPDATE bark_excl_d SET t = t || '';
+SELECT 'deferrable, same value' AS step, * FROM bark_excl_count('bark_excl_d');
+COMMIT;
+-- the HOT updates kept the old entries, which still find the rows (terse:
+-- the error detail would print the 3000-byte values)
+\set VERBOSITY terse
+INSERT INTO bark_excl VALUES (5, repeat('e', 3000) || 1);
+INSERT INTO bark_excl VALUES (5, repeat('e', 3000) || 5);
+-- an update to a conflicting value changes it, so it is not HOT, and fails
+UPDATE bark_excl SET t = repeat('e', 3000) || 1 WHERE id = 5;
+BEGIN;
+UPDATE bark_excl_d SET t = t || '' WHERE id = 2;
+UPDATE bark_excl_d SET t = repeat('e', 3000) || 1 WHERE id = 2;
+COMMIT;
+\set VERBOSITY default
+SELECT bark_index_check(indexrelid, true) FROM pg_index
+  WHERE indrelid IN ('bark_excl'::regclass, 'bark_excl_d'::regclass)
+  ORDER BY indexrelid::regclass::text;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+EXPLAIN (COSTS OFF) SELECT id FROM bark_excl WHERE t = 'x';
+SELECT id FROM bark_excl WHERE t = repeat('e', 3000) || 1;
+SELECT array_agg(id ORDER BY id) FROM bark_excl b
+  WHERE t = (SELECT t FROM bark_excl WHERE id = b.id);
+SELECT array_agg(id ORDER BY id) FROM bark_excl_d b
+  WHERE t = (SELECT t FROM bark_excl_d WHERE id = b.id);
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+DROP TABLE bark_excl, bark_excl_d;
+DROP FUNCTION bark_excl_count;

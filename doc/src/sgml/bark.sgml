@@ -1147,7 +1147,10 @@ CREATE INDEX orders_customer_idx ON orders (customer);
    class does not index, is HOT.  Where a multikey column uses GIN's query
    interface and its class has no <function>equalimage</function>
    function, keys need only compare equal, as in GIN, since the index
-   keeps one image of such keys.
+   keeps one image of such keys.  The index of an exclusion constraint
+   follows the same rule; the constraint is then checked against the new
+   values, and an update of a deferrable constraint's column is never
+   <acronym>HOT</acronym>.
   </para>
  </sect3>
 
