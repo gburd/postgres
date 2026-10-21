@@ -706,8 +706,8 @@ SELECT * FROM update_case(
 SELECT * FROM update_case(
   $$CREATE TABLE hot_expr_test (id int, t text) WITH (fillfactor = 50);
     CREATE UNIQUE INDEX ON hot_expr_test (t);
-    INSERT INTO hot_expr_test SELECT g, repeat('x', 2000) || g FROM generate_series(1, 10) g$$,
-  $$UPDATE hot_expr_test SET t = repeat('x', 2000) || id$$);
+    INSERT INTO hot_expr_test SELECT g, repeat('x', 3000) || g FROM generate_series(1, 10) g$$,
+  $$UPDATE hot_expr_test SET t = repeat('x', 3000) || id$$);
  updated | hot 
 ---------+-----
       10 |   0
