@@ -1115,6 +1115,13 @@ VACUUM
 barkbulkdelete reads the index in physical block order, as btbulkdelete
 does, and deletes the entries whose heap TIDs are dead.  Only live leaf pages
 are cleaned; deleted pages, internal pages and overflow pages are skipped.
+The blocks come from a read stream over [1, length), as btvacuumscan's do
+since nbtree's c5c239e26e3: bark_vacuum_scan re-arms it for the blocks added
+since each pass, and bark_vacuum_page gets each block's buffer from it.  A
+page reached by backtracking (below) is off the stream's order and is read
+directly.  Measured cold (BARK-Design.mediawiki, "As built (RethinkDB
+review)"), it cut VACUUM's read calls sevenfold and left its time as it
+was.
 
 A leaf split during the scan can move entries from a page the scan has not
 reached yet to a right page at a block it has already passed (a split takes
@@ -1601,6 +1608,73 @@ For an index with an extracted column the run is of the fixed columns and
 one key; markers and keys with a NULL column (unless NULLS NOT DISTINCT)
 are skipped, and OVERSIZED keys are compared in full.  pg_amcheck
 --checkunique passes it through for BARK indexes from amcheck 1.8.
+
+amcheck's checks of one page by itself are bark_page_verify
+(barkverify.c), which the backend shares; the checks of a page against
+another page (sibling links, a downlink against its child) and the walk
+of the tree stay in verify_bark.c.
+
+Page validator.  In cassert builds every change to a BARK page is
+followed, once its critical section is over and while the page is still
+exclusive-locked, by bark_verify_page_change on each page the change
+touched: bark_page_verify's SHAPES checks (layout, entry shapes and
+sizes, LIST and POSTING members; no catalog access, no comparator) and
+ORDER checks (key order, heap TID order among equal keys, the high-key
+bound), and for the meta page its magic number and version and for an
+overflow page its layout.  The idea is RethinkDB's: its debug builds run
+a node's full check after every mutation (leaf::validate in
+src/btree/leaf_node.cc), so a fault is reported by the call that made
+it.  The call sites are every function that ends a critical section on
+a BARK page: bark_insert_entry, bark_insert_multi, bark_overwrite_entry,
+bark_add_tid_entry, bark_swap_tid_entry, bark_split (both halves, the
+right sibling, the child), bark_new_root (with the old root and the meta
+page), bark_create_root_leaf, bark_delitems_vacuum, bark_delitems_delete
+(bottom-up deletion and the merge), bark_delete_empty_leaf (four pages),
+bark_write_overflow_chain, bark_free_oversized, bark_set_multikey and
+bark_set_nkeys.
+
+A change of one entry or a few adjacent ones (the first five of those
+functions) checks the shapes of only those entries, their order against
+the entry on each side and the high key, and the page's layout and high
+key; every 32nd such check in a backend checks the whole page
+(BARK_VERIFY_FULL_EVERY), and every other change is checked whole.  So
+a fault in or next to the changed entry is reported by the statement
+that made it, and one elsewhere on the page by a later change's
+whole-page check or by amcheck.  A failure is an ERROR with the caller
+in its context, not a PANIC: the change is logged by then, so a PANIC
+would only restart the server into replaying it; the ERROR fails the
+statement that broke the page, and amcheck reports the page again.
+CONTENTS (overflow chains, markers) and COMPLETE (no unfinished split)
+are not run there.
+
+WAL redo runs the SHAPES checks (bark_verify_redo), with no relcache
+entry and so no comparator, and PANICs on a failure: on every page of
+every record, but on a record that changed only a few entries just one
+time in 32, whole.  Redo of bark/t/008_redo_dropped_index.pl, 41,000
+ADD_TID records into large LIST and POSTING entries, takes 5.2 s under
+cassert and 28 s with gcov without the validator; checking every such
+record whole took 9.4 s and 55 s, and checking only its touched entry
+9.3 s and 55.9 s (an sbm's validation costs as much as redo's own
+add-TID), close to pg_ctl's 60 s start wait; one in 32 takes 5.7 s and
+31 s.  The primary checked each of those changes when it made it.
+
+The developer option bark_verify_pages (a boolean, PGC_SUSET, cassert
+builds only, on by default there) turns both off; elsewhere the calls
+compile away.  t/015_page_validator.pl in src/test/modules/bark plants
+faults through the injection points bark-verify-fault-count,
+bark-verify-fault-order, bark-verify-fault-far, bark-verify-fault-meta
+and bark-verify-fault-overflow, and bark-verify-force-full makes the
+next check of a few entries a whole-page one.
+
+Its cost, in a cassert build on c7i.4xlarge: a write-only workload of
+long equal-key LISTs (60,000 inserts into a table with three BARK
+indexes, then non-HOT updates, deletes, VACUUM and more inserts) took
+5.6x as long with the validator as without (39.5 s against 7.1 s) when
+every change checked the whole page, 1.9x (13.6 s) with the bounded
+check, and takes 1.5x (10.7 s) now that the shapes of only the touched
+entries are checked; the bark, bark_multikey, bark_wildcard and amcheck
+test suites took 1.17x (186 s against 159 s, median of 4, measured with
+every page checked whole).
 
 contrib/pageinspect/barkfuncs.c: bark_metap, bark_page_stats,
 bark_multi_page_stats and bark_page_items (by relation and block, or of a
