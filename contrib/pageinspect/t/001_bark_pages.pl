@@ -103,6 +103,14 @@ is( $node->safe_psql(
 		"SELECT allequalimage IS NULL, flags, nkeys FROM bark_metap('t_idx')"),
 	't|0|0',
 	'a meta page without the newer fields reads them as absent');
+# Its TID stride (bark_tid_stride, also past pd_lower) is heap's, so the
+# index's entries decode and a scan of the leaves not patched below
+# returns the table's rows.
+is( $node->safe_psql(
+		'postgres',
+		"SET enable_seqscan = off; SET enable_bitmapscan = off; SELECT count(*), sum(a) FROM t WHERE a BETWEEN 5000 AND 9000"),
+	'4001|28007000',
+	'a meta page without the TID stride reads it as heap\'s');
 is( $node->safe_psql(
 		'postgres',
 		"SELECT type, flags FROM bark_page_stats('t_idx', $leaves[0])"),
