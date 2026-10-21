@@ -52,7 +52,11 @@ DROP INDEX bcu_s_nu;
 
 -- A real violation: two live rows with key 7.  With indisunique cleared
 -- the insert is not checked; restoring it makes the index claim a
--- uniqueness it does not have, as a bug would.
+-- uniqueness it does not have, as a bug would.  deduplicate_items = off
+-- keeps the duplicate in an entry of its own, as a unique index's writers
+-- do: an entry of several heap TIDs is reported before the uniqueness
+-- check runs (bcu_d below).
+ALTER INDEX bcu_s_k SET (deduplicate_items = off);
 UPDATE pg_index SET indisunique = false WHERE indexrelid = 'bcu_s_k'::regclass;
 INSERT INTO bcu_s VALUES (-7, 7, 0);
 UPDATE pg_index SET indisunique = true WHERE indexrelid = 'bcu_s_k'::regclass;
@@ -61,11 +65,9 @@ SELECT bcu('bcu_s_k'), bcu('bcu_s_k', true);
 SELECT bark_index_check('bcu_s_k', true);
 DELETE FROM bcu_s WHERE id = -7;
 SELECT bcu('bcu_s_k');
--- With indisunique cleared the insert above coalesced its key into a LIST
--- entry with the first row's, which the check reads at once.  A run of
--- SINGLE entries across a leaf boundary: an INCLUDE column keeps entries
--- from coalescing, and 400 rows of one key with a 100-byte INCLUDE value
--- do not fit on one leaf.
+-- A run of SINGLE entries across a leaf boundary: an INCLUDE column keeps
+-- entries from coalescing, and 400 rows of one key with a 100-byte INCLUDE
+-- value do not fit on one leaf.
 ALTER TABLE bcu_s ADD COLUMN pad text DEFAULT repeat('p', 100);
 CREATE UNIQUE INDEX bcu_s_ki ON bcu_s USING bark (k) INCLUDE (pad);
 SELECT bcu('bcu_s_ki');
@@ -93,6 +95,7 @@ CREATE TABLE bcu_o (id int, k text);
 CREATE UNIQUE INDEX bcu_o_k ON bcu_o USING bark (k);
 INSERT INTO bcu_o SELECT g, repeat(md5(g::text), 400) FROM generate_series(1, 20) g;
 SELECT bcu('bcu_o_k');
+ALTER INDEX bcu_o_k SET (deduplicate_items = off);
 UPDATE pg_index SET indisunique = false WHERE indexrelid = 'bcu_o_k'::regclass;
 INSERT INTO bcu_o VALUES (-5, repeat(md5('5'), 400));
 -- Same prefix, different key: not a violation.
@@ -113,6 +116,7 @@ INSERT INTO bcu_m VALUES (-1, 0, '{5,5,5}'), (-2, 0, '{}'), (-3, 0, '{}'),
   (-4, 0, NULL), (-5, 0, '{NULL,6}'), (-6, 1, '{NULL}');
 UPDATE bcu_m SET a = a || 7 WHERE id = -1;
 SELECT bcu('bcu_m_a'), bcu('bcu_m_ta'), bcu('bcu_m_a', true);
+ALTER INDEX bcu_m_a SET (deduplicate_items = off);
 UPDATE pg_index SET indisunique = false WHERE indexrelid = 'bcu_m_a'::regclass;
 INSERT INTO bcu_m VALUES (-10, 5, '{1000,999999}');
 UPDATE pg_index SET indisunique = true WHERE indexrelid = 'bcu_m_a'::regclass;
@@ -121,6 +125,7 @@ SELECT bcu('bcu_m_a');
 SELECT bcu('bcu_m_ta');
 DELETE FROM bcu_m WHERE id = -10;
 SELECT bcu('bcu_m_a');
+ALTER INDEX bcu_m_ta SET (deduplicate_items = off);
 UPDATE pg_index SET indisunique = false WHERE indexrelid = 'bcu_m_ta'::regclass;
 -- bcu_m_a is still unique, so a row sharing 1000 there would be refused:
 -- drop it first.  (A coalescing insert into a unique index that cached its
@@ -158,6 +163,31 @@ UPDATE pg_index SET indisunique = true WHERE indexrelid = 'bcu_c_k'::regclass;
 \c -
 INSERT INTO bcu_c VALUES (1);
 DROP TABLE bcu_c;
+
+-- A unique index has no LIST or POSTING entry: its writers never coalesce,
+-- since bark_index_coalesces asks indisunique, not whether this write
+-- enforces the constraint (CLUSTER, VACUUM FULL and REPACK rebuild without
+-- enforcing it, and index the dead duplicates an older snapshot sees).  An
+-- index holding one anyway, as such a rebuild made before that fix, is
+-- reported by the structural check, with or without checkunique.  Here
+-- non-unique partial indexes with a LIST and a POSTING entry are marked
+-- unique.
+CREATE TABLE bcu_d (k int);
+INSERT INTO bcu_d SELECT 1 FROM generate_series(1, 3);
+INSERT INTO bcu_d SELECT 2 FROM generate_series(1, 2000);
+CREATE INDEX bcu_d_l ON bcu_d USING bark (k) WHERE k = 1;
+CREATE INDEX bcu_d_p ON bcu_d USING bark (k) WHERE k = 2;
+SELECT 'bcu_d_l' AS idx, shape, ntids FROM bark_page_items('bcu_d_l', 1)
+UNION ALL
+SELECT 'bcu_d_p', shape, ntids FROM bark_page_items('bcu_d_p', 1);
+SELECT bark_index_check('bcu_d_l', true), bark_index_check('bcu_d_p', true);
+UPDATE pg_index SET indisunique = true
+  WHERE indexrelid IN ('bcu_d_l'::regclass, 'bcu_d_p'::regclass);
+\c -
+SELECT bark_index_check('bcu_d_l');
+SELECT bark_index_check('bcu_d_p', true, true);
+SELECT bark_index_parent_check('bcu_d_l', true);
+DROP TABLE bcu_d;
 
 -- heapallindexed on a multikey index forms each row's keys with procedure 7
 -- and probes for each: it passes on a sound index, with LIST and POSTING

@@ -2452,7 +2452,10 @@ visible to the check's MVCC snapshot (table_fetch_tid follows HOT chains).
 OVERSIZED keys are compared in full. pg_amcheck --checkunique passes it
 to BARK indexes when amcheck is 1.8. bark_check_unique, the insert's check,
 also refuses an entry with several heap TIDs in a unique index as
-corruption instead of reading only its first. Tests (check_bark_unique.sql):
+corruption instead of reading only its first, and bark_index_check reports
+one, with or without checkunique. Whether an index is unique, for its
+writers, is indisunique, not ii_Unique, which CLUSTER, VACUUM FULL and
+REPACK clear (bark_index_coalesces). Tests (check_bark_unique.sql):
 healthy scalar and multikey unique indexes with dead duplicates; violations
 of a scalar index, a run across a leaf boundary, OVERSIZED keys (and a
 same-prefix non-violation), a multikey index and a compound one, each
