@@ -1032,15 +1032,13 @@ CREATE INDEX orders_customer_idx ON orders (customer);
     functions rather than its <function>bt_*</function> ones, and
     <function>pgstatbarkindex</function> rather than
     <function>pgstatindex</function>.  <xref linkend="app-pgamcheck"/>
-    skips it.
+    checks it with <function>bark_index_check</function>.
    </para>
   </listitem>
   <listitem>
    <para>
     Its plans can differ from those of a B-tree index implemented by B-tree
-    itself, since BARK estimates its own costs; and scans do not mark the
-    entries of dead rows (see <xref linkend="bark-limitations"/>), so an
-    index with many dead entries may grow until <command>VACUUM</command>.
+    itself, since BARK estimates its own costs.
    </para>
   </listitem>
  </itemizedlist>
@@ -1162,10 +1160,15 @@ CREATE INDEX orders_customer_idx ON orders (customer);
    that did not change the index's columns would split a leaf page, BARK
    first asks the table which of the page's row versions are dead to
    every transaction and removes their entries, and splits only if that
-   does not make room.  Unlike B-tree, BARK does not mark entries dead
-   when a scan finds their rows dead, and so has no simple deletion of
-   such entries before a split: the entries of dead rows are removed only
-   by bottom-up deletion and by <command>VACUUM</command>.
+   does not make room.  As B-tree does, an index scan that finds an
+   entry's rows dead to every transaction marks the entry dead (an
+   unlogged hint, as B-tree's <literal>LP_DEAD</literal> bit), later scans
+   skip it, and an insert that would split the page first removes the
+   marked entries (simple deletion).  An entry holding several rows
+   (<literal>LIST</literal> or <literal>POSTING</literal>) is marked only
+   when all of them are dead.  <xref linkend="pageinspect"/>'s
+   <function>bark_page_stats</function> counts the marked entries of a
+   page as <structfield>dead_items</structfield>.
   </para>
 
   <para>
@@ -1197,9 +1200,12 @@ CREATE INDEX orders_customer_idx ON orders (customer);
    splits, new roots, overflow pages, merges, bottom-up deletion,
    <command>VACUUM</command>, page deletion and page reuse.  It can be
    named in <xref linkend="guc-wal-consistency-checking"/>.  BARK indexes
-   are crash-safe and are replicated to standby servers.  On a hot standby,
-   replay of bottom-up deletion and of the reuse of a deleted page cancels
-   the queries that could still need what is removed, and replay of
+   are crash-safe and are replicated to standby servers.  The dead-entry
+   marks are not logged, except in a full-page image when data checksums
+   or <xref linkend="guc-wal-log-hints"/> are on, and scans on a standby
+   do not trust them.  On a hot standby, replay of simple and bottom-up
+   deletion and of the reuse of a deleted page cancels the queries that
+   could still need what is removed, and replay of
    <command>VACUUM</command>'s changes waits for scans that hold a pin on
    the page, as for B-tree (see <xref linkend="hot-standby-conflict"/>).
   </para>
@@ -1318,13 +1324,6 @@ SELECT single_entries, list_entries, posting_entries, oversized_entries
     <literal>a</literal> to the next, runs forward only, and only over the
     first column.  A backward scan with such a condition reads every entry
     in its range, and B-tree also skips over several leading columns.
-   </para>
-  </listitem>
-  <listitem>
-   <para>
-    Scans do not mark the entries of dead rows, so later scans keep
-    reading them until bottom-up deletion or <command>VACUUM</command>
-    removes them (see <xref linkend="bark-deletion"/>).
    </para>
   </listitem>
   <listitem>

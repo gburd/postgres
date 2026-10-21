@@ -42,13 +42,16 @@ The code
                   the page read (bark_readpage), stepping and re-descent
                   (bark_readnextpage, bark_lock_and_validate_left), required
                   array keys, skip scan, the per-page satisfied-key test,
-                  mark/restore and parallel scans
+                  dead-entry hints (bark_killitems), mark/restore and
+                  parallel scans
   barkknn.c       ordered-operator (KNN) scans, ORDER BY col <~> const
   barksort.c      CREATE INDEX (bark_build): heap scan, tuplesort, parallel
                   build, the bottom-up load (bark_load) and the second pass
                   for oversized keys; ambuildempty (bark_buildempty)
-  barkdelete.c    bottom-up deletion (bark_bottomup_delete), the merge of a
-                  leaf's equal-key entries before a split (bark_merge_page),
+  barkdelete.c    simple and bottom-up deletion (bark_simple_delete,
+                  bark_bottomup_delete, which share bark_delete_pass), the
+                  merge of a leaf's equal-key entries before a split
+                  (bark_merge_page),
                   and the re-forming of LIST and POSTING entries that both
                   share with VACUUM (bark_reform_entry)
   barkutils.c     comparison (bark_build_keyinfo, bark_compare_itups,
@@ -113,12 +116,13 @@ PostgreSQL page whose special space holds a BarkPageOpaqueData:
                             (16 bits; see "VACUUM" below)
     bark_flags              page role: BARK_LEAF, BARK_ROOT, BARK_META,
                             BARK_DELETED, BARK_INCOMPLETE_SPLIT,
-                            BARK_OVERFLOW, BARK_PREFIX.  BARK_HALF_DEAD and
-                            BARK_HAS_GARBAGE are defined, and readers
-                            treat a half-dead page as nbtree treats one,
-                            but no code sets either: page deletion is one
-                            step (see "Page deletion and recycling"), and
-                            scans set no LP_DEAD hints
+                            BARK_OVERFLOW, BARK_PREFIX, and the hint
+                            BARK_HAS_GARBAGE (see "Dead-entry hints and
+                            simple deletion").  BARK_HALF_DEAD is defined,
+                            and readers treat a half-dead page as nbtree
+                            treats one, but no code sets it: page deletion
+                            is one step (see "Page deletion and
+                            recycling")
     bark_page_id            BARK_PAGE_ID (0xFF84), so external tools can
                             tell BARK pages from nbtree pages: nbtree keeps
                             its vacuum cycle ID in the last two bytes of the
@@ -217,7 +221,9 @@ On the write-locked leaf, at the offset bark_leaf_insert_off found:
      index is unchanged (see "Bottom-up deletion"); the single-value cut
      when the page holds one key at the end of its run
      (bark_singleval_cut, see "Page splits"); the merge pass; and only then
-     the split (bark_split).
+     the split (bark_split).  Simple deletion of the entries scans marked
+     dead (see "Dead-entry hints and simple deletion") comes before all of
+     these, and before a divided entry's split.
 
 A fast-path insert has no stack and so never splits: where it would need
 to, bark_insert_key returns BARK_PLACE_RETRY, the leaf is forgotten as the
@@ -724,8 +730,10 @@ iteration to the page; the planner never asks a backward scan of such an
 index.  The TIDs are collected with no leaf pinned,
 so an index scan needs an MVCC snapshot (nbtree's dropPin argument: a slot
 VACUUM frees and the heap reuses holds a row the snapshot cannot see), and
-refuses any other.  It has no leaf position and BARK sets no LP_DEAD hints,
-so kill_prior_tuple is ignored, and the seen set is off (a row's TID is in
+refuses any other.  It has no leaf position to mark dead entries on, so
+kill_prior_tuple is ignored (its reads still skip the entries other scans
+marked; see "Dead-entry hints and simple deletion"), and the seen set is
+off (a row's TID is in
 several boundaries' streams, merged into one).  bark_property answers
 index_scan false only when the column is not the index's first: rows come
 back in TID order, not in the order of the columns before it, which the
@@ -1165,6 +1173,118 @@ at it.  On a hot standby, redo first cancels the queries whose snapshots
 could still see those tuples (the record's snapshotConflictHorizon).  No
 entry moves to another page, so VACUUM's cycle IDs are unaffected; a leaf
 the pass empties is an empty leaf, which VACUUM deletes.
+
+Dead-entry hints and simple deletion
+------------------------------------
+
+As in nbtree (see "Simple deletion" in the nbtree README), an index scan
+whose heap fetch finds that an entry's row is dead to every snapshot
+(heapam sets kill_prior_tuple) remembers the item, and when the scan leaves
+the page, by stepping, rescan, restore of a mark on another page or end of
+scan, bark_killitems marks LP_DEAD the line pointers of the entries whose
+every heap TID was killed: nbtree's _bt_killitems.  The marks are hints.
+They are set under the page's share lock through BufferBeginSetHintBits
+(which may refuse, while the page is being written out), are not
+WAL-logged, and are lost freely: a split does not carry them to either
+half, and every in-place rewrite of an entry clears its mark
+(BarkPageOverwriteEntry), since the new entry may hold a live TID.  A page
+with a newly marked entry gets BARK_HAS_GARBAGE, a hint too, which every
+deletion clears; nothing reads it, as nbtree reads its BTP_HAS_GARBAGE
+only for indexes older than heap TID order.
+
+Which entries.  A SINGLE when its TID is killed.  A LIST (plain or coded)
+or POSTING only when every one of its TIDs was killed by this scan, as
+nbtree requires every TID of a posting list tuple: one live member keeps
+the entry.  The kills of one entry's members are consecutive items, since
+items[] is in index order.  An OVERSIZED entry, whose one TID is in its
+ref, when that is killed: scans then skip it without reading its overflow
+chain, and VACUUM, not simple deletion, removes it, since only VACUUM frees
+chains (as for bottom-up deletion).  A marker names no row and is never
+killed; pivots are never returned.  In an index with an extracted column
+a row has an entry per key, and only the entry the scan returned the row
+from is marked; the others are marked by scans that return the row from
+them, or stay for VACUUM.
+
+Finding the entry again.  An item records the offset its entry had when
+read.  The scan looks there and to the right (inserts move entries right)
+for the entry whose TID range holds the item's TID, and gives up on the
+kill if it does not find one (a split moved it, or a deletion before it
+shifted it left).  The pin rule is nbtree's (dropPin, "Making concurrent TID
+recycling safe" in the nbtree README): a scan that kept its pin since the
+read (index-only and non-MVCC scans) blocked VACUUM's cleanup lock, so no
+TID on the page can have been removed and given to a new row; a plain MVCC
+scan drops its pin after the read, so it records the page's LSN then
+(BarkScanPosData.lsn) and marks nothing unless the LSN is unchanged: any
+logged change at all, VACUUM's included, gives the kills up.  A held pin
+does not keep the page from being emptied by deletion and then deleted
+(neither takes a cleanup lock), so a deleted page gives the kills up too.
+A scan of a GIN-interface column has no leaf position
+(bark_mk_gin_gettuple collects all its TIDs first, with no pin), a bitmap
+scan gets no kill_prior_tuple, and a KNN scan's cursors are not currPos:
+none of them marks entries, and all of them skip marked ones.
+
+Readers.  bark_readpage and the KNN read skip a marked entry's rows when
+scan->ignore_killed_tuples, which is false in a transaction that started in
+recovery, as for nbtree: the primary marks by its horizon, which a
+standby's snapshots are not part of, and a standby gets the marks in page
+images.  bark_readpage does not compare a marked entry's keys, except the
+last on the page in the scan's direction, whose keys may still end the scan
+there.  The unique check skips a marked entry without a heap fetch, and
+marks the entry of a row its fetch finds dead to everyone, as nbtree's
+_bt_check_unique does.  amcheck accepts marks anywhere, and heapallindexed
+does not fingerprint a marked entry, as verify_nbtree.c does not (except
+in a transaction that started in recovery, for the reason above).  The
+merge pass leaves marked entries alone: a merged entry would hide the mark.
+An insert does not coalesce into a marked entry; a TID above its range gets
+a SINGLE, and a TID inside it first has simple deletion delete the marked
+entries, as nbtree's _bt_findinsertloc deletes a dead posting list that a
+new TID falls into.
+
+Simple deletion.  An insert that would split a leaf first runs
+bark_simple_delete, nbtree's _bt_simpledel_pass, before bottom-up deletion
+and the merge, as _bt_delete_or_dedup_one_page orders them; it shares the
+deletion pass, and its XLOG_BARK_DELETE record, with bottom-up deletion
+(bark_delete_pass, as nbtree's two share _bt_delitems_delete_check).  It
+offers the table AM every TID of a marked entry as known deletable, and
+every other TID on the page that is in a heap block of theirs or of the new
+entry's TID (nbtree's _bt_deadblocks), and deletes or re-forms each entry
+by the table AM's answer.  heapam computes the snapshotConflictHorizon from
+the known-deletable TIDs' heap tuples too, so redo on a hot standby cancels
+the queries whose snapshots could still see the deleted rows, and none
+when the rows died before every standby snapshot; a row pruned already has
+its horizon in the prune record.  A leaf with no marked entry costs one
+pass over its line pointers.
+
+WAL.  bark_mask masks a leaf's line pointer flags and BARK_HAS_GARBAGE, as
+btree_mask does, for wal_consistency_checking.  With data checksums or
+wal_log_hints, the first hint on a page after a checkpoint writes a
+full-page image (MarkBufferDirtyHint), so the standby gets the marks of
+that moment; later hints reach it only in a later image.  Nothing else in
+BARK depended on pages having no unlogged changes: no code compares a page
+with its LSN but bark_killitems, the level-1 cache validates a page by its
+flags, level and high key under its lock, never by LSN, the split copies
+the original page's LSN into the left half for the full-page-image test
+only, and amcheck checks no line pointer flags.  The vacuum cycle ID's
+clear stays logged ("WAL").
+
+Versioned entries.  The marking is per entry and is decided by matching an
+entry's members to the TIDs the scan killed.  An entry that also carries a
+version tag ((key, TID, tag), phase 5b) is reported dead by the table AM
+for that tag, and the same matching applies with the tag compared too: a
+kill names one (TID, tag) member, an entry is marked when all its members
+are killed, and simple deletion offers them as known deletable.  Nothing
+here assumes one entry per TID except the one-TID shapes.
+
+Tests: bark_lpdead (bark module): marks after a scan of deleted rows
+(pageinspect), backward, index-only and KNN scans that skip them, simple
+deletion when the leaf would split, the unique check's marks, LIST, coded
+LIST and POSTING entries with partial and full deaths, OVERSIZED entries,
+a multikey index, a BARK-implemented btree index, a scan that dropped its
+pin and gives its kills up on a changed page, and regress/mvcc's case,
+whose index stays 16 kB; bark_lpdead_snapshot (isolation): a snapshot
+that sees the rows keeps them; t/014_lpdead_standby.pl: unlogged hints and
+the page image after a checkpoint, masking under wal_consistency_checking,
+and simple deletion's recovery conflict, or none.
 
 Merging a page's entries before a split
 ---------------------------------------
@@ -1675,7 +1795,8 @@ records:
       nothing to delete gets a record only when it carries the running
       VACUUM's cycle ID, so a VACUUM that finds nothing logs nothing.
 
-  XLOG_BARK_DELETE (bark_delitems_delete, from bark_bottomup_delete)
+  XLOG_BARK_DELETE (bark_delitems_delete, from bark_simple_delete and
+                    bark_bottomup_delete)
       One leaf, as nbtree's XLOG_BTREE_DELETE: the same payload as
       XLOG_BARK_VACUUM, plus the conflict horizon of the heap tuples whose
       entries go and whether the heap is a catalog for logical decoding.
@@ -1731,10 +1852,12 @@ once in an index's life, bark_nkeys at most once per VACUUM.
 The vacuum cycle ID's clear is logged, in XLOG_BARK_VACUUM, and a split
 logs the cycle ID it stamps, although nbtree treats the clear as a hint and
 masks the field in btree_mask.  The clear could become a hint, with
-bark_mask masking the field; logging it keeps every BARK page
-byte-identical between primary and standby.  So bark_mask (wal_consistency_checking) masks only
-the LSN, checksum, page-header hint bits and the unused space: BARK sets no
-LP_DEAD bits and makes no other unlogged changes.
+bark_mask masking the field; logging it keeps the field identical between
+primary and standby.  BARK's unlogged changes are the dead-entry hints: a
+leaf entry's LP_DEAD mark and BARK_HAS_GARBAGE (see "Dead-entry hints and
+simple deletion").  So bark_mask (wal_consistency_checking) masks the LSN,
+checksum, page-header hint bits, the unused space, a leaf's line pointer
+flags and BARK_HAS_GARBAGE, as btree_mask does, and not the cycle ID.
 
 Entry encoding (the C-KEYSHAPE contract)
 ----------------------------------------
