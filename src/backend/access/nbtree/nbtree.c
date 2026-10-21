@@ -173,6 +173,7 @@ bthandler(PG_FUNCTION_ARGS)
 		.amparallelrescan = btparallelrescan,
 		.amtranslatestrategy = bttranslatestrategy,
 		.amtranslatecmptype = bttranslatecmptype,
+		.amcomparedatums = btcomparedatums,
 	};
 
 	PG_RETURN_POINTER(&amroutine);
@@ -1869,4 +1870,24 @@ bttranslatecmptype(CompareType cmptype, Oid opfamily)
 		default:
 			return InvalidStrategy;
 	}
+}
+
+/*
+ * btcomparedatums() -- would newValue give the same index entry as oldValue?
+ *
+ * A btree index stores the value itself, detoasted (and maybe compressed
+ * again), and returns it in index-only scans, so the entries are the same
+ * only if the values are the same byte for byte once detoasted.  Values the
+ * operator class merely considers equal, such as numeric 1.0 and 1.00, are
+ * not.  An UPDATE that writes back the value a row already has gives the
+ * same entry even when the old value is stored compressed or out of line
+ * and the new one is not yet, which the executor's byte comparison of the
+ * stored forms counts as a change.
+ */
+bool
+btcomparedatums(Relation index, IndexInfo *indexInfo, int attnum,
+				Oid typid, int16 typlen, bool typbyval,
+				Datum oldValue, Datum newValue)
+{
+	return datum_image_eq(oldValue, newValue, typbyval, typlen);
 }

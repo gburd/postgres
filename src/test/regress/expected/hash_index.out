@@ -375,3 +375,237 @@ CREATE INDEX hash_f8_index2 ON hash_f8_heap USING hash (random float8_ops)
 	WITH (fillfactor=101);
 ERROR:  value 101 out of bounds for option "fillfactor"
 DETAIL:  Valid values are between "10" and "100".
+--
+-- An UPDATE to a value with the same hash code is HOT: the index stores
+-- only the code, and scans recheck the heap tuple.
+--
+CREATE TABLE hash_hot (id int, n numeric) WITH (fillfactor = 10);
+CREATE INDEX hash_hot_n ON hash_hot USING hash (n);
+CREATE INDEX hash_hot_n2 ON hash_hot USING hash ((n * 2));
+INSERT INTO hash_hot SELECT g, g FROM generate_series(1, 50) g;
+-- (pg_stat_get_xact_* count this transaction's updates, and earlier
+-- transactions' not yet reported)
+CREATE FUNCTION hash_hot_count(OUT updated bigint, OUT hot bigint)
+LANGUAGE sql AS $$
+  SELECT pg_stat_get_xact_tuples_updated('hash_hot'::regclass),
+         pg_stat_get_xact_tuples_hot_updated('hash_hot'::regclass) $$;
+BEGIN;
+-- numeric hashes ignore the display scale, in the column and in the
+-- expression: HOT
+UPDATE hash_hot SET n = n + 0.00;
+SELECT * FROM hash_hot_count();
+ updated | hot 
+---------+-----
+      50 |  50
+(1 row)
+
+-- a different value: not HOT
+UPDATE hash_hot SET n = n + 100 WHERE id <= 5;
+SELECT * FROM hash_hot_count();
+ updated | hot 
+---------+-----
+      55 |  50
+(1 row)
+
+COMMIT;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+EXPLAIN (COSTS OFF) SELECT id, n FROM hash_hot WHERE n = 7;
+               QUERY PLAN                
+-----------------------------------------
+ Index Scan using hash_hot_n on hash_hot
+   Index Cond: (n = '7'::numeric)
+(2 rows)
+
+SELECT id, n FROM hash_hot WHERE n = 7;
+ id |  n   
+----+------
+  7 | 7.00
+(1 row)
+
+SELECT id, n FROM hash_hot WHERE n = 7.000;
+ id |  n   
+----+------
+  7 | 7.00
+(1 row)
+
+SELECT id, n FROM hash_hot WHERE n = 3;
+ id | n 
+----+---
+(0 rows)
+
+SELECT id, n FROM hash_hot WHERE n = 103;
+ id |   n    
+----+--------
+  3 | 103.00
+(1 row)
+
+SELECT id, n FROM hash_hot WHERE n * 2 = 14;
+ id |  n   
+----+------
+  7 | 7.00
+(1 row)
+
+RESET enable_bitmapscan;
+SET enable_indexscan = off;
+SELECT count(*) FROM hash_hot h WHERE n = (SELECT n FROM hash_hot WHERE id = h.id);
+ count 
+-------
+    50
+(1 row)
+
+RESET enable_indexscan;
+RESET enable_seqscan;
+DROP TABLE hash_hot;
+-- An exclusion constraint is checked on the values, so a change to a value
+-- with the same hash code must still be checked, even when the index keeps
+-- its entry and the update is HOT.  hashint8 folds the high half into the
+-- low, so 1 and 2^32 collide.
+SELECT hashint8(1) = hashint8(4294967296) AS same_hash;
+ same_hash 
+-----------
+ t
+(1 row)
+
+CREATE TABLE hash_hot (id int, k int8, EXCLUDE USING hash (k WITH =))
+  WITH (fillfactor = 10);
+INSERT INTO hash_hot VALUES (1, 1), (2, 4294967296);
+UPDATE hash_hot SET k = 4294967296 WHERE id = 1;
+ERROR:  conflicting key value violates exclusion constraint "hash_hot_k_excl"
+DETAIL:  Key (k)=(4294967296) conflicts with existing key (k)=(4294967296).
+-- pg_stat_get_xact_* also count earlier transactions' updates not yet
+-- reported; report them, so the counts below start from zero
+SELECT pg_stat_force_next_flush();
+ pg_stat_force_next_flush 
+--------------------------
+ 
+(1 row)
+
+BEGIN;
+DELETE FROM hash_hot WHERE id = 2;
+-- without a conflict, the update is checked, and is HOT
+UPDATE hash_hot SET k = 4294967296 WHERE id = 1;
+SELECT * FROM hash_hot_count();
+ updated | hot 
+---------+-----
+       1 |   1
+(1 row)
+
+COMMIT;
+SELECT * FROM hash_hot;
+ id |     k      
+----+------------
+  1 | 4294967296
+(1 row)
+
+-- with a conflict, the HOT update fails
+INSERT INTO hash_hot VALUES (3, 1);
+UPDATE hash_hot SET k = 4294967296 WHERE id = 3;
+ERROR:  conflicting key value violates exclusion constraint "hash_hot_k_excl"
+DETAIL:  Key (k)=(4294967296) conflicts with existing key (k)=(4294967296).
+-- the index still finds both rows under their values
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT * FROM hash_hot WHERE k = 4294967296;
+ id |     k      
+----+------------
+  1 | 4294967296
+(1 row)
+
+SELECT * FROM hash_hot WHERE k = 1;
+ id | k 
+----+---
+  3 | 1
+(1 row)
+
+RESET enable_bitmapscan;
+RESET enable_seqscan;
+DROP TABLE hash_hot;
+-- A deferrable exclusion constraint is checked at commit, on the values the
+-- row has then.  Its index is not asked whether entries are the same, so
+-- such an update is not HOT; its recheck relies on the values in the index
+-- entries being those of every row version they lead to.
+CREATE TABLE hash_hot (id int, k int8, n int,
+  CONSTRAINT hash_hot_k EXCLUDE USING hash (k WITH =)
+    DEFERRABLE INITIALLY DEFERRED)
+  WITH (fillfactor = 10);
+INSERT INTO hash_hot VALUES (1, 1), (2, 4294967296);
+SELECT pg_stat_force_next_flush();
+ pg_stat_force_next_flush 
+--------------------------
+ 
+(1 row)
+
+BEGIN;
+UPDATE hash_hot SET k = 4294967296 WHERE id = 1;
+SELECT * FROM hash_hot_count();
+ updated | hot 
+---------+-----
+       1 |   0
+(1 row)
+
+COMMIT;
+ERROR:  conflicting key value violates exclusion constraint "hash_hot_k"
+DETAIL:  Key (k)=(4294967296) conflicts with existing key (k)=(4294967296).
+-- updated again before commit, back to no conflict
+BEGIN;
+UPDATE hash_hot SET k = 4294967296 WHERE id = 1;
+UPDATE hash_hot SET k = 1 WHERE id = 1;
+COMMIT;
+-- the other row moves away before commit
+BEGIN;
+UPDATE hash_hot SET k = 4294967296 WHERE id = 1;
+UPDATE hash_hot SET k = 3 WHERE id = 2;
+COMMIT;
+-- the row is deleted before commit
+BEGIN;
+UPDATE hash_hot SET k = 3 WHERE id = 1;
+DELETE FROM hash_hot WHERE id = 1;
+COMMIT;
+-- another column changes (HOT) after the conflicting update: still checked
+INSERT INTO hash_hot VALUES (1, 1), (5, 4294967296);
+BEGIN;
+UPDATE hash_hot SET k = 4294967296 WHERE id = 1;
+UPDATE hash_hot SET n = 1 WHERE id = 1;
+COMMIT;
+ERROR:  conflicting key value violates exclusion constraint "hash_hot_k"
+DETAIL:  Key (k)=(4294967296) conflicts with existing key (k)=(4294967296).
+DELETE FROM hash_hot WHERE id IN (1, 5);
+-- checked when the constraint is made immediate
+BEGIN;
+UPDATE hash_hot SET k = 3 WHERE id = 2;
+INSERT INTO hash_hot VALUES (4, 4294967296);
+UPDATE hash_hot SET k = 3 WHERE id = 4;
+SET CONSTRAINTS hash_hot_k IMMEDIATE;
+ERROR:  conflicting key value violates exclusion constraint "hash_hot_k"
+DETAIL:  Key (k)=(3) conflicts with existing key (k)=(3).
+ROLLBACK;
+SELECT * FROM hash_hot ORDER BY id;
+ id | k | n 
+----+---+---
+  2 | 3 |  
+(1 row)
+
+DROP TABLE hash_hot;
+-- the same when the index is evaluated, being on an expression
+CREATE TABLE hash_hot (id int, k int8,
+  EXCLUDE USING hash ((k + 0) WITH =) DEFERRABLE INITIALLY DEFERRED)
+  WITH (fillfactor = 10);
+INSERT INTO hash_hot VALUES (1, 1), (2, 2);
+SELECT pg_stat_force_next_flush();
+ pg_stat_force_next_flush 
+--------------------------
+ 
+(1 row)
+
+BEGIN;
+UPDATE hash_hot SET k = 4294967296 WHERE id = 1;
+SELECT * FROM hash_hot_count();
+ updated | hot 
+---------+-----
+       1 |   0
+(1 row)
+
+COMMIT;
+DROP TABLE hash_hot;
+DROP FUNCTION hash_hot_count;
