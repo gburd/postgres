@@ -111,6 +111,12 @@ typedef CompareType (*amtranslate_strategy_function) (StrategyNumber strategy, O
 /* translate general operator types to AM-specific strategies */
 typedef StrategyNumber (*amtranslate_cmptype_function) (CompareType cmptype, Oid opfamily);
 
+/* would two non-null values of an index column give the same entries? */
+typedef bool (*amcomparedatums_function) (Relation indexRelation,
+										  IndexInfo *indexInfo,
+										  int attnum, Oid typid,
+										  Datum oldValue, Datum newValue);
+
 /* build new index */
 typedef IndexBuildResult *(*ambuild_function) (Relation heapRelation,
 											   Relation indexRelation,
@@ -370,6 +376,9 @@ typedef struct IndexAmRoutine
 	/* interface functions to support planning */
 	amtranslate_strategy_function amtranslatestrategy;	/* can be NULL */
 	amtranslate_cmptype_function amtranslatecmptype;	/* can be NULL */
+
+	/* interface function to support HOT updates */
+	amcomparedatums_function amcomparedatums;	/* can be NULL */
 } IndexAmRoutine;
 
 
