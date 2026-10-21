@@ -226,6 +226,14 @@ DELETE FROM lpdo WHERE id <= 5;
 SELECT * FROM lpd_count('SELECT * FROM lpdo WHERE k > ''''');
 SELECT shape, count(*) FROM lpd_dead('lpdo_k', 1) GROUP BY shape;
 SELECT * FROM lpd_count('SELECT * FROM lpdo WHERE k > ''''');
+-- A backward scan reads the marked entry at the leaf's low end, whose key
+-- may end the scan there, and so its overflow chain, and skips it.
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*), sum(id) FROM (SELECT id FROM lpdo WHERE k > ''
+  ORDER BY k DESC) x;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
 SELECT bark_index_check('lpdo_k', true);
 -- An insert that would split the leaf finds only marked OVERSIZED entries,
 -- which simple deletion does not offer, so it splits.
@@ -307,6 +315,90 @@ SELECT lpd_ndead('lpdc_a');
 SELECT * FROM lpd_count('SELECT * FROM lpdc WHERE a > 0');
 SELECT lpd_ndead('lpdc_a');
 DROP TABLE lpdc;
+
+-- An index-only scan keeps its pin, so the leaf may change between the
+-- read and the marking (see lpdr above).  Each cursor below passes dead
+-- rows, which kills them, and stops on a live row before leaving the leaf;
+-- then the leaf changes.
+-- (1) A plain index scan marks the entries first: they are left as they are.
+CREATE TEMP TABLE lpdk (a int);
+CREATE INDEX lpdk_a ON lpdk USING bark (a);
+INSERT INTO lpdk SELECT g FROM generate_series(1, 100) g;
+DELETE FROM lpdk WHERE a <= 10;
+BEGIN;
+SET LOCAL enable_seqscan = off;
+SET LOCAL enable_bitmapscan = off;
+DECLARE c CURSOR FOR SELECT a FROM lpdk WHERE a > 0;
+FETCH 1 FROM c;
+SELECT * FROM lpd_count('SELECT * FROM lpdk WHERE a > 0');
+SELECT count(*) AS dead FROM lpd_dead('lpdk_a', 1);
+FETCH ALL FROM c \g /dev/null
+COMMIT;
+SELECT count(*) AS dead FROM lpd_dead('lpdk_a', 1);
+DROP TABLE lpdk;
+-- (2) The leaf, the rightmost, splits: its left half now has a high key at
+-- offset 1, where the first dead entry was, and the entries are one offset
+-- right.
+CREATE TEMP TABLE lpds (a int);
+CREATE INDEX lpds_a ON lpds USING bark (a);
+INSERT INTO lpds SELECT g FROM generate_series(1, 300) g;
+DELETE FROM lpds WHERE a <= 10;
+BEGIN;
+SET LOCAL enable_seqscan = off;
+SET LOCAL enable_bitmapscan = off;
+DECLARE c CURSOR FOR SELECT a FROM lpds WHERE a > 0;
+FETCH 1 FROM c;
+INSERT INTO lpds SELECT g FROM generate_series(301, 500) g;
+FETCH ALL FROM c \g /dev/null
+COMMIT;
+SELECT pg_relation_size('lpds_a') / 8192 > 2 AS split,
+       (SELECT count(*) FROM lpd_dead('lpds_a', 1)) AS dead;
+SELECT * FROM lpd_count('SELECT * FROM lpds WHERE a > 0');
+SELECT bark_index_check('lpds_a', true);
+DROP TABLE lpds;
+-- (3) An insert that would split the leaf deletes the marked entries 1 to
+-- 20 instead, and in passing the killed ones, 300 to 310, whose heap block
+-- it visits: the entries the scan killed are gone, and the ones now at
+-- their offsets are of later rows.  Nothing is marked.
+CREATE TEMP TABLE lpdv (a int);
+CREATE INDEX lpdv_a ON lpdv USING bark (a);
+INSERT INTO lpdv SELECT g FROM generate_series(1, 400) g;
+DELETE FROM lpdv WHERE a <= 20;
+SELECT * FROM lpd_count('SELECT * FROM lpdv WHERE a <= 20');
+DELETE FROM lpdv WHERE a BETWEEN 300 AND 310;
+BEGIN;
+SET LOCAL enable_seqscan = off;
+SET LOCAL enable_bitmapscan = off;
+DECLARE c CURSOR FOR SELECT a FROM lpdv WHERE a > 0;
+FETCH 280 FROM c \g /dev/null
+INSERT INTO lpdv SELECT g FROM generate_series(1001, 1020) g;
+SELECT * FROM lpd_page('lpdv_a', 1);
+FETCH ALL FROM c \g /dev/null
+COMMIT;
+SELECT * FROM lpd_page('lpdv_a', 1);
+SELECT * FROM lpd_count('SELECT * FROM lpdv WHERE a > 0');
+DROP TABLE lpdv;
+-- (4) A backward scan kills the LIST at the leaf's high end first; an
+-- insert of its key adds a TID to it, which the scan never saw, so the
+-- LIST is not marked.
+CREATE TEMP TABLE lpdg (a int);
+CREATE INDEX lpdg_a ON lpdg USING bark (a);
+INSERT INTO lpdg SELECT g FROM generate_series(1, 100) g;
+INSERT INTO lpdg SELECT 999 FROM generate_series(1, 5);
+DELETE FROM lpdg WHERE a = 999;
+BEGIN;
+SET LOCAL enable_seqscan = off;
+SET LOCAL enable_bitmapscan = off;
+DECLARE c CURSOR FOR SELECT a FROM lpdg WHERE a > 0 ORDER BY a DESC;
+FETCH 1 FROM c;
+INSERT INTO lpdg VALUES (999);
+FETCH ALL FROM c \g /dev/null
+COMMIT;
+SELECT shape, ntids FROM bark_page_items('lpdg_a', 1) WHERE itemoffset > 100;
+SELECT count(*) AS dead FROM lpd_dead('lpdg_a', 1);
+SELECT * FROM lpd_count('SELECT * FROM lpdg WHERE a = 999');
+SELECT bark_index_check('lpdg_a', true);
+DROP TABLE lpdg;
 
 -- regress/mvcc's case, with BARK implementing the btree index: index scans
 -- over the rows of rolled-back subtransactions mark their entries, and each
