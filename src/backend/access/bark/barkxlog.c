@@ -85,7 +85,8 @@ bark_xlog_restore_meta(XLogReaderState *record, uint8 block_id)
 
 		PageSetLSN(metapage, lsn);
 		MarkBufferDirty(metabuf);
-		bark_verify_redo(record, block_id, metabuf);
+		bark_verify_redo(record, block_id, metabuf, InvalidOffsetNumber,
+						 InvalidOffsetNumber);
 	}
 	if (BufferIsValid(metabuf))
 		UnlockReleaseBuffer(metabuf);
@@ -112,7 +113,8 @@ bark_xlog_clear_incomplete_split(XLogReaderState *record, uint8 block_id)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
-		bark_verify_redo(record, block_id, buffer);
+		bark_verify_redo(record, block_id, buffer, InvalidOffsetNumber,
+						 InvalidOffsetNumber);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -150,7 +152,7 @@ bark_xlog_insert(bool isleaf, XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
-		bark_verify_redo(record, 0, buffer);
+		bark_verify_redo(record, 0, buffer, xlrec->offnum, xlrec->offnum);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -191,7 +193,8 @@ bark_xlog_insert_multi(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
-		bark_verify_redo(record, 0, buffer);
+		bark_verify_redo(record, 0, buffer, offsets[0],
+						 offsets[xlrec->nentries - 1]);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -304,11 +307,14 @@ bark_xlog_split(XLogReaderState *record)
 		MarkBufferDirty(sbuf);
 	}
 
-	bark_verify_redo(record, 1, rbuf);
+	bark_verify_redo(record, 1, rbuf, InvalidOffsetNumber,
+					 InvalidOffsetNumber);
 	if (BufferIsValid(lbuf))
-		bark_verify_redo(record, 0, lbuf);
+		bark_verify_redo(record, 0, lbuf, InvalidOffsetNumber,
+						 InvalidOffsetNumber);
 	if (BufferIsValid(sbuf))
-		bark_verify_redo(record, 2, sbuf);
+		bark_verify_redo(record, 2, sbuf, InvalidOffsetNumber,
+						 InvalidOffsetNumber);
 
 	if (BufferIsValid(sbuf))
 		UnlockReleaseBuffer(sbuf);
@@ -343,7 +349,8 @@ bark_xlog_newroot(XLogReaderState *record)
 
 	bark_xlog_restore_meta(record, 2);
 
-	bark_verify_redo(record, 0, rootbuf);
+	bark_verify_redo(record, 0, rootbuf, InvalidOffsetNumber,
+					 InvalidOffsetNumber);
 	UnlockReleaseBuffer(rootbuf);
 }
 
@@ -371,7 +378,8 @@ bark_xlog_overflow(XLogReaderState *record)
 								link.next);
 		PageSetLSN(BufferGetPage(buf), lsn);
 		MarkBufferDirty(buf);
-		bark_verify_redo(record, block_id, buf);
+		bark_verify_redo(record, block_id, buf, InvalidOffsetNumber,
+						 InvalidOffsetNumber);
 		UnlockReleaseBuffer(buf);
 	}
 }
@@ -394,7 +402,8 @@ bark_xlog_create_root(XLogReaderState *record)
 
 	bark_xlog_restore_meta(record, 1);
 
-	bark_verify_redo(record, 0, leafbuf);
+	bark_verify_redo(record, 0, leafbuf, InvalidOffsetNumber,
+					 InvalidOffsetNumber);
 	UnlockReleaseBuffer(leafbuf);
 }
 
@@ -419,7 +428,7 @@ bark_xlog_overwrite(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
-		bark_verify_redo(record, 0, buffer);
+		bark_verify_redo(record, 0, buffer, xlrec->offnum, xlrec->offnum);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -493,7 +502,8 @@ bark_xlog_vacuum(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
-		bark_verify_redo(record, 0, buffer);
+		bark_verify_redo(record, 0, buffer, InvalidOffsetNumber,
+						 InvalidOffsetNumber);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -531,7 +541,8 @@ bark_xlog_delete(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
-		bark_verify_redo(record, 0, buffer);
+		bark_verify_redo(record, 0, buffer, InvalidOffsetNumber,
+						 InvalidOffsetNumber);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -559,7 +570,8 @@ bark_xlog_merge(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
-		bark_verify_redo(record, 0, buffer);
+		bark_verify_redo(record, 0, buffer, InvalidOffsetNumber,
+						 InvalidOffsetNumber);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -634,10 +646,14 @@ bark_xlog_unlink_page(XLogReaderState *record)
 		MarkBufferDirty(parentbuf);
 	}
 
-	bark_verify_redo(record, 1, leftbuf);
-	bark_verify_redo(record, 0, target);
-	bark_verify_redo(record, 2, rightbuf);
-	bark_verify_redo(record, 3, parentbuf);
+	bark_verify_redo(record, 1, leftbuf, InvalidOffsetNumber,
+					 InvalidOffsetNumber);
+	bark_verify_redo(record, 0, target, InvalidOffsetNumber,
+					 InvalidOffsetNumber);
+	bark_verify_redo(record, 2, rightbuf, InvalidOffsetNumber,
+					 InvalidOffsetNumber);
+	bark_verify_redo(record, 3, parentbuf, InvalidOffsetNumber,
+					 InvalidOffsetNumber);
 
 	if (BufferIsValid(leftbuf))
 		UnlockReleaseBuffer(leftbuf);
@@ -664,7 +680,8 @@ bark_xlog_mark_deleted(XLogReaderState *record)
 	BarkPageSetDeleted(page, BARK_P_NONE, xlrec->next, xlrec->safexid);
 	PageSetLSN(page, lsn);
 	MarkBufferDirty(buffer);
-	bark_verify_redo(record, 0, buffer);
+	bark_verify_redo(record, 0, buffer, InvalidOffsetNumber,
+					 InvalidOffsetNumber);
 	UnlockReleaseBuffer(buffer);
 }
 
@@ -746,7 +763,7 @@ bark_xlog_add_tid(XLogReaderState *record)
 #ifdef USE_INJECTION_POINTS
 		bark_verify_plant_fault(page, xlrec->offnum);
 #endif
-		bark_verify_redo(record, 0, buffer);
+		bark_verify_redo(record, 0, buffer, xlrec->offnum, xlrec->offnum);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -793,7 +810,8 @@ bark_xlog_insert_swap(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
-		bark_verify_redo(record, 0, buffer);
+		bark_verify_redo(record, 0, buffer, xlrec->offnum,
+						 OffsetNumberNext(xlrec->offnum));
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
