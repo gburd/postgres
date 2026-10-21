@@ -332,7 +332,7 @@ bark_build_may_be_oversized(BarkBuildState *bs, TupleDesc tupdesc,
 			bound += VARSIZE_ANY(val) + att->attalignby - 1;
 		}
 	}
-	return bark_len_is_oversized(bound);
+	return bark_len_is_oversized(bs->keyinfo, bound);
 }
 
 /*
@@ -350,7 +350,7 @@ bark_build_row_oversized(BarkBuildState *bs, TupleDesc tupdesc,
 		return false;
 	full = bark_form_full_tuple(tupdesc, values, isnull, &fulllen);
 	pfree(full);
-	return bark_len_is_oversized(fulllen);
+	return bark_len_is_oversized(bs->keyinfo, fulllen);
 }
 
 /*
@@ -399,7 +399,7 @@ bark_build_marker(BarkBuildState *bs, Datum key)
 	}
 
 	/* Refuse one too large for a page, as an insert would. */
-	pfree(bark_form_marker(index, key, &fulllen));
+	pfree(bark_form_marker(index, bs->keyinfo, key, &fulllen));
 
 	oldcxt = MemoryContextSwitchTo(MemoryContextGetParent(bs->rowcxt));
 	if (bs->nmarkers == bs->markersalloc)
@@ -807,7 +807,7 @@ bark_buildadd(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *st,
 		BarkEntryGetShape(itup) == BARK_SHAPE_POSTING)
 		hikeysz = BarkEntryGetBodyOffset(itup);
 	if (st->level == 0)
-		hikeysz = MAXALIGN(hikeysz) + BarkPivotSuffixReserve;
+		hikeysz = MAXALIGN(hikeysz) + BarkPivotSuffixReserve(bs->keyinfo);
 
 	ndata = st->nextoff - BarkPageFirstDataKey(BarkPageGetOpaque(page));
 	if (ndata >= 1 &&
@@ -888,7 +888,8 @@ bark_finish(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *leaf)
 	meta->bark_root = rootblk;
 	meta->bark_level = rootlevel;
 	meta->bark_allequalimage = bs->allequalimage;
-	meta->bark_flags = bs->multikey ? BARK_META_MULTIKEY : 0;
+	meta->bark_flags = (bs->multikey ? BARK_META_MULTIKEY : 0) |
+		(bs->keyinfo->versioned ? BARK_META_VERSIONED : 0);
 	meta->bark_nkeys = (uint64) bs->indtuples;
 	meta->bark_tid_stride = bs->keyinfo->tidstride;
 	((PageHeader) metabuf)->pd_lower =
@@ -1346,7 +1347,8 @@ bark_parallel_scan_and_sort(Relation heap, Relation index,
 	memset(&bs, 0, sizeof(bs));
 	bs.heap = heap;
 	bs.index = index;
-	bs.keyinfo = bark_build_keyinfo_stride(index, bark_heap_tid_stride(heap));
+	bs.keyinfo = bark_build_keyinfo_stride(index, bark_heap_tid_stride(heap),
+										   bark_heap_versioned(heap));
 	bs.keyinfo->heaprel = heap;
 	bs.nkeyatts = IndexRelationGetNumberOfKeyAttributes(index);
 	bs.isunique = false;		/* leader enforces uniqueness during load */
@@ -1744,7 +1746,8 @@ bark_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	memset(&bs, 0, sizeof(bs));
 	bs.heap = heap;
 	bs.index = index;
-	bs.keyinfo = bark_build_keyinfo_stride(index, bark_heap_tid_stride(heap));
+	bs.keyinfo = bark_build_keyinfo_stride(index, bark_heap_tid_stride(heap),
+										   bark_heap_versioned(heap));
 	bs.keyinfo->heaprel = heap;
 	bs.nkeyatts = IndexRelationGetNumberOfKeyAttributes(index);
 	bs.nblocks = 1;				/* block 0 is reserved for the meta page */
@@ -1858,10 +1861,12 @@ bark_buildempty(Relation index)
 	BarkPageOpaque opaque;
 	Relation	heap;
 	uint16		stride;
+	bool		versioned;
 
 	/* index_build, the only caller, holds a lock on the table. */
 	heap = table_open(index->rd_index->indrelid, NoLock);
 	stride = bark_heap_tid_stride(heap);
+	versioned = bark_heap_versioned(heap);
 	table_close(heap, NoLock);
 
 	bulk = smgr_bulk_start_rel(index, INIT_FORKNUM);
@@ -1883,6 +1888,7 @@ bark_buildempty(Relation index)
 	meta->bark_level = 0;
 	meta->bark_allequalimage = bark_allequalimage(index);
 	meta->bark_tid_stride = stride;
+	meta->bark_flags = versioned ? BARK_META_VERSIONED : 0;
 	((PageHeader) metabuf)->pd_lower =
 		((char *) meta + sizeof(BarkMetaPageData)) - (char *) metabuf;
 

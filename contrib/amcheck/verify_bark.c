@@ -129,8 +129,8 @@ static void bark_check_downlinks(Relation rel, BlockNumber blkno,
 
 /*
  * Compare the leaf entry `itup`, taken at its lowest heap TID (or its highest
- * when `high`), with the pivot or leaf entry `other`, in the tree's order of
- * (key, heap TID): bark_compare_itups_tid.
+ * when `high`) and its version tag, with the pivot or leaf entry `other`, in
+ * the tree's order of (key, heap TID, tag): bark_compare_itups_tid.
  */
 static int
 bark_check_compare_leaf(Relation rel, BarkKeyInfo *keyinfo, IndexTuple itup,
@@ -140,7 +140,8 @@ bark_check_compare_leaf(Relation rel, BarkKeyInfo *keyinfo, IndexTuple itup,
 	ItemPointerData hi;
 
 	bark_entry_tid_range(itup, &lo, &hi, keyinfo->tidstride);
-	return bark_compare_itups_tid(keyinfo, rel, itup, high ? &hi : &lo, other);
+	return bark_compare_itups_tid(keyinfo, rel, itup, high ? &hi : &lo,
+								  BarkEntryGetTag(itup), other);
 }
 
 /*
@@ -520,7 +521,8 @@ bark_check_downlinks(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo)
 
 /*
  * Are two pivots the same separator: equal on the key attributes, with the
- * same number of them and the same heap TID (or none)?  A downlink is a copy
+ * same number of them and the same heap TID (or none) and version tag (or
+ * none)?  A downlink is a copy
  * of the high key of the child to its left, made by the split that created
  * the child or by CREATE INDEX, so the two never differ.
  */
@@ -535,6 +537,8 @@ bark_check_same_pivot(Relation rel, BarkKeyInfo *keyinfo, IndexTuple a,
 		return false;
 	if ((atid == NULL) != (btid == NULL) ||
 		(atid != NULL && !ItemPointerEquals(atid, btid)))
+		return false;
+	if (bark_pivot_tag(a) != bark_pivot_tag(b))
 		return false;
 	return bark_compare_itups(keyinfo, rel, a, b) == 0;
 }

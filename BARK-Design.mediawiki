@@ -318,8 +318,11 @@ when the UNDO integration phase lands (not in the first functional AM).
 ''Status:'' none of the undo branch's interface is in this tree (no
 <code>amdeletemark</code>, <code>am_supports_undo</code>,
 <code>BT_IS_DELETE_MARKED</code> or <code>index_delete_mark</code>).
-<code>BARK_IS_DELETE_MARKED</code> (0x4000) is reserved in bark.h and
-nothing sets or tests it; blocked on the UNDO work.
+The bit once reserved for it, 0x4000, is <code>BARK_HAS_TAG</code> since
+version 3 (versioned locators: design section 5, "Version tags" in the
+README), which designs index undo out (no index undo; abort leaves entries
+the table AM's validity rule rejects).  Delete-marking, if it is ever
+needed, takes a new code point.
 
 === C-KEYSHAPE: the key/value shape and the inverted paradigm ===
 

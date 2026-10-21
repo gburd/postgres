@@ -3284,7 +3284,8 @@ bark_copy_pos(BarkScanOpaque so, BarkScanPosData *dst, char **dsttuples,
  * workspace (*tuples, *tuplesSize, grown as needed; *nextoff is its first
  * free byte), once per entry, and return its offset there.  `resolved` is
  * the entry with its attributes readable (the full tuple of an OVERSIZED
- * entry).  A LIST or POSTING entry is copied without its body; nothing reads
+ * entry).  A LIST or POSTING entry is copied without its body, and a tagged
+ * SINGLE without its trailer; nothing reads
  * xs_itup's t_tid, so its members all share the one copy.  The plain scan
  * and each KNN cursor have their own workspace.
  */
@@ -3297,7 +3298,8 @@ bark_save_tuple(BarkScanOpaque so, char **tuples, uint32 *tuplesSize,
 	uint32		off = *nextoff;
 	IndexTuple	copy;
 
-	if (shape == BARK_SHAPE_LIST || shape == BARK_SHAPE_POSTING)
+	if (shape == BARK_SHAPE_LIST || shape == BARK_SHAPE_POSTING ||
+		(shape == BARK_SHAPE_SINGLE && BarkEntryIsAltTID(entry)))
 		len = BarkEntryGetBodyOffset(entry);
 	else if (shape == BARK_SHAPE_OVERSIZED)
 		len = BarkOverflowGetRef(entry)->fulllen;
@@ -3307,9 +3309,12 @@ bark_save_tuple(BarkScanOpaque so, char **tuples, uint32 *tuplesSize,
 	bark_tuples_reserve(so, tuples, tuplesSize, off + MAXALIGN(len));
 	copy = (IndexTuple) (*tuples + off);
 	memcpy(copy, resolved, len);
-	if (shape == BARK_SHAPE_LIST || shape == BARK_SHAPE_POSTING)
+	if (len != IndexTupleSize(entry) && shape != BARK_SHAPE_OVERSIZED)
 	{
-		/* Now a plain key tuple: drop the body's size and the alt-TID bit. */
+		/*
+		 * Now a plain key tuple: drop the body's (or a tagged SINGLE's
+		 * trailer's) size and the alt-TID bit.
+		 */
 		copy->t_info = (copy->t_info & ~(INDEX_SIZE_MASK | INDEX_AM_RESERVED_BIT)) |
 			(uint16) len;
 	}
