@@ -844,10 +844,15 @@ bark_verify_redo(XLogReaderState *record, uint8 block_id, Buffer buf,
 
 	/*
 	 * shortcut: in redo only every BARK_VERIFY_FULL_EVERY-th change of a few
-	 * entries is checked (whole page), the rest not at all: checking each
-	 * doubled crash recovery's redo time (9.4 s against 5.2 s for
-	 * bark/t/008's 41,000 ADD_TIDs under cassert, 55 s against 28 s with
-	 * gcov, past pg_ctl's 60 s start wait).  The primary checked each one.
+	 * entries is checked (whole page), the rest not at all, so a redo bug in
+	 * one entry of a record without a page image is caught one time in 32;
+	 * check lo..hi on every record if one hides there.  Checking each,
+	 * whole, doubled crash recovery's redo time for bark/t/008's 41,000
+	 * ADD_TIDs (9.4 s against 5.2 s under cassert, 55 s against 28 s with
+	 * gcov, past pg_ctl's 60 s start wait).  Checking only the touched entry
+	 * of each costs as much: 9.3 s and 55.9 s, since that entry is a
+	 * POSTING of up to 2.7 kB whose sbm validation and cardinality cost as
+	 * much as redo's own add-TID.  The primary checked each one.
 	 */
 	if (OffsetNumberIsValid(lo) && ++nlocal % BARK_VERIFY_FULL_EVERY != 0 &&
 		!IS_INJECTION_POINT_ATTACHED("bark-verify-force-full"))
