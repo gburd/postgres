@@ -18,7 +18,8 @@
  *	SHAPES		the page alone: the deleted-page and prefix layouts, the high
  *				key's shape, entry sizes and shapes, and the members of LIST
  *				and POSTING entries.  No catalog access, no comparator call,
- *				no other page.
+ *				no other page.  Always asked for: the other checks read
+ *				entries these have found well formed.
  *	ORDER		the keys, by the comparators: order within the page, heap TID
  *				order among equal keys, entries within the high key.
  *	CONTENTS	entries against the index's definition and other pages:
@@ -159,6 +160,7 @@ bark_page_verify_range(Relation index, BarkKeyInfo *keyinfo,
 	int			cur = 0;
 
 	Assert(elevel >= ERROR);
+	Assert(flags & BARK_VERIFY_SHAPES);	/* every check builds on them */
 	Assert(keyinfo != NULL ||
 		   (flags & (BARK_VERIFY_ORDER | BARK_VERIFY_CONTENTS)) == 0);
 
@@ -188,11 +190,10 @@ bark_page_verify_range(Relation index, BarkKeyInfo *keyinfo,
 	{
 		PageHeader	phdr = (PageHeader) page;
 
-		if ((flags & BARK_VERIFY_SHAPES) &&
-			(phdr->pd_lower != SizeOfPageHeaderData ||
-			 phdr->pd_upper != phdr->pd_special -
-			 MAXALIGN(sizeof(BarkDeletedPageData)) ||
-			 (opaque->bark_flags & (BARK_LEAF | BARK_OVERFLOW)) != 0))
+		if (phdr->pd_lower != SizeOfPageHeaderData ||
+			phdr->pd_upper != phdr->pd_special -
+			MAXALIGN(sizeof(BarkDeletedPageData)) ||
+			(opaque->bark_flags & (BARK_LEAF | BARK_OVERFLOW)) != 0)
 			bark_verify_fail(&v, "BARK index \"%s\" has a deleted page %u that does not have the deleted-page layout",
 							 v.relname, blkno);
 		return;
@@ -214,7 +215,7 @@ bark_page_verify_range(Relation index, BarkKeyInfo *keyinfo,
 	 * bark_prefix_decode reports one that does not decode within its bounds
 	 * or claims more of the prefix than the page has.
 	 */
-	if ((flags & BARK_VERIFY_SHAPES) && BarkPageHasPrefix(opaque))
+	if (BarkPageHasPrefix(opaque))
 	{
 		OffsetNumber poff = BarkPagePrefixOff(opaque);
 		ItemId		iid;
@@ -244,18 +245,15 @@ bark_page_verify_range(Relation index, BarkKeyInfo *keyinfo,
 	if (!BarkPageRightmost(opaque) && maxoff >= BARK_P_HIKEY)
 	{
 		hikey = (IndexTuple) PageGetItem(page, PageGetItemId(page, BARK_P_HIKEY));
-		if (flags & BARK_VERIFY_SHAPES)
-		{
-			if (BarkEntryIsLeafData(hikey) &&
-				(BarkEntryGetShape(hikey) != BARK_SHAPE_OVERSIZED ||
-				 BarkOverflowIsLeaf(hikey)))
-				bark_verify_fail(&v, "BARK index \"%s\" has a high key on page %u that is not a pivot",
-								 v.relname, blkno);
-			hikeynatts = BarkEntryGetPivotNAtts(hikey);
-			if (hikeynatts < 1 || hikeynatts > nkeys)
-				bark_verify_fail(&v, "BARK index \"%s\" has a high key with %d key attributes on page %u",
-								 v.relname, hikeynatts, blkno);
-		}
+		if (BarkEntryIsLeafData(hikey) &&
+			(BarkEntryGetShape(hikey) != BARK_SHAPE_OVERSIZED ||
+			 BarkOverflowIsLeaf(hikey)))
+			bark_verify_fail(&v, "BARK index \"%s\" has a high key on page %u that is not a pivot",
+							 v.relname, blkno);
+		hikeynatts = BarkEntryGetPivotNAtts(hikey);
+		if (hikeynatts < 1 || hikeynatts > nkeys)
+			bark_verify_fail(&v, "BARK index \"%s\" has a high key with %d key attributes on page %u",
+							 v.relname, hikeynatts, blkno);
 	}
 
 	/* ORDER compares each touched item with the ones next to it. */
@@ -282,7 +280,7 @@ bark_page_verify_range(Relation index, BarkKeyInfo *keyinfo,
 		 * and key, which a corrupt LIST, POSTING or overflow chain would make
 		 * them fail on without saying where.
 		 */
-		if ((flags & BARK_VERIFY_SHAPES) && BarkPageIsLeaf(opaque) &&
+		if (BarkPageIsLeaf(opaque) &&
 			(!OffsetNumberIsValid(lo) || (off >= lo && off <= hi)))
 		{
 			if (IndexTupleSize(itup) > BarkMaxItemSize)
