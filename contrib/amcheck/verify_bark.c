@@ -81,10 +81,8 @@
 #include "common/pg_prng.h"
 #include "fmgr.h"
 #include "lib/bloomfilter.h"
-#include "lib/sbm.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
-#include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
@@ -128,15 +126,6 @@ static void bark_check_heap(Relation rel, Relation heaprel,
 							bool readonly);
 static void bark_check_downlinks(Relation rel, BlockNumber blkno,
 								 BarkKeyInfo *keyinfo);
-static void bark_check_marker(Relation rel, BarkKeyInfo *keyinfo,
-							  BlockNumber blkno, OffsetNumber off,
-							  IndexTuple itup);
-static void bark_check_list(Relation rel, BlockNumber blkno, OffsetNumber off,
-							IndexTuple itup);
-static void bark_check_posting(Relation rel, BlockNumber blkno, OffsetNumber off,
-							   IndexTuple itup);
-static void bark_check_oversized(Relation rel, BlockNumber blkno, OffsetNumber off,
-								 IndexTuple itup, BarkKeyInfo *keyinfo);
 
 /*
  * Compare the leaf entry `itup`, taken at its lowest heap TID (or its highest
@@ -309,13 +298,7 @@ bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo)
 	Buffer		buf = ReadBuffer(rel, blkno);
 	Page		page;
 	BarkPageOpaque opaque;
-	OffsetNumber maxoff;
-	OffsetNumber firstdata;
 	IndexTuple	hikey = NULL;
-	int			hikeynatts = 0;
-	IndexTuple	prev = NULL;
-	BarkItemBuf ibuf[2];		/* this item's and the previous one's */
-	int			cur = 0;
 	bool		live;
 
 	LockBuffer(buf, BUFFER_LOCK_SHARE);
@@ -337,211 +320,23 @@ bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo)
 	}
 
 	/*
-	 * A deleted page has been unlinked from the tree and holds no items, only
-	 * its safexid.  It keeps the sibling links it had when it was deleted,
-	 * for readers that still held a link to it, and those siblings need not
-	 * link back to it any more, so the link checks below do not apply.  Check
-	 * only that it has the deleted-page layout (see BarkDeletedPageData).
+	 * The page by itself (barkverify.c): its layout, its entries' shapes and
+	 * sizes, LIST and POSTING members, OVERSIZED chains, markers, key order
+	 * and the high-key bound, and no unfinished split.  A deleted page gets
+	 * the layout check only, and the link checks below do not apply to it.
 	 */
+	bark_page_verify(rel, keyinfo, NULL, page, blkno,
+					 BARK_VERIFY_SHAPES | BARK_VERIFY_ORDER |
+					 BARK_VERIFY_CONTENTS | BARK_VERIFY_COMPLETE, ERROR);
 	if (BarkPageIsDeleted(opaque))
 	{
-		PageHeader	phdr = (PageHeader) page;
-
-		if (phdr->pd_lower != SizeOfPageHeaderData ||
-			phdr->pd_upper != phdr->pd_special -
-			MAXALIGN(sizeof(BarkDeletedPageData)) ||
-			(opaque->bark_flags & (BARK_LEAF | BARK_OVERFLOW)) != 0)
-			ereport(ERROR,
-					(errcode(ERRCODE_INDEX_CORRUPTED),
-					 errmsg("BARK index \"%s\" has a deleted page %u that does not have the deleted-page layout",
-							RelationGetRelationName(rel), blkno)));
 		UnlockReleaseBuffer(buf);
 		return false;
 	}
 
-	/* A clean index never leaves an unfinished split behind. */
-	if ((opaque->bark_flags & BARK_INCOMPLETE_SPLIT) != 0)
-		ereport(ERROR,
-				(errcode(ERRCODE_INDEX_CORRUPTED),
-				 errmsg("BARK index \"%s\" has an unfinished split on page %u",
-						RelationGetRelationName(rel), blkno)));
-
-	maxoff = PageGetMaxOffsetNumber(page);
-	firstdata = BarkPageFirstDataKey(opaque);
-
-	/*
-	 * A prefix-compressed page is a leaf whose PREFIX item, just after the
-	 * high key, is an IndexTupleData header with nothing but its size set,
-	 * followed by the prefix.  Its entries are checked as they decode, below;
-	 * bark_prefix_decode reports one that does not decode within its bounds
-	 * or claims more of the prefix than the page has.
-	 */
-	if (BarkPageHasPrefix(opaque))
-	{
-		OffsetNumber poff = BarkPagePrefixOff(opaque);
-		ItemId		iid;
-		IndexTuple	pitem;
-		Size		plen;
-
-		if (!BarkPageIsLeaf(opaque) || maxoff < poff)
-			ereport(ERROR,
-					(errcode(ERRCODE_INDEX_CORRUPTED),
-					 errmsg("BARK index \"%s\" has a prefix-compressed page %u that is not a leaf with a prefix item",
-							RelationGetRelationName(rel), blkno)));
-		iid = PageGetItemId(page, poff);
-		pitem = (IndexTuple) PageGetItem(page, iid);
-		plen = ItemIdGetLength(iid);
-		if (plen <= sizeof(IndexTupleData) ||
-			plen > sizeof(IndexTupleData) + BARK_PREFIX_MAX ||
-			pitem->t_info != plen ||
-			ItemPointerGetBlockNumberNoCheck(&pitem->t_tid) != 0 ||
-			ItemPointerGetOffsetNumberNoCheck(&pitem->t_tid) != 0)
-			ereport(ERROR,
-					(errcode(ERRCODE_INDEX_CORRUPTED),
-					 errmsg("BARK index \"%s\" has a malformed prefix item on page %u",
-							RelationGetRelationName(rel), blkno)));
-	}
-
-	/*
-	 * The high key, when present, is the first item on a non-rightmost page.
-	 * It is a pivot with at least one key attribute: only a page's downlink
-	 * can be minus infinity.
-	 */
-	if (!BarkPageRightmost(opaque) && maxoff >= BARK_P_HIKEY)
-	{
+	if (!BarkPageRightmost(opaque) &&
+		PageGetMaxOffsetNumber(page) >= BARK_P_HIKEY)
 		hikey = (IndexTuple) PageGetItem(page, PageGetItemId(page, BARK_P_HIKEY));
-		if (BarkEntryIsLeafData(hikey) &&
-			(BarkEntryGetShape(hikey) != BARK_SHAPE_OVERSIZED ||
-			 BarkOverflowIsLeaf(hikey)))
-			ereport(ERROR,
-					(errcode(ERRCODE_INDEX_CORRUPTED),
-					 errmsg("BARK index \"%s\" has a high key on page %u that is not a pivot",
-							RelationGetRelationName(rel), blkno)));
-		hikeynatts = BarkEntryGetPivotNAtts(hikey);
-		if (hikeynatts < 1 || hikeynatts > keyinfo->nkeys)
-			ereport(ERROR,
-					(errcode(ERRCODE_INDEX_CORRUPTED),
-					 errmsg("BARK index \"%s\" has a high key with %d key attributes on page %u",
-							RelationGetRelationName(rel), hikeynatts, blkno)));
-	}
-
-	for (OffsetNumber off = firstdata; off <= maxoff;
-		 off = OffsetNumberNext(off))
-	{
-		IndexTuple	itup = BarkPageGetItem(page, off, &ibuf[cur]);
-
-		/*
-		 * A LIST entry (sorted duplicates) on a leaf page must carry at least
-		 * two locators, stored strictly ascending.  A POSTING entry must hold
-		 * a valid sbm serialization with at least two members.  SINGLE
-		 * entries and pivots need no extra checks here.  No leaf entry may
-		 * exceed the item ceiling the insert and vacuum paths keep to (an
-		 * OVERSIZED entry is a small stub, so it always passes).  These come
-		 * first: the order and marker checks below read the entry's heap TIDs
-		 * and key, which a corrupt LIST, POSTING or overflow chain would make
-		 * them fail on without saying where.
-		 */
-		if (BarkPageIsLeaf(opaque))
-		{
-			if (IndexTupleSize(itup) > BarkMaxItemSize)
-				ereport(ERROR,
-						(errcode(ERRCODE_INDEX_CORRUPTED),
-						 errmsg("BARK index \"%s\" has a %zu-byte leaf entry on page %u at offset %u, larger than the %zu-byte limit",
-								RelationGetRelationName(rel), IndexTupleSize(itup),
-								blkno, off, (Size) BarkMaxItemSize)));
-
-			/*
-			 * Insert and CREATE INDEX both store a row too large to stay
-			 * inline as an OVERSIZED entry, so a SINGLE never is one.
-			 */
-			if (BarkEntryGetShape(itup) == BARK_SHAPE_SINGLE &&
-				bark_len_is_oversized(IndexTupleSize(itup)))
-				ereport(ERROR,
-						(errcode(ERRCODE_INDEX_CORRUPTED),
-						 errmsg("BARK index \"%s\" has a %zu-byte SINGLE entry on page %u at offset %u that should be OVERSIZED",
-								RelationGetRelationName(rel), IndexTupleSize(itup),
-								blkno, off)));
-
-			/*
-			 * A unique index's entries have one heap TID each, whatever
-			 * wrote them (bark_index_coalesces); bark_check_unique refuses
-			 * any other as corruption, so an insert of the key would fail.
-			 */
-			if (rel->rd_index->indisunique &&
-				(BarkEntryGetShape(itup) == BARK_SHAPE_LIST ||
-				 BarkEntryGetShape(itup) == BARK_SHAPE_POSTING))
-				ereport(ERROR,
-						(errcode(ERRCODE_INDEX_CORRUPTED),
-						 errmsg("unique BARK index \"%s\" has an entry with several heap TIDs on page %u at offset %u",
-								RelationGetRelationName(rel), blkno, off)));
-
-			if (BarkEntryGetShape(itup) == BARK_SHAPE_LIST)
-				bark_check_list(rel, blkno, off, itup);
-			else if (BarkEntryGetShape(itup) == BARK_SHAPE_POSTING)
-				bark_check_posting(rel, blkno, off, itup);
-			else if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED)
-				bark_check_oversized(rel, blkno, off, itup, keyinfo);
-
-			bark_check_marker(rel, keyinfo, blkno, off, itup);
-		}
-		else if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED)
-		{
-			/* An oversized downlink / high key also has a chain to validate. */
-			bark_check_oversized(rel, blkno, off, itup, keyinfo);
-		}
-
-		/*
-		 * Keys must be in non-decreasing order within the page, and on a
-		 * leaf, the heap TIDs of a run of equal keys in ascending order: each
-		 * entry's lowest TID above the previous entry's highest.
-		 */
-		if (prev != NULL)
-		{
-			int			cmp = bark_compare_itups(keyinfo, rel, prev, itup);
-
-			if (cmp > 0)
-				ereport(ERROR,
-						(errcode(ERRCODE_INDEX_CORRUPTED),
-						 errmsg("BARK index \"%s\" has out-of-order keys on page %u at offset %u",
-								RelationGetRelationName(rel), blkno, off)));
-			if (cmp == 0 && BarkPageIsLeaf(opaque) &&
-				bark_check_compare_leaf(rel, keyinfo, prev, true, itup) >= 0)
-				ereport(ERROR,
-						(errcode(ERRCODE_INDEX_CORRUPTED),
-						 errmsg("BARK index \"%s\" has out-of-order heap TIDs among equal keys on page %u at offset %u",
-								RelationGetRelationName(rel), blkno, off)));
-		}
-
-		/*
-		 * Every data key must be within the page's high-key bound.  Equal
-		 * keys may sit on both sides of a page boundary, so a key may equal
-		 * an untruncated high key.  A truncated high key must be strictly
-		 * greater, which is what this test checks for it: a pivot with fewer
-		 * key attributes never compares equal to a full key.
-		 */
-		if (hikey != NULL &&
-			bark_compare_itups(keyinfo, rel, itup, hikey) > 0)
-			ereport(ERROR,
-					(errcode(ERRCODE_INDEX_CORRUPTED),
-					 errmsg("BARK index \"%s\" has a key past the high key on page %u at offset %u",
-							RelationGetRelationName(rel), blkno, off)));
-
-		/*
-		 * A leaf entry equal to the high key on every key attribute must lie
-		 * below the high key's heap TID, the lowest of the right sibling's
-		 * first entry; a high key without one would be minus infinity there.
-		 */
-		if (hikey != NULL && BarkPageIsLeaf(opaque) &&
-			bark_check_compare_leaf(rel, keyinfo, itup, true, hikey) >= 0)
-			ereport(ERROR,
-					(errcode(ERRCODE_INDEX_CORRUPTED),
-					 errmsg("BARK index \"%s\" has a heap TID past the high key on page %u at offset %u",
-							RelationGetRelationName(rel), blkno, off)));
-
-
-		prev = itup;
-		cur = 1 - cur;
-	}
 
 	/*
 	 * Cross-check the right-sibling link: the sibling's left link must point
@@ -721,241 +516,6 @@ bark_check_downlinks(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo)
 
 	pfree(children);
 	ReleaseBuffer(pbuf);
-}
-
-/*
- * Validate a LIST entry: it must carry at least two locators, and they must
- * be stored strictly ascending (the invariant the insert and vacuum paths
- * maintain, and the one the scan relies on to return TIDs in order).
- */
-static void
-bark_check_list(Relation rel, BlockNumber blkno, OffsetNumber off,
-				IndexTuple itup)
-{
-	int			n = BarkListGetCount(itup);
-	ItemPointer tids;
-
-	if (n < 2)
-		ereport(ERROR,
-				(errcode(ERRCODE_INDEX_CORRUPTED),
-				 errmsg("BARK index \"%s\" has a list entry with %d locators on page %u at offset %u",
-						RelationGetRelationName(rel), n, blkno, off)));
-
-	/*
-	 * Read the locators through the accessor so a delta+varbyte coded LIST
-	 * (BarkListIsCoded) is decoded; a plain LIST reads its array in place.
-	 */
-	tids = palloc_array(ItemPointerData, n);
-	bark_entry_get_tids(itup, tids, n, bark_index_tid_stride(rel));
-
-	for (int i = 1; i < n; i++)
-	{
-		if (ItemPointerCompare(&tids[i - 1], &tids[i]) >= 0)
-		{
-			pfree(tids);
-			ereport(ERROR,
-					(errcode(ERRCODE_INDEX_CORRUPTED),
-					 errmsg("BARK index \"%s\" has out-of-order list locators on page %u at offset %u",
-							RelationGetRelationName(rel), blkno, off)));
-		}
-	}
-	pfree(tids);
-}
-
-/*
- * Check a leaf entry against the rules for markers ("Markers" in
- * BARK-Design.mediawiki).  The reserved heap TID (BarkTidIsMarker) is only
- * ever the TID of a SINGLE entry, in an index with an extracted column
- * whose procedure 7 can return markers, and the entry's other key columns
- * are NULL.  It sorts after every real TID, so an
- * entry of any other shape that held it would hold it as its highest.
- *
- * That each (key, TID) of such an index has one entry needs no check of its
- * own: the TIDs of a run of equal keys are checked to ascend strictly, on a
- * page and across a page boundary, and within a LIST or POSTING entry.
- */
-static void
-bark_check_marker(Relation rel, BarkKeyInfo *keyinfo, BlockNumber blkno,
-				  OffsetNumber off, IndexTuple itup)
-{
-	int			extracted = bark_index_extracted_column(rel);
-	ItemPointerData lo;
-	ItemPointerData hi;
-
-	bark_entry_tid_range(itup, &lo, &hi, keyinfo->tidstride);
-	if (!BarkTidIsMarker(&hi))
-		return;
-
-	/* Procedure 7 returns markers through its fourth and fifth arguments. */
-	if (extracted == 0 ||
-		get_func_nargs(index_getprocid(rel, extracted,
-									   BARK_EXTRACTVALUE_PROC)) < 5)
-		ereport(ERROR,
-				(errcode(ERRCODE_INDEX_CORRUPTED),
-				 errmsg("BARK index \"%s\" has a marker on page %u at offset %u but no column with markers",
-						RelationGetRelationName(rel), blkno, off)));
-	if (BarkEntryGetShape(itup) != BARK_SHAPE_SINGLE)
-		ereport(ERROR,
-				(errcode(ERRCODE_INDEX_CORRUPTED),
-				 errmsg("BARK index \"%s\" has the reserved marker heap TID in an entry that is not SINGLE on page %u at offset %u",
-						RelationGetRelationName(rel), blkno, off)));
-	for (int i = 0; i < keyinfo->nkeys; i++)
-	{
-		bool		isnull;
-
-		(void) index_getattr(itup, i + 1, RelationGetDescr(rel), &isnull);
-		if ((i + 1 == extracted) == isnull)
-			ereport(ERROR,
-					(errcode(ERRCODE_INDEX_CORRUPTED),
-					 errmsg("BARK index \"%s\" has a marker on page %u at offset %u whose key column %d is %s",
-							RelationGetRelationName(rel), blkno, off, i + 1,
-							isnull ? "NULL" : "not NULL")));
-	}
-}
-
-/*
- * Validate a POSTING entry: its body must be a valid sbm serialization that
- * passes a structural self-check and holds at least two members (a smaller set
- * would never have been promoted from a LIST), and the entry must be at least
- * as large as a POSTING entry sized for the set's removal bound.  VACUUM
- * relies on that reserve to rewrite the entry in place after removing members.
- */
-static void
-bark_check_posting(Relation rel, BlockNumber blkno, OffsetNumber off,
-				   IndexTuple itup)
-{
-	Sbm		   *map = NULL;
-	Size		reserved;
-
-	if (BarkPostingDataFits(itup))
-		map = sbm_deserialize(BarkPostingGetData(itup),
-							  BarkPostingGetDataSize(itup));
-	if (map == NULL)
-		ereport(ERROR,
-				(errcode(ERRCODE_INDEX_CORRUPTED),
-				 errmsg("BARK index \"%s\" has a corrupt posting set on page %u at offset %u",
-						RelationGetRelationName(rel), blkno, off)));
-
-	if (!sbm_validate(map) || sbm_cardinality(map) < 2)
-	{
-		size_t		card = sbm_cardinality(map);
-
-		sbm_free(map);
-		ereport(ERROR,
-				(errcode(ERRCODE_INDEX_CORRUPTED),
-				 errmsg("BARK index \"%s\" has an invalid posting set (%zu members) on page %u at offset %u",
-						RelationGetRelationName(rel), card, blkno, off)));
-	}
-
-	reserved = BarkPostingEntrySize(BarkEntryGetBodyOffset(itup),
-									sbm_removal_bound(map));
-	sbm_free(map);
-	if (IndexTupleSize(itup) < reserved)
-		ereport(ERROR,
-				(errcode(ERRCODE_INDEX_CORRUPTED),
-				 errmsg("BARK index \"%s\" has a %zu-byte posting entry on page %u at offset %u, smaller than the %zu bytes its set's removal bound requires",
-						RelationGetRelationName(rel), IndexTupleSize(itup),
-						blkno, off, reserved)));
-}
-
-/*
- * Validate an OVERSIZED entry: its overflow chain must be reachable and yield
- * exactly the recorded number of bytes (so the full tuple can be reconstructed
- * and compared), and the reconstructed tuple's leading key must agree with the
- * entry's position in key order (checked implicitly by the per-page order and
- * high-key checks, which fetch the chain through bark_compare_itups).  Here we
- * verify the chain structure directly: every page a BARK_OVERFLOW page, linked
- * through to the recorded length, with no premature terminus.
- */
-static void
-bark_check_oversized(Relation rel, BlockNumber blkno, OffsetNumber off,
-					 IndexTuple itup, BarkKeyInfo *keyinfo)
-{
-	BarkOverflowRef *ref = BarkOverflowGetRef(itup);
-	uint32		fulllen = ref->fulllen;
-	BlockNumber chainblk = BarkOverflowGetFirstBlock(itup);
-	BlockNumber npages = RelationGetNumberOfBlocks(rel);
-	uint32		got = 0;
-	IndexTuple	full;
-
-	while (chainblk != BARK_P_NONE && got < fulllen)
-	{
-		Buffer		cbuf;
-		Page		cpage;
-		BarkPageOpaque copaque;
-
-		if (chainblk >= npages)
-			ereport(ERROR,
-					(errcode(ERRCODE_INDEX_CORRUPTED),
-					 errmsg("BARK index \"%s\" oversized entry on page %u at offset %u points at out-of-range overflow block %u",
-							RelationGetRelationName(rel), blkno, off, chainblk)));
-
-		cbuf = ReadBuffer(rel, chainblk);
-		LockBuffer(cbuf, BUFFER_LOCK_SHARE);
-		cpage = BufferGetPage(cbuf);
-
-		/* A new page has no special space to read the flags from. */
-		if (PageIsNew(cpage) ||
-			!BarkPageIsOverflow((copaque = BarkPageGetOpaque(cpage))))
-		{
-			UnlockReleaseBuffer(cbuf);
-			ereport(ERROR,
-					(errcode(ERRCODE_INDEX_CORRUPTED),
-					 errmsg("BARK index \"%s\" oversized entry on page %u at offset %u references non-overflow block %u",
-							RelationGetRelationName(rel), blkno, off, chainblk)));
-		}
-
-		got += Min((uint32) BarkOverflowChunkSize, fulllen - got);
-		chainblk = copaque->bark_next;
-		UnlockReleaseBuffer(cbuf);
-	}
-
-	if (got != fulllen)
-		ereport(ERROR,
-				(errcode(ERRCODE_INDEX_CORRUPTED),
-				 errmsg("BARK index \"%s\" oversized entry on page %u at offset %u has a truncated overflow chain (%u of %u bytes)",
-						RelationGetRelationName(rel), blkno, off, got, fulllen)));
-
-	/* The reconstructed tuple must deform without error. */
-	full = bark_fetch_oversized(rel, itup);
-
-	/*
-	 * If the entry carries an inline comparison prefix, it must match the
-	 * leading bytes of the reconstructed first key column (that is the
-	 * invariant the compare fast path relies on).
-	 */
-	if (ref->prefixlen > 0)
-	{
-		TupleDesc	tupdesc = RelationGetDescr(rel);
-		Datum		d;
-		bool		isnull;
-
-		d = index_getattr(full, 1, tupdesc, &isnull);
-		if (isnull)
-			ereport(ERROR,
-					(errcode(ERRCODE_INDEX_CORRUPTED),
-					 errmsg("BARK index \"%s\" oversized entry on page %u at offset %u has a prefix but a NULL first key column",
-							RelationGetRelationName(rel), blkno, off)));
-		else
-		{
-			char	   *data = VARDATA_ANY(DatumGetPointer(d));
-			Size		fulllen1 = VARSIZE_ANY_EXHDR(DatumGetPointer(d));
-
-			if (ref->prefixcomplete && fulllen1 != ref->prefixlen)
-				ereport(ERROR,
-						(errcode(ERRCODE_INDEX_CORRUPTED),
-						 errmsg("BARK index \"%s\" oversized entry on page %u at offset %u claims a complete %u-byte prefix but the first key column is %zu bytes",
-								RelationGetRelationName(rel), blkno, off,
-								ref->prefixlen, fulllen1)));
-			if (fulllen1 < ref->prefixlen ||
-				memcmp(data, ref->prefix, ref->prefixlen) != 0)
-				ereport(ERROR,
-						(errcode(ERRCODE_INDEX_CORRUPTED),
-						 errmsg("BARK index \"%s\" oversized entry on page %u at offset %u has a prefix that does not match its first key column",
-								RelationGetRelationName(rel), blkno, off)));
-		}
-	}
-	pfree(full);
 }
 
 /*
