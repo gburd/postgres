@@ -4569,7 +4569,7 @@ check_inplace_rel_lock(HeapTuple oldtup)
 
 /*
  * Check if the specified attribute's values are the same.  Subroutine for
- * HeapDetermineColumnsInfo.
+ * HeapUpdateModifiedIdxAttrs.
  */
 static bool
 heap_attr_equals(TupleDesc tupdesc, int attrnum, Datum value1, Datum value2,

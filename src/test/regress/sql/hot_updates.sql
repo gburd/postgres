@@ -182,7 +182,6 @@ UPDATE hot_test_partitioned SET data = 'updated2' WHERE id = 2;
 
 SELECT pg_stat_force_next_flush();
 SELECT * FROM get_hot_count('hot_test_part1');
-SELECT pg_stat_force_next_flush();
 SELECT * FROM get_hot_count('hot_test_part2');
 
 SELECT id FROM hot_test_partitioned WHERE indexed_col = 100;

@@ -257,12 +257,6 @@ SELECT * FROM get_hot_count('hot_test_part1');
        1 |   1
 (1 row)
 
-SELECT pg_stat_force_next_flush();
- pg_stat_force_next_flush 
---------------------------
- 
-(1 row)
-
 SELECT * FROM get_hot_count('hot_test_part2');
  updates | hot 
 ---------+-----
