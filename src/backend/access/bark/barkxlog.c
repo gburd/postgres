@@ -719,6 +719,10 @@ bark_xlog_add_tid(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		/* The page validator's tests corrupt the entry here (barkverify.c). */
+#ifdef USE_INJECTION_POINTS
+		bark_verify_plant_fault(page, xlrec->offnum);
+#endif
 		bark_verify_redo(record, 0, buffer);
 	}
 	if (BufferIsValid(buffer))

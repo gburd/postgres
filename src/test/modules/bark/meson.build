@@ -58,6 +58,7 @@ tests += {
       't/011_insert_multi_recovery.pl',
       't/012_codedlist_recovery.pl',
       't/013_btree_impl_dump_upgrade.pl',
+      't/014_page_validator.pl',
     ],
   },
 }
