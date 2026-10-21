@@ -954,7 +954,9 @@ value stored plain as unchanged for every index.  That leaves the
 extracted column, and the other columns, scalar keys and INCLUDE columns,
 of an index whose extracted column uses GIN's query interface, which
 returns no column.  Those are stored as given, so yes means the same bytes
-once detoasted (datum_image_eq): numeric 1.0 and 1.00 differ.
+once detoasted (datum_image_eq): numeric 1.0 and 1.00 differ.  Core never
+asks about an exclusion constraint's index: an extracted column cannot be
+in one (bark_check_multikey_index), so all of its columns can be returned.
 
 For the extracted column both values go through bark_extract_row_keys, as
 an insert's do, and yes means the same number of keys, NULL in the same

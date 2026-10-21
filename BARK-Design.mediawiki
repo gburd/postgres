@@ -1903,7 +1903,11 @@ must be among the old value's, since a new marker is an insert the index
 needs and markers are never removed. A GIN-interface column that is not
 equalimage and coalesces compares by procedure 1 only: its entries keep
 the first row's image of an equal key, as GIN's do. Not-ready and
-invalid indexes answer no. Unique indexes are
+invalid indexes answer no. Core does not ask about an
+exclusion-constraint index: only a scalar column can be in a BARK
+exclusion constraint, so every column of one can be returned, and core
+keeps its entries only for the same value, which needs no new check of
+the constraint. Unique indexes are
 answered like any other (the HOT chain keeps the old entries pointing at the live
 version, so later inserts still conflict), though core asks only about a
 partial one. An optional opclass procedure that answers without
