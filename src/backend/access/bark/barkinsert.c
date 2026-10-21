@@ -526,7 +526,7 @@ bark_insert_entry(Relation index, Buffer buf, IndexTuple itup,
 
 	END_CRIT_SECTION();
 
-	bark_verify_page_change(index, buf);
+	bark_verify_entries_change(index, buf, off, off);
 	if (BufferIsValid(cbuf))
 		bark_verify_page_change(index, cbuf);
 
@@ -611,7 +611,7 @@ bark_insert_multi(Relation index, Buffer buf, IndexTuple *itups, int n,
 
 	END_CRIT_SECTION();
 
-	bark_verify_page_change(index, buf);
+	bark_verify_entries_change(index, buf, offs[0], offs[n - 1]);
 
 	pfree(data);
 }
@@ -662,7 +662,7 @@ bark_overwrite_entry(Relation index, Buffer buf, OffsetNumber off,
 
 	END_CRIT_SECTION();
 
-	bark_verify_page_change(index, buf);
+	bark_verify_entries_change(index, buf, off, off);
 
 	if (coded != itup)
 		pfree(coded);
@@ -717,7 +717,7 @@ bark_add_tid_entry(Relation index, Buffer buf, OffsetNumber off,
 #ifdef USE_INJECTION_POINTS
 	bark_verify_plant_fault(page, off);
 #endif
-	bark_verify_page_change(index, buf);
+	bark_verify_entries_change(index, buf, off, off);
 
 	if (coded != ext)
 		pfree(coded);
@@ -795,7 +795,7 @@ bark_swap_tid_entry(Relation index, Buffer buf, OffsetNumber off,
 
 	END_CRIT_SECTION();
 
-	bark_verify_page_change(index, buf);
+	bark_verify_entries_change(index, buf, off, OffsetNumberNext(off));
 
 	if (lcoded != left)
 		pfree(lcoded);

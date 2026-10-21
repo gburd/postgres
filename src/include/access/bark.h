@@ -1449,15 +1449,20 @@ extern void bark_page_verify(Relation index, BarkKeyInfo *keyinfo,
 #ifdef USE_ASSERT_CHECKING
 extern PGDLLIMPORT bool bark_verify_pages;
 extern void bark_verify_page_change_impl(Relation index, Buffer buf,
+										 OffsetNumber lo, OffsetNumber hi,
 										 const char *caller);
 #define bark_verify_page_change(index, buf) \
-	bark_verify_page_change_impl((index), (buf), __func__)
+	bark_verify_page_change_impl((index), (buf), InvalidOffsetNumber, \
+								 InvalidOffsetNumber, __func__)
+#define bark_verify_entries_change(index, buf, lo, hi) \
+	bark_verify_page_change_impl((index), (buf), (lo), (hi), __func__)
 #else
 #define bark_verify_page_change(index, buf) ((void) 0)
+#define bark_verify_entries_change(index, buf, lo, hi) ((void) 0)
 #endif
 struct XLogReaderState;
 extern void bark_verify_redo(struct XLogReaderState *record, uint8 block_id,
-							 Buffer buf);
+							 Buffer buf, OffsetNumber lo, OffsetNumber hi);
 #ifdef USE_INJECTION_POINTS
 extern void bark_verify_plant_fault(Page page, OffsetNumber off);
 #endif
