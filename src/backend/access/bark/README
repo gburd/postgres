@@ -1195,11 +1195,12 @@ marks the entry of a row its fetch finds dead to everyone, as nbtree's
 _bt_check_unique does.  amcheck accepts marks anywhere, and heapallindexed
 does not fingerprint a marked entry, as verify_nbtree.c does not (except
 in a transaction that started in recovery, for the reason above).  The
-merge pass leaves marked entries alone: a merged entry would hide the mark.
-An insert does not coalesce into a marked entry; a TID above its range gets
-a SINGLE, and a TID inside it first has simple deletion delete the marked
-entries, as nbtree's _bt_findinsertloc deletes a dead posting list that a
-new TID falls into.
+merge pass runs after simple deletion has deleted the marked entries; one
+merged all the same (no heap relation, or past PG_INT16_MAX TIDs) loses its
+mark.  An insert does not coalesce into a marked entry; a TID above its
+range gets a SINGLE, and a TID inside it first has simple deletion delete
+the marked entries, as nbtree's _bt_findinsertloc deletes a dead posting
+list that a new TID falls into.
 
 Simple deletion.  An insert that would split a leaf first runs
 bark_simple_delete, nbtree's _bt_simpledel_pass, before bottom-up deletion
