@@ -247,6 +247,19 @@ dioptions(Datum reloptions, bool validate)
 }
 
 /*
+ * amcanreturn: with option_ternary_1 set to true, claim that every column
+ * can be returned, so that amcomparedatums is not to be asked about it.
+ * (The index cannot actually be scanned.)
+ */
+static bool
+dicanreturn(Relation index, int attno)
+{
+	DummyIndexOptions *opts = (DummyIndexOptions *) index->rd_options;
+
+	return opts != NULL && opts->option_ternary_1 == PG_TERNARY_TRUE;
+}
+
+/*
  * Would newValue give the same entries as oldValue?  The dummy index stores
  * nothing, so any answer is correct.  For testing the executor's use of
  * amcomparedatums: with option_real set to 1, int4 values that are equal
@@ -346,7 +359,7 @@ dihandler(PG_FUNCTION_ARGS)
 		.aminsert = diinsert,
 		.ambulkdelete = dibulkdelete,
 		.amvacuumcleanup = divacuumcleanup,
-		.amcanreturn = NULL,
+		.amcanreturn = dicanreturn,
 		.amcostestimate = dicostestimate,
 		.amgettreeheight = NULL,
 		.amoptions = dioptions,

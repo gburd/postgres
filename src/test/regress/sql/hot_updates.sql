@@ -430,6 +430,34 @@ UPDATE hot_expr_cic SET x = 1 WHERE id = 2;
 SELECT * FROM hot_expr_cic ORDER BY id;
 DROP TABLE hot_expr_cic;
 
+-- Writing back a value that is stored compressed in the old row, and not
+-- yet in the new one.  An SP-GiST index, whose access method cannot compare
+-- entries, and which returns the value in index-only scans.
+SELECT * FROM update_case(
+  $$CREATE TABLE hot_expr_test (id int PRIMARY KEY, t text) WITH (fillfactor = 50);
+    CREATE INDEX ON hot_expr_test USING spgist (t);
+    INSERT INTO hot_expr_test SELECT g, repeat('x', 3000) || g FROM generate_series(1, 10) g$$,
+  $$UPDATE hot_expr_test SET t = repeat('x', 3000) || id$$);
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*) FROM hot_expr_test WHERE t = repeat('x', 3000) || 7;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+-- The same in a partial index evaluated for another column's change.
+SELECT * FROM update_case(
+  $$CREATE TABLE hot_expr_test (id int PRIMARY KEY, t text, x int) WITH (fillfactor = 50);
+    CREATE INDEX ON hot_expr_test (t) WHERE x >= 0;
+    INSERT INTO hot_expr_test SELECT g, repeat('x', 3000) || g, 0 FROM generate_series(1, 10) g$$,
+  $$UPDATE hot_expr_test SET t = repeat('x', 3000) || id, x = x + 1$$);
+-- ... but not for a column of a unique index, which the table's lock
+-- strength is decided by as stored.
+SELECT * FROM update_case(
+  $$CREATE TABLE hot_expr_test (id int, t text) WITH (fillfactor = 50);
+    CREATE UNIQUE INDEX ON hot_expr_test (t);
+    INSERT INTO hot_expr_test SELECT g, repeat('x', 2000) || g FROM generate_series(1, 10) g$$,
+  $$UPDATE hot_expr_test SET t = repeat('x', 2000) || id$$);
+DROP TABLE hot_expr_test;
+
 DROP FUNCTION update_case(text, text);
 
 DROP FUNCTION get_hot_count(text);

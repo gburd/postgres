@@ -30,6 +30,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#include "access/genam.h"
 #include "access/htup_details.h"
 #include "access/multixact.h"
 #include "access/parallel.h"
@@ -5538,7 +5539,8 @@ restart:
 													attrnum - FirstLowInvalidHeapAttributeNumber);
 					if (indexDesc->rd_indam->amcomparedatums != NULL &&
 						(!indexDesc->rd_index->indisexclusion ||
-						 indexDesc->rd_index->indimmediate))
+						 indexDesc->rd_index->indimmediate) &&
+						!index_can_return(indexDesc, i + 1))
 						cmpattrs = bms_add_member(cmpattrs,
 												  attrnum - FirstLowInvalidHeapAttributeNumber);
 					else

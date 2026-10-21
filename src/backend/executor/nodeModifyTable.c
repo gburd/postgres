@@ -55,6 +55,7 @@
 #include "postgres.h"
 
 #include "access/amapi.h"
+#include "access/genam.h"
 #include "access/htup_details.h"
 #include "access/tableam.h"
 #include "access/tupconvert.h"
@@ -81,6 +82,7 @@
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
+#include "varatt.h"
 
 
 typedef struct MTTargetRelLookup
@@ -199,11 +201,93 @@ static TupleTableSlot *ExecMergeNotMatched(ModifyTableContext *context,
 										   bool canSetTag);
 
 /*
+ * Are two varlena values that differ as stored the same value?  They can
+ * only be if one of them is compressed or stored out of line; otherwise the
+ * stored bytes are the value.  datum_image_eq() then compares them
+ * detoasted, which it skips when their sizes differ.  Any index makes the
+ * same entries for the same value, so for HOT the two are the same.
+ */
+static bool
+VarlenaImageEqual(Datum value1, Datum value2)
+{
+	varlena    *v1 = (varlena *) DatumGetPointer(value1);
+	varlena    *v2 = (varlena *) DatumGetPointer(value2);
+
+	if (!VARATT_IS_EXTERNAL(v1) && !VARATT_IS_COMPRESSED(v1) &&
+		!VARATT_IS_EXTERNAL(v2) && !VARATT_IS_COMPRESSED(v2))
+		return false;
+	return datum_image_eq(value1, value2, false, -1);
+}
+
+/*
+ * Remove from attrs, the indexed attributes whose values differ as stored
+ * between old_tts and new_tts, those that are the same value stored
+ * differently: the old one compressed or out of line, say, and the new one
+ * not yet, as when an UPDATE writes back the value a row has.  No index needs
+ * a new entry for them.  Attributes of candidate keys and the replica
+ * identity stay, as the table AM decides its lock strength and what it logs
+ * from the values as stored.
+ */
+static Bitmapset *
+DropRestoredAttrs(Relation relation, Bitmapset *attrs,
+				  TupleTableSlot *old_tts, TupleTableSlot *new_tts,
+				  EState *estate)
+{
+	TupleDesc	tupdesc = RelationGetDescr(relation);
+	Bitmapset  *keepattrs = NULL;
+	bool		fetched = false;
+	MemoryContext oldcxt;
+	int			attidx = -1;
+
+	oldcxt = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
+	while ((attidx = bms_next_member(attrs, attidx)) >= 0)
+	{
+		AttrNumber	attrnum = attidx + FirstLowInvalidHeapAttributeNumber;
+		Datum		value1,
+					value2;
+		bool		null1,
+					null2;
+
+		if (attrnum <= 0 ||
+			TupleDescCompactAttr(tupdesc, attrnum - 1)->attlen != -1)
+			continue;
+		value1 = slot_getattr(old_tts, attrnum, &null1);
+		value2 = slot_getattr(new_tts, attrnum, &null2);
+		if (null1 || null2 || !VarlenaImageEqual(value1, value2))
+			continue;
+
+		if (!fetched)
+		{
+			Bitmapset  *idattrs;
+
+			MemoryContextSwitchTo(oldcxt);
+			keepattrs = RelationGetIndexAttrBitmap(relation,
+												   INDEX_ATTR_BITMAP_KEY);
+			idattrs = RelationGetIndexAttrBitmap(relation,
+												 INDEX_ATTR_BITMAP_IDENTITY_KEY);
+			keepattrs = bms_add_members(keepattrs, idattrs);
+			bms_free(idattrs);
+			MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
+			fetched = true;
+		}
+		if (!bms_is_member(attidx, keepattrs))
+			attrs = bms_del_member(attrs, attidx);
+	}
+	MemoryContextSwitchTo(oldcxt);
+	bms_free(keepattrs);
+
+	return attrs;
+}
+
+/*
  * Do the old and new index datums differ?  Compare each column as the type
  * FormIndexDatum() produced it in: the table column's type or the
  * expression's, which need not be the type the index stores.  Datums that
- * differ byte for byte may still give the index the same entries; if its
- * access method can tell (amcomparedatums), ask it.
+ * differ byte for byte may be the same value stored differently, which gives
+ * any index the same entries.  Other datums that differ may still give the
+ * index the same entries; if its access method can tell (amcomparedatums),
+ * ask it, but not for a column the index can return in index-only scans,
+ * where only the same value will do.
  *
  * *valchanged is set if some datum differs byte for byte although the
  * entries are the same.  That matters for an exclusion constraint's index:
@@ -257,7 +341,9 @@ IndexDatumsDiffer(Relation heapRel, Relation indexRel, IndexInfo *indexInfo,
 		if (old_isnull[i] ||
 			datumIsEqual(old_values[i], new_values[i], typbyval, typlen))
 			continue;
-		if (cmp == NULL ||
+		if (typlen == -1 && VarlenaImageEqual(old_values[i], new_values[i]))
+			continue;
+		if (cmp == NULL || index_can_return(indexRel, i + 1) ||
 			!cmp(indexRel, indexInfo, i + 1, typid, typlen, typbyval,
 				 old_values[i], new_values[i]))
 			return true;
@@ -556,6 +642,10 @@ ExecUpdateModifiedIdxAttrs(ResultRelInfo *resultRelInfo,
 
 	attrs = table_slot_modified_idx_attrs(relation, old_tts, new_tts);
 
+	if (bms_is_empty(attrs))
+		return attrs;
+
+	attrs = DropRestoredAttrs(relation, attrs, old_tts, new_tts, estate);
 	if (bms_is_empty(attrs))
 		return attrs;
 

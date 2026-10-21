@@ -45,6 +45,17 @@ UPDATE dummy_cmp SET a = a + 10;
 SELECT * FROM dummy_cmp_hot();
 COMMIT;
 DROP INDEX dummy_cmp_a2;
+-- Nor is the callback asked about a column the index says it can return in
+-- index-only scans (option_ternary_1 makes dummy_index_am say so): a + 10
+-- is not HOT then.
+ALTER INDEX dummy_cmp_a SET (option_ternary_1 = true);
+-- count from zero: flush what earlier transactions counted
+SELECT pg_stat_force_next_flush();
+BEGIN;
+UPDATE dummy_cmp SET a = a + 10;
+SELECT * FROM dummy_cmp_hot();
+COMMIT;
+ALTER INDEX dummy_cmp_a RESET (option_ternary_1);
 -- The columns of a unique index that a foreign key could reference are
 -- never compared this way.  (Nor are those of the replica identity, but an
 -- index that can be the replica identity is always such a key.)  Without

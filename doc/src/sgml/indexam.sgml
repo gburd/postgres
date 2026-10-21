@@ -937,7 +937,9 @@ amcomparedatums (Relation indexRelation,
    type of the table column or index expression, which need not be the type
    the index stores), whose length and by-value property are
    <parameter>typlen</parameter> and <parameter>typbyval</parameter>, and
-   are not equal byte for byte.  The function is
+   are not equal byte for byte, nor once detoasted: the executor itself
+   treats two values that are the same, but stored differently, as giving
+   the same entries in any index.  The function is
    called during <command>UPDATE</command>, before the table access method
    is, for every index that uses a column whose value changed; if every such
    index answers <literal>true</literal> for every changed column, the update
@@ -953,9 +955,10 @@ amcomparedatums (Relation indexRelation,
    So <literal>true</literal> is only correct if no scan can tell the old
    entries from the ones the new value would make: they must have the same
    keys, compared as the index compares them, and anything a scan returns
-   from them must be the same.  An index that can return stored values in
-   index-only scans must store identical bytes for both values.  If the
-   function cannot be sure, it must return <literal>false</literal>, which
+   from them must be the same.  The function is not called for a column the
+   index can return in index-only scans (see <function>amcanreturn</function>):
+   the index stores the value itself there, so only the same value gives the
+   same entries.  If the function cannot be sure, it must return <literal>false</literal>, which
    is always correct.  It must not modify the index, and it may be called for
    an index that is not yet valid.  Columns of unique indexes that can be
    referenced by a foreign key, and of the replica identity index, are not

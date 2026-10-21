@@ -1128,7 +1128,12 @@ data. Empty in ordinary tables.</entry>
      unique indexes that a foreign key can reference, of the replica
      identity index, or of deferrable exclusion constraints.  It does apply
      to other exclusion constraints, which are then checked against the new
-     values although no index entry is made.
+     values although no index entry is made.  Nor is a column changed whose
+     new value is the same as the old one, only stored differently, as when
+     the old value is compressed or stored out of line
+     (see <xref linkend="storage-toast"/>) and an update writes it back;
+     except for the columns of those unique and replica identity indexes,
+     this holds for every kind of index.
      </para>
    </listitem>
    <listitem>
