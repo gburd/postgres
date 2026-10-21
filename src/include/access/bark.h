@@ -1497,6 +1497,19 @@ extern IndexTuple bark_form_full_tuple(TupleDesc tupdesc, const Datum *values,
 extern bool bark_len_is_oversized(Size fulllen);
 
 /*
+ * Checks of one page by itself (barkverify.c), shared by amcheck and the
+ * cassert page validator.  See the file header there for what each covers.
+ */
+#define BARK_VERIFY_SHAPES		(1 << 0)	/* layout, entry shapes and sizes */
+#define BARK_VERIFY_ORDER		(1 << 1)	/* key order, by the comparators */
+#define BARK_VERIFY_CONTENTS	(1 << 2)	/* markers, overflow chains */
+#define BARK_VERIFY_COMPLETE	(1 << 3)	/* no unfinished split */
+
+extern void bark_page_verify(Relation index, BarkKeyInfo *keyinfo,
+							 const char *relname, Page page,
+							 BlockNumber blkno, int flags, int elevel);
+
+/*
  * Number of overflow pages the chain for a tuple of `fulllen` bytes needs.
  */
 extern BlockNumber bark_overflow_nchunks(Size fulllen);

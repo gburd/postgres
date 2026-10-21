@@ -67,6 +67,8 @@ The code
   barkxlog.c      WAL redo (bark_redo) and bark_mask
   barkvalidate.c  operator class validation (barkvalidate) and
                   barkadjustmembers
+  barkverify.c    the checks of one page by itself (bark_page_verify),
+                  which amcheck and the cassert page validator share
   ../rmgrdesc/barkdesc.c   WAL record descriptions for pg_waldump
 
 amcheck's checks are contrib/amcheck/verify_bark.c, pageinspect's
