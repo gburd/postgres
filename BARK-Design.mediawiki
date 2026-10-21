@@ -220,14 +220,43 @@ locator than the descriptor states. ''Status:'' BARK leaves
 <code>amcanvarlocator</code> false, because its format stores a fixed 6-byte
 <code>ItemPointerData</code>: SINGLE entries keep the locator in
 <code>t_tid</code>, LIST entries are arrays of it (a coded LIST packs the
-offset into 11 bits), and POSTING entries map a TID to the 64-bit key
-<code>block * MaxHeapTuplesPerPage + offset - 1</code>.
+offset into <code>max(11, bits of the stride)</code> bits), and POSTING
+entries map a TID to the 64-bit key <code>block * stride + offset - 1</code>,
+where the stride is the table's <code>max_offset</code> at CREATE INDEX,
+kept in the meta page (<code>bark_tid_stride</code>).
 <code>index_check_locator()</code> therefore admits a BARK index only on a
-table whose locator is fixed-width and fits in 6 bytes, and
-<code>bark_build()</code> refuses a table whose <code>max_offset</code>
-exceeds <code>MaxHeapTuplesPerPage</code>, the bound the POSTING key
-needs (the coded LIST's 2047 is looser); <code>ginbuild()</code> refuses
-such a table too.
+table whose locator is fixed-width and fits in 6 bytes; a larger
+<code>max_offset</code> (up to <code>MaxOffsetNumber</code>) is indexed, with
+the mappings laid out for it. <code>ginbuild()</code> refuses such a table.
+
+''As built (2026-10-20, TID stride).'' Phase 2 first refused, in
+<code>bark_build()</code>, a table whose <code>max_offset</code> exceeds
+<code>MaxHeapTuplesPerPage</code>; the refusal is gone. CREATE INDEX stores
+the table's <code>max_offset</code> as the index's TID stride in what was
+the padding after <code>bark_allequalimage</code>, so a heap index's pages
+are unchanged and an older meta page reads 0, meaning
+<code>MaxHeapTuplesPerPage</code>; no version change. Every TID mapping takes
+the stride: the POSTING key, the coded LIST (heap's 11 offset bits are
+GIN's; MaxOffsetNumber at BLCKSZ 8192 takes 12), and the scan seen set's
+radix-tree key. ADD_TID and INSERT_SWAP redo recompute their entry from the
+logged TID, so a record of an index whose stride is not heap's carries it
+after its struct. aminsert and the build callback refuse a TID past the
+stride (the table's locators changed without a rebuild). A GIN-interface
+index scan, whose result is a TIDBitmap of BARK's own, folds an offset past
+<code>TBM_MAX_TUPLES_PER_PAGE</code> into further bitmap pages of the same
+heap block, one-to-one and in TID order; the executor's bitmaps are not
+folded, since the planner makes no bitmap scan of such a table. REINDEX and
+ALTER TABLE ... SET ACCESS METHOD rebuild with the new table's stride. Tests:
+<code>bark_locator.sql</code> (the stride through CREATE INDEX [CONCURRENTLY],
+SET ACCESS METHOD both ways and REINDEX; the mappings on synthetic TIDs at
+291 and MaxOffsetNumber, offsets 291/292 and 2047/2048, blocks 0 and
+MaxBlockNumber; the insert guard), <code>bark_wideblock.sql</code> on
+<code>bark_test_wideblock</code>, a heap whose TIDs fold seven blocks into
+one, so offsets reach 2037 (builds, every entry shape, every scan, VACUUM,
+bottom-up deletion, CIC, each compared with a seqscan and checked by
+<code>bark_index_check</code>), and <code>t/002_wideblock_recovery.pl</code>
+(standby replay under <code>wal_consistency_checking</code>, and crash
+recovery).
 The other fields ask nothing of an index AM: <code>stable</code> and
 <code>old_version_retained</code> are the executor's, and the bitmap
 callbacks are the table AM's. A wider locator would need a format change;

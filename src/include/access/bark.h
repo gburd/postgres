@@ -912,9 +912,10 @@ BarkListIsCoded(const IndexTupleData *itup)
  * locator stored raw so BarkEntryGetBodyOffset gives the low end and this the
  * high end of the TID range in O(1) (bark_entry_tid_range is on the insert
  * descent's hot path).  The first locator is stored raw just after this
- * header; the remaining locators follow as varbyte deltas of their 48-bit
- * encodings (see bark_tid_to_vb in barkutils.c), ascending as the plain array
- * is.  nbytes covers only the delta stream.
+ * header; the remaining locators follow as varbyte deltas of their integer
+ * encodings, block << 11 | offset for heap (see bark_tid_to_vb in
+ * barkutils.c), ascending as the plain array is.  nbytes covers only the
+ * delta stream.
  */
 typedef struct BarkCodedListHdr
 {
@@ -967,11 +968,14 @@ BarkCodedListGetDeltas(IndexTupleData *itup)
  * A heap TID maps to an sbm index with a reversible, block-clustered encoding
  * so a run of TIDs on one heap block becomes a dense sbm run:
  *
- *     key    = (uint64) block * MaxHeapTuplesPerPage + (offset - 1)
- *     block  = key / MaxHeapTuplesPerPage
- *     offset = (key % MaxHeapTuplesPerPage) + 1
+ *     key    = (uint64) block * stride + (offset - 1)
+ *     block  = key / stride
+ *     offset = (key % stride) + 1
  *
- * (offset is 1-based on a heap page, so it is biased by one into the set.)
+ * where stride is the index's TID stride (bark_index_tid_stride), the
+ * table's largest locator offset at CREATE INDEX: MaxHeapTuplesPerPage for
+ * heap, up to MaxOffsetNumber for a table AM that declares more.  (offset is
+ * 1-based on a heap page, so it is biased by one into the set.)
  * ----------------------------------------------------------------------------
  */
 
@@ -1314,7 +1318,7 @@ extern IndexTuple bark_form_list(TupleDesc tupdesc, IndexTuple key,
  * Build the smaller of a plain and a delta+varbyte coded LIST entry for the
  * key columns of `key` and the `ntids` ascending, distinct locators in `tids`
  * (BARK_SHAPE_LIST either way; see BARK_LIST_CODED).  A coded LIST stores the
- * locators as 48-bit deltas, about 1-3 bytes each for a clustered or
+ * locators as deltas, about 1-3 bytes each for a clustered or
  * duplicate-heavy index, where the plain 6-bytes-each array is larger; a very
  * scattered set codes larger than plain, and then the plain LIST is returned.
  * Returns a palloc'd entry; it is the shape decision for LISTs, so every
@@ -1394,7 +1398,9 @@ extern IndexTuple bark_single_from_list(Relation index, IndexTuple entry,
  * POSTING shape: an inverted locator set stored as an sbm serialization.
  *
  * bark_tid_to_key / bark_key_to_tid are the reversible, block-clustered TID
- * <-> uint64 mapping documented in the POSTING accessor section above.
+ * <-> uint64 mapping documented in the POSTING accessor section above, at
+ * the index's TID stride; every function here that forms or reads a LIST or
+ * POSTING entry takes the stride too.
  *
  * bark_form_posting builds a POSTING entry from the key columns of `key` and
  * the `ntids` ascending locators in `tids`, sized for the set's removal
