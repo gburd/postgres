@@ -711,7 +711,10 @@ bark_verify_page_change_impl(Relation index, Buffer buf, OffsetNumber lo,
 	{
 		BarkKeyInfo *keyinfo = bark_build_keyinfo(index);
 
-		if (OffsetNumberIsValid(lo) && ++nlocal % BARK_VERIFY_FULL_EVERY == 0)
+		/* Tests force a whole-page check with bark-verify-force-full. */
+		if (OffsetNumberIsValid(lo) &&
+			(++nlocal % BARK_VERIFY_FULL_EVERY == 0 ||
+			 IS_INJECTION_POINT_ATTACHED("bark-verify-force-full")))
 			lo = hi = InvalidOffsetNumber;
 		bark_page_verify_range(index, keyinfo, NULL, page, ctx.blkno,
 							   BARK_VERIFY_SHAPES | BARK_VERIFY_ORDER, ERROR,
@@ -783,9 +786,9 @@ bark_verify_plant_fault(Page page, OffsetNumber off)
  * bark_verify_pages is on in the process doing the redo; by then the
  * primary's validator has checked the page in full, so a failure here means
  * redo built a page the primary did not (which wal_consistency_checking
- * would also report, but only on records that carry an image).  As in a
- * backend, a record that changed the entries at lo..hi has only those and
- * their neighbours checked, but every BARK_VERIFY_FULL_EVERY-th one.
+ * would also report, but only on records that carry an image).  A record
+ * that changed only the entries at lo..hi (an insert, overwrite, added TID
+ * or divided entry) is checked one time in BARK_VERIFY_FULL_EVERY, whole.
  */
 void
 bark_verify_redo(XLogReaderState *record, uint8 block_id, Buffer buf,
@@ -800,6 +803,17 @@ bark_verify_redo(XLogReaderState *record, uint8 block_id, Buffer buf,
 
 	if (!bark_verify_pages || !BufferIsValid(buf))
 		return;
+
+	/*
+	 * shortcut: in redo only every BARK_VERIFY_FULL_EVERY-th change of a few
+	 * entries is checked (whole page), the rest not at all: checking each
+	 * doubled crash recovery's redo time (9.4 s against 5.2 s for
+	 * bark/t/008's 41,000 ADD_TIDs under cassert, 55 s against 28 s with
+	 * gcov, past pg_ctl's 60 s start wait).  The primary checked each one.
+	 */
+	if (OffsetNumberIsValid(lo) && ++nlocal % BARK_VERIFY_FULL_EVERY != 0 &&
+		!IS_INJECTION_POINT_ATTACHED("bark-verify-force-full"))
+		return;
 	XLogRecGetBlockTag(record, block_id, &rlocator, NULL, &blkno);
 	snprintf(relname, sizeof(relname), "%u", rlocator.relNumber);
 	page = BufferGetPage(buf);
@@ -810,11 +824,7 @@ bark_verify_redo(XLogReaderState *record, uint8 block_id, Buffer buf,
 			 BarkPageIsOverflow(BarkPageGetOpaque(page)))
 		bark_verify_other_page(page, relname, blkno, PANIC);
 	else
-	{
-		if (OffsetNumberIsValid(lo) && ++nlocal % BARK_VERIFY_FULL_EVERY == 0)
-			lo = hi = InvalidOffsetNumber;
-		bark_page_verify_range(NULL, NULL, relname, page, blkno,
-							   BARK_VERIFY_SHAPES, PANIC, lo, hi);
-	}
+		bark_page_verify(NULL, NULL, relname, page, blkno,
+						 BARK_VERIFY_SHAPES, PANIC);
 #endif
 }
