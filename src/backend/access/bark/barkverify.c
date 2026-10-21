@@ -616,7 +616,12 @@ bark_verify_other_page(Page page, const char *relname, BlockNumber blkno,
  */
 bool		bark_verify_pages = true;
 
-/* One check in this many of a few entries' change takes the whole page. */
+/*
+ * One check in this many of a few entries' change takes the whole page.
+ *
+ * shortcut: a non-local fault is caught only by every 32nd change's full
+ * check or by amcheck; check every page in full if a bug hides there
+ */
 #define BARK_VERIFY_FULL_EVERY	32
 
 /* What the error context names: the function that changed the page. */
@@ -659,9 +664,8 @@ bark_verify_errcontext(void *arg)
  * layout and high key, except that every BARK_VERIFY_FULL_EVERY-th such
  * check in a backend takes the whole page.  Checking the whole page every
  * time made a write-only workload of long equal-key LISTs 5.6x slower under
- * cassert, which pushed core regress past its timeout in a coverage build;
- * see "As built (RethinkDB review)" in BARK-Design.mediawiki for the
- * numbers.  Every other change (splits, new roots, VACUUM, deletion and
+ * cassert (1.9x bounded), which pushed core regress past its timeout in a
+ * coverage build; see "Page validator" in the README for the numbers.  Every other change (splits, new roots, VACUUM, deletion and
  * merging, page deletion, overflow and meta pages) is checked whole.
  */
 void
@@ -722,6 +726,9 @@ bark_verify_page_change_impl(Relation index, Buffer buf, OffsetNumber lo,
  * check reports it); with bark-verify-fault-order, swap the entry's line
  * pointer with the one before it (an ORDER check reports it).  The page is
  * then corrupt on this server only, as a buggy change would leave it.
+ * bark-verify-fault-far swaps the page's first two data entries instead,
+ * when both lie more than one entry before `off`, outside what the bounded
+ * check of the change looks at (bark_verify_page_change_impl).
  */
 void
 bark_verify_plant_fault(Page page, OffsetNumber off)
@@ -743,6 +750,18 @@ bark_verify_plant_fault(Page page, OffsetNumber off)
 
 		*PageGetItemId(page, off) = *PageGetItemId(page, off - 1);
 		*PageGetItemId(page, off - 1) = tmp;
+	}
+	if (IS_INJECTION_POINT_ATTACHED("bark-verify-fault-far"))
+	{
+		OffsetNumber first = BarkPageFirstDataKey(BarkPageGetOpaque(page));
+
+		if (off > first + 2)
+		{
+			ItemIdData	tmp = *PageGetItemId(page, first);
+
+			*PageGetItemId(page, first) = *PageGetItemId(page, first + 1);
+			*PageGetItemId(page, first + 1) = tmp;
+		}
 	}
 }
 

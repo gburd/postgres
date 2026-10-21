@@ -9,7 +9,10 @@
 # bark-verify-fault-count (a LIST entry's count set to 1, a SHAPES check)
 # and bark-verify-fault-order (the entry's line pointer swapped with the
 # one before it, an ORDER check), after an ADD_TID record, on the primary
-# or in the standby's redo of it.  This is the check sqlxtc ran for its
+# or in the standby's redo of it.  Both lie in the entries the ADD_TID
+# touched, which the validator checks after every such change.  A third,
+# bark-verify-fault-far, swaps two entries far from the change, which only
+# the validator's periodic check of the whole page sees.  This is the check sqlxtc ran for its
 # own port of RethinkDB's validate-after-every-mutation: a planted
 # one-byte fault, caught at the call that made it.
 
@@ -101,6 +104,43 @@ like($cerr, qr/$ord/, 'order fault, validator on: amcheck sees the same page');
 is($rc, 0, 'order fault, validator off: the insert succeeds');
 like($cerr, qr/BARK index "t_order_off_idx" $ord/,
 	'order fault, validator off: only amcheck reports it');
+
+# A fault away from the change.  The INSERT of 9 adds a TID to the LIST at
+# offset 9, and bark-verify-fault-far swaps the entries at offsets 1 and 2
+# as it does.  The bounded check of an ADD_TID looks at offsets 8..10 and
+# the high key (this leaf, the rightmost, has none), so it misses the swap:
+# that INSERT succeeds.  The point is detached at once (a second swap would
+# undo the fault), and more inserts of 9 follow in the same backend.  The
+# psql session is a new backend, whose count of bounded checks starts at
+# zero, so the planting INSERT is its first and is checked bounded; every
+# 32nd checks the whole page, so the 31st insert after it reports the swap,
+# at offset 2, before amcheck runs.  So the periodic full check catches it,
+# not amcheck, because the same backend changes the page again 31 times;
+# with fewer later changes only amcheck would.
+setup($node, 't_far');
+$node->safe_psql('postgres', 'INSERT INTO t_far VALUES (9)');
+{
+	my ($rc, $out, $err) = $node->psql(
+		'postgres', q[
+		SELECT injection_points_attach('bark-verify-fault-far', 'notice');
+		INSERT INTO t_far VALUES (9);
+		SELECT injection_points_detach('bark-verify-fault-far');
+		SELECT 'after the far fault';
+		DO $$ BEGIN FOR i IN 1..40 LOOP
+			RAISE NOTICE 'insert %', i; INSERT INTO t_far VALUES (9);
+		END LOOP; END $$;
+	]);
+	like($out, qr/after the far fault/,
+		'far fault: the INSERT that planted it succeeds');
+	like($err,
+		qr/ERROR:  BARK index "t_far_idx" has out-of-order keys on page $blk at offset 2/,
+		'far fault: a later change\'s periodic full check reports it');
+	like($err,
+		qr/CONTEXT:  BARK page validator, block $blk after bark_add_tid_entry/,
+		'far fault: reported after a later ADD_TID');
+	my @n = $err =~ /NOTICE:  insert (\d+)/g;
+	is($n[-1], 31, 'far fault: by the 32nd check of the backend');
+}
 
 # Unfaulted, the same inserts pass the validator and amcheck.
 setup($node, 't_clean');
