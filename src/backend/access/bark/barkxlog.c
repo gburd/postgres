@@ -400,7 +400,7 @@ bark_xlog_overwrite(XLogReaderState *record)
 		Size		datalen;
 		char	   *datapos = XLogRecGetBlockData(record, 0, &datalen);
 
-		if (!PageIndexTupleOverwrite(page, xlrec->offnum, datapos, datalen))
+		if (!BarkPageOverwriteEntry(page, xlrec->offnum, datapos, datalen))
 			elog(PANIC, "failed to replace BARK leaf entry during replay");
 
 		PageSetLSN(page, lsn);
@@ -436,13 +436,16 @@ bark_redo_delitems(XLogReaderState *record, Page page, uint16 ndeleted,
 	{
 		Size		itemsz = IndexTupleSize((IndexTuple) itup);
 
-		if (!PageIndexTupleOverwrite(page, updatedoffsets[i], itup, itemsz))
+		if (!BarkPageOverwriteEntry(page, updatedoffsets[i], itup, itemsz))
 			elog(PANIC, "failed to rewrite BARK leaf entry during replay");
 		itup += MAXALIGN(itemsz);
 	}
 
 	if (!deletefirst && ndeleted > 0)
 		PageIndexMultiDelete(page, deleted, ndeleted);
+
+	/* The primary clears the hint too; bark_mask masks it either way. */
+	BarkPageGetOpaque(page)->bark_flags &= ~BARK_HAS_GARBAGE;
 }
 
 /*
@@ -687,7 +690,7 @@ bark_xlog_add_tid(XLogReaderState *record)
 		if (ext == NULL)
 			elog(PANIC, "failed to add a TID to a BARK entry during replay");
 		coded = bark_prefix_encode(page, ext);
-		if (!PageIndexTupleOverwrite(page, xlrec->offnum, coded,
+		if (!BarkPageOverwriteEntry(page, xlrec->offnum, coded,
 									 IndexTupleSize(coded)))
 			elog(PANIC, "failed to add a TID to a BARK entry during replay");
 		if (coded != ext)
@@ -726,7 +729,7 @@ bark_xlog_insert_swap(XLogReaderState *record)
 							&xlrec->tid, &left, &right);
 		lcoded = bark_prefix_encode(page, left);
 		rcoded = bark_prefix_encode(page, right);
-		if (!PageIndexTupleOverwrite(page, xlrec->offnum, lcoded,
+		if (!BarkPageOverwriteEntry(page, xlrec->offnum, lcoded,
 									 IndexTupleSize(lcoded)) ||
 			PageAddItem(page, rcoded, IndexTupleSize(rcoded),
 						OffsetNumberNext(xlrec->offnum), false, false) ==
@@ -809,17 +812,26 @@ bark_redo(XLogReaderState *record)
 /*
  * Mask a BARK page before performing consistency checks on it.
  *
- * BARK makes no unlogged changes to its pages: it sets no LP_DEAD bits, and
- * it logs the clearing of the vacuum cycle ID, which nbtree treats as a hint
- * and masks (see "WAL" in the README).  So only the standard fields need
- * masking.
+ * BARK's only unlogged changes are hints, as nbtree's are: scans and the
+ * unique check mark leaf entries LP_DEAD, and set BARK_HAS_GARBAGE, without
+ * WAL (bark_killitems), so a leaf's line pointer flags and that page flag
+ * are masked, as btree_mask masks them.  BARK logs the clearing of the
+ * vacuum cycle ID, which nbtree treats as a hint and masks (see "WAL" in the
+ * README), so the cycle ID is not masked.  Only a leaf has line pointers to
+ * mask: an overflow page's pd_lower covers raw bytes of an oversized value.
  */
 void
 bark_mask(char *pagedata, BlockNumber blkno)
 {
 	Page		page = (Page) pagedata;
+	BarkPageOpaque opaque;
 
 	mask_page_lsn_and_checksum(page);
 	mask_page_hint_bits(page);
 	mask_unused_space(page);
+
+	opaque = BarkPageGetOpaque(page);
+	if (BarkPageIsLeaf(opaque))
+		mask_lp_flags(page);
+	opaque->bark_flags &= ~BARK_HAS_GARBAGE;
 }

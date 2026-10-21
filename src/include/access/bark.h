@@ -343,6 +343,24 @@ BarkPageIsRecyclable(Page page, Relation heaprel)
 	(BarkPagePrefixOff(opaque) + (BarkPageHasPrefix(opaque) ? 1 : 0))
 
 /*
+ * Overwrite the leaf entry at `off` on `page` with `item` (`size` bytes), as
+ * PageIndexTupleOverwrite does, and clear an LP_DEAD mark the entry had
+ * (see "Dead-entry hints" in the README): the new entry
+ * may hold a live heap TID, which a marked entry would hide from scans, and
+ * the mark is only a hint, so dropping it is always safe.  Every in-place
+ * rewrite of a leaf entry goes through here, on the primary and in redo.
+ */
+static inline bool
+BarkPageOverwriteEntry(Page page, OffsetNumber off, const void *item,
+					   Size size)
+{
+	if (!PageIndexTupleOverwrite(page, off, item, size))
+		return false;
+	PageGetItemId(page, off)->lp_flags = LP_NORMAL;
+	return true;
+}
+
+/*
  * Workspace for BarkPageGetItem.  Every read of a data item (any item but
  * the high key) goes through that function rather than PageGetItem, so that
  * a page format whose items are stored encoded (leaf prefix compression) has
@@ -1857,6 +1875,7 @@ typedef struct BarkScanPosItem
 	OffsetNumber indexOffset;	/* entry's offset on the page when read */
 	uint32		tupleOffset;	/* entry's copy in currTuples (IOS only) */
 	bool		recheck;		/* return it with xs_recheck (multikey) */
+	bool		killed;			/* the executor found its row dead to all */
 } BarkScanPosItem;
 
 typedef struct BarkScanPosData
@@ -1867,6 +1886,7 @@ typedef struct BarkScanPosData
 	BlockNumber currPage;		/* page read, or InvalidBlockNumber if none */
 	BlockNumber prevPage;		/* currPage's bark_prev when read */
 	BlockNumber nextPage;		/* currPage's bark_next when read */
+	XLogRecPtr	lsn;			/* currPage's LSN when read, if dropPin */
 	ScanDirection dir;			/* direction the page was read in */
 
 	/* may there be matching entries left / right of currPage? */
@@ -1936,6 +1956,13 @@ typedef struct BarkScanOpaqueData
 	bool		dropPin;
 
 	BarkScanPosData currPos;	/* current position */
+
+	/*
+	 * How many of currPos's items the executor found dead to every snapshot
+	 * (kill_prior_tuple; BarkScanPosItem.killed), for bark_killitems to mark
+	 * when the scan leaves the page, as nbtree's numKilled.
+	 */
+	int			numKilled;
 
 	/*
 	 * Mark/restore (nbtree's markItemIndex/markPos).  A mark on the page in

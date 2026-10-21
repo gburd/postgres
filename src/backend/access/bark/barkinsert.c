@@ -631,7 +631,7 @@ bark_overwrite_entry(Relation index, Buffer buf, OffsetNumber off,
 	/* No ereport(ERROR) until changes are logged */
 	START_CRIT_SECTION();
 
-	if (!PageIndexTupleOverwrite(page, off, coded, itemsz))
+	if (!BarkPageOverwriteEntry(page, off, coded, itemsz))
 		elog(PANIC, "failed to replace entry at offset %u of block %u in BARK index \"%s\"",
 			 off, BufferGetBlockNumber(buf), RelationGetRelationName(index));
 
@@ -680,7 +680,7 @@ bark_add_tid_entry(Relation index, Buffer buf, OffsetNumber off,
 	/* No ereport(ERROR) until changes are logged */
 	START_CRIT_SECTION();
 
-	if (!PageIndexTupleOverwrite(page, off, coded, IndexTupleSize(coded)))
+	if (!BarkPageOverwriteEntry(page, off, coded, IndexTupleSize(coded)))
 		elog(PANIC, "failed to replace entry at offset %u of block %u in BARK index \"%s\"",
 			 off, BufferGetBlockNumber(buf), RelationGetRelationName(index));
 
@@ -754,7 +754,7 @@ bark_swap_tid_entry(Relation index, Buffer buf, OffsetNumber off,
 	/* No ereport(ERROR) until changes are logged */
 	START_CRIT_SECTION();
 
-	if (!PageIndexTupleOverwrite(page, off, lcoded, IndexTupleSize(lcoded)) ||
+	if (!BarkPageOverwriteEntry(page, off, lcoded, IndexTupleSize(lcoded)) ||
 		PageAddItem(page, rcoded, IndexTupleSize(rcoded), OffsetNumberNext(off),
 					false, false) == InvalidOffsetNumber)
 		elog(PANIC, "failed to divide entry at offset %u of block %u in BARK index \"%s\"",
@@ -1063,11 +1063,13 @@ bark_split(Relation index, Relation heaprel, BarkKeyInfo *keyinfo,
 	 *
 	 * Redo sets each half's flags from the record's leaf and prefix flags
 	 * alone, so the original page may carry no flag but BARK_LEAF,
-	 * BARK_PREFIX and BARK_ROOT (which the left half gives up: a new root is
-	 * made above it).
+	 * BARK_PREFIX, BARK_ROOT (which the left half gives up: a new root is
+	 * made above it) and the hint BARK_HAS_GARBAGE, which neither half keeps.
+	 * Neither keeps an entry's LP_DEAD mark either, as in nbtree's
+	 * _bt_split: the entries are added afresh.
 	 */
 	Assert((origopaque->bark_flags &
-			~(BARK_LEAF | BARK_ROOT | BARK_PREFIX)) == 0);
+			~(BARK_LEAF | BARK_ROOT | BARK_PREFIX | BARK_HAS_GARBAGE)) == 0);
 	leftpage = PageGetTempPage(origpage);
 	BarkPageInit(leftpage, origleft, rightblk, level,
 				 leafflag | BARK_INCOMPLETE_SPLIT, cycleid);
@@ -1740,8 +1742,8 @@ bark_finish_split(Relation index, BarkKeyInfo *keyinfo, Buffer lbuf,
  * `buf` then needs no second binary search, as nbtree's _bt_check_unique
  * saves its bounds for _bt_findinsertloc.
  *
- * This does not opportunistically kill known-dead index entries during the
- * check; that is an orthogonal optimization layered on the correct check here.
+ * An entry whose row the fetch finds dead to everyone is marked LP_DEAD, and
+ * an entry already marked is skipped without a fetch, as in nbtree.
  */
 static TransactionId
 bark_check_unique(Relation index, BarkKeyInfo *keyinfo, IndexTuple itup,
@@ -1842,6 +1844,15 @@ bark_check_unique(Relation index, BarkKeyInfo *keyinfo, IndexTuple itup,
 				ItemPointerCompare(&htid, &itup->t_tid) == 0)
 				continue;
 
+			/*
+			 * An entry marked LP_DEAD names a row dead to every snapshot: no
+			 * conflict, and no heap fetch, as in nbtree's _bt_check_unique.
+			 * Its key was still compared above, so the run ends where it
+			 * would.
+			 */
+			if (ItemIdIsDead(PageGetItemId(page, off)))
+				continue;
+
 			if (table_fetch_tid(heapRel, &htid, &SnapshotDirty, &all_dead))
 			{
 				TransactionId xwait;
@@ -1913,7 +1924,21 @@ bark_check_unique(Relation index, BarkKeyInfo *keyinfo, IndexTuple itup,
 													RelationGetRelationName(index))));
 				}
 			}
-			/* else: the heap tuple is dead to everyone; not a conflict. */
+			else if (all_dead)
+			{
+				/*
+				 * The row is dead to everyone, so it is no conflict; mark its
+				 * entry LP_DEAD, as nbtree's _bt_check_unique does, if the
+				 * hint may be set (see bark_killitems).  A unique index's
+				 * entries have one heap TID each.
+				 */
+				if (BufferBeginSetHintBits(curbuf))
+				{
+					ItemIdMarkDead(PageGetItemId(page, off));
+					opaque->bark_flags |= BARK_HAS_GARBAGE;
+					BufferFinishSetHintBits(curbuf, true, true);
+				}
+			}
 		}
 		if (!ownbuf && lo > maxoff)
 			*insertoff = lo;
@@ -2038,6 +2063,17 @@ bark_coalesce_list(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 	bark_entry_tid_range(cur, &lo, &hi);
 	Assert(ItemPointerCompare(&lo, newtid) <= 0);
 	inside = ItemPointerCompare(newtid, &hi) <= 0;
+
+	/*
+	 * An entry marked LP_DEAD holds only rows dead to every snapshot.  A TID
+	 * above its range gets a SINGLE of its own, after it, as nbtree's insert
+	 * leaves a dead posting list alone; adding the TID would make the entry
+	 * live again (BarkPageOverwriteEntry clears the mark) and keep its dead
+	 * members.  A TID inside its range must go into it, and the mark is
+	 * lost, which is only a hint.
+	 */
+	if (!inside && ItemIdIsDead(iid))
+		return BARK_COALESCE_NONE;
 	if (inside && bark_entry_has_tid(cur, newtid))
 		elog(ERROR, "heap TID (%u,%u) already in BARK entry at offset %u of block %u in index \"%s\"",
 			 ItemPointerGetBlockNumber(newtid),

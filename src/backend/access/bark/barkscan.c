@@ -75,6 +75,7 @@
 #include "utils/wait_event.h"
 
 static int	bark_key_cmp(IndexScanDesc scan, int i, IndexTuple itup);
+static void bark_killitems(IndexScanDesc scan);
 static bool bark_mk_gin_gettuple(IndexScanDesc scan, ScanDirection dir);
 static bool bark_key_bounds(IndexScanDesc scan, ScanKey sk, bool *lower,
 							bool *upper);
@@ -2909,6 +2910,7 @@ bark_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 {
 	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
 
+	bark_killitems(scan);
 	BarkScanPosUnpinIfPinned(so->currPos);
 	BarkScanPosInvalidate(so->currPos);
 	so->markItemIndex = -1;
@@ -3351,6 +3353,7 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 	bool		skipreseek = false; /* ... and asked for a re-descent */
 
 	Assert(!BarkPageIgnore(opaque));
+	so->numKilled = 0;			/* the kills of the page left are moot */
 	pos->currPage = BufferGetBlockNumber(pos->buf);
 	pos->prevPage = opaque->bark_prev;
 	pos->nextPage = opaque->bark_next;
@@ -3389,12 +3392,30 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 		 offnum = forward ? OffsetNumberNext(offnum) : OffsetNumberPrev(offnum))
 	{
 		BarkItemBuf ibuf;
-		IndexTuple	itup = BarkPageGetItem(page, offnum, &ibuf);
+		IndexTuple	itup;
 		bool		fetched;
 		IndexTuple	resolved;
 		int			ntids;
 		uint32		tupoff = 0;
 		bool		recheck = false;
+		bool		dead;
+
+		/*
+		 * An entry marked LP_DEAD (bark_killitems) is dead to every snapshot,
+		 * so its rows are not returned, as in nbtree's _bt_readpage, unless
+		 * the scan started in recovery (ignore_killed_tuples is false): a
+		 * primary marks by its own horizon, which a standby's snapshots are
+		 * not part of.  It is skipped without comparing its keys, except the
+		 * page's last entry in the scan's direction, whose keys may still
+		 * end the scan here rather than on the next page, as nbtree's
+		 * backward scan tests its first tuple.
+		 */
+		dead = scan->ignore_killed_tuples &&
+			ItemIdIsDead(PageGetItemId(page, offnum));
+		if (dead && offnum != (forward ? maxoff : minoff))
+			continue;
+
+		itup = BarkPageGetItem(page, offnum, &ibuf);
 
 		/* A marker names no row ("Markers" in BARK-Design.mediawiki). */
 		if (BarkEntryIsMarker(itup))
@@ -3456,6 +3477,12 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 			}
 			continue;
 		}
+		if (dead)
+		{
+			if (fetched)
+				pfree(resolved);
+			continue;
+		}
 
 		/* Expand the entry into one item per heap TID. */
 		ntids = bark_entry_count_tids(itup);
@@ -3499,6 +3526,7 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 				item->indexOffset = offnum;
 				item->tupleOffset = tupoff;
 				item->recheck = recheck;
+				item->killed = false;
 			}
 			pos->lastItem += ntids;
 		}
@@ -3517,6 +3545,7 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 				item->indexOffset = offnum;
 				item->tupleOffset = tupoff;
 				item->recheck = recheck;
+				item->killed = false;
 			}
 			pos->lastItem += ntids;
 		}
@@ -3593,8 +3622,180 @@ bark_drop_lock_and_maybe_pin(BarkScanOpaque so)
 		LockBuffer(so->currPos.buf, BUFFER_LOCK_UNLOCK);
 		return;
 	}
+
+	/*
+	 * Without the pin, VACUUM may remove the page's entries and the heap
+	 * reuse their TIDs before bark_killitems runs; it checks this LSN to
+	 * tell whether the page changed since.
+	 */
+	so->currPos.lsn = BufferGetLSNAtomic(so->currPos.buf);
 	UnlockReleaseBuffer(so->currPos.buf);
 	so->currPos.buf = InvalidBuffer;
+}
+
+/*
+ * Mark LP_DEAD the entries of currPos's page whose every heap TID the
+ * executor found dead (kill_prior_tuple), as nbtree's _bt_killitems does,
+ * before the scan leaves the page.  Called with currPos unlocked, pinned only
+ * when !dropPin; returns with the same pins.
+ *
+ * The marks are hints: they are set under a share lock through
+ * BufferBeginSetHintBits, which can refuse (another backend is writing the
+ * page out), and are not WAL-logged, so bark_mask masks them; with
+ * checksums or wal_log_hints the first hint after a checkpoint logs a page
+ * image (MarkBufferDirtyHint).
+ *
+ * An entry is found by its offset as read and its heap TIDs, never by offset
+ * alone.  A scan that kept its pin since the read (!dropPin) blocked
+ * VACUUM's cleanup lock, so no TID on the page can have been removed and
+ * reused; entries may have moved right within the page (inserts), or off it
+ * (a split, or a deletion before them), and an entry moved off is not
+ * found, which only loses the hint.  A scan that dropped its pin gives up
+ * unless the page's LSN is the one it read: any logged change at all, a
+ * VACUUM's included, makes it stop.  A kill says the heap TID's whole HOT
+ * chain is dead to every snapshot, so any entry holding only killed TIDs may
+ * be marked, whichever row of a multikey index's it was returned for.
+ *
+ * SINGLE and OVERSIZED entries have one TID, so a kill marks them.  Scans
+ * skip a marked OVERSIZED entry without reading its overflow chain.  A LIST or POSTING entry is marked only when every one of its
+ * TIDs was killed by this scan, as nbtree requires of a posting list tuple:
+ * one live member keeps the entry, for that member's sake.  A marker names
+ * no row and is never killed; pivots are never in items[].  A page with an
+ * entry newly marked gets BARK_HAS_GARBAGE, a hint too.
+ *
+ * A scan of a GIN-interface column (bark_mk_gin_gettuple) has no leaf
+ * position when it returns TIDs, so it never collects kills; nor does a
+ * bitmap scan (the executor gives it no kill_prior_tuple) or a KNN scan,
+ * whose cursors are not currPos.
+ */
+static void
+bark_killitems(IndexScanDesc scan)
+{
+	Relation	index = scan->indexRelation;
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	BarkScanPosData *pos = &so->currPos;
+	Buffer		buf;
+	Page		page;
+	BarkPageOpaque opaque;
+	OffsetNumber minoff;
+	OffsetNumber maxoff;
+	bool		killedsomething = false;
+	ItemPointer tids = NULL;
+	int			tidsalloc = 0;
+
+	if (so->numKilled == 0)
+		return;
+	so->numKilled = 0;
+	Assert(BarkScanPosIsValid(*pos));
+	Assert(scan->heapRelation != NULL);
+
+	if (!so->dropPin)
+	{
+		Assert(BarkScanPosIsPinned(*pos));
+		buf = pos->buf;
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+	}
+	else
+	{
+		Assert(!BarkScanPosIsPinned(*pos));
+		buf = ReadBuffer(index, pos->currPage);
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		if (BufferGetLSNAtomic(buf) != pos->lsn)
+			goto done;			/* changed: give up on the hints */
+	}
+
+	page = BufferGetPage(buf);
+	opaque = BarkPageGetOpaque(page);
+	minoff = BarkPageFirstDataKey(opaque);
+	maxoff = PageGetMaxOffsetNumber(page);
+
+	/*
+	 * A held pin does not keep the leaf alive: bottom-up deletion empties a
+	 * leaf under an exclusive lock, and VACUUM deletes an empty leaf
+	 * without a cleanup lock (bark_delete_empty_leaf).  It cannot have been
+	 * reused, since this scan's snapshot holds back its safexid.
+	 */
+	if (BarkPageIgnore(opaque))
+		goto done;
+
+	/* items[] is in index order, and an entry's members are consecutive. */
+	for (int i = pos->firstItem; i <= pos->lastItem; i++)
+	{
+		BarkScanPosItem *kitem = &pos->items[i];
+
+		if (!kitem->killed)
+			continue;
+
+		/* The entry may have moved right on the page since it was read. */
+		for (OffsetNumber offnum = kitem->indexOffset; offnum <= maxoff;
+			 offnum = OffsetNumberNext(offnum))
+		{
+			ItemId		iid = PageGetItemId(page, offnum);
+			BarkItemBuf ibuf;
+			IndexTuple	itup;
+			ItemPointerData lo;
+			ItemPointerData hi;
+			int			n;
+			int			j;
+
+			if (offnum < minoff)
+				continue;		/* a split gave the page a high key */
+
+			/* A marker's TID is no row's, so its range holds no kill. */
+			itup = BarkPageGetItem(page, offnum, &ibuf);
+			bark_entry_tid_range(itup, &lo, &hi);
+			if (ItemPointerCompare(&kitem->heapTid, &lo) < 0 ||
+				ItemPointerCompare(&kitem->heapTid, &hi) > 0)
+				continue;
+
+			/* Every member must be killed, from this item on. */
+			n = bark_entry_count_tids(itup);
+			if (n > tidsalloc)
+			{
+				tidsalloc = Max(n, 64);
+				tids = tids == NULL ? palloc_array(ItemPointerData, tidsalloc) :
+					repalloc_array(tids, ItemPointerData, tidsalloc);
+			}
+			n = bark_entry_get_tids(itup, tids, n);
+			for (j = 0; j < n && i + j <= pos->lastItem; j++)
+			{
+				if (!pos->items[i + j].killed ||
+					!ItemPointerEquals(&tids[j], &pos->items[i + j].heapTid))
+					break;
+			}
+			if (j == n && !ItemIdIsDead(iid))
+			{
+				if (!killedsomething && !BufferBeginSetHintBits(buf))
+					goto done;
+				ItemIdMarkDead(iid);
+				killedsomething = true;
+			}
+			break;
+		}
+
+		/* The other items of the entry read at this offset are done with. */
+		while (i < pos->lastItem &&
+			   pos->items[i + 1].indexOffset == kitem->indexOffset)
+			i++;
+	}
+
+	if (killedsomething)
+	{
+		opaque->bark_flags |= BARK_HAS_GARBAGE;
+		BufferFinishSetHintBits(buf, true, true);
+	}
+
+done:
+	if (tids != NULL)
+		pfree(tids);
+	if (!so->dropPin)
+		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+	else
+		UnlockReleaseBuffer(buf);
+
+	/* A copy for a mark must not carry the kills over to a later call. */
+	for (int i = pos->firstItem; i <= pos->lastItem; i++)
+		pos->items[i].killed = false;
 }
 
 /*
@@ -3922,6 +4123,9 @@ bark_steppage(IndexScanDesc scan, ScanDirection dir)
 
 	Assert(BarkScanPosIsValid(so->currPos));
 
+	/* Before leaving the page, mark the entries the executor killed. */
+	bark_killitems(scan);
+
 	/*
 	 * A mark on this page is only an itemIndex so far; before leaving the
 	 * page, make it a full copy of the position (nbtree's _bt_steppage); the
@@ -4041,6 +4245,17 @@ bark_gettuple(IndexScanDesc scan, ScanDirection dir)
 	}
 	else
 	{
+		/*
+		 * The executor found the item returned last dead to every snapshot:
+		 * remember it, for bark_killitems to mark when the scan leaves the
+		 * page.
+		 */
+		if (scan->kill_prior_tuple)
+		{
+			so->currPos.items[so->currPos.itemIndex].killed = true;
+			so->numKilled++;
+		}
+
 		/*
 		 * Advance within the page read last.  A reversal of direction
 		 * continues from the same item, in the new direction, which is what a
@@ -4835,7 +5050,8 @@ bark_mk_gin_load(BarkMkScanState *mk, int k)
  * is not visible to it, nbtree's argument for dropping its pin
  * (so->dropPin).  A scan with any other snapshot (the dirty snapshot of an
  * exclusion constraint's check) gets an error.  The scan has no leaf
- * position, and BARK sets no LP_DEAD hints, so kill_prior_tuple is ignored.
+ * position to mark LP_DEAD hints on (bark_killitems), so kill_prior_tuple
+ * is ignored; its reads skip the entries other scans marked.
  * The planner makes no index-only, ordered or parallel scan of such an index
  * (bark_canreturn; the column has no sort family, and bark_property keeps an
  * index with columns before it to bitmap scans; plancat.c's amcanparallel);
@@ -4968,6 +5184,7 @@ bark_endscan(IndexScanDesc scan)
 
 	if (so == NULL)
 		return;
+	bark_killitems(scan);
 	bark_knn_endscan(scan);
 	if (so->arrayCxt != NULL)
 		MemoryContextDelete(so->arrayCxt);
@@ -5111,6 +5328,7 @@ bark_restrpos(IndexScanDesc scan)
 	}
 	else
 	{
+		bark_killitems(scan);
 		BarkScanPosUnpinIfPinned(so->currPos);
 		if (BarkScanPosIsValid(so->markPos))
 		{

@@ -104,6 +104,7 @@ typedef struct BarkCheckState
 	int			extracted;		/* the extracted column's attno, or 0 */
 	int64		heaptuplespresent;	/* heap tuples found in the filter */
 	bool		readonly;		/* ShareLock held (bark_index_parent_check) */
+	bool		inrecovery;		/* the transaction started in recovery */
 	MemoryContext tmpcxt;		/* reset after every fingerprinted entry */
 } BarkCheckState;
 
@@ -1368,6 +1369,19 @@ bark_fingerprint_leaves(Relation rel, BarkCheckState *state)
 			{
 				BarkItemBuf ibuf;
 
+				/*
+				 * An entry marked LP_DEAD is not fingerprinted, as in
+				 * verify_nbtree.c: its rows are dead to every snapshot, so
+				 * the heap scan's snapshot sees none of them, and a row it
+				 * does see whose only entry is marked was marked wrongly.
+				 * Not so for a transaction that started in recovery, as a
+				 * scan's ignore_killed_tuples is not: a standby gets the
+				 * primary's marks in page images, set by the primary's
+				 * horizon, which its own snapshots are not part of.
+				 */
+				if (!state->inrecovery &&
+					ItemIdIsDead(PageGetItemId(page, off)))
+					continue;
 				bark_fingerprint_entry(rel, state,
 									   BarkPageGetItem(page, off, &ibuf));
 				MemoryContextReset(state->tmpcxt);
@@ -1676,6 +1690,7 @@ bark_check_heap(Relation rel, Relation heaprel, BarkKeyInfo *keyinfo,
 								 pg_prng_uint64(&pg_global_prng_state));
 	state->heaprel = heaprel;
 	state->readonly = readonly;
+	state->inrecovery = TransactionStartedDuringRecovery();
 	state->tmpcxt = AllocSetContextCreate(CurrentMemoryContext,
 										  "bark_check_heap",
 										  ALLOCSET_DEFAULT_SIZES);
