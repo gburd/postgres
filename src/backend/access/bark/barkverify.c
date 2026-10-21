@@ -728,10 +728,11 @@ bark_verify_page_change_impl(Relation index, Buffer buf, OffsetNumber lo,
  * whose change is already logged, for the page validator's tests: with
  * bark-verify-fault-count attached, set a LIST entry's count to 1 (a SHAPES
  * check reports it); with bark-verify-fault-order, swap the entry's line
- * pointer with the one before it (an ORDER check reports it).  The page is
+ * pointer with the one before it (an ORDER check reports it).  Each asserts
+ * the entry it needs (a LIST, an entry before it).  The page is
  * then corrupt on this server only, as a buggy change would leave it.
  * bark-verify-fault-far swaps the page's first two data entries instead,
- * when both lie more than one entry before `off`, outside what the bounded
+ * which must lie more than one entry before `off`, outside what the bounded
  * check of the change looks at (bark_verify_page_change_impl).
  */
 void
@@ -742,15 +743,16 @@ bark_verify_plant_fault(Page page, OffsetNumber off)
 		IndexTuple	itup = (IndexTuple) PageGetItem(page,
 													PageGetItemId(page, off));
 
-		if (BarkEntryGetShape(itup) == BARK_SHAPE_LIST)
-			ItemPointerSetOffsetNumber(&itup->t_tid,
-									   (ItemPointerGetOffsetNumberNoCheck(&itup->t_tid) &
-										~BARK_OFFSET_MASK) | 1);
+		Assert(BarkEntryGetShape(itup) == BARK_SHAPE_LIST);
+		ItemPointerSetOffsetNumber(&itup->t_tid,
+								   (ItemPointerGetOffsetNumberNoCheck(&itup->t_tid) &
+									~BARK_OFFSET_MASK) | 1);
 	}
-	if (IS_INJECTION_POINT_ATTACHED("bark-verify-fault-order") &&
-		off > BarkPageFirstDataKey(BarkPageGetOpaque(page)))
+	if (IS_INJECTION_POINT_ATTACHED("bark-verify-fault-order"))
 	{
 		ItemIdData	tmp = *PageGetItemId(page, off);
+
+		Assert(off > BarkPageFirstDataKey(BarkPageGetOpaque(page)));
 
 		*PageGetItemId(page, off) = *PageGetItemId(page, off - 1);
 		*PageGetItemId(page, off - 1) = tmp;
@@ -758,14 +760,11 @@ bark_verify_plant_fault(Page page, OffsetNumber off)
 	if (IS_INJECTION_POINT_ATTACHED("bark-verify-fault-far"))
 	{
 		OffsetNumber first = BarkPageFirstDataKey(BarkPageGetOpaque(page));
+		ItemIdData	tmp = *PageGetItemId(page, first);
 
-		if (off > first + 2)
-		{
-			ItemIdData	tmp = *PageGetItemId(page, first);
-
-			*PageGetItemId(page, first) = *PageGetItemId(page, first + 1);
-			*PageGetItemId(page, first + 1) = tmp;
-		}
+		Assert(off > first + 2);
+		*PageGetItemId(page, first) = *PageGetItemId(page, first + 1);
+		*PageGetItemId(page, first + 1) = tmp;
 	}
 }
 
