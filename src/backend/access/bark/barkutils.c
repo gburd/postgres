@@ -450,6 +450,8 @@ bark_set_multikey(Relation index)
 			PageSetLSN(metapage, XLogGetFakeLSN(index));
 
 		END_CRIT_SECTION();
+
+		bark_verify_page_change(index, metabuf);
 	}
 	UnlockReleaseBuffer(metabuf);
 
@@ -486,6 +488,8 @@ bark_set_nkeys(Relation index, uint64 nkeys)
 			PageSetLSN(metapage, XLogGetFakeLSN(index));
 
 		END_CRIT_SECTION();
+
+		bark_verify_page_change(index, metabuf);
 	}
 	UnlockReleaseBuffer(metabuf);
 }
@@ -3372,6 +3376,9 @@ bark_write_overflow_chain(Relation index, Relation heaprel, IndexTuple full,
 		for (i = first; i < last; i++)
 			PageSetLSN(BufferGetPage(bufs[i]), recptr);
 		END_CRIT_SECTION();
+
+		for (i = first; i < last; i++)
+			bark_verify_page_change(index, bufs[i]);
 	}
 
 	for (BlockNumber i = 0; i < nchunks; i++)
@@ -3487,6 +3494,8 @@ bark_free_oversized(Relation index, IndexTuple entry)
 		PageSetLSN(page, recptr);
 
 		END_CRIT_SECTION();
+
+		bark_verify_page_change(index, buf);
 
 		UnlockReleaseBuffer(buf);
 		nfreed++;

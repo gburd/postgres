@@ -356,6 +356,11 @@ bark_delete_empty_leaf(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno,
 
 	END_CRIT_SECTION();
 
+	bark_verify_page_change(index, lbuf);
+	bark_verify_page_change(index, buf);
+	bark_verify_page_change(index, rbuf);
+	bark_verify_page_change(index, pbuf);
+
 	UnlockReleaseBuffer(rbuf);
 	UnlockReleaseBuffer(buf);
 	UnlockReleaseBuffer(lbuf);
@@ -477,6 +482,8 @@ bark_delitems_vacuum(Relation index, Buffer buf,
 	PageSetLSN(page, recptr);
 
 	END_CRIT_SECTION();
+
+	bark_verify_page_change(index, buf);
 
 	if (updatedbuf != NULL)
 		pfree(updatedbuf);
