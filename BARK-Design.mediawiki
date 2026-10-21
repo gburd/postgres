@@ -917,9 +917,27 @@ Each entry is marked ''done'' with its commits on <code>idxam</code>,
   (nbtree's <code>_bt_compare</code> forward optimization). ''(done:
   80e5ab22ec1)''
 * '''K2''' -- dead-tuple hints from scans and simple deletion before a split.
-  After <code>amgetbatch</code> (CF 4351) is in core and BARK adopts it, since
-  the hint goes through <code>amkillitemsbatch</code>. ''(blocked on
-  cf/4351 and G1)''
+  ''As built:'' through amgettuple's kill_prior_tuple, as nbtree's
+  _bt_killitems (with <code>amgetbatch</code>, CF 4351, the hint moves to
+  <code>amkillitemsbatch</code>, under G1).  A scan leaving a leaf marks
+  LP_DEAD the entries all of whose TIDs it killed: a SINGLE or OVERSIZED
+  entry for its one TID, a LIST, coded LIST or POSTING only when every
+  member died, as nbtree requires of a posting list.  The marks and
+  BARK_HAS_GARBAGE are unlogged hints (BufferBeginSetHintBits,
+  MarkBufferDirtyHint), masked by bark_mask; a plain MVCC scan, which drops
+  its pin, marks only a page whose LSN is unchanged, nbtree's dropPin rule.
+  Scans skip marked entries unless they started in recovery; the unique
+  check skips them and marks the entries of rows its fetch finds dead; the
+  GIN-interface scan, with no leaf position, marks nothing.  An insert that
+  would split a leaf first runs simple deletion (bark_simple_delete,
+  nbtree's _bt_simpledel_pass), which shares bottom-up deletion's pass and
+  XLOG_BARK_DELETE record and its conflict horizon.  OVERSIZED entries are
+  marked but left to VACUUM, which frees their chains.  Nothing in BARK
+  relied on pages without unlogged changes beyond bark_mask: the level-1
+  cache validates by page contents, not LSN.  regress/mvcc's index stays at
+  16 kB as nbtree's (64 kB before), and isolation/horizons matches nbtree's
+  with <code>default_btree_implementation = bark</code>.  See "Dead-entry
+  hints and simple deletion" in the README.''
 * '''G1''' -- adopt <code>amgetbatch</code>: <code>bark_readpage</code> fills
   an <code>IndexScanBatch</code>, and the scan position, mark/restore, the
   pin rule and parallel seize/release move to the batch layer; KNN keeps
@@ -1323,7 +1341,8 @@ scan requires an MVCC snapshot (nbtree's dropPin argument) and errors
 otherwise; no SQL reaches that today, since exclusion constraints are
 refused for multikey classes. The seen set is off for these scans (a TID in
 several boundaries' streams is merged into one row already), and
-kill_prior_tuple is ignored (no leaf position, no LP_DEAD hints).
+kill_prior_tuple is ignored (no leaf position to mark), though its reads
+skip the entries other scans marked LP_DEAD.
 bark_property keeps <code>index_scan</code> false when the column is not
 the first: rows come back in TID order, and the planner would take the
 scan to return the columns before it in order (pathkeys, merge joins, KNN).
@@ -1777,7 +1796,7 @@ reserved one). A marker is a SINGLE entry, so a marker key too large for a
 page is refused. Every reader skips
 an entry with the reserved TID: bark_readpage before matching, barkbulkdelete
 before its callback, bottom-up deletion before offering TIDs to the table
-AM, the later K2 kill hints, and amcheck, which accepts the reserved TID
+AM, the K2 kill hints, and amcheck, which accepts the reserved TID
 only on a SINGLE entry of a column with markers. The class reads a marker
 through <code>bark_index_has_marker(Relation, Datum key)</code>, one descent
 to (key, reserved TID); a planner support function of the class can call it
@@ -1889,8 +1908,9 @@ it as a BARK index (by pg_index.indimplam). REPACK sorts on it (tuplesort_begin_
 data). Multikey classes still need <code>USING bark</code>. Run with
 <code>default_btree_implementation = bark</code> cluster-wide, the core
 regression and isolation suites show no wrong result or crash; their
-differences are plans, sizes (no LP_DEAD marking), <code>\d</code>'s
-"implemented by", index properties and one error detail. Tests:
+differences are plans, one size (an empty index's two pages),
+<code>\d</code>'s "implemented by", index properties and one error
+detail; since K2, regress/mvcc and isolation/horizons match nbtree's. Tests:
 bark_btree_impl.sql and t/013_btree_impl_dump_upgrade.pl (bark module),
 test_index_impl.
 

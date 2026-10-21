@@ -165,7 +165,7 @@ bark_delitems_delete(Relation index, Buffer buf, bool merge,
 	for (int i = 0; i < nupdated; i++)
 	{
 		if (!BarkPageOverwriteEntry(page, updatedoffsets[i], updated[i],
-									 IndexTupleSize(updated[i])))
+									IndexTupleSize(updated[i])))
 			elog(PANIC, "failed to rewrite BARK leaf entry at offset %u of block %u of index \"%s\"",
 				 updatedoffsets[i], BufferGetBlockNumber(buf),
 				 RelationGetRelationName(index));
@@ -631,9 +631,9 @@ bark_merge_form(Page page, IndexTuple key, ItemPointer tids, int n)
  * heap TID order with disjoint ranges, so the members of a group, read in
  * order, are already ascending.  SINGLE entries fold in like the rest;
  * OVERSIZED ones, markers and entries marked LP_DEAD are left alone, and end
- * a group: a merged entry is live, and would hide the mark.  A group never spans
- * newitemoff: the merged entry's TID range would then hold the new TID, and
- * the new entry could not go next to it.  A group that would save nothing (a
+ * a group: a merged entry is live, and would hide the mark.  A group never
+ * spans newitemoff: the merged entry's TID range would then hold the new
+ * TID, and the new entry could not go next to it.  A group that would save nothing (a
  * single entry, or alignment eating the gain) is left as it is.  The pass
  * stops after the group that frees enough for the new entry, so a page is
  * not rewritten further than the insert needs.

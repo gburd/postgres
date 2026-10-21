@@ -691,7 +691,7 @@ bark_xlog_add_tid(XLogReaderState *record)
 			elog(PANIC, "failed to add a TID to a BARK entry during replay");
 		coded = bark_prefix_encode(page, ext);
 		if (!BarkPageOverwriteEntry(page, xlrec->offnum, coded,
-									 IndexTupleSize(coded)))
+									IndexTupleSize(coded)))
 			elog(PANIC, "failed to add a TID to a BARK entry during replay");
 		if (coded != ext)
 			pfree(coded);
@@ -730,7 +730,7 @@ bark_xlog_insert_swap(XLogReaderState *record)
 		lcoded = bark_prefix_encode(page, left);
 		rcoded = bark_prefix_encode(page, right);
 		if (!BarkPageOverwriteEntry(page, xlrec->offnum, lcoded,
-									 IndexTupleSize(lcoded)) ||
+									IndexTupleSize(lcoded)) ||
 			PageAddItem(page, rcoded, IndexTupleSize(rcoded),
 						OffsetNumberNext(xlrec->offnum), false, false) ==
 			InvalidOffsetNumber)

@@ -1065,9 +1065,9 @@ bark_split(Relation index, Relation heaprel, BarkKeyInfo *keyinfo,
 	 * alone, so the original page may carry no flag but BARK_LEAF,
 	 * BARK_PREFIX, BARK_ROOT (which the left half gives up: a new root is
 	 * made above it) and the hint BARK_HAS_GARBAGE, which neither half keeps.
-	 * Neither keeps an entry's LP_DEAD mark either, as in nbtree's
-	 * _bt_split: the entries are added afresh, and simple deletion has
-	 * already removed the marked entries it could.
+	 * Neither keeps an entry's LP_DEAD mark either, as in nbtree's _bt_split:
+	 * the entries are added afresh, and simple deletion has already removed
+	 * the marked entries it could.
 	 */
 	Assert((origopaque->bark_flags &
 			~(BARK_LEAF | BARK_ROOT | BARK_PREFIX | BARK_HAS_GARBAGE)) == 0);
@@ -2070,12 +2070,12 @@ bark_coalesce_list(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 	 * An entry marked LP_DEAD holds only rows dead to every snapshot, and
 	 * simple deletion removes it when the page would split.  A TID above its
 	 * range gets a SINGLE of its own, after it, as nbtree's insert leaves a
-	 * dead posting list alone; adding the TID would make the entry live
-	 * again (BarkPageOverwriteEntry clears the mark) and keep its dead
-	 * members.  A TID inside its range must go into it, so the caller first
-	 * deletes it (BARK_COALESCE_DEAD), as nbtree's _bt_findinsertloc deletes
-	 * a dead posting list a new TID overlaps; when the caller could not
-	 * (deadok), the TID goes in and the mark is lost, which is only a hint.
+	 * dead posting list alone; adding the TID would make the entry live again
+	 * (BarkPageOverwriteEntry clears the mark) and keep its dead members.  A
+	 * TID inside its range must go into it, so the caller first deletes it
+	 * (BARK_COALESCE_DEAD), as nbtree's _bt_findinsertloc deletes a dead
+	 * posting list a new TID overlaps; when the caller could not (deadok),
+	 * the TID goes in and the mark is lost, which is only a hint.
 	 */
 	if (ItemIdIsDead(iid) && !inside)
 		return BARK_COALESCE_NONE;
@@ -2499,9 +2499,9 @@ bark_insert_key(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 			 * cannot hold the entry divided.  Delete the entries scans marked
 			 * dead, else merge the page's equal-key entries, as below for an
 			 * entry that does not fit, and try once more.  Either moves
-			 * entries, so the insert offset is
-			 * found again and the division recomputed, whether or not the
-			 * merge made enough room; if it did not, the page splits.
+			 * entries, so the insert offset is found again and the division
+			 * recomputed, whether or not the merge made enough room; if it
+			 * did not, the page splits.
 			 */
 			Size		need = bark_coded_size(page, replace) +
 				bark_coded_size(page, newitem) -
