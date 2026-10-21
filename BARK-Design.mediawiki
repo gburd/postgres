@@ -1044,6 +1044,61 @@ BENCHMARK-2026-10b.md, at 5d4e2883b10)
   not started)''
 * '''N2''' -- IS NULL and IS NOT NULL position and stop scans, as nbtree's
   do. ''(held: card written, not started)''
+* '''RT''' -- three recommendations of the RethinkDB review
+  (<code>/scratch/postgres-idxam/scratch-rethink/RETHINKDB-REVIEW.md</code>,
+  R3.1, R1 and R5), done before phase 5b of the versioned-entry design:
+  one pivot-suffix reserve, a page validator after every page change in
+  cassert builds, and a read stream in VACUUM's scan. ''(done, branch
+  bark-rethink: see "As built (RethinkDB review)" below)''
+
+'''As built (RethinkDB review).'''
+* ''R3.1, one pivot-suffix reserve.'' <code>BarkPivotSuffixReserve</code>
+  in bark.h replaces six hand-written <code>MAXALIGN(sizeof(ItemPointerData))</code>
+  reserves (leaf free space, the pivot itself, the split's and the build's
+  high-key estimate, the merge's target, the inline limit); the version tag
+  grows it from 8 to 16 bytes in one line. RethinkDB's
+  <code>leaf_node.cc</code> documents the bug it avoids: an optional field
+  counted in one size calculation and not another. A deterministic
+  workload's 3495 pages were byte-identical before and after.
+* ''R1, the page validator.'' amcheck's checks of one page moved to
+  <code>barkverify.c</code> (<code>bark_page_verify</code>), grouped SHAPES
+  (no catalog, no comparator), ORDER, CONTENTS and COMPLETE; amcheck calls
+  it, its messages unchanged. In cassert builds every function that ends a
+  critical section on a BARK page runs SHAPES and ORDER on each page it
+  changed, after the critical section and under the lock, and WAL redo runs
+  SHAPES on each page it replays. A failure is an ERROR in a backend (the
+  change is logged, so a PANIC would only replay it again) and a PANIC in
+  redo. From RethinkDB's <code>leaf::validate</code>, run after every node
+  mutation in its debug builds; sqlxtc's port caught a planted one-byte
+  fault its own test oracle missed. The developer option
+  <code>bark_verify_pages</code> (cassert builds only, on by default) turns
+  it off. A change of one or a few adjacent entries checks those entries
+  (and their order against the entry on each side), and every 32nd such
+  check in a backend the whole page; other changes check the whole page;
+  redo checks one such record in 32, whole, and every other record in
+  full. t/015_page_validator.pl plants a LIST count fault and an order
+  fault next to an ADD_TID (the INSERT fails at the call site; with the
+  validator off only amcheck reports the page; the standby's redo PANICs),
+  one away from it (a later change's whole-page check reports it), and
+  faults in a meta page and an overflow page. No false positive in the
+  BARK suites, core regress and isolation, or 027_stream_regress with
+  wal_consistency_checking. Cost under cassert: 5.6x on a long-LIST write
+  workload with every page checked whole, 1.9x bounded, 1.5x with the
+  shapes of the touched entries only; 1.17x on the BARK suites (README,
+  "Page validator").
+* ''R5, VACUUM's read stream.'' nbtree's c5c239e26e3 ported to
+  <code>bark_vacuum_scan</code>: a <code>block_range_read_stream_cb</code>
+  stream over the data blocks, re-armed for blocks added during the scan;
+  backtracking keeps <code>ReadBufferExtended</code>. Measured on
+  c7i.4xlarge (gp3 EBS, release build, shared_buffers 128MB, server
+  restarted and OS cache dropped before each timed VACUUM, PARALLEL 0;
+  10M rows, 30% deleted, four indexes (k), (d), (h), (v); median of 5):
+  VACUUM's reads in pg_stat_io fell from 142,195 to 19,849 for the same
+  2.6 GB, but the time did not: BARK 17.7 s before and 18.2 s after,
+  nbtree 18.6 s and 18.7 s, bark/btree 0.95 and 0.97 (pairwise 0.93-0.96
+  and 0.95-0.98). The heap passes dominate, and the volume serves 8 kB
+  reads in order well enough that combining them gains nothing here; the
+  win, if any, is on slower or contended storage.
 
 '''M-series -- documents (multikey)'''
 
