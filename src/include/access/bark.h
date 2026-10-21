@@ -1441,6 +1441,25 @@ extern void bark_page_verify(Relation index, BarkKeyInfo *keyinfo,
 							 BlockNumber blkno, int flags, int elevel);
 
 /*
+ * The page validator: in cassert builds, every change to a BARK page is
+ * followed, once its critical section is over and while the page is still
+ * locked, by bark_verify_page_change on it (and WAL redo checks each page it
+ * replays, bark_verify_redo).  bark_verify_pages turns it off.
+ */
+#ifdef USE_ASSERT_CHECKING
+extern PGDLLIMPORT bool bark_verify_pages;
+extern void bark_verify_page_change_impl(Relation index, Buffer buf,
+										 const char *caller);
+#define bark_verify_page_change(index, buf) \
+	bark_verify_page_change_impl((index), (buf), __func__)
+#else
+#define bark_verify_page_change(index, buf) ((void) 0)
+#endif
+#ifdef USE_INJECTION_POINTS
+extern void bark_verify_plant_fault(Page page, OffsetNumber off);
+#endif
+
+/*
  * Number of overflow pages the chain for a tuple of `fulllen` bytes needs.
  */
 extern BlockNumber bark_overflow_nchunks(Size fulllen);
