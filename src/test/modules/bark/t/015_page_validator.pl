@@ -12,7 +12,8 @@
 # or in the standby's redo of it.  Both lie in the entries the ADD_TID
 # touched, which the validator checks after every such change.  A third,
 # bark-verify-fault-far, swaps two entries far from the change, which only
-# the validator's periodic check of the whole page sees.  This is the check sqlxtc ran for its
+# a whole-page check sees: one forced by bark-verify-force-full, or the
+# validator's periodic one.  This is the check sqlxtc ran for its
 # own port of RethinkDB's validate-after-every-mutation: a planted
 # one-byte fault, caught at the call that made it.
 
@@ -105,42 +106,52 @@ is($rc, 0, 'order fault, validator off: the insert succeeds');
 like($cerr, qr/BARK index "t_order_off_idx" $ord/,
 	'order fault, validator off: only amcheck reports it');
 
-# A fault away from the change.  The INSERT of 9 adds a TID to the LIST at
-# offset 9, and bark-verify-fault-far swaps the entries at offsets 1 and 2
-# as it does.  The bounded check of an ADD_TID looks at offsets 8..10 and
-# the high key (this leaf, the rightmost, has none), so it misses the swap:
-# that INSERT succeeds.  The point is detached at once (a second swap would
-# undo the fault), and more inserts of 9 follow in the same backend.  The
-# psql session is a new backend, whose count of bounded checks starts at
-# zero, so the planting INSERT is its first and is checked bounded; every
-# 32nd checks the whole page, so the 31st insert after it reports the swap,
-# at offset 2, before amcheck runs.  So the periodic full check catches it,
-# not amcheck, because the same backend changes the page again 31 times;
-# with fewer later changes only amcheck would.
-setup($node, 't_far');
-$node->safe_psql('postgres', 'INSERT INTO t_far VALUES (9)');
+# A fault away from the change.  An INSERT of 9 adds a TID to the LIST at
+# offset 9 while bark-verify-fault-far swaps the entries at offsets 1 and 2.
+# The bounded check of an ADD_TID reads offsets 8..10 and the high key
+# (this rightmost leaf has none), so it misses the swap and the INSERT
+# succeeds: it is the first BARK change of a fresh session, and only every
+# 32nd bounded check of a backend reads the whole page.  The point is
+# detached at once, since a second swap would undo the fault.  A later
+# change's whole-page check then reports the swap at offset 2: forced at
+# once with bark-verify-force-full, and without it within
+# BARK_VERIFY_FULL_EVERY (32) more changes in the backend.  With no later
+# change only amcheck would report it.
+sub far_fault
 {
-	my ($rc, $out, $err) = $node->psql(
-		'postgres', q[
+	my ($t, $more) = @_;
+	setup($node, $t);
+	$node->safe_psql('postgres', "INSERT INTO $t VALUES (9)");
+	return $node->psql(
+		'postgres', qq[
 		SELECT injection_points_attach('bark-verify-fault-far', 'notice');
-		INSERT INTO t_far VALUES (9);
+		INSERT INTO $t VALUES (9);
 		SELECT injection_points_detach('bark-verify-fault-far');
-		SELECT 'after the far fault';
-		DO $$ BEGIN FOR i IN 1..40 LOOP
-			RAISE NOTICE 'insert %', i; INSERT INTO t_far VALUES (9);
-		END LOOP; END $$;
+		SELECT 'planted';
+		$more
 	]);
-	like($out, qr/after the far fault/,
-		'far fault: the INSERT that planted it succeeds');
-	like($err,
-		qr/ERROR:  BARK index "t_far_idx" has out-of-order keys on page $blk at offset 2/,
-		'far fault: a later change\'s periodic full check reports it');
-	like($err,
-		qr/CONTEXT:  BARK page validator, block $blk after bark_add_tid_entry/,
-		'far fault: reported after a later ADD_TID');
-	my @n = $err =~ /NOTICE:  insert (\d+)/g;
-	is($n[-1], 31, 'far fault: by the 32nd check of the backend');
 }
+my $far = qr/ERROR:  BARK index "t_far\w*_idx" has out-of-order keys on page $blk at offset 2/;
+my $farctx = qr/CONTEXT:  BARK page validator, block $blk after bark_add_tid_entry/;
+
+($rc, my $out, $err) = far_fault('t_far_forced', q[
+		SELECT injection_points_attach('bark-verify-force-full', 'notice');
+		INSERT INTO t_far_forced VALUES (9);]);
+$node->safe_psql('postgres',
+	"SELECT injection_points_detach('bark-verify-force-full')");
+like($out, qr/planted/, 'far fault: the INSERT that planted it succeeds');
+like($err, $far, 'far fault: a forced whole-page check reports it');
+like($err, $farctx, 'far fault: after the next ADD_TID');
+
+($rc, $out, $err) = far_fault('t_far_periodic', q[
+		DO $$ BEGIN FOR i IN 1..40 LOOP
+			RAISE NOTICE 'insert %', i; INSERT INTO t_far_periodic VALUES (9);
+		END LOOP; END $$;]);
+my @n = $err =~ /NOTICE:  insert (\d+)/g;
+like($out, qr/planted/, 'far fault, periodic: the planting INSERT succeeds');
+like($err, $far, 'far fault, periodic: a later full check reports it');
+ok(@n && $n[-1] <= 32,
+	'far fault, periodic: within 32 changes (' . ($n[-1] // 'none') . ')');
 
 # Unfaulted, the same inserts pass the validator and amcheck.
 setup($node, 't_clean');
@@ -149,7 +160,9 @@ is(scalar $node->psql('postgres', "SELECT bark_index_parent_check('t_clean_idx')
 	0, 'no fault: the validator and amcheck pass');
 
 # Redo: the standby plants the count fault as it replays an ADD_TID record,
-# and its redo check PANICs.  The primary's page is untouched.
+# and its redo check PANICs.  Redo checks one such record in 32, so the
+# check is forced with bark-verify-force-full.  The primary's page is
+# untouched.
 $node->backup('b');
 my $standby = PostgreSQL::Test::Cluster->new('standby');
 $standby->init_from_backup($node, 'b', has_streaming => 1);
@@ -157,7 +170,8 @@ $standby->start;
 setup($node, 't_redo');
 $node->wait_for_replay_catchup($standby);
 $standby->safe_psql('postgres',
-	"SELECT injection_points_attach('bark-verify-fault-count', 'notice')");
+	"SELECT injection_points_attach('bark-verify-fault-count', 'notice'); "
+	  . "SELECT injection_points_attach('bark-verify-force-full', 'notice')");
 my $off = -s $standby->logfile;
 $node->safe_psql('postgres', 'INSERT INTO t_redo VALUES (5)');
 ok( $standby->wait_for_log(
