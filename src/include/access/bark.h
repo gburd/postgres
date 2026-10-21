@@ -1524,6 +1524,9 @@ extern void bark_verify_page_change_impl(Relation index, Buffer buf,
 #else
 #define bark_verify_page_change(index, buf) ((void) 0)
 #endif
+struct XLogReaderState;
+extern void bark_verify_redo(struct XLogReaderState *record, uint8 block_id,
+							 Buffer buf);
 #ifdef USE_INJECTION_POINTS
 extern void bark_verify_plant_fault(Page page, OffsetNumber off);
 #endif
