@@ -144,10 +144,11 @@ bark_page_verify(Relation index, BarkKeyInfo *keyinfo, const char *relname,
 }
 
 /*
- * bark_page_verify, with the per-entry checks limited to the data items at
- * offsets lo..hi and the one on each side of them, when lo is valid: the
- * entries a change touched, their order against their neighbours and their
- * bound by the high key.  The page's layout and high key are checked whole.
+ * bark_page_verify, with the per-entry checks limited, when lo is valid, to
+ * the entries a change touched: the SHAPES checks of the data items at
+ * offsets lo..hi, and the ORDER checks of those items against the item on
+ * each side of them and against the high key.  The page's layout and high
+ * key are checked whole.
  */
 static void
 bark_page_verify_range(Relation index, BarkKeyInfo *keyinfo,
@@ -268,10 +269,15 @@ bark_page_verify_range(Relation index, BarkKeyInfo *keyinfo,
 	if (OffsetNumberIsValid(lo))
 	{
 		Assert(lo <= hi);
-		if (lo > firstdata)
+		/* ORDER compares each touched item with the ones next to it. */
+		if ((flags & BARK_VERIFY_ORDER) && lo > firstdata)
 			firstdata = lo - 1;
-		if (hi < maxoff)
+		else
+			firstdata = Max(firstdata, lo);
+		if ((flags & BARK_VERIFY_ORDER) && hi < maxoff)
 			maxoff = hi + 1;
+		else
+			maxoff = Min(maxoff, hi);
 	}
 
 	for (OffsetNumber off = firstdata; off <= maxoff;
@@ -290,7 +296,8 @@ bark_page_verify_range(Relation index, BarkKeyInfo *keyinfo,
 		 * and key, which a corrupt LIST, POSTING or overflow chain would make
 		 * them fail on without saying where.
 		 */
-		if ((flags & BARK_VERIFY_SHAPES) && BarkPageIsLeaf(opaque))
+		if ((flags & BARK_VERIFY_SHAPES) && BarkPageIsLeaf(opaque) &&
+			(!OffsetNumberIsValid(lo) || (off >= lo && off <= hi)))
 		{
 			if (IndexTupleSize(itup) > BarkMaxItemSize)
 				bark_verify_fail(&v, "BARK index \"%s\" has a %zu-byte leaf entry on page %u at offset %u, larger than the %zu-byte limit",
