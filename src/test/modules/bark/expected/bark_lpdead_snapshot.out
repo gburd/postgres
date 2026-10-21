@@ -1,0 +1,148 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1_begin s1_k s2_delete s2_scan s2_dead s1_k s1_v s1_seq s1_commit s2_xid s2_scan s2_dead s1_begin s1_k s1_v s1_seq s1_commit
+step s1_begin: 
+	BEGIN ISOLATION LEVEL REPEATABLE READ;
+	SELECT 1 AS snapshot;
+
+snapshot
+--------
+       1
+(1 row)
+
+step s1_k: 
+	SELECT count(*) AS k_rows, count(*) FILTER (WHERE k = 2) AS k2_rows
+	  FROM lpd WHERE k BETWEEN 1 AND 50;
+
+k_rows|k2_rows
+------+-------
+    70|     21
+(1 row)
+
+step s2_delete: 
+	DELETE FROM lpd WHERE k BETWEEN 1 AND 50 AND k <> 2;
+	DELETE FROM lpd WHERE k = 2 AND v = -1;
+
+step s2_scan: 
+	SELECT count(*) AS k_rows FROM lpd WHERE k BETWEEN 1 AND 50;
+	SELECT count(*) AS v_rows FROM lpd WHERE v BETWEEN 1 AND 50;
+
+k_rows
+------
+    20
+(1 row)
+
+v_rows
+------
+     1
+(1 row)
+
+step s2_dead: 
+	SELECT (SELECT sum(dead_items) FROM bark_multi_page_stats('lpd_k', 1, -1)
+			 WHERE type = 'leaf') AS k_dead,
+		   (SELECT sum(dead_items) FROM bark_multi_page_stats('lpd_v', 1, -1)
+			 WHERE type = 'leaf') AS v_dead;
+
+k_dead|v_dead
+------+------
+     0|     0
+(1 row)
+
+step s1_k: 
+	SELECT count(*) AS k_rows, count(*) FILTER (WHERE k = 2) AS k2_rows
+	  FROM lpd WHERE k BETWEEN 1 AND 50;
+
+k_rows|k2_rows
+------+-------
+    70|     21
+(1 row)
+
+step s1_v: 
+	SELECT count(*) AS v_rows FROM lpd WHERE v BETWEEN 1 AND 50;
+
+v_rows
+------
+    50
+(1 row)
+
+step s1_seq: 
+	SET LOCAL enable_seqscan = on;
+	SET LOCAL enable_indexscan = off;
+	SELECT count(*) AS seq_rows FROM lpd WHERE k BETWEEN 1 AND 50;
+
+seq_rows
+--------
+      70
+(1 row)
+
+step s1_commit: COMMIT;
+step s2_xid: 
+	SELECT pg_current_xact_id() IS NOT NULL AS xid;
+
+xid
+---
+t  
+(1 row)
+
+step s2_scan: 
+	SELECT count(*) AS k_rows FROM lpd WHERE k BETWEEN 1 AND 50;
+	SELECT count(*) AS v_rows FROM lpd WHERE v BETWEEN 1 AND 50;
+
+k_rows
+------
+    20
+(1 row)
+
+v_rows
+------
+     1
+(1 row)
+
+step s2_dead: 
+	SELECT (SELECT sum(dead_items) FROM bark_multi_page_stats('lpd_k', 1, -1)
+			 WHERE type = 'leaf') AS k_dead,
+		   (SELECT sum(dead_items) FROM bark_multi_page_stats('lpd_v', 1, -1)
+			 WHERE type = 'leaf') AS v_dead;
+
+k_dead|v_dead
+------+------
+    49|    49
+(1 row)
+
+step s1_begin: 
+	BEGIN ISOLATION LEVEL REPEATABLE READ;
+	SELECT 1 AS snapshot;
+
+snapshot
+--------
+       1
+(1 row)
+
+step s1_k: 
+	SELECT count(*) AS k_rows, count(*) FILTER (WHERE k = 2) AS k2_rows
+	  FROM lpd WHERE k BETWEEN 1 AND 50;
+
+k_rows|k2_rows
+------+-------
+    20|     20
+(1 row)
+
+step s1_v: 
+	SELECT count(*) AS v_rows FROM lpd WHERE v BETWEEN 1 AND 50;
+
+v_rows
+------
+     1
+(1 row)
+
+step s1_seq: 
+	SET LOCAL enable_seqscan = on;
+	SET LOCAL enable_indexscan = off;
+	SELECT count(*) AS seq_rows FROM lpd WHERE k BETWEEN 1 AND 50;
+
+seq_rows
+--------
+      20
+(1 row)
+
+step s1_commit: COMMIT;
