@@ -121,6 +121,11 @@ bark_verify_compare_leaf(BarkVerify *v, IndexTuple itup, bool high,
 								  other);
 }
 
+static void bark_page_verify_range(Relation index, BarkKeyInfo *keyinfo,
+								   const char *relname, Page page,
+								   BlockNumber blkno, int flags, int elevel,
+								   OffsetNumber lo, OffsetNumber hi);
+
 /*
  * Check `page`, block `blkno` of `index`, by the checks `flags` asks for (see
  * the file header), reporting corruption at `elevel` (ERROR or PANIC).
@@ -134,6 +139,21 @@ bark_verify_compare_leaf(BarkVerify *v, IndexTuple itup, bool high,
 void
 bark_page_verify(Relation index, BarkKeyInfo *keyinfo, const char *relname,
 				 Page page, BlockNumber blkno, int flags, int elevel)
+{
+	bark_page_verify_range(index, keyinfo, relname, page, blkno, flags, elevel,
+						   InvalidOffsetNumber, InvalidOffsetNumber);
+}
+
+/*
+ * bark_page_verify, with the per-entry checks limited to the data items at
+ * offsets lo..hi and the one on each side of them, when lo is valid: the
+ * entries a change touched, their order against their neighbours and their
+ * bound by the high key.  The page's layout and high key are checked whole.
+ */
+static void
+bark_page_verify_range(Relation index, BarkKeyInfo *keyinfo,
+					   const char *relname, Page page, BlockNumber blkno,
+					   int flags, int elevel, OffsetNumber lo, OffsetNumber hi)
 {
 	BarkVerify	v;
 	BarkPageOpaque opaque;
@@ -253,6 +273,15 @@ bark_page_verify(Relation index, BarkKeyInfo *keyinfo, const char *relname,
 				bark_verify_fail(&v, "BARK index \"%s\" has a high key with %d key attributes on page %u",
 								 v.relname, hikeynatts, blkno);
 		}
+	}
+
+	if (OffsetNumberIsValid(lo))
+	{
+		Assert(lo <= hi);
+		if (lo > firstdata)
+			firstdata = lo - 1;
+		if (hi < maxoff)
+			maxoff = hi + 1;
 	}
 
 	for (OffsetNumber off = firstdata; off <= maxoff;
@@ -609,6 +638,9 @@ bark_verify_other_page(Page page, const char *relname, BlockNumber blkno,
  */
 bool		bark_verify_pages = true;
 
+/* One check in this many of a few entries' change takes the whole page. */
+#define BARK_VERIFY_FULL_EVERY	32
+
 /* What the error context names: the function that changed the page. */
 typedef struct BarkVerifyContext
 {
@@ -643,12 +675,22 @@ bark_verify_errcontext(void *arg)
  * into the same page, and would abort every other test of the run.  Redo,
  * where an ERROR cannot be contained, checks with bark_verify_redo instead.
  *
- * shortcut: every change is checked (no sampling); README "Page validator"
- * has the measured cassert cost.  Sample per backend if it grows too slow.
+ * A change of one leaf entry or a few adjacent ones (an insert, overwrite,
+ * added TID or divided entry: most changes) passes their offsets lo..hi,
+ * and only those entries and their neighbours are checked, with the page's
+ * layout and high key, except that every BARK_VERIFY_FULL_EVERY-th such
+ * check in a backend takes the whole page.  Checking the whole page every
+ * time made a write-only workload of long equal-key LISTs 5.6x slower under
+ * cassert, which pushed core regress past its timeout in a coverage build;
+ * see "As built (RethinkDB review)" in BARK-Design.mediawiki for the
+ * numbers.  Every other change (splits, new roots, VACUUM, deletion and
+ * merging, page deletion, overflow and meta pages) is checked whole.
  */
 void
-bark_verify_page_change_impl(Relation index, Buffer buf, const char *caller)
+bark_verify_page_change_impl(Relation index, Buffer buf, OffsetNumber lo,
+							 OffsetNumber hi, const char *caller)
 {
+	static uint32 nlocal = 0;
 	Page		page;
 	BarkVerifyContext ctx;
 	ErrorContextCallback errcb;
@@ -680,8 +722,11 @@ bark_verify_page_change_impl(Relation index, Buffer buf, const char *caller)
 	{
 		BarkKeyInfo *keyinfo = bark_build_keyinfo(index);
 
-		bark_page_verify(index, keyinfo, NULL, page, ctx.blkno,
-						 BARK_VERIFY_SHAPES | BARK_VERIFY_ORDER, ERROR);
+		if (OffsetNumberIsValid(lo) && ++nlocal % BARK_VERIFY_FULL_EVERY == 0)
+			lo = hi = InvalidOffsetNumber;
+		bark_page_verify_range(index, keyinfo, NULL, page, ctx.blkno,
+							   BARK_VERIFY_SHAPES | BARK_VERIFY_ORDER, ERROR,
+							   lo, hi);
 		pfree(keyinfo);
 	}
 
@@ -734,12 +779,16 @@ bark_verify_plant_fault(Page page, OffsetNumber off)
  * bark_verify_pages is on in the process doing the redo; by then the
  * primary's validator has checked the page in full, so a failure here means
  * redo built a page the primary did not (which wal_consistency_checking
- * would also report, but only on records that carry an image).
+ * would also report, but only on records that carry an image).  As in a
+ * backend, a record that changed the entries at lo..hi has only those and
+ * their neighbours checked, but every BARK_VERIFY_FULL_EVERY-th one.
  */
 void
-bark_verify_redo(XLogReaderState *record, uint8 block_id, Buffer buf)
+bark_verify_redo(XLogReaderState *record, uint8 block_id, Buffer buf,
+				 OffsetNumber lo, OffsetNumber hi)
 {
 #ifdef USE_ASSERT_CHECKING
+	static uint32 nlocal = 0;
 	RelFileLocator rlocator;
 	BlockNumber blkno;
 	char		relname[NAMEDATALEN];
@@ -757,7 +806,11 @@ bark_verify_redo(XLogReaderState *record, uint8 block_id, Buffer buf)
 			 BarkPageIsOverflow(BarkPageGetOpaque(page)))
 		bark_verify_other_page(page, relname, blkno, PANIC);
 	else
-		bark_page_verify(NULL, NULL, relname, page, blkno,
-						 BARK_VERIFY_SHAPES, PANIC);
+	{
+		if (OffsetNumberIsValid(lo) && ++nlocal % BARK_VERIFY_FULL_EVERY == 0)
+			lo = hi = InvalidOffsetNumber;
+		bark_page_verify_range(NULL, NULL, relname, page, blkno,
+							   BARK_VERIFY_SHAPES, PANIC, lo, hi);
+	}
 #endif
 }
