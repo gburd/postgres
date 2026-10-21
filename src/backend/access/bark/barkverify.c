@@ -258,18 +258,12 @@ bark_page_verify_range(Relation index, BarkKeyInfo *keyinfo,
 		}
 	}
 
+	/* ORDER compares each touched item with the ones next to it. */
 	if (OffsetNumberIsValid(lo))
 	{
-		Assert(lo <= hi);
-		/* ORDER compares each touched item with the ones next to it. */
-		if ((flags & BARK_VERIFY_ORDER) && lo > firstdata)
-			firstdata = lo - 1;
-		else
-			firstdata = Max(firstdata, lo);
-		if ((flags & BARK_VERIFY_ORDER) && hi < maxoff)
-			maxoff = hi + 1;
-		else
-			maxoff = Min(maxoff, hi);
+		Assert(lo <= hi && (flags & BARK_VERIFY_ORDER));
+		firstdata = Max(firstdata, lo - 1);
+		maxoff = Min(maxoff, hi + 1);
 	}
 
 	for (OffsetNumber off = firstdata; off <= maxoff;
