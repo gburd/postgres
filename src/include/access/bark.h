@@ -1221,7 +1221,7 @@ extern int	bark_index_extracted_column(Relation index);
 extern bool bark_index_gin_query(Relation index);
 extern bool bark_opfamily_is_own(Oid opfamily);
 extern bool bark_relation_is_bark(Relation rel);
-extern bool bark_index_coalesces(Relation index, bool unique);
+extern bool bark_index_coalesces(Relation index);
 extern bool bark_opfamily_extracts(Oid opfamily, Oid opcintype);
 extern bool bark_property(Oid index_oid, int attno, IndexAMProperty prop,
 						  const char *propname, bool *res, bool *isnull);

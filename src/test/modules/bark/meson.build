@@ -40,6 +40,7 @@ tests += {
       'bark_l1_concurrent',
       'bark_walk_left',
       'bark_lpdead_snapshot',
+      'bark_unique_rebuild',
     ],
     'regress_args': ['--temp-config', files('../injection_points/extra.conf')],
     # Injection points are cluster-wide.
