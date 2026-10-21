@@ -44,7 +44,6 @@
 #include "access/genam.h"
 #include "access/xlogreader.h"
 #include "lib/sbm.h"
-#include "lib/stringinfo.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
 #include "utils/injection_point.h"
@@ -72,6 +71,9 @@ static void bark_verify_chain(BarkVerify *v, OffsetNumber off,
 							  IndexTuple itup);
 static void bark_verify_marker(BarkVerify *v, OffsetNumber off,
 							   IndexTuple itup);
+#if defined(USE_ASSERT_CHECKING) && defined(USE_INJECTION_POINTS)
+static void bark_verify_plant_page_fault(Page page);
+#endif
 
 /*
  * Report corruption.  One function rather than an ereport at each check, so
@@ -81,25 +83,15 @@ static void bark_verify_marker(BarkVerify *v, OffsetNumber off,
 static void
 bark_verify_fail(BarkVerify *v, const char *fmt,...)
 {
-	StringInfoData buf;
+	char		msg[1024];		/* the longest message is about 250 bytes */
+	va_list		args;
 
-	fmt = _(fmt);
-	initStringInfo(&buf);
-	for (;;)
-	{
-		va_list		args;
-		int			needed;
-
-		va_start(args, fmt);
-		needed = appendStringInfoVA(&buf, fmt, args);
-		va_end(args);
-		if (needed == 0)
-			break;
-		enlargeStringInfo(&buf, needed);
-	}
+	va_start(args, fmt);
+	vsnprintf(msg, sizeof(msg), _(fmt), args);
+	va_end(args);
 	ereport(v->elevel,
 			errcode(ERRCODE_INDEX_CORRUPTED),
-			errmsg_internal("%s", buf.data));
+			errmsg_internal("%s", msg));
 	pg_unreachable();
 }
 
@@ -697,11 +689,13 @@ bark_verify_page_change_impl(Relation index, Buffer buf, OffsetNumber lo,
 	errcb.previous = error_context_stack;
 	error_context_stack = &errcb;
 
-	if (PageIsNew(page))
-		elog(ERROR, "BARK index \"%s\" left page %u new after changing it",
-			 RelationGetRelationName(index), ctx.blkno);
-	else if (BarkPageIsMeta(BarkPageGetOpaque(page)) ||
-			 BarkPageIsOverflow(BarkPageGetOpaque(page)))
+	/* Every change leaves an initialized page. */
+	Assert(!PageIsNew(page));
+#ifdef USE_INJECTION_POINTS
+	bark_verify_plant_page_fault(page);
+#endif
+	if (BarkPageIsMeta(BarkPageGetOpaque(page)) ||
+		BarkPageIsOverflow(BarkPageGetOpaque(page)))
 		bark_verify_other_page(page, RelationGetRelationName(index),
 							   ctx.blkno, ERROR);
 	else if (BarkPageIsDeleted(BarkPageGetOpaque(page)))
@@ -775,6 +769,28 @@ bark_verify_plant_fault(Page page, OffsetNumber off)
 	}
 }
 
+
+#ifdef USE_ASSERT_CHECKING
+/*
+ * Plant a fault in a meta or overflow page the caller has just changed,
+ * for the validator's tests: with bark-verify-fault-meta, a meta page's
+ * version is set to 0; with bark-verify-fault-overflow, an overflow page
+ * gets a left link.
+ */
+static void
+bark_verify_plant_page_fault(Page page)
+{
+	BarkPageOpaque opaque = BarkPageGetOpaque(page);
+
+	if (BarkPageIsMeta(opaque) &&
+		IS_INJECTION_POINT_ATTACHED("bark-verify-fault-meta"))
+		BarkPageGetMeta(page)->bark_version = 0;
+	if (BarkPageIsOverflow(opaque) &&
+		IS_INJECTION_POINT_ATTACHED("bark-verify-fault-overflow"))
+		opaque->bark_prev = 1;
+}
+#endif
+
 #endif							/* USE_INJECTION_POINTS */
 
 /*
@@ -817,11 +833,9 @@ bark_verify_redo(XLogReaderState *record, uint8 block_id, Buffer buf,
 	XLogRecGetBlockTag(record, block_id, &rlocator, NULL, &blkno);
 	snprintf(relname, sizeof(relname), "%u", rlocator.relNumber);
 	page = BufferGetPage(buf);
-	if (PageIsNew(page))
-		elog(PANIC, "BARK index \"%s\" left page %u new in redo",
-			 relname, blkno);
-	else if (BarkPageIsMeta(BarkPageGetOpaque(page)) ||
-			 BarkPageIsOverflow(BarkPageGetOpaque(page)))
+	Assert(!PageIsNew(page));
+	if (BarkPageIsMeta(BarkPageGetOpaque(page)) ||
+		BarkPageIsOverflow(BarkPageGetOpaque(page)))
 		bark_verify_other_page(page, relname, blkno, PANIC);
 	else
 		bark_page_verify(NULL, NULL, relname, page, blkno,
