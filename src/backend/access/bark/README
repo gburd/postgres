@@ -568,6 +568,44 @@ in both, which is right for an index with no extracted column.  The format
 version stays 2.  A writer of either field first moves pd_lower past them
 (bark_meta_cover), so the standard-layout image it logs keeps them.
 
+TID stride
+----------
+
+Every mapping of a heap TID to an integer is laid out for the table's
+largest locator offset, the index's TID stride: a POSTING entry's sbm key
+(bark_tid_to_key, block * stride + offset - 1), a coded LIST's integer
+(block << bits | offset, with max(11, bits of the stride) offset bits), and
+the scan seen set's radix-tree key (bark_tid_to_key's).  For heap the
+stride is MaxHeapTuplesPerPage, and a coded LIST's 11 bits are GIN's.  A
+table AM may declare larger offsets (LocatorDesc.max_offset, at most
+MaxOffsetNumber); the mappings then use its bound, so offsets from
+different blocks never meet.
+
+CREATE INDEX takes the stride from the table's LocatorDesc
+(bark_heap_tid_stride) and stores it in the meta page's bark_tid_stride,
+which sits in what was the padding after bark_allequalimage: the struct
+keeps its size and pd_lower its place, so a heap index's meta page is the
+one it was, byte for byte, but for that field, and every other page is
+unchanged.  A meta page written before the field reads 0 there (PageInit
+zeroed the padding), which bark_index_tid_stride reads as
+MaxHeapTuplesPerPage, the only stride such an index can have.
+bark_index_tid_stride caches the value in rd_amcache; it changes only with
+the relfilenode (a rebuild: REINDEX, or the rewrite of ALTER TABLE ... SET
+ACCESS METHOD, which writes the new table's stride), and a new relfilenode
+drops rd_amcache.  BarkKeyInfo carries it to the code that forms and reads
+entries.  A TID whose offset exceeds the stride cannot be mapped, so
+CREATE INDEX's callback and aminsert refuse one as corruption
+(bark_check_tid_offset): the table's locators changed without a rebuild.
+
+An index scan through GIN's query interface keeps its result in a
+TIDBitmap, which holds offsets only up to TBM_MAX_TUPLES_PER_PAGE (heap's
+bound).  For a larger stride the scan folds heap block B's offset O into
+bitmap page B * fold + (O - 1) / TBM_MAX_TUPLES_PER_PAGE
+(bark_mk_gin_tbm_add), one-to-one and in TID order, and bark_mk_gin_load
+turns each page back; work_mem bounds it as before.  The executor's bitmaps
+are not folded: the planner makes no bitmap scan of a table whose offsets
+exceed TBM_MAX_TUPLES_PER_PAGE (plancat.c).
+
 Multikey keys
 -------------
 
@@ -770,7 +808,8 @@ An entry that passes goes to bark_mk_accept (procedure 9 when its range
 asked for it: false drops the entry, maybe sets the item's recheck flag)
 and then, in bark_readpage, to bark_mk_seen, the seen set: a radix tree
 (lib/radixtree.h, local, in its own context) from bark_tid_to_key(tid) >> 6
-to a 64-bit word with one bit per TID of that window.  A TID already in it
+(at the index's TID stride) to a 64-bit word with one bit per TID of that
+window.  A TID already in it
 is dropped; a new one is set and kept.  So a page's items are free of
 repeats when the read copies them, and gettuple returns them as they are.
 Entries rejected by a filter or procedure 9 never reach the set.  With
@@ -1608,15 +1647,18 @@ records:
       bark_entry_add_tid on the entry, as the primary did, and overwrites
       the entry with the result.  bark_entry_add_tid depends on nothing but
       the entry and the TID (it takes the key from the entry, not from the
-      inserted tuple), so both sides build the same bytes;
-      wal_consistency_checking checks that they do.
+      inserted tuple), and the index's TID stride, so both sides build the
+      same bytes; wal_consistency_checking checks that they do.  Redo has no
+      meta page to read the stride from, so the record of an index whose
+      stride is not MaxHeapTuplesPerPage carries it, a uint16 after
+      xl_bark_add_tid; a heap index's records are as they were.
 
   XLOG_BARK_INSERT_SWAP (bark_swap_tid_entry, from bark_coalesce_list)
       One leaf: an entry's offset and a heap TID that falls inside the
       entry's TID range but does not fit in it (see "Heap TID order").  Like
       ADD_TID, it carries only the TID: redo divides the entry with
       bark_entry_swap_tid, as the primary did, and puts the two parts at the
-      entry's offset and the next.  nbtree logs the same change as an
+      entry's offset and the next.  The TID stride follows as for ADD_TID.  nbtree logs the same change as an
       INSERT_POST with a posting offset.  When the parts do not fit, the
       insert splits the page instead, and the SPLIT record carries them.
 
@@ -1769,7 +1811,8 @@ plain LIST is an ItemPointerData array.  A coded LIST sets BARK_LIST_CODED
 (the 0x1000 status bit, BARK_PIVOT_META on a pivot, never set on a leaf
 entry) and holds a BarkCodedListHdr (the varbyte stream's length and the
 last TID raw), the first TID raw, then the varbyte deltas of the rest, each
-TID mapped to block << 11 | offset as ginpostinglist.c does.  The first and
+TID mapped to block << 11 | offset as ginpostinglist.c does (more offset
+bits for a TID stride past 2047; see "TID stride").  The first and
 last TIDs stay readable in O(1) for bark_entry_tid_range.  Every reader goes
 through bark_entry_get_tids / bark_entry_count_tids / bark_entry_has_tid, and
 bark_entry_add_tid re-forms a coded LIST (decode, insert, re-encode), which
