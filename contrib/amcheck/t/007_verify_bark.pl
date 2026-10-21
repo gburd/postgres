@@ -76,6 +76,13 @@ for my $i (sort keys %idx)
 	$node->safe_psql('postgres', "SELECT bark_index_parent_check('$i', true)");
 }
 
+# checkunique reads an OVERSIZED key's chain to compare it in full.
+$node->safe_psql('postgres',
+	'CREATE UNIQUE INDEX i_big_u ON t_big USING bark (k)');
+is( $node->psql('postgres', "SELECT bark_index_check('i_big_u', true, true)"),
+	0, 'checkunique passes a unique index with an OVERSIZED key');
+$node->safe_psql('postgres', 'DROP INDEX i_big_u');
+
 # Facts about each index, read before the server stops.
 my %info;
 for my $i (sort keys %idx)
