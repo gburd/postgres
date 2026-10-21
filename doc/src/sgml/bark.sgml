@@ -1119,6 +1119,18 @@ CREATE INDEX orders_customer_idx ON orders (customer);
    the index records which entries came from such rows; the table decides
    their visibility, as for every other entry.
   </para>
+
+  <para>
+   The metapage also records the largest item number of the table's row
+   locators when the index was built (see <xref linkend="tableam-locator"/>; for a
+   heap table, the most tuples a page can hold), and the compressed forms
+   of a <literal>LIST</literal> or <literal>POSTING</literal> entry are laid
+   out for it.  A BARK index can therefore be built on a table whose access
+   method's locators carry larger item numbers, up to the largest an item
+   pointer can hold, which <acronym>GIN</acronym> refuses.
+   <command>REINDEX</command> and <command>ALTER TABLE ... SET ACCESS
+   METHOD</command> record the new value.
+  </para>
  </sect3>
 
  <sect3 id="bark-hot">
