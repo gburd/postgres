@@ -268,7 +268,13 @@ unique index checks each sorted live tuple against the previous live one by
 the same rule (bark_load), and its second pass checks live oversized keys by
 inserting them with UNIQUE_CHECK_YES; rows the table AM passes as not alive
 are indexed but not checked (see "CREATE INDEX").  A unique index never
-coalesces, so it holds only SINGLE and OVERSIZED entries.
+coalesces, so it holds only SINGLE and OVERSIZED entries.  Whether it is
+unique is the catalog's indisunique (bark_index_coalesces), not the
+IndexInfo's ii_Unique, which says only whether to enforce the constraint
+now: CLUSTER, VACUUM FULL and REPACK rebuild with ii_Unique cleared
+(reindex_index's skip_constraint_checks) and still index the dead
+duplicates an older snapshot sees.  bark_index_check reports a LIST or
+POSTING entry in a unique index as corruption.
 
 A unique BARK index can be an ON CONFLICT arbiter, a foreign key's
 referenced index and a replica identity, but no constraint can use one

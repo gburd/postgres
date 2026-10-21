@@ -2395,7 +2395,7 @@ bark_insert_state(Relation index, IndexInfo *indexInfo)
 
 		state = palloc_object(BarkInsertState);
 		state->keyinfo = bark_build_keyinfo(index);
-		state->coalesce = bark_index_coalesces(index, indexInfo->ii_Unique);
+		state->coalesce = bark_index_coalesces(index);
 		state->extracted = bark_index_extracted_column(index);
 		state->ginrule = state->coalesce && state->extracted > 0 &&
 			!bark_allequalimage(index);

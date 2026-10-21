@@ -291,11 +291,20 @@ bark_index_may_coalesce(Relation index)
  * turns BARK's coalescing off as it turns off nbtree's deduplication: later
  * inserts store every row as a SINGLE, and entries already coalesced stay as
  * they are.
+ *
+ * Uniqueness is the catalog's (indisunique), not the IndexInfo's ii_Unique,
+ * which says only whether to enforce the constraint now.  A unique index's
+ * entries have one heap TID each, whatever built them: bark_check_unique
+ * refuses any other entry as corruption.  A rebuild that skips constraint
+ * checks (CLUSTER, VACUUM FULL and REPACK, through reindex_index's
+ * skip_constraint_checks) clears ii_Unique, yet indexes the dead duplicates
+ * an older snapshot still sees, which would otherwise coalesce with the live
+ * row of their key.
  */
 bool
-bark_index_coalesces(Relation index, bool unique)
+bark_index_coalesces(Relation index)
 {
-	return !unique && BarkGetDeduplicateItems(index) &&
+	return !index->rd_index->indisunique && BarkGetDeduplicateItems(index) &&
 		bark_index_may_coalesce(index);
 }
 
