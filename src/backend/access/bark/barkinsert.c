@@ -1072,7 +1072,8 @@ bark_split(Relation index, Relation heaprel, BarkKeyInfo *keyinfo,
 	 * BARK_PREFIX, BARK_ROOT (which the left half gives up: a new root is
 	 * made above it) and the hint BARK_HAS_GARBAGE, which neither half keeps.
 	 * Neither keeps an entry's LP_DEAD mark either, as in nbtree's
-	 * _bt_split: the entries are added afresh.
+	 * _bt_split: the entries are added afresh, and simple deletion has
+	 * already removed the marked entries it could.
 	 */
 	Assert((origopaque->bark_flags &
 			~(BARK_LEAF | BARK_ROOT | BARK_PREFIX | BARK_HAS_GARBAGE)) == 0);
@@ -1986,6 +1987,7 @@ typedef enum BarkCoalesceResult
 	BARK_COALESCE_NONE,			/* nothing done: insert a SINGLE */
 	BARK_COALESCE_DONE,			/* the TID is in the index */
 	BARK_COALESCE_SPLIT,		/* split with *replace and *newitem */
+	BARK_COALESCE_DEAD,			/* inside an entry marked LP_DEAD: delete */
 } BarkCoalesceResult;
 
 /*
@@ -2034,7 +2036,7 @@ typedef enum BarkCoalesceResult
 static BarkCoalesceResult
 bark_coalesce_list(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 				   ItemPointer newtid, Buffer buf, OffsetNumber off,
-				   IndexTuple *replace, IndexTuple *newitem)
+				   bool deadok, IndexTuple *replace, IndexTuple *newitem)
 {
 	Page		page = BufferGetPage(buf);
 	BarkPageOpaque opaque = BarkPageGetOpaque(page);
@@ -2071,15 +2073,20 @@ bark_coalesce_list(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 	inside = ItemPointerCompare(newtid, &hi) <= 0;
 
 	/*
-	 * An entry marked LP_DEAD holds only rows dead to every snapshot.  A TID
-	 * above its range gets a SINGLE of its own, after it, as nbtree's insert
-	 * leaves a dead posting list alone; adding the TID would make the entry
-	 * live again (BarkPageOverwriteEntry clears the mark) and keep its dead
-	 * members.  A TID inside its range must go into it, and the mark is
-	 * lost, which is only a hint.
+	 * An entry marked LP_DEAD holds only rows dead to every snapshot, and
+	 * simple deletion removes it when the page would split.  A TID above its
+	 * range gets a SINGLE of its own, after it, as nbtree's insert leaves a
+	 * dead posting list alone; adding the TID would make the entry live
+	 * again (BarkPageOverwriteEntry clears the mark) and keep its dead
+	 * members.  A TID inside its range must go into it, so the caller first
+	 * deletes it (BARK_COALESCE_DEAD), as nbtree's _bt_findinsertloc deletes
+	 * a dead posting list a new TID overlaps; when the caller could not
+	 * (deadok), the TID goes in and the mark is lost, which is only a hint.
 	 */
-	if (!inside && ItemIdIsDead(iid))
+	if (ItemIdIsDead(iid) && !inside)
 		return BARK_COALESCE_NONE;
+	if (ItemIdIsDead(iid) && !deadok)
+		return BARK_COALESCE_DEAD;
 	if (inside && bark_entry_has_tid(cur, newtid, keyinfo->tidstride))
 		elog(ERROR, "heap TID (%u,%u) already in BARK entry at offset %u of block %u in index \"%s\"",
 			 ItemPointerGetBlockNumber(newtid),
@@ -2466,7 +2473,20 @@ bark_insert_key(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 		BarkCoalesceResult cr;
 
 		cr = bark_coalesce_list(index, keyinfo, itup, &itup->t_tid, buf, off,
-								&replace, &newitem);
+								heapRel == NULL, &replace, &newitem);
+		if (cr == BARK_COALESCE_DEAD)
+		{
+			/*
+			 * The new TID falls inside an entry marked dead: delete the
+			 * marked entries rather than make it live again, then find the
+			 * insert offset again.
+			 */
+			(void) bark_simple_delete(index, heapRel, keyinfo, buf, itup, 0);
+			off = bark_leaf_insert_off(index, keyinfo, itup, &itup->t_tid,
+									   page);
+			cr = bark_coalesce_list(index, keyinfo, itup, &itup->t_tid, buf,
+									off, true, &replace, &newitem);
+		}
 		if (cr == BARK_COALESCE_SPLIT && fastpath)
 		{
 			/*
@@ -2483,9 +2503,10 @@ bark_insert_key(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 		{
 			/*
 			 * The entry the TID falls inside cannot take it, and the page
-			 * cannot hold the entry divided.  Merge the page's equal-key
-			 * entries first, as below for an entry that does not fit, and try
-			 * once more.  The merge moves entries, so the insert offset is
+			 * cannot hold the entry divided.  Delete the entries scans marked
+			 * dead, else merge the page's equal-key entries, as below for an
+			 * entry that does not fit, and try once more.  Either moves
+			 * entries, so the insert offset is
 			 * found again and the division recomputed, whether or not the
 			 * merge made enough room; if it did not, the page splits.
 			 */
@@ -2496,15 +2517,18 @@ bark_insert_key(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 
 			pfree(replace);
 			pfree(newitem);
-			bark_merge_page(index, keyinfo, buf, InvalidOffsetNumber, need);
+			if (heapRel == NULL ||
+				!bark_simple_delete(index, heapRel, keyinfo, buf, itup, need))
+				bark_merge_page(index, keyinfo, buf, InvalidOffsetNumber, need);
 			off = bark_leaf_insert_off(index, keyinfo, itup, &itup->t_tid,
 									   page);
 			cr = bark_coalesce_list(index, keyinfo, itup, &itup->t_tid, buf,
-									off, &replace, &newitem);
+									off, true, &replace, &newitem);
 		}
 		switch (cr)
 		{
 			case BARK_COALESCE_NONE:
+			case BARK_COALESCE_DEAD:	/* not returned when deadok */
 				break;
 			case BARK_COALESCE_DONE:
 				*offp = off;
@@ -2549,16 +2573,21 @@ bark_insert_key(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 			bool		roomnow = false;
 
 			/*
-			 * The entry is a new version of a row whose key here did not
-			 * change: before splitting, delete the entries of dead versions
-			 * (bottom-up deletion, barkdelete.c).  Deleting shifts offsets,
-			 * so find the entry's place again whether or not that made room.
+			 * Before splitting, delete the entries scans marked dead (simple
+			 * deletion), then, when the entry is a new version of a row whose
+			 * key here did not change, the entries of dead versions
+			 * (bottom-up deletion), as nbtree's _bt_delete_or_dedup_one_page
+			 * tries them (barkdelete.c).  Deleting shifts offsets, so find
+			 * the entry's place again whether or not that made room.
 			 */
-			if (indexUnchanged && heapRel != NULL)
+			if (heapRel != NULL)
 			{
-				roomnow = bark_bottomup_delete(index, heapRel, keyinfo, buf,
-											   itup,
-											   bark_coded_size(page, entry));
+				roomnow = bark_simple_delete(index, heapRel, keyinfo, buf,
+											 itup, bark_coded_size(page, entry));
+				if (!roomnow && indexUnchanged)
+					roomnow = bark_bottomup_delete(index, heapRel, keyinfo,
+												   buf, itup,
+												   bark_coded_size(page, entry));
 				off = bark_leaf_insert_off(index, keyinfo, itup, &itup->t_tid,
 										   page);
 			}
