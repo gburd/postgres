@@ -30,7 +30,9 @@
  */
 #define XLOG_BARK_VACUUM		0x00	/* delete entries on a leaf during
 										 * VACUUM */
-#define XLOG_BARK_UNLINK_PAGE	0x10	/* delete an empty leaf from the tree */
+#define XLOG_BARK_UNLINK_PAGE	0x10	/* delete an empty leaf from the tree,
+										 * or lower a leaf's lower bound
+										 * (XLH_BARK_UNLINK_LOWER_SEP) */
 #define XLOG_BARK_REUSE_PAGE	0x20	/* deleted page is about to be reused
 										 * from the FSM */
 #define XLOG_BARK_MARK_DELETED	0x30	/* free one overflow page */
@@ -262,6 +264,23 @@ typedef struct xl_bark_merge
  * Backup Blk 1: left sibling
  * Backup Blk 2: right sibling
  * Backup Blk 3: parent
+ *
+ * The same opcode also logs a second operation, the lowering of a leaf's
+ * lower bound (bark_lower_bound), since BARK's rmgr has no free opcode.  The
+ * two are told apart by XLH_BARK_UNLINK_LOWER_SEP and by the absence of
+ * block 0: a lowering deletes no page.  It moves no entry: the left page's
+ * high key and the parent's downlink to the right page, both (K, L, t0),
+ * become (K, L) with no tag, and the right page loses BARK_LOWBOUND_TAGGED.
+ * leftsib and rightsib name the two leaves and poffset the downlink;
+ * safexid is unused (zero).  Each block is present only when it changes:
+ *
+ * Backup Blk 1: left page; payload: its new high key
+ * Backup Blk 2: right page; BARK_LOWBOUND_TAGGED is cleared
+ * Backup Blk 3: parent; payload: the new downlink at poffset
+ *
+ * A lowering whose bound has no tag already (the right page kept the flag
+ * through a page deletion that gave it an untagged lower bound) has block 2
+ * alone.
  */
 typedef struct xl_bark_unlink_page
 {
@@ -276,6 +295,8 @@ typedef struct xl_bark_unlink_page
 
 /* The target had BARK_LOWBOUND_TAGGED, which its right sibling takes over. */
 #define XLH_BARK_UNLINK_LOWTAG	0x0001
+/* Not a page deletion: a lowered lower bound (bark_lower_bound). */
+#define XLH_BARK_UNLINK_LOWER_SEP	0x0002
 
 /*
  * A deleted page is about to be reused (bark_get_free_page), as nbtree's
