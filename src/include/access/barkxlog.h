@@ -118,6 +118,8 @@ typedef struct xl_bark_split
 #define XLH_BARK_SPLIT_NEWLEFT	0x0008	/* new entry went to the left half */
 #define XLH_BARK_SPLIT_REPLACE	0x0010	/* replaced entry stayed left */
 #define XLH_BARK_SPLIT_LWHOLE	0x0020	/* left half is logged whole */
+#define XLH_BARK_SPLIT_LLOWTAG	0x0040	/* left half has BARK_LOWBOUND_TAGGED */
+#define XLH_BARK_SPLIT_RLOWTAG	0x0080	/* right half has BARK_LOWBOUND_TAGGED */
 
 /*
  * A new root above the split of the old one (bark_new_root), as nbtree's
@@ -171,8 +173,14 @@ typedef struct xl_bark_overflow_page
  * whole: re-forming a POSTING entry needs the index's tuple descriptor, which
  * redo does not have.  Rewrites never grow an entry.
  *
- * Redo also clears the page's vacuum cycle ID.  A record with nothing deleted
- * or rewritten is written only to clear a page's cycle ID.
+ * Then, after the deletions, tagged entries are untagged in place, one at a
+ * time in the order logged (bark_vacuum_untag): the entry at the i'th
+ * "from" offset is removed and the i'th untagged entry goes in at the i'th
+ * "to" offset, at or before it (BarkPageMoveEntry).  Offsets are as of that
+ * step.
+ *
+ * Redo also clears the page's vacuum cycle ID.  A record with nothing deleted,
+ * rewritten or untagged is written only to clear a page's cycle ID.
  *
  * Backup Blk 0: leaf page
  *
@@ -180,14 +188,18 @@ typedef struct xl_bark_overflow_page
  * - DELETED TARGET OFFSET NUMBERS (ndeleted)
  * - UPDATED TARGET OFFSET NUMBERS (nupdated)
  * - UPDATED ENTRIES (nupdated), each padded to MAXALIGN(IndexTupleSize())
+ * - UNTAGGED "FROM" OFFSET NUMBERS (nuntagged)
+ * - UNTAGGED "TO" OFFSET NUMBERS (nuntagged)
+ * - UNTAGGED ENTRIES (nuntagged), each padded to MAXALIGN(IndexTupleSize())
  */
 typedef struct xl_bark_vacuum
 {
 	uint16		ndeleted;
 	uint16		nupdated;
+	uint16		nuntagged;
 } xl_bark_vacuum;
 
-#define SizeOfBarkVacuum	(offsetof(xl_bark_vacuum, nupdated) + sizeof(uint16))
+#define SizeOfBarkVacuum	(offsetof(xl_bark_vacuum, nuntagged) + sizeof(uint16))
 
 /*
  * Bottom-up deletion's changes to one leaf (bark_delitems_delete), as
@@ -242,7 +254,9 @@ typedef struct xl_bark_merge
  * downlink in the parent (at poffset) is pointed at the right sibling and the
  * right sibling's own downlink, the next item, is removed, and the target is
  * reinitialized as a deleted leaf that keeps its sibling links.  This is
- * nbtree's mark-half-dead and unlink steps in one record.
+ * nbtree's mark-half-dead and unlink steps in one record.  The right sibling
+ * takes over the target's lower bound, and with it the target's
+ * BARK_LOWBOUND_TAGGED (XLH_BARK_UNLINK_LOWTAG).
  *
  * Backup Blk 0: target leaf (reinitialized)
  * Backup Blk 1: left sibling
@@ -255,9 +269,13 @@ typedef struct xl_bark_unlink_page
 	BlockNumber rightsib;		/* target's right sibling */
 	FullTransactionId safexid;	/* target's BarkPageSetDeleted() XID */
 	OffsetNumber poffset;		/* target's downlink in the parent */
+	uint16		flags;			/* XLH_BARK_UNLINK_* */
 } xl_bark_unlink_page;
 
-#define SizeOfBarkUnlinkPage	(offsetof(xl_bark_unlink_page, poffset) + sizeof(OffsetNumber))
+#define SizeOfBarkUnlinkPage	(offsetof(xl_bark_unlink_page, flags) + sizeof(uint16))
+
+/* The target had BARK_LOWBOUND_TAGGED, which its right sibling takes over. */
+#define XLH_BARK_UNLINK_LOWTAG	0x0001
 
 /*
  * A deleted page is about to be reused (bark_get_free_page), as nbtree's

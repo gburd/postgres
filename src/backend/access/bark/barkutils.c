@@ -1562,6 +1562,32 @@ bark_compare_itups_tid(BarkKeyInfo *keyinfo, Relation index, IndexTuple key,
 }
 
 /*
+ * The untagged form of the tagged SINGLE or OVERSIZED leaf entry `itup`
+ * (decoded, not coded for a page), palloc'd: a plain SINGLE of its key and
+ * heap TID, or the OVERSIZED entry without its tag trailer, which refers to
+ * the same overflow chain.
+ */
+IndexTuple
+bark_entry_untag(IndexTuple itup)
+{
+	IndexTuple	plain;
+	Size		size;
+
+	Assert(BarkEntryHasTag(itup));
+	if (BarkEntryGetShape(itup) != BARK_SHAPE_OVERSIZED)
+		return bark_form_tagged(itup, BarkEntryGetHeapTid(itup),
+								InvalidIndexVersionTag);
+
+	size = IndexTupleSize(itup) - MAXALIGN(sizeof(IndexVersionTag));
+	plain = (IndexTuple) palloc(size);
+	memcpy(plain, itup, size);
+	plain->t_info = (plain->t_info & ~INDEX_SIZE_MASK) | (uint16) size;
+	ItemPointerSetOffsetNumber(&plain->t_tid, (OffsetNumber) BARK_IS_OVERFLOW);
+	Assert(!BarkEntryHasTag(plain));
+	return plain;
+}
+
+/*
  * Form a tagged SINGLE (see "Version tags" in bark.h) from `key`, a SINGLE-
  * shape key tuple or the key part of an entry, its key `IndexTupleSize`
  * bytes: the key, padded to MAXALIGN, then the trailer of heap TID `tid` and

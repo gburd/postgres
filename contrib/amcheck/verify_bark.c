@@ -17,6 +17,8 @@
  *	- sibling links are consistent (the right sibling's left link points back,
  *	  and levels match across a sibling link), and the right sibling's first
  *	  key is not less than the page's high key, (key, heap TID) on a leaf;
+ *	  a leaf whose left sibling's high key has a version tag has
+ *	  BARK_LOWBOUND_TAGGED;
  *	- every downlink points at a page one level down whose first key is not
  *	  less than the downlink, (key, heap TID) for a leaf child;
  *	- no page is still flagged with an unfinished split, which a clean index
@@ -385,6 +387,20 @@ bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo)
 							 errmsg("BARK index \"%s\" has a first key on page %u that is less than the high key of its left sibling %u",
 									RelationGetRelationName(rel), rightblk, blkno)));
 			}
+
+			/*
+			 * A leaf whose lower bound, the left sibling's high key, has a
+			 * version tag must say so: VACUUM untags in place on a leaf
+			 * without BARK_LOWBOUND_TAGGED.
+			 */
+			if (hikey != NULL && BarkPageIsLeaf(ropaque) &&
+				(ropaque->bark_flags & (BARK_DELETED | BARK_HALF_DEAD)) == 0 &&
+				bark_pivot_tag(hikey) != InvalidIndexVersionTag &&
+				(ropaque->bark_flags & BARK_LOWBOUND_TAGGED) == 0)
+				ereport(ERROR,
+						(errcode(ERRCODE_INDEX_CORRUPTED),
+						 errmsg("BARK index \"%s\" has a leaf %u whose lower bound, the high key of %u, has a version tag, but no BARK_LOWBOUND_TAGGED",
+								RelationGetRelationName(rel), rightblk, blkno)));
 		}
 		UnlockReleaseBuffer(rbuf);
 	}

@@ -259,8 +259,10 @@ typedef struct TM_FailureData
  * TM_IndexStatus, and an
  * entry is deletable when no snapshot can see a version for which the entry
  * (tid, tag) is valid.  That lets the table AM reclaim the stale entries of
- * a row whose current version is still live.  Every other caller leaves the
- * tag InvalidIndexVersionTag.  The tag is in TM_IndexStatus, not in
+ * a row whose current version is still live.  Such an index can hold
+ * several entries of one row at one TID, so a TID may then appear more than
+ * once in deltids, once per entry, each with its own status and tag.  Every
+ * other caller leaves the tag InvalidIndexVersionTag and offers a TID once.  The tag is in TM_IndexStatus, not in
  * TM_IndexDelete, to keep the array that the table AM sorts small; a table
  * AM reaches it through the entry's id.  Heap ignores it: its locator is not
  * versioned, so its verdict for a TID holds for every entry naming it.

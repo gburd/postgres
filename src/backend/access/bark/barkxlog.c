@@ -223,6 +223,10 @@ bark_xlog_split(XLogReaderState *record)
 	uint16		leafflag = isleaf ? BARK_LEAF : 0;
 	uint16		lprefix = (xlrec->flags & XLH_BARK_SPLIT_LPREFIX) ? BARK_PREFIX : 0;
 	uint16		rprefix = (xlrec->flags & XLH_BARK_SPLIT_RPREFIX) ? BARK_PREFIX : 0;
+	uint16		llowtag = (xlrec->flags & XLH_BARK_SPLIT_LLOWTAG) ?
+		BARK_LOWBOUND_TAGGED : 0;
+	uint16		rlowtag = (xlrec->flags & XLH_BARK_SPLIT_RLOWTAG) ?
+		BARK_LOWBOUND_TAGGED : 0;
 	BlockNumber leftblk;
 	BlockNumber rightblk;
 	Buffer		lbuf;
@@ -242,7 +246,7 @@ bark_xlog_split(XLogReaderState *record)
 	rbuf = XLogInitBufferForRedo(record, 1);
 	page = BufferGetPage(rbuf);
 	BarkPageInit(page, leftblk, xlrec->rightnext, xlrec->level,
-				 leafflag | rprefix, xlrec->cycleid);
+				 leafflag | rprefix | rlowtag, xlrec->cycleid);
 	datapos = XLogRecGetBlockData(record, 1, &datalen);
 	bark_restore_page(page, datapos, datalen);
 	PageSetLSN(page, lsn);
@@ -254,7 +258,8 @@ bark_xlog_split(XLogReaderState *record)
 		lbuf = XLogInitBufferForRedo(record, 0);
 		page = BufferGetPage(lbuf);
 		BarkPageInit(page, xlrec->leftprev, rightblk, xlrec->level,
-					 leafflag | lprefix | BARK_INCOMPLETE_SPLIT, xlrec->cycleid);
+					 leafflag | lprefix | llowtag | BARK_INCOMPLETE_SPLIT,
+					 xlrec->cycleid);
 		datapos = XLogRecGetBlockData(record, 0, &datalen);
 		bark_restore_page(page, datapos, datalen);
 		PageSetLSN(page, lsn);
@@ -286,7 +291,7 @@ bark_xlog_split(XLogReaderState *record)
 		Assert(BarkPageHasPrefix(BarkPageGetOpaque(origpage)) == (lprefix != 0));
 
 		BarkPageInit(leftpage, xlrec->leftprev, rightblk, xlrec->level,
-					 leafflag | BARK_INCOMPLETE_SPLIT, xlrec->cycleid);
+					 leafflag | llowtag | BARK_INCOMPLETE_SPLIT, xlrec->cycleid);
 		if (!bark_split_build_left(leftpage, origpage, hikey,
 								   xlrec->firstrightoff,
 								   newitem, xlrec->newitemoff,
@@ -439,7 +444,7 @@ bark_xlog_overwrite(XLogReaderState *record)
  * the order the primary made the changes: rewrites, then deletions, or for a
  * MERGE (`deletefirst`) deletions, then rewrites.
  */
-static void
+static char *
 bark_redo_delitems(XLogReaderState *record, Page page, uint16 ndeleted,
 				   uint16 nupdated, bool deletefirst)
 {
@@ -470,6 +475,8 @@ bark_redo_delitems(XLogReaderState *record, Page page, uint16 ndeleted,
 
 	/* The primary clears the hint too; bark_mask masks it either way. */
 	BarkPageGetOpaque(page)->bark_flags &= ~BARK_HAS_GARBAGE;
+
+	return itup;				/* the end of what was read */
 }
 
 /*
@@ -494,9 +501,24 @@ bark_xlog_vacuum(XLogReaderState *record)
 		Page		page = BufferGetPage(buffer);
 
 		/* A record that only clears the cycle ID carries no block data */
-		if (xlrec->ndeleted > 0 || xlrec->nupdated > 0)
-			bark_redo_delitems(record, page, xlrec->ndeleted, xlrec->nupdated,
-							   false);
+		if (xlrec->ndeleted > 0 || xlrec->nupdated > 0 ||
+			xlrec->nuntagged > 0)
+		{
+			char	   *ptr = bark_redo_delitems(record, page, xlrec->ndeleted,
+												 xlrec->nupdated, false);
+			OffsetNumber *from = (OffsetNumber *) ptr;
+			OffsetNumber *to = from + xlrec->nuntagged;
+			char	   *itup = (char *) (to + xlrec->nuntagged);
+
+			for (int i = 0; i < xlrec->nuntagged; i++)
+			{
+				Size		itemsz = IndexTupleSize((IndexTuple) itup);
+
+				if (!BarkPageMoveEntry(page, from[i], to[i], itup, itemsz))
+					elog(PANIC, "failed to untag BARK leaf entry during replay");
+				itup += MAXALIGN(itemsz);
+			}
+		}
 
 		BarkPageGetOpaque(page)->bark_cycleid = 0;
 
@@ -621,6 +643,8 @@ bark_xlog_unlink_page(XLogReaderState *record)
 	{
 		page = BufferGetPage(rightbuf);
 		BarkPageGetOpaque(page)->bark_prev = xlrec->leftsib;
+		if (xlrec->flags & XLH_BARK_UNLINK_LOWTAG)
+			BarkPageGetOpaque(page)->bark_flags |= BARK_LOWBOUND_TAGGED;
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(rightbuf);

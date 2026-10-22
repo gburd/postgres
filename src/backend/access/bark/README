@@ -118,7 +118,9 @@ PostgreSQL page whose special space holds a BarkPageOpaqueData:
                             (16 bits; see "VACUUM" below)
     bark_flags              page role: BARK_LEAF, BARK_ROOT, BARK_META,
                             BARK_DELETED, BARK_INCOMPLETE_SPLIT,
-                            BARK_OVERFLOW, BARK_PREFIX, and the hint
+                            BARK_OVERFLOW, BARK_PREFIX,
+                            BARK_LOWBOUND_TAGGED (see "Version tags"),
+                            and the hint
                             BARK_HAS_GARBAGE (see "Dead-entry hints and
                             simple deletion").  BARK_HALF_DEAD is defined,
                             and readers treat a half-dead page as nbtree
@@ -2143,7 +2145,56 @@ Pivots.  Suffix truncation keeps a tag only where it separates: when
 lastleft and firstright are equal on every key attribute and on heap TID
 (two entries of one row), the high key keeps firstright's TID and tag;
 otherwise a pivot has no tag, which is minus infinity on it.  A pivot with
-a tag has every key attribute and a heap TID.
+a tag has every key attribute and a heap TID.  A leaf split chooses such a
+point (inside a run of one row's entries, equal on key and TID) only when
+the page has no other (bark_findsplitloc); the runs are one row's same-key
+versions between two VACUUMs, so in practice only a page that is all one
+run leaves a tagged pivot.  The right half of a split whose high key has a
+tag gets BARK_LOWBOUND_TAGGED, a "may be tagged" hint on its lower bound,
+logged in the split record (XLH_BARK_SPLIT_LLOWTAG/RLOWTAG; the left half
+keeps the original page's).  Page deletion moves a page's key space to its
+right sibling, which takes the flag with it (XLH_BARK_UNLINK_LOWTAG).  The
+flag is never cleared, which is always safe.
+
+Readers.  Every amgettuple path reports an entry's tag in xs_heaptag: a
+page read records each item's tag (BarkScanPosItem.tag, BarkKnnItem.tag),
+so forward, backward, SAOP, skip, KNN, mark/restore and parallel scans
+return it with the TID.  LIST and POSTING members and every entry of a
+multikey index have tag 0.  A bitmap scan drops tags.  The unique check of
+an index that stores tags asks table_fetch_tid_version about each equal
+entry, with its tag and the index; every other index asks table_fetch_tid.
+UNIQUE_CHECK_EXISTING recognizes the row's own entries by TID alone, a stale
+one too.  A kill (bark_killitems) names one (TID, tag): an entry is marked
+only when its tag is the killed item's.
+
+VACUUM.  With IndexVacuumInfo.version_callback set (a versioned table, an
+index that stores tags), VACUUM asks it about every entry, (TID, tag), an
+untagged one with tag 0, every LIST or POSTING member too, instead of the
+plain callback; without it the plain callback decides by TID, right for a
+tagged entry too, since a dead TID means every version at the locator is
+dead.  DEAD deletes; LIVE keeps; LIVE_UNTAG lets BARK clear the tag, which
+moves the entry from (K, L, t) to (K, L, 0), before every entry of (K, L)
+with a tag.  BARK untags an entry only in place (bark_vacuum_untag): moved
+to its sorted slot on the same page, in the page's XLOG_BARK_VACUUM record
+(nuntagged moves after the deletions; redo makes the same moves).  That is
+safe when the slot has an entry before it on the page, or the page is
+leftmost, or it lacks BARK_LOWBOUND_TAGGED: an untagged lower bound <=
+(K, L, t) is <= (K, L, 0).  Otherwise (the slot would be the page's first,
+under a lower bound that may be (K, L, t0 > 0)) the entry stays tagged and
+the verdict is taken as LIVE, counted in VACUUM's DEBUG2 line, as is an
+entry whose (K, L, 0) lies in another entry (the row's untagged one, or a
+LIST or POSTING whose range holds L).  An entry is never moved to another
+page: a scan reads one page at a time, and would miss the row or return
+it twice.  Lowering the separator instead (follow-up T2) would clear every
+tag.
+
+Deletion.  Simple and bottom-up deletion put each entry's tag in its
+TM_IndexStatus, and offer a TID once per entry: the table AM's verdict is
+about the entry.  Before a leaf of an index that stores tags splits, and
+after simple and bottom-up deletion, bark_tagged_delete offers the page's
+tagged SINGLEs to table_index_delete_tuples, as a bottom-up pass in which
+all are promising, so stale entries of live rows go (R3.3 of the RethinkDB
+review).
 
 Version 2.  An index without BARK_META_VERSIONED, every version 2 index
 among them, answers false to amindexcanversion, so the executor moves the
@@ -2180,7 +2231,10 @@ ending the entry, a tag never 0, no tag in an index not built for tags), the
 pivot rule (a tagged pivot has every key attribute and a heap TID), the
 (key, TID, tag) order on a page and against the high key and across
 downlinks, and that a version 2 meta page does not claim
-BARK_META_VERSIONED.  pageinspect's bark_page_items shows a tag column.
+BARK_META_VERSIONED.  amcheck also checks that a leaf whose lower bound has a
+tag has BARK_LOWBOUND_TAGGED, and the validator that only a leaf with a left
+sibling has it.  pageinspect's bark_page_items shows a tag column, and
+bark_page_stats the flag as lowbound_tagged.
 
 Invariants
 ----------

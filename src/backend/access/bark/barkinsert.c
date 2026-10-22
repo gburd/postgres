@@ -1076,6 +1076,8 @@ bark_split(Relation index, Relation heaprel, BarkKeyInfo *keyinfo,
 	IndexTuple	lreplace = NULL;
 	BarkCycleId	cycleid = 0;
 	uint16		leafflag = isleaf ? BARK_LEAF : 0;
+	uint16		llowtag;
+	uint16		rlowtag = 0;
 	XLogRecPtr	recptr;
 
 	/* Preserve the original high key (if any) for the new right page. */
@@ -1138,8 +1140,13 @@ bark_split(Relation index, Relation heaprel, BarkKeyInfo *keyinfo,
 	 * first item with the attributes that item has, as in nbtree.
 	 */
 	if (isleaf)
+	{
 		lhikey = bark_truncate_pivot(index, keyinfo, items[splitidx - 1],
 									 items[splitidx]);
+		/* The right page's lower bound is lhikey (BARK_LOWBOUND_TAGGED). */
+		if (bark_pivot_tag(lhikey) != InvalidIndexVersionTag)
+			rlowtag = BARK_LOWBOUND_TAGGED;
+	}
 	else
 	{
 		lhikey = CopyIndexTuple(items[splitidx]);
@@ -1183,19 +1190,23 @@ bark_split(Relation index, Relation heaprel, BarkKeyInfo *keyinfo,
 	 * descends here finishes the split (bark_finish_split).  The flag is
 	 * cleared atomically with the downlink insert in bark_insert_parent.
 	 *
-	 * Redo sets each half's flags from the record's leaf and prefix flags
-	 * alone, so the original page may carry no flag but BARK_LEAF,
-	 * BARK_PREFIX, BARK_ROOT (which the left half gives up: a new root is
-	 * made above it) and the hint BARK_HAS_GARBAGE, which neither half keeps.
+	 * Redo sets each half's flags from the record's leaf, prefix and
+	 * lower-bound flags alone, so the original page may carry no flag but
+	 * BARK_LEAF, BARK_PREFIX, BARK_LOWBOUND_TAGGED (which the left half keeps
+	 * with the original's lower bound), BARK_ROOT (which the left half gives
+	 * up: a new root is made above it) and the hint BARK_HAS_GARBAGE, which
+	 * neither half keeps.
 	 * Neither keeps an entry's LP_DEAD mark either, as in nbtree's _bt_split:
 	 * the entries are added afresh, and simple deletion has already removed
 	 * the marked entries it could.
 	 */
 	Assert((origopaque->bark_flags &
-			~(BARK_LEAF | BARK_ROOT | BARK_PREFIX | BARK_HAS_GARBAGE)) == 0);
+			~(BARK_LEAF | BARK_ROOT | BARK_PREFIX | BARK_LOWBOUND_TAGGED |
+			  BARK_HAS_GARBAGE)) == 0);
+	llowtag = origopaque->bark_flags & BARK_LOWBOUND_TAGGED;
 	leftpage = PageGetTempPage(origpage);
 	BarkPageInit(leftpage, origleft, rightblk, level,
-				 leafflag | BARK_INCOMPLETE_SPLIT, cycleid);
+				 leafflag | llowtag | BARK_INCOMPLETE_SPLIT, cycleid);
 
 	/*
 	 * Copy the original page's LSN into the left page, which replaces it,
@@ -1206,7 +1217,8 @@ bark_split(Relation index, Relation heaprel, BarkKeyInfo *keyinfo,
 	PageSetLSN(leftpage, PageGetLSN(origpage));
 
 	rightpage = PageGetTempPage(origpage);
-	BarkPageInit(rightpage, origblk, origright, level, leafflag, cycleid);
+	BarkPageInit(rightpage, origblk, origright, level, leafflag | rlowtag,
+				 cycleid);
 
 	/*
 	 * The left page, as nbtree's _bt_split builds it: the original page's
@@ -1303,6 +1315,10 @@ bark_split(Relation index, Relation heaprel, BarkKeyInfo *keyinfo,
 			xlrec.flags |= XLH_BARK_SPLIT_NEWLEFT;
 		if (lreplace != NULL)
 			xlrec.flags |= XLH_BARK_SPLIT_REPLACE;
+		if (llowtag)
+			xlrec.flags |= XLH_BARK_SPLIT_LLOWTAG;
+		if (rlowtag)
+			xlrec.flags |= XLH_BARK_SPLIT_RLOWTAG;
 		xlrec.cycleid = cycleid;
 		xlrec.leftprev = origleft;
 		xlrec.rightnext = origright;
@@ -2779,7 +2795,8 @@ bark_insert_key(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 			 * deletion), then, when the entry is a new version of a row whose
 			 * key here did not change, the entries of dead versions
 			 * (bottom-up deletion), as nbtree's _bt_delete_or_dedup_one_page
-			 * tries them (barkdelete.c).  Deleting shifts offsets, so find
+			 * tries them, then, in an index that stores version tags, the
+			 * stale tagged entries the table AM finds (barkdelete.c).  Deleting shifts offsets, so find
 			 * the entry's place again whether or not that made room.
 			 */
 			if (heapRel != NULL)
@@ -2790,6 +2807,10 @@ bark_insert_key(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 					roomnow = bark_bottomup_delete(index, heapRel, keyinfo,
 												   buf, itup,
 												   bark_coded_size(page, entry));
+				if (!roomnow && keyinfo->canversion)
+					roomnow = bark_tagged_delete(index, heapRel, keyinfo,
+												 buf, itup,
+												 bark_coded_size(page, entry));
 				off = bark_leaf_insert_off(index, keyinfo, itup, &itup->t_tid,
 										   keyinfo->instag, page);
 			}
