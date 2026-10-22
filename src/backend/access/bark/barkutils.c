@@ -34,6 +34,7 @@
 #include "access/heaptoast.h"
 #include "access/htup_details.h"
 #include "access/itup.h"
+#include "access/table.h"
 #include "access/tableam.h"
 #include "access/toast_internals.h"
 #include "access/xloginsert.h"
@@ -542,6 +543,20 @@ bool
 bark_index_versioned(Relation index)
 {
 	BarkAmCache *cache = bark_get_amcache(index);
+
+	/*
+	 * During CREATE INDEX or REINDEX the meta page is not written yet, and
+	 * the table AM's build scan asks (index_can_version): answer what the
+	 * build will write.  The caller holds a lock on the table.
+	 */
+	if (cache->versioned < 0 && RelationGetNumberOfBlocks(index) == 0)
+	{
+		Relation	heap = table_open(index->rd_index->indrelid, NoLock);
+		bool		versioned = bark_heap_versioned(heap);
+
+		table_close(heap, NoLock);
+		return versioned;
+	}
 
 	if (cache->versioned < 0)
 	{
