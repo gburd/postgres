@@ -166,6 +166,7 @@ bark_build_keyinfo_stride(Relation index, uint16 stride, bool versioned)
 	keyinfo->nkeys = nkeys;
 	keyinfo->tidstride = stride;
 	keyinfo->versioned = versioned;
+	keyinfo->canversion = versioned && bark_index_extracted_column(index) == 0;
 
 	for (int i = 0; i < nkeys; i++)
 	{
@@ -561,6 +562,22 @@ bark_index_versioned(Relation index)
 		cache->versioned = versioned ? 1 : 0;
 	}
 	return cache->versioned > 0;
+}
+
+/*
+ * amindexcanversion: does the index store version tags?  Only an index
+ * built for them (BARK_META_VERSIONED, so never a version 2 index), and
+ * without an extracted column.  A multikey index's scans return each row
+ * once by TID (the seen set, and a GIN-interface scan's TIDBitmap), which is
+ * right only while no row has two entries valid for different versions; so
+ * such an index stores no tags, and the executor moves a row whenever an
+ * update affects it, as for an index of an AM without amcanversion.
+ */
+bool
+bark_indexcanversion(Relation index)
+{
+	return bark_index_versioned(index) &&
+		bark_index_extracted_column(index) == 0;
 }
 
 /* Is an index of `heap` built to hold tags (BARK_META_VERSIONED)? */

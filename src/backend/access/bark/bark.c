@@ -1877,6 +1877,7 @@ barkhandler(PG_FUNCTION_ARGS)
 		.amkeytype = InvalidOid,
 		.amimplements = BTREE_AM_OID,
 		.amcanversion = true,
+		.amindexcanversion = bark_indexcanversion,
 
 		.ambuild = barkbuild,
 		.ambuildempty = barkbuildempty,
