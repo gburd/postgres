@@ -443,15 +443,14 @@ bark_build_row_keys(BarkBuildState *bs, ItemPointer tid, Datum *values,
 	Datum		kvalues[INDEX_MAX_KEYS];
 	bool		knulls[INDEX_MAX_KEYS];
 	BarkRowKeys rk;
-	bool		tagged;
 
 	bark_extract_row_keys(index, bs->keyinfo, values[attno - 1],
 						  isnull[attno - 1], &rk);
 	if (rk.nkeys > 1)
 		bs->multikey = true;
-	tagged = bs->indexInfo->ii_VersionTag != InvalidIndexVersionTag;
-	if (tagged)
-		bs->has_oversized = true;
+
+	/* A multikey index stores no tags (bark_indexcanversion). */
+	Assert(bs->indexInfo->ii_VersionTag == InvalidIndexVersionTag);
 	if (!tupleIsAlive && bs->deadsort != NULL)
 	{
 		sortstate = bs->deadsort;
@@ -466,8 +465,6 @@ bark_build_row_keys(BarkBuildState *bs, ItemPointer tid, Datum *values,
 	{
 		kvalues[attno - 1] = rk.keys[i];
 		knulls[attno - 1] = rk.nulls[i];
-		if (tagged)
-			continue;
 		if (bark_build_row_oversized(bs, tupdesc, kvalues, knulls))
 			bs->has_oversized = true;
 		else

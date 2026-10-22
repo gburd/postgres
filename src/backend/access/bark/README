@@ -2089,8 +2089,17 @@ stores, orders and returns tags, and never interprets them.
 Which indexes.  The meta page's BARK_META_VERSIONED says the table's
 locator was versioned when the index was built; CREATE INDEX and every
 rebuild (REINDEX, the rewrite of ALTER TABLE ... SET ACCESS METHOD) set it
-from the table's LocatorDesc, and nothing else changes it.  Only such an
-index holds tags.  Its pivot suffix reserve (BarkPivotSuffixReserve) is 16
+from the table's LocatorDesc, and nothing else changes it.  Such an index
+stores tags unless it has an extracted column: amindexcanversion
+(bark_indexcanversion) answers the executor's index_can_version().  A
+multikey index returns each row once by TID (the seen set, and a
+GIN-interface index scan's TIDBitmap), which is right only while no row has
+two valid entries of different versions, so it stores no tags, and the
+executor moves a row whenever an update affects it; its entries stay
+untagged, as an index of heap's.  (Versioned multikey indexes need
+deduplication after the table AM's verdict, or untagging a row's entries
+together, and are left as a follow-up.)  An index with BARK_META_VERSIONED
+has a pivot suffix reserve (BarkPivotSuffixReserve) is 16
 bytes, room for a pivot's heap TID and tag (6 + 4, MAXALIGNed); every other
 index keeps the 8-byte reserve, so an index of a heap table is laid out
 byte for byte as before tags existed.  The design text had the reserve grow
@@ -2137,18 +2146,18 @@ otherwise a pivot has no tag, which is minus infinity on it.  A pivot with
 a tag has every key attribute and a heap TID.
 
 Version 2.  An index without BARK_META_VERSIONED, every version 2 index
-among them, never holds a tag: an insert or build that brings one is
-refused with an ERROR and a hint to REINDEX (bark_check_can_tag).
-amcanversion is per access method, so the executor could send a tag to
-such an index only if it was built before its table's locator became
-versioned, which only pg_upgrade of a pre-version-3 BARK index on a
-versioned table can produce.
+among them, answers false to amindexcanversion, so the executor moves the
+row of a versioned table whenever an update affects the index, and never
+hands it a tag (bark_check_can_tag reports one as an internal error).  A
+version 2 index on a versioned table, which only pg_upgrade of a
+pre-version-3 BARK index could produce, then works as an index of heap's
+does; REINDEX makes it store tags.
 
-Writers.  barkhandler sets amcanversion.  aminsert and the build callback
-read IndexInfo.ii_VersionTag (the executor, or the table AM's build and
-validation scans, set it).  A tagged row's entry (each of its entries, for
-a multikey row) is placed by (key, TID, tag), as a tagged SINGLE or a tagged
-OVERSIZED entry, and never coalesces: bark_coalesce_list skips a tagged
+Writers.  barkhandler sets amcanversion and amindexcanversion.  aminsert
+and the build callback read IndexInfo.ii_VersionTag (the executor, or the
+table AM's build and validation scans, set it).  A tagged row's entry is
+placed by (key, TID, tag), as a tagged SINGLE or a tagged OVERSIZED entry,
+and never coalesces: bark_coalesce_list skips a tagged
 neighbour and a tagged insert, the merge pass (bark_merge_page) ends a group
 at a tagged entry, bark_load never sees one, and VACUUM's and bottom-up
 deletion's re-forms touch only LIST and POSTING entries.  A tagged row's

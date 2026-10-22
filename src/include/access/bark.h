@@ -1391,7 +1391,8 @@ typedef struct BarkKeyInfo
 	int			nkeys;			/* number of key columns */
 	uint16		tidstride;		/* bark_index_tid_stride: the TID mappings'
 								 * stride */
-	bool		versioned;		/* bark_index_versioned: may hold tags */
+	bool		versioned;		/* bark_index_versioned: the 16-byte reserve */
+	bool		canversion;		/* bark_indexcanversion: may hold tags */
 	IndexVersionTag instag;		/* the version tag of the entries an insert
 								 * is placing; set by bark_insert_entries */
 	BarkKeyColumn cols[FLEXIBLE_ARRAY_MEMBER];
@@ -1401,6 +1402,7 @@ extern BarkKeyInfo *bark_build_keyinfo(Relation index);
 extern BarkKeyInfo *bark_build_keyinfo_stride(Relation index, uint16 stride,
 											 bool versioned);
 extern bool bark_index_versioned(Relation index);
+extern bool bark_indexcanversion(Relation index);
 extern bool bark_heap_versioned(Relation heap);
 extern IndexTuple bark_form_tagged(IndexTuple key, ItemPointer tid,
 								   IndexVersionTag tag);
