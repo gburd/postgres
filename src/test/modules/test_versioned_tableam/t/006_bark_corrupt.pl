@@ -180,7 +180,7 @@ like($err, qr/does not store tags/, 'c5: so does the parent check');
 
 # (6) Internal pivots of c5, restored: a tag of 0 with BARK_PIVOT_TAG, too
 # short for its tag, and without every key attribute.
-for my $case ('zero', 'short', 'natts')
+for my $case ('zero', 'short', 'natts', 'other')
 {
 	$node->safe_psql('postgres', 'REINDEX INDEX c5_k');
 	$node->safe_psql(
@@ -212,6 +212,18 @@ for my $case ('zero', 'short', 'natts')
 		($e1, $e2) = reports('c5_k', $root);
 		like($e1, qr/has a pivot (too short for its version tag|with version tag 0) on page $root at offset $poff/,
 			'c6: amcheck reports a pivot shortened under its tag');
+	}
+	elsif ($case eq 'other')
+	{
+		# another nonzero tag, one below: the downlink no longer equals the
+		# high key of the page to its child's left
+		patch('c5_k', $root, sub {
+			my $t = unpack('L', substr(${ $_[0] }, $o + $len - 6 - 4, 4));
+			s32($_[0], $o + $len - 6 - 4, $t - 1); });
+		($r, $out, $err) =
+		  $node->psql('postgres', "SELECT bark_index_parent_check('c5_k')");
+		like($err, qr/has a downlink on page $root at offset $poff that is not the high key of the page to its child's left/,
+			'c6: the parent check reports a downlink whose tag is not its left page\'s high key\'s');
 	}
 	else
 	{
@@ -311,4 +323,6 @@ is($descs, 'true true true true',
 	SELECT record_type || ': ' || max(description) FROM pg_get_wal_records_info('} . $start . q{', pg_current_wal_flush_lsn())
 	 WHERE resource_manager = 'Bark' GROUP BY record_type}));
 
+# a clean stop, so that backends exit normally (coverage counts)
+$node->stop;
 done_testing();
