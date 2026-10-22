@@ -247,8 +247,9 @@ SELECT * FROM test_versioned_seen;
     counter    | n  
 ---------------+----
  scan_untagged |  1
+ vacuum_live   | 28
  vacuum_untag  | 10
-(2 rows)
+(3 rows)
 
 SELECT count(*) AS still_tagged FROM tv WHERE test_versioned_tag('tv_a', ctid) <> 0;
  still_tagged 
