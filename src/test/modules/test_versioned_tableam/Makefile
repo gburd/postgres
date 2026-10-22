@@ -6,7 +6,7 @@ EXTENSION = test_versioned_tableam
 DATA = test_versioned_tableam--1.0.sql
 PGFILEDESC = "test_versioned_tableam - test version-tag plumbing"
 
-EXTRA_INSTALL = contrib/amcheck
+EXTRA_INSTALL = contrib/amcheck contrib/pageinspect
 
 REGRESS = versioned
 ISOLATION = cic_versioned
