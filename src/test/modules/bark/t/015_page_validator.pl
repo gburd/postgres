@@ -192,6 +192,50 @@ $node->safe_psql('postgres', 'INSERT INTO t_clean VALUES (5), (5), (11)');
 is(scalar $node->psql('postgres', "SELECT bark_index_parent_check('t_clean_idx')"),
 	0, 'no fault: the validator and amcheck pass');
 
+# A version tag of 0 in a tagged SINGLE (BARK_HAS_TAG kept): planted by
+# bark-verify-fault-tag in the entry an INSERT_LEAF just added, which only a
+# table AM that hands out tags makes (test_versioned_tableam's
+# heap_versioned, where it is installed).
+SKIP:
+{
+	skip 'test_versioned_tableam is not installed', 4
+	  if $node->safe_psql('postgres',
+		q{SELECT count(*) FROM pg_available_extensions WHERE name = 'test_versioned_tableam'}) ne '1';
+	$node->safe_psql(
+		'postgres', q[
+		CREATE EXTENSION test_versioned_tableam;
+		CREATE TABLE t_tag (id int, k int) USING heap_versioned;
+		INSERT INTO t_tag SELECT g, g FROM generate_series(1, 10) g;
+		CREATE INDEX t_tag_idx ON t_tag USING bark (k);
+		CREATE TABLE t_tag_off (id int, k int) USING heap_versioned;
+		INSERT INTO t_tag_off SELECT g, g FROM generate_series(1, 10) g;
+		CREATE INDEX t_tag_off_idx ON t_tag_off USING bark (k);
+	]);
+	my $tagfault = qr/has a tagged entry with tag 0 on page $blk at offset \d+/;
+	($rc, $out, $err) = $node->psql(
+		'postgres', q[
+		SELECT injection_points_attach('bark-verify-fault-tag', 'notice');
+		UPDATE t_tag SET k = 100 WHERE id = 3;]);
+	$node->safe_psql('postgres',
+		"SELECT injection_points_detach('bark-verify-fault-tag')");
+	like($err, qr/ERROR:  BARK index "t_tag_idx" $tagfault/,
+		'tag fault, validator on: reported by the update');
+	like($err, qr/CONTEXT:  BARK page validator, block $blk after bark_insert_entry/,
+		'tag fault, validator on: the context names the insert');
+	($rc, $out, $err) = $node->psql(
+		'postgres', q[
+		SELECT injection_points_attach('bark-verify-fault-tag', 'notice');
+		SET bark_verify_pages = off;
+		UPDATE t_tag_off SET k = 100 WHERE id = 3;]);
+	$node->safe_psql('postgres',
+		"SELECT injection_points_detach('bark-verify-fault-tag')");
+	is($rc, 0, 'tag fault, validator off: the update succeeds');
+	($rc, $out, $err) =
+	  $node->psql('postgres', "SELECT bark_index_check('t_tag_off_idx')");
+	like($err, qr/BARK index "t_tag_off_idx" $tagfault/,
+		'tag fault, validator off: only amcheck reports it');
+}
+
 # Redo: the standby plants the count fault as it replays an ADD_TID record,
 # and its redo check PANICs.  Redo checks one such record in 32, so the
 # check is forced with bark-verify-force-full.  The primary's page is
