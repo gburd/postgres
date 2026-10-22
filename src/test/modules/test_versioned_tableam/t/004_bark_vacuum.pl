@@ -357,4 +357,7 @@ $node->wait_for_catchup($standby);
 unlike(slurp_file($standby->logfile), qr/inconsistent page found/,
 	'no inconsistent page in replay');
 
+# a clean stop, so that backends exit normally (coverage counts)
+$standby->stop;
+$node->stop;
 done_testing();

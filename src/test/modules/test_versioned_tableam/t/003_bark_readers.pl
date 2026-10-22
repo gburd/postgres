@@ -217,4 +217,6 @@ for my $opc (qw(bark_int4_array_ops bark_gin_int4_array_ops))
 	});
 }
 
+# a clean stop, so that backends exit normally (coverage counts)
+$node->stop;
 done_testing();
