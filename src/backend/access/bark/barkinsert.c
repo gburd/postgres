@@ -1877,7 +1877,9 @@ bark_finish_split(Relation index, BarkKeyInfo *keyinfo, Buffer lbuf,
  * saves its bounds for _bt_findinsertloc.
  *
  * An entry whose row the fetch finds dead to everyone is marked LP_DEAD, and
- * an entry already marked is skipped without a fetch, as in nbtree.
+ * an entry already marked is skipped without a fetch, as in nbtree.  In an
+ * index that stores version tags the fetch is table_fetch_tid_version, with
+ * the entry's tag, so both answers are about the entry, not its locator.
  */
 static TransactionId
 bark_check_unique(Relation index, BarkKeyInfo *keyinfo, IndexTuple itup,
@@ -1973,7 +1975,12 @@ bark_check_unique(Relation index, BarkKeyInfo *keyinfo, IndexTuple itup,
 			}
 			bark_entry_get_tids(curitup, &htid, 1, keyinfo->tidstride);
 
-			/* The tuple we are checking is itself, not a conflict. */
+			/*
+			 * The tuple we are checking is itself, not a conflict.  The
+			 * recheck is untagged: every entry of the row is recognized by
+			 * its locator, a stale one too (see "Versioned locators" in
+			 * amlocator.h).
+			 */
 			if (checkUnique == UNIQUE_CHECK_EXISTING &&
 				ItemPointerCompare(&htid, &itup->t_tid) == 0)
 				continue;
@@ -1987,7 +1994,17 @@ bark_check_unique(Relation index, BarkKeyInfo *keyinfo, IndexTuple itup,
 			if (ItemIdIsDead(PageGetItemId(page, off)))
 				continue;
 
-			if (table_fetch_tid(heapRel, &htid, &SnapshotDirty, &all_dead))
+			/*
+			 * An index that stores tags asks about the entry (htid, tag): a
+			 * stale entry of a live row is no conflict, and all_dead is then
+			 * about this entry alone.  Any other index's entries resolve by
+			 * locator.
+			 */
+			if (keyinfo->canversion ?
+				table_fetch_tid_version(heapRel, &htid,
+										BarkEntryGetTag(curitup), index,
+										&SnapshotDirty, &all_dead) :
+				table_fetch_tid(heapRel, &htid, &SnapshotDirty, &all_dead))
 			{
 				TransactionId xwait;
 

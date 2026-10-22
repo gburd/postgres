@@ -3411,6 +3411,7 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 		uint32		tupoff = 0;
 		bool		recheck = false;
 		bool		dead;
+		IndexVersionTag tag;
 
 		/*
 		 * An entry marked LP_DEAD (bark_killitems) is dead to every snapshot,
@@ -3525,6 +3526,8 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 		if (scan->xs_want_itup || (so->mk != NULL && so->mk->order))
 			tupoff = bark_save_tuple(so, &so->currTuples, &so->currTuplesSize,
 									 &pos->nextTupleOffset, itup, resolved);
+		/* a tagged entry has one TID; a LIST, POSTING or multikey entry 0 */
+		tag = BarkEntryGetTag(itup);
 		if (fetched)
 			pfree(resolved);
 
@@ -3536,6 +3539,7 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 				BarkScanPosItem *item = &pos->items[pos->lastItem + 1 + i];
 
 				item->heapTid = so->entryTids[i];
+				item->tag = tag;
 				item->indexOffset = offnum;
 				item->tupleOffset = tupoff;
 				item->recheck = recheck;
@@ -3555,6 +3559,7 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 				BarkScanPosItem *item = &pos->items[pos->lastItem + 1 + i];
 
 				item->heapTid = so->entryTids[ntids - 1 - i];
+				item->tag = tag;
 				item->indexOffset = offnum;
 				item->tupleOffset = tupoff;
 				item->recheck = recheck;
@@ -3601,6 +3606,7 @@ bark_saveitem(IndexScanDesc scan)
 	BarkScanPosItem *item = &so->currPos.items[so->currPos.itemIndex];
 
 	scan->xs_heaptid = item->heapTid;
+	scan->xs_heaptag = item->tag;
 	scan->xs_recheck = item->recheck;
 	if (scan->xs_want_itup)
 	{
@@ -5216,6 +5222,7 @@ bark_mk_gin_gettuple(IndexScanDesc scan, ScanDirection dir)
 		}
 	}
 	ItemPointerSet(&scan->xs_heaptid, mk->ginblkno, mk->ginoffs[mk->gini]);
+	scan->xs_heaptag = InvalidIndexVersionTag;	/* multikey: never tagged */
 	scan->xs_recheck = mk->ginrecheck;
 	return true;
 }
@@ -5225,7 +5232,10 @@ bark_mk_gin_gettuple(IndexScanDesc scan, ScanDirection dir)
  * through the same positioning and page reads as a forward gettuple scan,
  * as nbtree's btgetbitmap does, adding each page's items at once.  A TID
  * needs a recheck only when a multikey scan says so (bark_mk_accept); a
- * row's repeats under several keys are absorbed by the bitmap.
+ * row's repeats under several keys are absorbed by the bitmap.  A bitmap
+ * holds TIDs only, so entries' version tags are dropped here; the table AM
+ * rechecks rows whose history may make an entry stale (see "Versioned
+ * locators" in amlocator.h).
  */
 int64
 bark_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
