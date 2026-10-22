@@ -512,6 +512,9 @@ static int	keep_locator = KEEP_LOCATOR_OFF;
 /* percentage of rows its build scan tags; see tvh_build_callback */
 static int	build_tag_percent = 100;
 
+/* older versions its build scan hands for each row it tags; ditto */
+static int	build_history = 0;
+
 
 static const struct config_enum_entry stale_tags_options[] = {
 	{"dead", STALE_TAGS_DEAD, false},
@@ -867,6 +870,33 @@ tvh_build_callback(Relation index, ItemPointer tid, Datum *values,
 	}
 	else if (BufferIsValid(buf))
 		ReleaseBuffer(buf);
+
+	/*
+	 * build_history = n hands a tagged row n more times first, as not alive,
+	 * with the tags xmin - n .. xmin - 1: the row's older versions of the
+	 * same key, each with its own tag, that an AM which updates in place
+	 * indexes when a key changed and changed back while the locator stayed.
+	 * heap_versioned moves rows, so it has no such history; this gives a
+	 * build the runs of entries equal on key and TID that the load must not
+	 * cut where it can avoid it.  The extra tags are stale (tv_tag_stale),
+	 * so tests that use this set stale_tags = live.  Only an index AM that
+	 * stores tags itself gets them: nbtree refuses a TID twice.
+	 */
+	if (bs->indexInfo->ii_VersionTag != InvalidIndexVersionTag &&
+		index->rd_indam->aminsert != tvb_insert)
+	{
+		IndexVersionTag tag = bs->indexInfo->ii_VersionTag;
+
+		for (int i = build_history; i > 0; i--)
+		{
+			bs->indexInfo->ii_VersionTag = tag - (IndexVersionTag) i;
+			if (bs->indexInfo->ii_VersionTag == InvalidIndexVersionTag)
+				elog(ERROR, "history tag would be 0");
+			bs->callback(index, tid, values, isnull, false,
+						 bs->callback_state);
+		}
+		bs->indexInfo->ii_VersionTag = tag;
+	}
 	bs->callback(index, tid, values, isnull, tupleIsAlive,
 				 bs->callback_state);
 	/* an index AM that stores tags itself (bark) needs no record */
@@ -1252,6 +1282,14 @@ _PG_init(void)
 							NULL,
 							&build_tag_percent,
 							100, 0, 100,
+							PGC_USERSET,
+							0,
+							NULL, NULL, NULL);
+	DefineCustomIntVariable("test_versioned_tableam.build_history",
+							"Older versions heap_versioned's index build scan hands for each row it tags.",
+							NULL,
+							&build_history,
+							0, 0, 10000,
 							PGC_USERSET,
 							0,
 							NULL, NULL, NULL);

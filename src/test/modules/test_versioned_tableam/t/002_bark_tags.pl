@@ -3,9 +3,11 @@
 
 # BARK storing the version tags heap_versioned hands it: tagged entries from UPDATE, from a helper that adds a tagged
 # entry at a TID the index already has, and from CREATE INDEX, serial and
-# parallel.  Each step is checked with amcheck, against the expected
-# entries and tags (tag = the xmin of the tuple at the entry's TID), and on
-# a standby that replays the WAL with wal_consistency_checking = bark.
+# parallel, including runs of one row's entries of one key in a build and
+# where the load may end a leaf in one.  Each step is checked with amcheck,
+# against the expected entries and tags (tag = the xmin of the tuple at the
+# entry's TID), and on a standby that replays the WAL with
+# wal_consistency_checking = bark.
 
 use strict;
 use warnings FATAL => 'all';
@@ -76,6 +78,26 @@ sub entries
 		                  CASE WHEN tag IS NULL THEN '' ELSE ' tagged' END,
 		                  E'\\n' ORDER BY blk, off)
 		  FROM bark_entries('$idx')});
+}
+
+# Row by row: each row of `tab` has one entry in `idx`, tagged with the
+# row's xmin when the build scan tagged the row (build_tag_percent `pct`,
+# by TID), untagged otherwise.  Returns "mismatches/rows".
+sub tags_per_row
+{
+	my ($idx, $tab, $pct) = @_;
+	return $node->safe_psql(
+		'postgres', qq{
+		WITH e AS (SELECT coalesce(m.tid, e.htid) AS tid, e.tag
+		             FROM bark_entries('$idx') e
+		             LEFT JOIN LATERAL unnest(e.tids) m(tid) ON true),
+		     r AS (SELECT ctid, CASE WHEN ((ctid::text::point)[0]::int * 7 +
+		                                   (ctid::text::point)[1]::int) % 100 < $pct
+		                             THEN xmin::text::int8 END AS want
+		             FROM $tab)
+		SELECT count(*) FILTER (WHERE r.ctid IS NULL OR e.tid IS NULL OR
+		                              e.tag IS DISTINCT FROM r.want) || '/' || count(*)
+		  FROM e FULL JOIN r ON r.ctid = e.tid});
 }
 
 # Every tagged entry's tag is the xmin of the tuple at its TID.
@@ -221,8 +243,20 @@ for my $pct (100, 50, 0)
 		{
 			is(tags_right($idx, 'tb'), "$ntagged/$ntagged",
 				"$what: $idx tags are the rows' xmin");
+			is(tags_per_row($idx, 'tb', $pct), '0/30000',
+				"$what: $idx has one entry per row, tagged as the scan tagged it");
 			check_index($idx, "$what: $idx");
 		}
+		# tagged SINGLEs go through the sort and are packed as untagged
+		# entries are, not split about 50/50 by inserts after the load
+		cmp_ok( $node->safe_psql(
+				'postgres', q{
+				SELECT avg(s.free_size)::int
+				  FROM generate_series(1, pg_relation_size('tb_k') / 8192 - 1) b,
+				       LATERAL bark_page_stats('tb_k', b) s
+				 WHERE s.type = 'leaf' AND s.bark_next <> 0}),
+			'<', 2048, "$what: tb_k's leaves are packed")
+		  if $pct > 0;
 		is( $node->safe_psql(
 				'postgres', q{
 				SELECT count(*) FROM bark_entries('tb_t') WHERE shape = 'OVERSIZED' AND tag IS NOT NULL}),
@@ -238,6 +272,200 @@ for my $pct (100, 50, 0)
 			'30000|1439082', "$what: index scan");
 		$node->safe_psql('postgres', 'DROP INDEX tb_k, tb_t');
 	}
+}
+
+# (b) Runs of entries equal on key and heap TID in one build.  With
+# build_history = n, heap_versioned's build scan hands each row it tags n
+# more times, tagged xmin - n .. xmin - 1 (see tvh_build_callback): one
+# row's versions with one key.  bark_load does not end a leaf inside such a
+# run, but moves the run's entries on the page to the next leaf, unless they
+# fill the page or take more than a quarter of it (bark_build_run_tail);
+# a leaf whose lower bound keeps a tag has BARK_LOWBOUND_TAGGED.  The extra
+# tags are stale, which stale_tags = live accepts.
+my $inj = ($ENV{enable_injection_points} // '') eq 'yes';
+$node->safe_psql('postgres', 'CREATE EXTENSION injection_points') if $inj;
+$node->safe_psql(
+	'postgres', q{
+	-- each leaf: its high key's tag, its first and last data entries'
+	-- (TID, key), and the run of entries of the last one's (TID, key) that
+	-- ends the page: entries and bytes, as bark_build_run_tail counts them
+	CREATE FUNCTION leaf_runs(idx regclass)
+	  RETURNS TABLE (blk int, next int8, flags text[], hitag int8,
+	                 ftid tid, fdata text, ftag int8, ltid tid, ldata text,
+	                 tailn int8, tailbytes int8, ndata int8)
+	  LANGUAGE sql AS $$
+	  WITH l AS (SELECT b::int AS blk, s.bark_next AS next, s.flags
+	               FROM generate_series(1, pg_relation_size(idx) / 8192 - 1) b,
+	                    LATERAL bark_page_stats(idx::text, b) s
+	              WHERE s.type = 'leaf'),
+	       i AS MATERIALIZED (SELECT l.blk, l.next, it.* FROM l, LATERAL bark_page_items(idx::text, l.blk) it),
+	       d AS MATERIALIZED (SELECT * FROM i
+	              WHERE shape IN ('SINGLE', 'LIST', 'POSTING', 'OVERSIZED')
+	                AND NOT (itemoffset = 1 AND next <> 0)),
+	       f AS (SELECT DISTINCT ON (blk) blk, htid, data, tag FROM d ORDER BY blk, itemoffset),
+	       x AS (SELECT DISTINCT ON (blk) blk, htid, data FROM d ORDER BY blk, itemoffset DESC),
+	       c AS (SELECT d.blk, max(d.itemoffset) AS off FROM d JOIN x USING (blk)
+	              WHERE (d.htid, d.data) IS DISTINCT FROM (x.htid, x.data) GROUP BY d.blk),
+	       t AS (SELECT d.blk, count(*) AS n, sum((d.itemlen + 7) / 8 * 8 + 4) AS bytes
+	               FROM d LEFT JOIN c USING (blk)
+	              WHERE d.itemoffset > coalesce(c.off, 0) GROUP BY d.blk)
+	  SELECT l.blk, l.next, coalesce(l.flags, '{}'), h.tag, f.htid, f.data, f.tag, x.htid, x.data,
+	         t.n, t.bytes, (SELECT count(*) FROM d WHERE d.blk = l.blk)
+	    FROM l JOIN f USING (blk) JOIN x USING (blk) JOIN t USING (blk)
+	    LEFT JOIN i h ON h.blk = l.blk AND h.itemoffset = 1 AND l.next <> 0 $$;
+	-- leaf boundaries inside a run, and those of them where the run's part
+	-- on the left leaf neither fills it nor takes over a quarter of a page
+	CREATE FUNCTION run_cuts(idx regclass, OUT cuts int8, OUT bad int8)
+	  LANGUAGE sql AS $$
+	  WITH r AS MATERIALIZED (SELECT * FROM leaf_runs(idx))
+	  SELECT count(*),
+	         count(*) FILTER (WHERE a.tailn < a.ndata AND
+	                          a.tailbytes <= current_setting('block_size')::int / 4)
+	    FROM r a JOIN r b ON b.blk = a.next
+	   WHERE b.ftid = a.ltid AND b.fdata = a.ldata AND b.ftag IS NOT NULL $$;
+	-- leaf high keys with a tag, and whether the flagged leaves are
+	-- exactly those whose left sibling's high key has one
+	CREATE FUNCTION tag_bounds(idx regclass, OUT tagged int8, OUT flags_right bool)
+	  LANGUAGE sql AS $$
+	  WITH r AS MATERIALIZED (SELECT * FROM leaf_runs(idx))
+	  SELECT count(*) FILTER (WHERE a.hitag IS NOT NULL),
+	         bool_and((a.hitag IS NOT NULL) = ('lowbound_tagged' = ANY (b.flags)))
+	    FROM r a JOIN r b ON b.blk = a.next $$;
+});
+
+# Every row of `tab` has n + 1 entries in `idx`, tagged xmin - n .. xmin.
+sub history_right
+{
+	my ($idx, $tab, $n) = @_;
+	return $node->safe_psql(
+		'postgres', qq{
+		SELECT count(*) FILTER (WHERE e.n = $n + 1 AND e.lo = r.x - $n AND e.hi = r.x
+		                          AND e.d = $n + 1) || '/' || count(*)
+		  FROM (SELECT ctid, xmin::text::int8 AS x FROM $tab) r
+		  LEFT JOIN (SELECT htid, count(*) AS n, count(DISTINCT tag) AS d,
+		                    min(tag) AS lo, max(tag) AS hi
+		               FROM bark_entries('$idx') GROUP BY htid) e ON e.htid = r.ctid});
+}
+
+# (b1) Short runs: 2000 rows, each with 21 entries (about 750 bytes), so
+# that nearly every leaf would end inside one.  Each run moves whole to the
+# next leaf: no high key keeps a tag, no leaf is flagged.  With the rule off
+# (an injection point) the same build ends leaves inside runs, which is
+# what the first checks would catch.
+$node->safe_psql(
+	'postgres', q{
+	CREATE TABLE tr1 (id int, k int) USING heap_versioned
+	  WITH (parallel_workers = 2);
+	INSERT INTO tr1 SELECT g, g % 500 FROM generate_series(1, 2000) g;
+});
+for my $par (0, 2)
+{
+	for my $rule (0, 1)
+	{
+		next if !$rule && !$inj;
+		my $what = "b1: runs of 21, $par workers" . ($rule ? '' : ', rule off');
+		$node->safe_psql('postgres',
+			q{SELECT injection_points_attach('bark-build-ignore-runs', 'notice')})
+		  if !$rule;
+		my ($ret, $out, $err) = $node->psql(
+			'postgres', qq{
+			SET test_versioned_tableam.build_tag_percent = 100;
+			SET test_versioned_tableam.build_history = 20;
+			SET max_parallel_maintenance_workers = $par;
+			SET min_parallel_table_scan_size = 0;
+			SET client_min_messages = debug1;
+			CREATE INDEX tr1_k ON tr1 USING bark (k);
+		});
+		is($ret, 0, "$what: CREATE INDEX");
+		like($err, qr/with request for $par parallel workers/, "$what: workers")
+		  if $par > 0;
+		$node->safe_psql('postgres',
+			q{SELECT injection_points_detach('bark-build-ignore-runs')})
+		  if !$rule;
+		is(history_right('tr1_k', 'tr1', 20), '2000/2000',
+			"$what: every row has its 21 entries, tagged xmin - 20 .. xmin");
+		cmp_ok($node->safe_psql('postgres', q{SELECT count(*) FROM leaf_runs('tr1_k')}),
+			'>', 100, "$what: leaves");
+		my ($cuts, $bad) = split /\|/,
+		  $node->safe_psql('postgres', q{SELECT * FROM run_cuts('tr1_k')});
+		my ($tagged, $flagsok) = split /\|/,
+		  $node->safe_psql('postgres', q{SELECT * FROM tag_bounds('tr1_k')});
+		if ($rule)
+		{
+			is($cuts, '0', "$what: no leaf ends inside a run");
+			is($tagged, '0', "$what: no high key has a tag");
+		}
+		else
+		{
+			cmp_ok($bad, '>', 50, "$what: leaves end inside short runs");
+			is($tagged, $cuts, "$what: each such leaf's high key has a tag");
+		}
+		is($flagsok, 't', "$what: the leaves after them, and only those, are flagged");
+		is( $node->safe_psql(
+				'postgres', q{
+				SET test_versioned_tableam.stale_tags = live;
+				SET enable_seqscan = off; SET enable_bitmapscan = off;
+				SELECT count(*), count(DISTINCT id) FROM tr1 WHERE k >= 0}),
+			'42000|2000', "$what: an index scan returns every entry");
+		check_index('tr1_k', $what);
+		$node->safe_psql('postgres', 'DROP INDEX tr1_k') if !$rule || !$par;	# keep the last
+	}
+}
+
+# (b2) A long run: 100 rows, of which only row 100 (TID (0,100), the
+# highest key) is tagged, with 500 more entries.  The leaf that holds rows
+# 1-99 ends with over a quarter of a page of the run, and keeps it; the
+# next is all run.  Both high keys keep a tag, and the leaves after them
+# are flagged.
+$node->safe_psql(
+	'postgres', q{
+	CREATE TABLE tr2 (id int, k int) USING heap_versioned;
+	INSERT INTO tr2 SELECT g, g FROM generate_series(1, 100) g;
+	SET test_versioned_tableam.build_tag_percent = 1;
+	SET test_versioned_tableam.build_history = 500;
+	CREATE INDEX tr2_k ON tr2 USING bark (k);
+});
+is($node->safe_psql('postgres', q{SELECT ctid FROM tr2 WHERE id = 100}),
+	'(0,100)', 'b2: row 100 is the one tagged');
+is(history_right('tr2_k', 'tr2 WHERE id = 100', 500), '1/1',
+	'b2: row 100 has its 501 entries, tagged xmin - 500 .. xmin');
+is( $node->safe_psql(
+		'postgres', q{
+		SELECT count(DISTINCT htid) FILTER (WHERE tag IS NULL) || ' ' || count(*)
+		  FROM bark_entries('tr2_k') WHERE htid <> '(0,100)'}),
+	'99 99', 'b2: the other rows have one untagged entry each');
+my $leaves = q{
+	SELECT string_agg(ftid || '-' || ltid || ' ' || (hitag IS NOT NULL) || ' ' ||
+	                  ('lowbound_tagged' = ANY (flags)) || ' ' || (tailn = ndata),
+	                  ', ' ORDER BY blk)
+	  FROM leaf_runs('tr2_k')};
+like($node->safe_psql('postgres', $leaves),
+	qr/^\(0,1\)-\(0,100\) true false false, \(0,100\)-\(0,100\) true true true, \(0,100\)-\(0,100\) /,
+	'b2: the first leaf keeps its part of the run, the second is all run; both high keys have a tag, the leaves after them are flagged');
+is( $node->safe_psql(
+		'postgres', q{
+		SELECT tailbytes > current_setting('block_size')::int / 4
+		  FROM leaf_runs('tr2_k') ORDER BY blk LIMIT 1}),
+	't', 'b2: the first leaf\'s part is over a quarter of a page');
+is($node->safe_psql('postgres', q{SELECT bad FROM run_cuts('tr2_k')}),
+	'0', 'b2: no leaf ends inside a run that it could have moved');
+is($node->safe_psql('postgres', q{SELECT * FROM tag_bounds('tr2_k')}),
+	'2|t', 'b2: two high keys have a tag, and the leaves after them are flagged');
+check_index('tr2_k', 'b2');
+$node->safe_psql('postgres',
+	'RESET test_versioned_tableam.build_tag_percent; RESET test_versioned_tableam.build_history');
+
+# (d) The builds' WAL, replayed by crash recovery: the standby replayed it
+# with wal_consistency_checking in check_index.
+my %before = map { $_ => $node->safe_psql('postgres', "SELECT * FROM bark_entries('$_')") }
+  qw(tr1_k tr2_k);
+$node->stop('immediate');
+$node->start;
+for my $idx (qw(tr1_k tr2_k))
+{
+	is($node->safe_psql('postgres', "SELECT * FROM bark_entries('$idx')"),
+		$before{$idx}, "b, crash recovery: $idx has its entries");
+	check_index($idx, "b, crash recovery: $idx");
 }
 
 # The meta page says whether an index may hold tags: set when the table's
