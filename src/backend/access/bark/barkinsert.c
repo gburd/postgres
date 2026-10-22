@@ -549,6 +549,11 @@ bark_insert_entry(Relation index, Buffer buf, IndexTuple itup,
 
 	END_CRIT_SECTION();
 
+	/* The page validator's tests corrupt a tagged leaf entry here. */
+#ifdef USE_INJECTION_POINTS
+	if (!BufferIsValid(cbuf))
+		bark_verify_plant_fault(page, off);
+#endif
 	bark_verify_entries_change(index, buf, off, off);
 	if (BufferIsValid(cbuf))
 		bark_verify_page_change(index, cbuf);
