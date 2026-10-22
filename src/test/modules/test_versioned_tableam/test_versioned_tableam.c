@@ -34,7 +34,8 @@
  * which passes it an entry's recorded tag, as an index AM that stores tags
  * would from its unique check.
  *
- * test_versioned_btree is nbtree with amcanversion and amimplements =
+ * test_versioned_btree is nbtree with amcanversion, amindexcanversion and
+ * amimplements =
  * btree, so that heap_versioned can ask for it for its btree indexes.  It
  * stores no tag on disk: aminsert and its build callback record (index,
  * TID) -> tag in a shared hash, and amgettuple reports the recorded tag in
@@ -399,6 +400,20 @@ tvb_bulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	return btbulkdelete(info, stats, tvb_vacuum_callback, &vs);
 }
 
+/*
+ * amindexcanversion: an index whose name ends in "_notag" stores no tags, so
+ * that a test can show the executor treating one index of an AM with
+ * amcanversion as an index without it.
+ */
+static bool
+tvb_indexcanversion(Relation index)
+{
+	const char *name = RelationGetRelationName(index);
+	size_t		len = strlen(name);
+
+	return !(len >= 6 && strcmp(name + len - 6, "_notag") == 0);
+}
+
 PG_FUNCTION_INFO_V1(test_versioned_btree_handler);
 Datum
 test_versioned_btree_handler(PG_FUNCTION_ARGS)
@@ -408,6 +423,7 @@ test_versioned_btree_handler(PG_FUNCTION_ARGS)
 		IndexAmRoutine routine = *GetIndexAmRoutine(F_BTHANDLER);
 
 		routine.amcanversion = true;
+		routine.amindexcanversion = tvb_indexcanversion;
 		routine.amimplements = BTREE_AM_OID;
 		routine.amcanbuildparallel = false; /* see tvb_build_record */
 		routine.aminsert = tvb_insert;
@@ -552,7 +568,7 @@ tvh_index_getnext_slot(IndexScanDesc scan, ScanDirection direction,
 	}
 	PG_END_TRY();
 
-	if (result && scan->indexRelation->rd_indam->amcanversion)
+	if (result && index_can_version(scan->indexRelation))
 	{
 		/* test_versioned_btree remembers its entry's TID; others: the root */
 		ItemPointerData tid = tvb_last_scan == scan ? tvb_last_tid :
@@ -604,7 +620,7 @@ static bool
 tvh_fetch_tid_version(Relation rel, ItemPointer tid, IndexVersionTag tag,
 					  Relation index, Snapshot snapshot, bool *all_dead)
 {
-	if (index->rd_indam->amcanversion)
+	if (index_can_version(index))
 	{
 		tv_check_tag(rel, tid, tag, "fetch_tid_version");
 		tv_count(tag != InvalidIndexVersionTag ?
@@ -741,7 +757,7 @@ tvh_index_build_range_scan(Relation table_rel, Relation index_rel,
 	bs.heap = table_rel;
 
 	/* other indexes' entries are untagged */
-	if (!index_rel->rd_indam->amcanversion)
+	if (!index_can_version(index_rel))
 		bs.callback = NULL;
 
 	AS_HEAP(table_rel,
@@ -883,7 +899,7 @@ tvh_relation_vacuum(Relation rel, const VacuumParams *params,
 		TvhVacuumState vs;
 		IndexBulkDeleteResult *stats;
 
-		if (!indrels[i]->rd_indam->amcanversion)
+		if (!index_can_version(indrels[i]))
 			continue;
 
 		memset(&ivinfo, 0, sizeof(ivinfo));
@@ -1002,6 +1018,8 @@ test_versioned_insert_entry(PG_FUNCTION_ARGS)
 
 	if (tag < 0 || tag > PG_UINT32_MAX)
 		elog(ERROR, "tag %lld is out of range", (long long) tag);
+	/* as an UPDATE would: its commit then flushes the insert's WAL */
+	(void) GetCurrentTransactionId();
 	if (!table_tuple_fetch_row_version(heap, &tid, SnapshotAny, slot))
 		elog(ERROR, "no tuple at (%u,%u)", ItemPointerGetBlockNumber(&tid),
 			 ItemPointerGetOffsetNumber(&tid));

@@ -15,7 +15,7 @@ use PostgreSQL::Test::Utils;
 use Test::More;
 
 my $node = PostgreSQL::Test::Cluster->new('primary');
-$node->init(allows_streaming => 1);
+$node->init(allows_streaming => 1, no_data_checksums => 1);
 $node->append_conf(
 	'postgresql.conf', q{
 autovacuum = off
@@ -34,6 +34,7 @@ $node->safe_psql(
 	CREATE EXTENSION test_versioned_tableam;
 	CREATE EXTENSION amcheck;
 	CREATE EXTENSION pageinspect;
+	CREATE EXTENSION bark_multikey;
 	-- every leaf entry of a BARK index, in index order
 	CREATE FUNCTION bark_entries(idx regclass)
 	  RETURNS TABLE (blk int, off int, shape text, htid tid, tids tid[], tag int8)
@@ -264,6 +265,90 @@ is( $node->safe_psql(
 		'postgres', q{SELECT a.amname, (bark_metap('th_b')).flags & 2
 		  FROM pg_index x JOIN pg_am a ON a.oid = x.indimplam WHERE x.indexrelid = 'th_b'::regclass}),
 	'bark|2', 'btree implemented by bark on heap_versioned');
+
+# A multikey BARK index stores no tags (amindexcanversion): an update that
+# affects it moves the row (TU_All) and its entries stay untagged; an
+# update that affects only a scalar BARK index keeps the locator
+# (TU_Affected) and tags that index's entry.  A version 2 index on a
+# versioned table stores no tags either: the update moves the row, with no
+# error.
+$node->safe_psql(
+	'postgres', q{
+	CREATE TABLE tmk (id int, s int, a int4[]) USING heap_versioned;
+	CREATE INDEX tmk_s ON tmk USING bark (s);
+	CREATE INDEX tmk_a ON tmk USING bark (a bark_int4_array_ops);
+	INSERT INTO tmk SELECT g, g, ARRAY[g, g + 1] FROM generate_series(1, 50) g;
+});
+is( $node->safe_psql(
+		'postgres', q{
+		SELECT string_agg(i::text || '=' || pg_indexam_has_property(a.oid, 'can_version'), ',')
+		  FROM unnest(ARRAY['tmk_s', 'tmk_a']::regclass[]) i
+		  JOIN pg_class c ON c.oid = i JOIN pg_am a ON a.oid = c.relam}),
+	'tmk_s=true,tmk_a=true', 'mk: the AM can version');
+my $kept = q{SELECT n FROM test_versioned_counts() WHERE counter = 'update_kept'};
+sub update_kept
+{
+	my ($sql) = @_;
+	return $node->safe_psql(
+		'postgres', qq{
+		DO \$\$BEGIN PERFORM test_versioned_reset(); END\$\$;
+		SET test_versioned_tableam.keep_locator = pretend;
+		$sql;
+		$kept});
+}
+is(update_kept(q{UPDATE tmk SET s = s + 100, a = a || 0 WHERE id = 1}),
+	'0', 'mk: scalar and multikey both affected: the row moves');
+is(update_kept(q{UPDATE tmk SET a = a || 1 WHERE id = 2}),
+	'0', 'mk: multikey only affected: the row moves');
+is(update_kept(q{UPDATE tmk SET s = s + 100 WHERE id = 3}),
+	'1', 'mk: scalar only affected: the locator is kept');
+# heap_versioned tags every new version, so the scalar index's entries of
+# the moved rows are tagged too; the multikey index's never are.
+is( $node->safe_psql(
+		'postgres', q{
+		SELECT (SELECT count(*) FROM bark_entries('tmk_s') WHERE tag IS NOT NULL) || ' ' ||
+		       (SELECT count(*) FROM bark_entries('tmk_a') WHERE tag IS NOT NULL)}),
+	'3 0', 'mk: the scalar index has tagged entries, the multikey none');
+is(tags_right('tmk_s', 'tmk'), '3/3', 'mk: the tags are the xmins');
+# keep_locator = pretend leaves the moved row without a tmk_a entry, so no
+# heapallindexed here
+for my $idx (qw(tmk_s tmk_a))
+{
+	is($node->safe_psql('postgres', "SELECT bark_index_parent_check('$idx')"),
+		'', "mk: $idx checks");
+}
+
+$node->safe_psql(
+	'postgres', q{
+	CREATE TABLE tv2 (id int, k int) USING heap_versioned;
+	CREATE INDEX tv2_k ON tv2 USING bark (k);
+	INSERT INTO tv2 SELECT g, g FROM generate_series(1, 100) g;
+});
+my $tv2path = $node->data_dir . '/'
+  . $node->safe_psql('postgres', q{SELECT pg_relation_filepath('tv2_k')});
+$node->stop;
+open(my $fh, '+<:raw', $tv2path) or die "open $tv2path: $!";
+seek($fh, 24 + 4, 0) or die "seek: $!";
+print $fh pack('L', 2);		# version 2
+seek($fh, 24 + 20, 0) or die "seek: $!";
+print $fh pack('L', 0);		# bark_flags: no BARK_META_VERSIONED
+close $fh;
+$node->start;
+is( $node->safe_psql('postgres', q{SELECT version, flags FROM bark_metap('tv2_k')}),
+	'2|0', 'v2: a version 2 index on a versioned table');
+is(update_kept(q{UPDATE tv2 SET k = k + 1000 WHERE id <= 10}),
+	'0', 'v2: an update affecting it moves the rows, with no error');
+is( $node->safe_psql(
+		'postgres', q{
+		SELECT count(*) FILTER (WHERE tag IS NOT NULL) || ' ' || count(*) FROM bark_entries('tv2_k')}),
+	'0 110', 'v2: its entries are untagged');
+is( $node->safe_psql(
+		'postgres', q{
+		SET enable_seqscan = off; SET enable_bitmapscan = off;
+		SELECT count(*), sum(k) FROM tv2 WHERE k > 0}),
+	'100|15050', 'v2: index scan');
+is($node->safe_psql('postgres', q{SELECT bark_index_parent_check('tv2_k', true)}),
+	'', 'v2: checks');
 
 # Crash recovery replays the same records.
 $node->stop('immediate');
