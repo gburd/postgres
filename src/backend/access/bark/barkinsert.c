@@ -3377,11 +3377,11 @@ bark_index_has_marker(Relation index, Datum key)
  * the row's other keys are (NULLS NOT DISTINCT is refused on such an index,
  * bark_check_multikey_index).  Returns bark_insert_entries's result.
  *
- * With oversizedonly, only the keys CREATE INDEX's sort did not take are
- * inserted: those too large for it, or every key of a tagged row (`tag`).
- * The build's second pass (bark_insert_oversized_keys) does that for a row
- * whose other keys the build loaded, after writing the flag and the markers
- * itself.  Every entry carries `tag`.
+ * With oversizedonly, only the keys too large for CREATE INDEX's sort are
+ * inserted: the build's second pass (bark_insert_oversized_keys) does that
+ * for a row whose other keys the build loaded, after writing the flag and
+ * the markers itself.  `tag` is always 0: such an index stores no tags
+ * (bark_indexcanversion).
  */
 static bool
 bark_insert_row_keys(Relation index, BarkInsertState *state, Datum *values,
@@ -3391,7 +3391,7 @@ bark_insert_row_keys(Relation index, BarkInsertState *state, Datum *values,
 {
 	TupleDesc	tupdesc = RelationGetDescr(index);
 	int			attno = state->extracted;
-	MemoryContext oldcxt = MemoryContextSwitchTo(state->rowcxt);
+	MemoryContext oldcxt;
 	Datum		kvalues[INDEX_MAX_KEYS];
 	bool		knulls[INDEX_MAX_KEYS];
 	BarkRowKeys rk;
@@ -3401,6 +3401,9 @@ bark_insert_row_keys(Relation index, BarkInsertState *state, Datum *values,
 	bool		result = true;
 	int			n = 0;
 
+	/* A multikey index stores no tags (bark_indexcanversion). */
+	Assert(tag == InvalidIndexVersionTag);
+	oldcxt = MemoryContextSwitchTo(state->rowcxt);
 	bark_extract_row_keys(index, state->keyinfo, values[attno - 1],
 						  isnull[attno - 1], &rk);
 
@@ -3434,8 +3437,7 @@ bark_insert_row_keys(Relation index, BarkInsertState *state, Datum *values,
 		knulls[attno - 1] = rk.nulls[i];
 		itups[n] = bark_form_full_tuple(tupdesc, kvalues, knulls,
 										&fulllens[n]);
-		if (oversizedonly && tag == InvalidIndexVersionTag &&
-			!bark_len_is_oversized(state->keyinfo, fulllens[n]))
+		if (oversizedonly && !bark_len_is_oversized(state->keyinfo, fulllens[n]))
 			continue;
 		itups[n]->t_tid = *ht_ctid;
 		if (checkkeys != NULL)
@@ -3534,26 +3536,17 @@ bark_insert_oversized_keys(Relation index, Datum *values, bool *isnull,
 }
 
 /*
- * Refuse a version tag for an index that cannot hold one: its meta page
- * lacks BARK_META_VERSIONED (see "Version tags" in the README).
+ * Refuse a version tag for an index that cannot hold one.  Nothing sends
+ * one: such an index answers false to amindexcanversion
+ * (bark_indexcanversion), so the executor and the table AM give it untagged
+ * entries.
  */
 void
 bark_check_can_tag(Relation index, BarkKeyInfo *keyinfo, IndexVersionTag tag)
 {
-	/*
-	 * shortcut: amcanversion is per access method, so the executor may send
-	 * a tagged entry to an index built before its table's locator was
-	 * versioned; such an index can only come from pg_upgrade of a pre-v3
-	 * BARK index on a versioned table.  Make the capability per index if
-	 * one appears.
-	 */
-	if (tag != InvalidIndexVersionTag && !keyinfo->versioned)
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("BARK index \"%s\" cannot store version tags",
-						RelationGetRelationName(index)),
-				 errdetail("The index was built before its table's locator was versioned."),
-				 errhint("REINDEX the index.")));
+	if (tag != InvalidIndexVersionTag && !keyinfo->canversion)
+		elog(ERROR, "BARK index \"%s\" was given a version tag it cannot store",
+			 RelationGetRelationName(index));
 }
 
 #ifdef USE_ASSERT_CHECKING
