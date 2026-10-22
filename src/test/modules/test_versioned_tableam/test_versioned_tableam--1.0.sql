@@ -39,6 +39,11 @@ LANGUAGE C STRICT;
 CREATE VIEW test_versioned_seen AS
   SELECT counter, n FROM test_versioned_counts() WHERE n > 0 ORDER BY counter;
 
+CREATE FUNCTION test_versioned_insert_entry(regclass, tid, bigint)
+RETURNS void
+AS 'MODULE_PATHNAME'
+LANGUAGE C STRICT;
+
 CREATE FUNCTION test_versioned_fetch(regclass, tid)
 RETURNS bool
 AS 'MODULE_PATHNAME'
