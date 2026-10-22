@@ -50,6 +50,7 @@ tests += {
       't/003_bark_readers.pl',
       't/004_bark_vacuum.pl',
       't/005_bark_more.pl',
+      't/006_bark_corrupt.pl',
     ],
   },
 }
