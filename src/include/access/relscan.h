@@ -171,9 +171,10 @@ typedef struct IndexScanDescData
 
 	/*
 	 * The version tag of the entry that gave xs_heaptid; see "Versioned
-	 * locators" in amlocator.h.  An index AM with amcanversion sets it with
-	 * xs_heaptid in every amgettuple call; for every other AM it stays
-	 * InvalidIndexVersionTag.  The table AM's xs_getnext_slot reads it.
+	 * locators" in amlocator.h.  An index that can store tags
+	 * (index_can_version()) sets it with xs_heaptid in every amgettuple
+	 * call; for every other index it stays InvalidIndexVersionTag.  The
+	 * table AM's xs_getnext_slot reads it.
 	 */
 	IndexVersionTag xs_heaptag;
 	bool		xs_heap_continue;	/* T if must keep walking, potential

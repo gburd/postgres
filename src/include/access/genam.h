@@ -89,7 +89,7 @@ typedef struct IndexVacuumInfo
 
 	/*
 	 * Set only by a table AM whose locator is versioned (see amlocator.h),
-	 * for an index whose AM has amcanversion; NULL otherwise.  When it is
+	 * for an index for which index_can_version() is true; NULL otherwise.  When it is
 	 * set, ambulkdelete asks version_callback, with version_state, about
 	 * every entry, tagged or not, instead of the callback it is passed.  The
 	 * table AM reaches the index through version_state.
@@ -233,6 +233,7 @@ extern IndexBulkDeleteResult *index_bulk_delete(IndexVacuumInfo *info,
 extern IndexBulkDeleteResult *index_vacuum_cleanup(IndexVacuumInfo *info,
 												   IndexBulkDeleteResult *istat);
 extern bool index_can_return(Relation indexRelation, int attno);
+extern bool index_can_version(Relation indexRelation);
 extern RegProcedure index_getprocid(Relation irel, AttrNumber attnum,
 									uint16 procnum);
 extern FmgrInfo *index_getprocinfo(Relation irel, AttrNumber attnum,
