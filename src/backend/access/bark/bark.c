@@ -31,6 +31,7 @@
 #include "access/xloginsert.h"
 #include "catalog/pg_am_d.h"
 #include "commands/vacuum.h"
+#include "common/int.h"
 #include "miscadmin.h"
 #include "optimizer/optimizer.h"
 #include "storage/bufmgr.h"
@@ -380,6 +381,332 @@ bark_delete_empty_leaf(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno,
 }
 
 /*
+ * Are two pivots the same separator: the same key attributes, heap TID (or
+ * none) and tag (or none)?  A downlink is a copy of the high key of the
+ * child to its left (amcheck's bark_check_same_pivot).
+ */
+static bool
+bark_same_pivot(BarkKeyInfo *keyinfo, Relation index, IndexTuple a,
+				IndexTuple b)
+{
+	ItemPointer atid = bark_pivot_heap_tid(a);
+	ItemPointer btid = bark_pivot_heap_tid(b);
+
+	return BarkEntryGetPivotNAtts(a) == BarkEntryGetPivotNAtts(b) &&
+		(atid == NULL) == (btid == NULL) &&
+		(atid == NULL || ItemPointerEquals(atid, btid)) &&
+		bark_pivot_tag(a) == bark_pivot_tag(b) &&
+		bark_compare_itups(keyinfo, index, a, b) == 0;
+}
+
+/*
+ * The plain pivot `pivot` (a heap TID and a tag) without its tag, palloc'd:
+ * the same key and heap TID in the 8-byte suffix a pivot without a tag has
+ * (bark_make_pivot), minus infinity on the tag.
+ */
+static IndexTuple
+bark_pivot_drop_tag(IndexTuple pivot)
+{
+	Size		size = IndexTupleSize(pivot) -
+		(BarkPivotSuffixReserveFor(true) - BarkPivotSuffixReserveFor(false));
+	IndexTuple	plain = (IndexTuple) palloc0(size);
+
+	Assert(BarkEntryGetShape(pivot) == BARK_SHAPE_PIVOT);
+	Assert(BarkPivotGetTag(pivot) != InvalidIndexVersionTag);
+	memcpy(plain, pivot, size - sizeof(ItemPointerData));
+	plain->t_info = (plain->t_info & ~INDEX_SIZE_MASK) | (uint16) size;
+	ItemPointerSetOffsetNumber(&plain->t_tid,
+							   ItemPointerGetOffsetNumberNoCheck(&plain->t_tid) &
+							   ~BARK_PIVOT_TAG);
+	*BarkPivotGetHeapTID(plain) = *BarkPivotGetHeapTID(pivot);
+	Assert(BarkPivotGetTag(plain) == InvalidIndexVersionTag);
+	return plain;
+}
+
+/*
+ * Lower the lower bound of leaf `blkno` (P2) so that VACUUM can untag its
+ * first entry in place, and clear its BARK_LOWBOUND_TAGGED (see "Lowering a
+ * lower bound" in the README).  The bound is the high key of the left
+ * sibling P1, (K, L, t0) with a tag, and the parent's downlink to P2 is a
+ * copy of it.  Once P1 holds no entry at or above (K, L) with no tag, both
+ * become (K, L) with no tag.  That moves no entry: a reader that read the
+ * old bound and reaches P1 for a key in [(K, L), (K, L, t0)) finds P1's new
+ * high key and moves right to P2, and one that reads the new downlink goes
+ * to P2 directly.  When P1's high key has no tag already (P2 kept the flag
+ * through a page deletion that gave it P1 as its left sibling), only the
+ * flag is cleared, and the parent is not needed.
+ *
+ * The locks are bark_delete_empty_leaf's: the parent first, then P1 and P2,
+ * tried without waiting while the parent is held; when one is busy, give up
+ * and let a later VACUUM retry.  A flag-only clear locks P1 and P2 left to
+ * right, as a split does, holding no parent.
+ *
+ * Returns true when P2's flag is clear on return.  Declines (false) when P2
+ * or P1 is not a live leaf of the expected shape, P1 is not P2's left
+ * sibling, P1 holds an entry at or above (K, L), the bound is an OVERSIZED
+ * pivot, the parent's downlink is not a copy of P1's high key, a lock is
+ * busy, or P2 is its parent's first child.
+ *
+ * shortcut: when P2 is its parent's first child, the bound is also the
+ * parent's lower bound (the high key of the parent's left sibling, and a
+ * downlink a level up), which would have to be lowered at every level up to
+ * the first where it is not at a page's edge; this declines, and P2's first
+ * entry stays tagged.  A tagged bound is left only by a leaf that was all one
+ * run, and it is at a parent's edge about once in a parent's fan-out of such
+ * bounds; lower it at the upper levels too if a table AM needs every tag
+ * cleared there.
+ */
+static bool
+bark_lower_bound(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno)
+{
+	Buffer		buf;
+	Buffer		lbuf;
+	Buffer		pbuf = InvalidBuffer;
+	Page		page;
+	Page		lpage;
+	BarkPageOpaque opaque;
+	BarkPageOpaque lopaque;
+	BlockNumber leftblk;
+	IndexTuple	hikey;
+	IndexTuple	newhikey = NULL;
+	IndexTuple	newdownlink = NULL;
+	OffsetNumber downoff = InvalidOffsetNumber;
+	bool		flagonly;
+	bool		ok = false;
+	bool		skiphikey = false;
+	XLogRecPtr	recptr;
+
+	/* P2: still a live leaf with the flag?  Who is its left sibling? */
+	buf = ReadBuffer(index, blkno);
+	LockBuffer(buf, BUFFER_LOCK_SHARE);
+	page = BufferGetPage(buf);
+	opaque = PageIsNew(page) ? NULL : BarkPageGetOpaque(page);
+	if (opaque == NULL || !BarkPageIsLeaf(opaque) || BarkPageIgnore(opaque) ||
+		BarkPageLeftmost(opaque) ||
+		(opaque->bark_flags & BARK_LOWBOUND_TAGGED) == 0)
+	{
+		bool		clear = opaque != NULL && BarkPageIsLeaf(opaque) &&
+			(opaque->bark_flags & BARK_LOWBOUND_TAGGED) == 0;
+
+		UnlockReleaseBuffer(buf);
+		return clear;
+	}
+	leftblk = opaque->bark_prev;
+	UnlockReleaseBuffer(buf);
+
+	/* P1's high key, P2's lower bound. */
+	lbuf = ReadBuffer(index, leftblk);
+	LockBuffer(lbuf, BUFFER_LOCK_SHARE);
+	lpage = BufferGetPage(lbuf);
+	lopaque = PageIsNew(lpage) ? NULL : BarkPageGetOpaque(lpage);
+	if (lopaque == NULL || !BarkPageIsLeaf(lopaque) ||
+		BarkPageIgnore(lopaque) || lopaque->bark_next != blkno ||
+		(lopaque->bark_flags & BARK_INCOMPLETE_SPLIT) != 0)
+	{
+		UnlockReleaseBuffer(lbuf);
+		return false;
+	}
+	hikey = CopyIndexTuple((IndexTuple)
+						   PageGetItem(lpage, PageGetItemId(lpage, BARK_P_HIKEY)));
+	UnlockReleaseBuffer(lbuf);
+	flagonly = bark_pivot_tag(hikey) == InvalidIndexVersionTag;
+	if (!flagonly && BarkEntryGetShape(hikey) != BARK_SHAPE_PIVOT)
+	{
+		pfree(hikey);
+		return false;			/* an OVERSIZED bound: keep it */
+	}
+
+	if (!flagonly)
+	{
+		Page		ppage;
+		BarkItemBuf ibuf;
+
+		newhikey = bark_pivot_drop_tag(hikey);
+		pbuf = bark_find_parent_downlink(index, keyinfo, hikey, blkno,
+										 &downoff);
+		if (pbuf == InvalidBuffer)
+			goto done;
+		ppage = BufferGetPage(pbuf);
+
+		/*
+		 * P1's downlink must be just before P2's, on the same page, and P2's
+		 * a copy of P1's high key.  The parent stays locked from here on.
+		 */
+		if (downoff <= BarkPageFirstDataKey(BarkPageGetOpaque(ppage)) ||
+			BarkEntryGetDownLink(BarkPageGetItem(ppage,
+												 OffsetNumberPrev(downoff),
+												 &ibuf)) != leftblk ||
+			!bark_same_pivot(keyinfo, index,
+							 (IndexTuple) PageGetItem(ppage,
+													  PageGetItemId(ppage, downoff)),
+							 hikey))
+			goto done;
+	}
+
+	/*
+	 * Tests stop here, holding the parent, so that another backend can lock
+	 * P1 or P2 first (a split of P2 waiting for this parent).
+	 */
+	if (!flagonly)
+		INJECTION_POINT("bark-lower-bound-parent", NULL);
+
+	/*
+	 * Lock P1 and P2, without waiting while the parent is held, then look
+	 * again at everything decided above.
+	 */
+	lbuf = ReadBuffer(index, leftblk);
+	buf = ReadBuffer(index, blkno);
+	if (flagonly)
+	{
+		LockBuffer(lbuf, BUFFER_LOCK_SHARE);
+		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+	}
+	else if (!ConditionalLockBuffer(lbuf))
+	{
+		ReleaseBuffer(buf);
+		ReleaseBuffer(lbuf);
+		goto done;
+	}
+	else if (!ConditionalLockBuffer(buf))
+	{
+		ReleaseBuffer(buf);
+		UnlockReleaseBuffer(lbuf);
+		goto done;
+	}
+	page = BufferGetPage(buf);
+	lpage = BufferGetPage(lbuf);
+	opaque = BarkPageGetOpaque(page);
+	lopaque = BarkPageGetOpaque(lpage);
+	if (!BarkPageIsLeaf(opaque) || BarkPageIgnore(opaque) ||
+		opaque->bark_prev != leftblk ||
+		(opaque->bark_flags & BARK_LOWBOUND_TAGGED) == 0 ||
+		!BarkPageIsLeaf(lopaque) || BarkPageIgnore(lopaque) ||
+		lopaque->bark_next != blkno ||
+		(lopaque->bark_flags & BARK_INCOMPLETE_SPLIT) != 0 ||
+		!bark_same_pivot(keyinfo, index,
+						 (IndexTuple) PageGetItem(lpage,
+												  PageGetItemId(lpage, BARK_P_HIKEY)),
+						 hikey))
+		goto unlock;
+
+	/* P1 must hold nothing at or above the new bound. */
+	if (!flagonly &&
+		PageGetMaxOffsetNumber(lpage) >= BarkPageFirstDataKey(lopaque))
+	{
+		BarkItemBuf ibuf;
+		IndexTuple	last = BarkPageGetItem(lpage, PageGetMaxOffsetNumber(lpage),
+										   &ibuf);
+		ItemPointerData lo;
+		ItemPointerData hi;
+
+		bark_entry_tid_range(last, &lo, &hi, keyinfo->tidstride);
+		if (bark_compare_itups_tid(keyinfo, index, last, &hi,
+								   BarkEntryGetTag(last), newhikey) >= 0)
+			goto unlock;
+	}
+
+	/*
+	 * Tests stop here, holding every lock the change needs, to run scans and
+	 * inserts against it; and leave P1's high key alone (the parent only), to
+	 * show that amcheck catches the mismatch.
+	 */
+	INJECTION_POINT("bark-lower-bound-locked", NULL);
+	if (!flagonly && IS_INJECTION_POINT_ATTACHED("bark-lower-bound-skip-hikey"))
+		skiphikey = true;
+
+	if (!flagonly)
+	{
+		newdownlink = CopyIndexTuple(newhikey);
+		BarkEntrySetDownLink(newdownlink, blkno);
+
+		/*
+		 * [(K, L), (K, L, t0)) moves from P1's range to P2's: a serializable
+		 * reader that read P1 for it must conflict with an insert on P2.
+		 */
+		PredicateLockPageSplit(index, leftblk, blkno);
+	}
+
+	/* No ereport(ERROR) until changes are logged */
+	START_CRIT_SECTION();
+
+	if (!flagonly && !skiphikey &&
+		!PageIndexTupleOverwrite(lpage, BARK_P_HIKEY, newhikey,
+								 IndexTupleSize(newhikey)))
+		elog(PANIC, "failed to lower the high key of block %u of index \"%s\"",
+			 leftblk, RelationGetRelationName(index));
+	if (!flagonly &&
+		!PageIndexTupleOverwrite(BufferGetPage(pbuf), downoff, newdownlink,
+								 IndexTupleSize(newdownlink)))
+		elog(PANIC, "failed to lower a downlink in block %u of index \"%s\"",
+			 BufferGetBlockNumber(pbuf), RelationGetRelationName(index));
+	opaque->bark_flags &= ~BARK_LOWBOUND_TAGGED;
+
+	if (!flagonly && !skiphikey)
+		MarkBufferDirty(lbuf);
+	MarkBufferDirty(buf);
+	if (!flagonly)
+		MarkBufferDirty(pbuf);
+
+	if (RelationNeedsWAL(index))
+	{
+		xl_bark_unlink_page xlrec;
+
+		xlrec.leftsib = leftblk;
+		xlrec.rightsib = blkno;
+		xlrec.safexid = InvalidFullTransactionId;
+		xlrec.poffset = downoff;
+		xlrec.flags = XLH_BARK_UNLINK_LOWER_SEP;
+
+		/* The second form of UNLINK_PAGE: no block 0 (barkxlog.h). */
+		XLogBeginInsert();
+		if (!flagonly && !skiphikey)
+		{
+			XLogRegisterBuffer(1, lbuf, REGBUF_STANDARD);
+			XLogRegisterBufData(1, newhikey, IndexTupleSize(newhikey));
+		}
+		XLogRegisterBuffer(2, buf, REGBUF_STANDARD);
+		if (!flagonly)
+		{
+			XLogRegisterBuffer(3, pbuf, REGBUF_STANDARD);
+			XLogRegisterBufData(3, newdownlink, IndexTupleSize(newdownlink));
+		}
+		XLogRegisterData(&xlrec, SizeOfBarkUnlinkPage);
+
+		recptr = XLogInsert(RM_BARK_ID, XLOG_BARK_UNLINK_PAGE);
+	}
+	else
+		recptr = XLogGetFakeLSN(index);
+
+	if (!flagonly && !skiphikey)
+		PageSetLSN(lpage, recptr);
+	PageSetLSN(page, recptr);
+	if (!flagonly)
+		PageSetLSN(BufferGetPage(pbuf), recptr);
+
+	END_CRIT_SECTION();
+
+	if (!flagonly && !skiphikey)
+		bark_verify_page_change(index, lbuf);
+	bark_verify_page_change(index, buf);
+	if (!flagonly)
+		bark_verify_page_change(index, pbuf);
+	ok = true;
+
+unlock:
+	UnlockReleaseBuffer(buf);
+	UnlockReleaseBuffer(lbuf);
+done:
+	if (BufferIsValid(pbuf))
+		UnlockReleaseBuffer(pbuf);
+	pfree(hikey);
+	if (newhikey != NULL)
+		pfree(newhikey);
+	if (newdownlink != NULL)
+		pfree(newdownlink);
+	return ok;
+}
+
+/*
  * Every build of an index (CREATE INDEX, REINDEX, CONCURRENTLY, and before
  * ambuildempty for an unlogged one) comes through here, so this is where an
  * index BARK cannot hold is refused.
@@ -560,6 +887,17 @@ bark_vacuum_target(Page page, bool backtracking, BarkCycleId cycleid)
 }
 
 /*
+ * A LIVE_UNTAG entry that bark_vacuum_untag kept tagged because its page's
+ * lower bound may carry a tag: its leaf, and a copy of the entry (decoded),
+ * to untag once bark_lower_bound has lowered the bound.
+ */
+typedef struct BarkKeptBound
+{
+	BlockNumber blkno;
+	IndexTuple	entry;
+} BarkKeptBound;
+
+/*
  * State of one VACUUM scan of a BARK index (bark_vacuum_scan), as nbtree's
  * BTVacState.  callback is NULL for a scan that only counts entries, deletes
  * empty leaves and recycles deleted pages (barkvacuumcleanup when no bulk
@@ -576,6 +914,10 @@ typedef struct BarkVacState
 	int64		nuntagged;		/* entries untagged in place */
 	int64		nkeptbound;		/* LIVE_UNTAG, kept: lower bound may be tagged */
 	int64		nkeptdup;		/* LIVE_UNTAG, kept: (K, L, 0) is in an entry */
+	int64		nlowered;		/* lower bounds lowered (bark_lower_bound) */
+	BarkKeptBound *kept;		/* entries counted in nkeptbound */
+	int			nkept;
+	int			keptalloc;
 	BarkCycleId	cycleid;
 	BlockNumber *emptyleaves;	/* empty interior leaves to delete */
 	int			nempty;
@@ -617,10 +959,9 @@ bark_vacuum_verdict(BarkVacState *vstate, ItemPointer tid, IndexVersionTag tag)
  * be divided.  The table AM's LIVE_UNTAG allows untagging, it does not
  * require it (IndexEntryVerdict).
  *
- * shortcut: an entry whose page's lower bound may carry a tag stays tagged;
- * lower the separator (P1's high key and the parent pivot to (K, L)
- * untagged, once the run's dead entries are gone) if a table AM needs every
- * tag cleared, e.g. for xid-wraparound (follow-up T2).
+ * An entry kept for its page's lower bound is recorded with the page's
+ * block `blkno` (unless that is InvalidBlockNumber), and once the scan is
+ * over bark_vacuum_lower_bounds lowers the bound and untags it then.
  *
  * Each planned move is applied to `page` before the next is planned, and
  * recorded as from[i], to[i] and the untagged entry, coded for the page, in
@@ -629,9 +970,9 @@ bark_vacuum_verdict(BarkVacState *vstate, ItemPointer tid, IndexVersionTag tag)
  * nkeptdup.
  */
 static int
-bark_vacuum_untag(BarkVacState *vstate, Page page, OffsetNumber *untag,
-				  int nuntag, OffsetNumber *from, OffsetNumber *to,
-				  IndexTuple *newitems)
+bark_vacuum_untag(BarkVacState *vstate, Page page, BlockNumber blkno,
+				  OffsetNumber *untag, int nuntag, OffsetNumber *from,
+				  OffsetNumber *to, IndexTuple *newitems)
 {
 	Relation	index = vstate->info->index;
 	BarkKeyInfo *keyinfo = vstate->keyinfo;
@@ -689,7 +1030,21 @@ bark_vacuum_untag(BarkVacState *vstate, Page page, OffsetNumber *untag,
 			if (dup)
 				vstate->nkeptdup++;
 			else
+			{
 				vstate->nkeptbound++;
+				if (BlockNumberIsValid(blkno))
+				{
+					if (vstate->nkept >= vstate->keptalloc)
+					{
+						vstate->keptalloc *= 2;
+						vstate->kept = repalloc_array(vstate->kept,
+													  BarkKeptBound,
+													  vstate->keptalloc);
+					}
+					vstate->kept[vstate->nkept].blkno = blkno;
+					vstate->kept[vstate->nkept++].entry = CopyIndexTuple(itup);
+				}
+			}
 			pfree(plain);
 			continue;
 		}
@@ -973,8 +1328,9 @@ bark_vacuum_page(BarkVacState *vstate, Buffer buf)
 					d++;
 				untag[i] -= d;
 			}
-			nuntagged = bark_vacuum_untag(vstate, scratch, untag, nuntag,
-										  untagfrom, untagto, untagged);
+			nuntagged = bark_vacuum_untag(vstate, scratch, blkno, untag,
+										  nuntag, untagfrom, untagto,
+										  untagged);
 			pfree(scratch);
 		}
 
@@ -1077,6 +1433,108 @@ bark_vacuum_page(BarkVacState *vstate, Buffer buf)
 #endif
 }
 
+static int
+bark_kept_cmp(const void *a, const void *b)
+{
+	return pg_cmp_u32(((const BarkKeptBound *) a)->blkno,
+					  ((const BarkKeptBound *) b)->blkno);
+}
+
+/*
+ * Untag the entries bark_vacuum_untag kept tagged for their page's lower
+ * bound, once the scan is over and every page has lost its dead entries:
+ * for each such page, lower its bound (bark_lower_bound), and if that
+ * succeeds, untag the entries in place, as the scan would have, under the
+ * page's cleanup lock and in an XLOG_BARK_VACUUM record of their own.  An
+ * entry no longer on its page (a split moved it, or it was deleted) is left
+ * alone; it stays counted as kept.
+ */
+static void
+bark_vacuum_lower_bounds(BarkVacState *vstate)
+{
+	Relation	index = vstate->info->index;
+
+	qsort(vstate->kept, vstate->nkept, sizeof(BarkKeptBound), bark_kept_cmp);
+	for (int i = 0, next; i < vstate->nkept; i = next)
+	{
+		BlockNumber blkno = vstate->kept[i].blkno;
+		Buffer		buf;
+		Page		page;
+		BarkPageOpaque opaque;
+		OffsetNumber untag[MaxOffsetNumber];
+		int			nuntag = 0;
+		OffsetNumber from[MaxOffsetNumber];
+		OffsetNumber to[MaxOffsetNumber];
+		IndexTuple	items[MaxOffsetNumber];
+		int			nmoved = 0;
+
+		for (next = i; next < vstate->nkept &&
+			 vstate->kept[next].blkno == blkno; next++)
+			;
+
+		vacuum_delay_point(false);
+		if (!bark_lower_bound(index, vstate->keyinfo, blkno))
+			continue;
+		vstate->nlowered++;
+
+		buf = ReadBufferExtended(index, MAIN_FORKNUM, blkno, RBM_NORMAL,
+								 vstate->info->strategy);
+		LockBufferForCleanup(buf);
+		page = BufferGetPage(buf);
+		opaque = BarkPageGetOpaque(page);
+		if (!BarkPageIsLeaf(opaque) || BarkPageIgnore(opaque) ||
+			(opaque->bark_flags & BARK_LOWBOUND_TAGGED) != 0)
+		{
+			UnlockReleaseBuffer(buf);
+			continue;
+		}
+
+		/* Find each entry again, by (key, TID, tag). */
+		for (OffsetNumber off = BarkPageFirstDataKey(opaque);
+			 off <= PageGetMaxOffsetNumber(page); off = OffsetNumberNext(off))
+		{
+			BarkItemBuf ibuf;
+			IndexTuple	itup = BarkPageGetItem(page, off, &ibuf);
+
+			if (!BarkEntryHasTag(itup))
+				continue;
+			for (int j = i; j < next; j++)
+			{
+				IndexTuple	kept = vstate->kept[j].entry;
+
+				if (BarkEntryGetTag(kept) == BarkEntryGetTag(itup) &&
+					bark_compare_itups_tid(vstate->keyinfo, index, kept,
+										   BarkEntryGetHeapTid(kept),
+										   BarkEntryGetTag(kept), itup) == 0)
+				{
+					untag[nuntag++] = off;
+					break;
+				}
+			}
+		}
+
+		if (nuntag > 0)
+		{
+			Page		scratch = PageGetTempPageCopy(page);
+
+			/* Planned again, so counted again (bark_vacuum_untag). */
+			vstate->nkeptbound -= nuntag;
+			nmoved = bark_vacuum_untag(vstate, scratch, InvalidBlockNumber,
+									   untag, nuntag, from, to, items);
+			pfree(scratch);
+		}
+		if (nmoved > 0)
+			bark_delitems_vacuum(index, buf, NULL, 0, NULL, NULL, 0,
+								 from, to, items, nmoved);
+		for (int j = 0; j < nmoved; j++)
+			pfree(items[j]);
+		UnlockReleaseBuffer(buf);
+	}
+	for (int i = 0; i < vstate->nkept; i++)
+		pfree(vstate->kept[i].entry);
+	vstate->nkept = 0;
+}
+
 /*
  * A leaf page deleted by this VACUUM and its safexid, kept so that the pages
  * can be put in the FSM at the end of the VACUUM, once nothing can still
@@ -1175,6 +1633,10 @@ bark_vacuum_scan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	vstate.nuntagged = 0;
 	vstate.nkeptbound = 0;
 	vstate.nkeptdup = 0;
+	vstate.nlowered = 0;
+	vstate.keptalloc = 16;
+	vstate.nkept = 0;
+	vstate.kept = palloc_array(BarkKeptBound, vstate.keptalloc);
 	vstate.cycleid = 0;
 	vstate.emptyalloc = 64;
 	vstate.nempty = 0;
@@ -1268,16 +1730,6 @@ bark_vacuum_scan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	if (callback != NULL || version_callback != NULL)
 		bark_end_vacuum();
 
-	if (vstate.nuntagged > 0 || vstate.nkeptbound > 0 || vstate.nkeptdup > 0)
-		ereport(info->message_level,
-				(errmsg("index \"%s\": untagged %lld entries in place, kept %lld tagged whose page's lower bound may carry a tag and %lld whose untagged position is in another entry",
-						RelationGetRelationName(index),
-						(long long) vstate.nuntagged,
-						(long long) vstate.nkeptbound,
-						(long long) vstate.nkeptdup)));
-	if (vstate.keyinfo != NULL)
-		pfree(vstate.keyinfo);
-
 	stats->num_pages = npages;
 
 	/*
@@ -1305,6 +1757,25 @@ bark_vacuum_scan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	}
 	pfree(keyinfo);
 	pfree(vstate.emptyleaves);
+
+	/*
+	 * Then lower the bounds that kept entries tagged: the scan has removed
+	 * the dead entries the lowering needs gone, and page deletion may have
+	 * given a page a new lower bound, whose flag alone may need clearing.
+	 */
+	if (vstate.nkept > 0)
+		bark_vacuum_lower_bounds(&vstate);
+	pfree(vstate.kept);
+	if (vstate.nuntagged > 0 || vstate.nkeptbound > 0 || vstate.nkeptdup > 0)
+		ereport(info->message_level,
+				(errmsg("index \"%s\": untagged %lld entries in place, kept %lld tagged whose page's lower bound may carry a tag and %lld whose untagged position is in another entry, after lowering %lld lower bounds",
+						RelationGetRelationName(index),
+						(long long) vstate.nuntagged,
+						(long long) vstate.nkeptbound,
+						(long long) vstate.nkeptdup,
+						(long long) vstate.nlowered)));
+	if (vstate.keyinfo != NULL)
+		pfree(vstate.keyinfo);
 
 	bark_pendingfsm_finalize(info, stats, pending, npending);
 	pfree(pending);
