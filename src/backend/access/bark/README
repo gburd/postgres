@@ -1025,7 +1025,7 @@ mapping.
 Only support function 1 is required; BARK calls it (bark_build_keyinfo) to
 order entries, and the family's cross-type ORDER procs to position scans on
 constants of other types (bark_setup_key_procs).  tuplesort reads 1 and 2
-for the build (tuplesort_begin_index_btree, through the shared family), 4
+for the build (bark_sort_begin, through the shared family), 4
 decides coalescing (bark_allequalimage), and 6 drives the skip scan's next
 value (PrepareSkipSupportFromOpclass).  BARK never calls in_range (3).
 
@@ -1090,7 +1090,7 @@ CREATE INDEX
 ------------
 
 bark_build (barksort.c) scans the heap through table_index_build_scan into a
-tuplesort ordered by (key, heap TID), then writes the tree bottom-up, as
+tuplesort ordered by (key, heap TID, tag), then writes the tree bottom-up, as
 nbtsort.c does; keys too large for the sort go in afterwards, by a second
 heap scan and the normal insert path.  A parallel build lets workers scan
 and sort; only the leader writes pages.
@@ -2213,18 +2213,28 @@ table AM's build and validation scans, set it).  A tagged row's entry is
 placed by (key, TID, tag), as a tagged SINGLE or a tagged OVERSIZED entry,
 and never coalesces: bark_coalesce_list skips a tagged
 neighbour and a tagged insert, the merge pass (bark_merge_page) ends a group
-at a tagged entry, bark_load never sees one, and VACUUM's and bottom-up
-deletion's re-forms touch only LIST and POSTING entries.  A tagged row's
+at a tagged entry, bark_load writes one as it is and ends the run of its key
+there, and VACUUM's and bottom-up deletion's re-forms touch only LIST and
+POSTING entries.  A tagged row's
 (key, TID) can fall inside the TID range of an untagged LIST or POSTING of
 its key; the entry sorts after the members up to its TID and before the
 rest, so that entry is divided there first (bark_entry_divide, logged as
 INSERT_SWAP with the tag after the stride, which redo reads as "divide, add
 nothing"), then the tagged entry goes in between by INSERT_LEAF, or, when
 the parts do not fit, the page splits with the parts in place of the entry
-and the insert descends again.  CREATE INDEX defers tagged rows to its
-second pass (bark_build_oversized_pass), which inserts them one at a time
-as it does oversized rows; serial and parallel builds alike, since the
-leader's second scan sees the table AM's tags.  Every WAL record carries
+and the insert descends again.  CREATE INDEX sorts a tagged row's entry
+with the rest: the build's sort (bark_sort_begin, a tuplesort variant of
+BARK's own) holds tagged SINGLEs and orders by (key, heap TID, tag),
+reading the heap TID and tag from the trailer, where nbtree's sort would
+read t_tid.  bark_load packs them to the fill factor as it does untagged
+entries.  A leaf the load ends inside a run of entries equal on key and
+heap TID moves the run to the next leaf, unless the run fills the page or
+takes more than a quarter of it (bark_build_run_tail), as a split avoids
+such a cut; a leaf whose lower bound keeps a tag gets
+BARK_LOWBOUND_TAGGED.  A tagged row whose key is too large to sort goes
+in by the second pass (bark_build_oversized_pass), as a tagged OVERSIZED
+entry; serial and parallel builds alike, since the leader's second scan
+sees the table AM's tags.  Every WAL record carries
 entry images or re-forms only LIST and POSTING entries, so tagged entries
 need no other record change.
 

@@ -2009,6 +2009,8 @@ extern int	bark_findsplitloc(Relation index, BarkKeyInfo *keyinfo,
 							  IndexTuple *items, const Size *sizes,
 							  Size reserve, int n, int newitemidx,
 							  bool isleaf, IndexTuple orighikey);
+extern bool bark_entries_in_run(Relation index, BarkKeyInfo *keyinfo,
+								IndexTuple lastleft, IndexTuple firstright);
 extern bool bark_singleval_cut(Relation index, BarkKeyInfo *keyinfo,
 							   Page page, OffsetNumber off, IndexTuple newitem,
 							   IndexTuple *left, IndexTuple *right);
