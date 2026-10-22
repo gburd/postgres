@@ -150,7 +150,7 @@ select amname, prop, pg_indexam_has_property(a.oid, prop) as p
  bark   | can_exclude     | t
  bark   | can_include     | t
  bark   | can_var_locator | f
- bark   | can_version     | f
+ bark   | can_version     | t
  bark   | bogus           | 
  brin   | can_order       | f
  brin   | can_unique      | f
