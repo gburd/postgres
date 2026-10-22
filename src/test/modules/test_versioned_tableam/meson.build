@@ -40,10 +40,14 @@ tests += {
     'runningcheck': false,
   },
   'tap': {
+    'env': {
+       'enable_injection_points': get_option('injection_points') ? 'yes' : 'no',
+    },
     'tests': [
       't/001_apply.pl',
       't/002_bark_tags.pl',
       't/003_bark_readers.pl',
+      't/004_bark_vacuum.pl',
     ],
   },
 }

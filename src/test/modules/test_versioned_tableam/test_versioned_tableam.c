@@ -124,8 +124,10 @@ typedef enum TvCounter
 	TVC_FETCH_TAGGED,
 	TVC_FETCH_UNTAGGED,
 	TVC_DELETE_STATUS,
+	TVC_DELETE_STALE,
 	TVC_VACUUM_DEAD,
 	TVC_VACUUM_UNTAG,
+	TVC_VACUUM_LIVE,
 	TVC_VALIDATE_TAGGED,
 	TVC_VALIDATE_UNTAGGED,
 	TVC_BITMAP_ROWS,
@@ -135,8 +137,9 @@ typedef enum TvCounter
 
 static const char *const tvc_names[NUM_TVC] = {
 	"insert_tagged", "build_tagged", "scan_tagged", "scan_untagged",
-	"fetch_tagged", "fetch_untagged", "delete_status", "vacuum_dead",
-	"vacuum_untag", "validate_tagged", "validate_untagged", "bitmap_rows",
+	"fetch_tagged", "fetch_untagged", "delete_status", "delete_stale",
+	"vacuum_dead",
+	"vacuum_untag", "vacuum_live", "validate_tagged", "validate_untagged", "bitmap_rows",
 	"update_kept",
 };
 
@@ -146,6 +149,31 @@ typedef struct TvShared
 } TvShared;
 
 static TvShared *tv_shared = NULL;
+
+/*
+ * How heap_versioned judges a stale entry (tv_tag_stale): dead (index
+ * deletion and VACUUM remove it), or, for tests that need many entries of
+ * one row, live (kept; VACUUM answers LIVE) or untag (kept; VACUUM answers
+ * LIVE_UNTAG).  Unless dead, the checks accept a stale tag.
+ */
+typedef enum
+{
+	STALE_TAGS_DEAD,
+	STALE_TAGS_LIVE,
+	STALE_TAGS_UNTAG,
+} StaleTags;
+
+static int	stale_tags = STALE_TAGS_DEAD;
+
+/*
+ * VACUUM's verdicts, for tests: a stale entry whose tag is in
+ * [stale_dead_min, stale_dead_max] is dead whatever stale_tags says; and with
+ * untag_tag >= 0 only an entry of that tag is answered LIVE_UNTAG, and every
+ * other live entry LIVE.
+ */
+static int	stale_dead_min = -1;
+static int	stale_dead_max = -1;
+static int	untag_tag = -1;
 static dshash_table *tv_tags = NULL;
 
 static const dshash_parameters tv_tags_params = {
@@ -275,7 +303,8 @@ tv_check_tag(Relation rel, ItemPointer tid, IndexVersionTag tag,
 			TransactionId xmin = HeapTupleHeaderGetRawXmin(htup);
 
 			present = true;
-			if (tag != InvalidIndexVersionTag && tag != (IndexVersionTag) xmin)
+			if (tag != InvalidIndexVersionTag && tag != (IndexVersionTag) xmin &&
+				stale_tags == STALE_TAGS_DEAD)
 			{
 				UnlockReleaseBuffer(buf);
 				elog(ERROR, "%s: tag %u does not name the tuple at (%u,%u), whose xmin is %u",
@@ -285,6 +314,36 @@ tv_check_tag(Relation rel, ItemPointer tid, IndexVersionTag tag,
 	}
 	UnlockReleaseBuffer(buf);
 	return present;
+}
+
+/*
+ * Is the entry (tid, tag) stale: tagged, at a TID whose tuple has another
+ * raw xmin?  heap_versioned's validity rule (rows move, so an entry is
+ * valid only for the version at its TID) makes such an entry valid for no
+ * version.  Only test_versioned_insert_entry's "stale" tags make one; every
+ * other check refuses it (tv_check_tag).
+ */
+static bool
+tv_tag_stale(Relation rel, ItemPointer tid, IndexVersionTag tag)
+{
+	Buffer		buf;
+	Page		page;
+	OffsetNumber off = ItemPointerGetOffsetNumber(tid);
+	bool		stale = false;
+
+	if (tag == InvalidIndexVersionTag ||
+		ItemPointerGetBlockNumber(tid) >= RelationGetNumberOfBlocks(rel))
+		return false;
+	buf = ReadBuffer(rel, ItemPointerGetBlockNumber(tid));
+	LockBuffer(buf, BUFFER_LOCK_SHARE);
+	page = BufferGetPage(buf);
+	if (off >= FirstOffsetNumber && off <= PageGetMaxOffsetNumber(page) &&
+		ItemIdIsNormal(PageGetItemId(page, off)))
+		stale = tag != (IndexVersionTag)
+			HeapTupleHeaderGetRawXmin((HeapTupleHeader)
+									  PageGetItem(page, PageGetItemId(page, off)));
+	UnlockReleaseBuffer(buf);
+	return stale;
 }
 
 /* The tag heap_versioned gives a tuple: its raw xmin. */
@@ -452,6 +511,14 @@ static int	keep_locator = KEEP_LOCATOR_OFF;
 
 /* percentage of rows its build scan tags; see tvh_build_callback */
 static int	build_tag_percent = 100;
+
+
+static const struct config_enum_entry stale_tags_options[] = {
+	{"dead", STALE_TAGS_DEAD, false},
+	{"live", STALE_TAGS_LIVE, false},
+	{"untag", STALE_TAGS_UNTAG, false},
+	{NULL, 0, false}
+};
 
 static const struct config_enum_entry keep_locator_options[] = {
 	{"off", KEEP_LOCATOR_OFF, false},
@@ -639,18 +706,82 @@ tvh_fetch_tid_version(Relation rel, ItemPointer tid, IndexVersionTag tag,
 
 /* --- index deletion --- */
 
+/*
+ * Check every (TID, tag) and answer stale entries deletable (tv_tag_stale),
+ * then let heap decide the rest by TID.  heap requires each TID once, but an
+ * index that stores tags offers a TID once per entry: hand heap the first of
+ * each TID, and give the others its answer, unless they are stale.
+ */
 static TransactionId
 tvh_index_delete_tuples(Relation rel, TM_IndexDeleteOp *delstate)
 {
-	for (int i = 0; i < delstate->ndeltids; i++)
-	{
-		TM_IndexStatus *status = &delstate->status[delstate->deltids[i].id];
+	TM_IndexDelete *all = palloc_array(TM_IndexDelete, delstate->ndeltids);
+	int			nall = delstate->ndeltids;
+	int			nheap = 0;
+	int			nstale = 0;
+	TransactionId horizon = InvalidTransactionId;
 
-		tv_check_tag(rel, &delstate->deltids[i].tid, status->tag,
-					 "index_delete_tuples");
+	memcpy(all, delstate->deltids, nall * sizeof(TM_IndexDelete));
+	for (int i = 0; i < nall; i++)
+	{
+		TM_IndexStatus *status = &delstate->status[all[i].id];
+		bool		dup = false;
+
+		if (tv_tag_stale(rel, &all[i].tid, status->tag))
+		{
+			status->knowndeletable = status->knowndeletable ||
+				stale_tags == STALE_TAGS_DEAD;
+			tv_count(TVC_DELETE_STALE);
+			nstale++;
+			continue;
+		}
+		tv_check_tag(rel, &all[i].tid, status->tag, "index_delete_tuples");
 		tv_count(TVC_DELETE_STATUS);
+		for (int j = 0; j < nheap && !dup; j++)
+		{
+			dup = ItemPointerEquals(&delstate->deltids[j].tid, &all[i].tid);
+			/* a mark says the TID's chain is dead: every entry's */
+			if (dup && status->knowndeletable)
+				delstate->status[delstate->deltids[j].id].knowndeletable = true;
+		}
+		if (!dup)
+			delstate->deltids[nheap++] = all[i];
 	}
-	return heap_index_delete_tuples(rel, delstate);
+	delstate->ndeltids = nheap;
+
+	/* simple deletion needs a known-deletable TID of heap's; see tableam.h */
+	if (!delstate->bottomup)
+	{
+		bool		anyknown = false;
+
+		for (int j = 0; j < nheap; j++)
+			anyknown = anyknown ||
+				delstate->status[delstate->deltids[j].id].knowndeletable;
+		if (!anyknown)
+			nheap = delstate->ndeltids = 0;
+	}
+	if (nheap > 0)
+		horizon = heap_index_delete_tuples(rel, delstate);
+
+	/* heap's answer for a TID holds for each of its entries */
+	for (int i = 0; i < nall; i++)
+	{
+		TM_IndexStatus *status = &delstate->status[all[i].id];
+
+		for (int j = 0; j < delstate->ndeltids && !status->knowndeletable; j++)
+			if (ItemPointerEquals(&delstate->deltids[j].tid, &all[i].tid) &&
+				delstate->status[delstate->deltids[j].id].knowndeletable)
+				status->knowndeletable = true;
+	}
+
+	/* the deletable entries, for the index AM to read back */
+	delstate->ndeltids = 0;
+	for (int i = 0; i < nall; i++)
+		if (delstate->status[all[i].id].knowndeletable)
+			delstate->deltids[delstate->ndeltids++] = all[i];
+	pfree(all);
+	(void) nstale;
+	return horizon;
 }
 
 /* --- update --- */
@@ -866,16 +997,38 @@ tvh_version_callback(ItemPointer tid, IndexVersionTag tag, void *state)
 {
 	TvhVacuumState *vs = (TvhVacuumState *) state;
 
+	if (tv_tag_stale(vs->heap, tid, tag))
+	{
+		bool		dead = stale_tags == STALE_TAGS_DEAD ||
+			(stale_dead_min >= 0 && tag >= (IndexVersionTag) stale_dead_min &&
+			 tag <= (IndexVersionTag) stale_dead_max);
+
+		if (dead)
+		{
+			tv_count(TVC_VACUUM_DEAD);
+			return INDEX_ENTRY_DEAD;
+		}
+		if (untag_tag >= 0 ? tag == (IndexVersionTag) untag_tag :
+			stale_tags == STALE_TAGS_UNTAG)
+		{
+			tv_count(TVC_VACUUM_UNTAG);
+			return INDEX_ENTRY_LIVE_UNTAG;
+		}
+		tv_count(TVC_VACUUM_LIVE);
+		return INDEX_ENTRY_LIVE;
+	}
 	if (!tv_check_tag(vs->heap, tid, tag, "vacuum version callback"))
 	{
 		tv_count(TVC_VACUUM_DEAD);
 		return INDEX_ENTRY_DEAD;
 	}
-	if (tag != InvalidIndexVersionTag)
+	if (tag != InvalidIndexVersionTag &&
+		(untag_tag < 0 || tag == (IndexVersionTag) untag_tag))
 	{
 		tv_count(TVC_VACUUM_UNTAG);
 		return INDEX_ENTRY_LIVE_UNTAG;
 	}
+	tv_count(TVC_VACUUM_LIVE);
 	return INDEX_ENTRY_LIVE;
 }
 
@@ -1001,7 +1154,9 @@ test_versioned_fetch(PG_FUNCTION_ARGS)
  * insert the entry of a new version of the row: for tests that need an
  * entry at a TID the index already has entries for.  The row's key is read
  * from the tuple at `tid` (SnapshotAny).  heap_versioned's checks then hold
- * the tag to that tuple's xmin.
+ * the tag to that tuple's xmin.  Tag -n (n <= 1000) makes a stale entry:
+ * tagged with that xmin - n, valid for no version, which index deletion and
+ * VACUUM remove (tv_tag_stale).
  */
 PG_FUNCTION_INFO_V1(test_versioned_insert_entry);
 Datum
@@ -1019,7 +1174,7 @@ test_versioned_insert_entry(PG_FUNCTION_ARGS)
 	Datum		values[INDEX_MAX_KEYS];
 	bool		isnull[INDEX_MAX_KEYS];
 
-	if (tag < 0 || tag > PG_UINT32_MAX)
+	if (tag < -1000 || tag > PG_UINT32_MAX)
 		elog(ERROR, "tag %lld is out of range", (long long) tag);
 	/* as an UPDATE would: its commit then flushes the insert's WAL */
 	(void) GetCurrentTransactionId();
@@ -1028,6 +1183,17 @@ test_versioned_insert_entry(PG_FUNCTION_ARGS)
 			 ItemPointerGetOffsetNumber(&tid));
 	econtext->ecxt_scantuple = slot;
 	FormIndexDatum(indexInfo, slot, estate, values, isnull);
+	/* -n: a stale tag, xmin - n, valid for no version (see tv_tag_stale) */
+	if (tag < 0)
+	{
+		bool		isnull1;
+		Datum		xmin = slot_getsysattr(slot, MinTransactionIdAttributeNumber,
+										   &isnull1);
+
+		tag = (int64) (uint32) (DatumGetTransactionId(xmin) + (int32) tag);
+		if (tag == 0)
+			elog(ERROR, "stale tag would be 0");
+	}
 	indexInfo->ii_VersionTag = (IndexVersionTag) tag;
 	index_insert(index, values, isnull, &tid, heap, UNIQUE_CHECK_NO, false,
 				 indexInfo);
@@ -1089,5 +1255,26 @@ _PG_init(void)
 							PGC_USERSET,
 							0,
 							NULL, NULL, NULL);
+	DefineCustomEnumVariable("test_versioned_tableam.stale_tags",
+							 "How heap_versioned judges stale index entries.",
+							 NULL,
+							 &stale_tags,
+							 STALE_TAGS_DEAD,
+							 stale_tags_options,
+							 PGC_USERSET,
+							 0,
+							 NULL, NULL, NULL);
+	DefineCustomIntVariable("test_versioned_tableam.stale_dead_min",
+							"Stale index entries with a tag in [min, max] are dead.",
+							NULL, &stale_dead_min, -1, -1, INT_MAX,
+							PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable("test_versioned_tableam.stale_dead_max",
+							"Stale index entries with a tag in [min, max] are dead.",
+							NULL, &stale_dead_max, -1, -1, INT_MAX,
+							PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable("test_versioned_tableam.untag_tag",
+							"VACUUM answers LIVE_UNTAG only for entries of this tag.",
+							NULL, &untag_tag, -1, -1, INT_MAX,
+							PGC_USERSET, 0, NULL, NULL, NULL);
 	MarkGUCPrefixReserved("test_versioned_tableam");
 }
