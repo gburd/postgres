@@ -62,25 +62,27 @@
 
 /*
  * Materialize the page-resident SINGLE/OVERSIZED leaf entry for `full` (a full
- * in-memory key tuple carrying its heap locator).  When `oversized`, writes the
- * full tuple to a fresh overflow chain and returns a small palloc'd
- * OVERSIZED entry referencing it; otherwise returns `full` itself, which the
- * insert places inline (the placing functions copy it and never change it).
+ * in-memory key tuple carrying its heap locator), with version tag `tag`.
+ * When `oversized`, writes the full tuple to a fresh overflow chain and
+ * returns a small palloc'd OVERSIZED entry referencing it; otherwise returns
+ * a palloc'd tagged SINGLE, or for tag 0 `full` itself, which the insert
+ * places inline (the placing functions copy it and never change it).
  */
 static IndexTuple
 bark_leaf_page_entry(Relation index, Relation heaprel, IndexTuple full,
-					 bool oversized, Size fulllen)
+					 bool oversized, Size fulllen, IndexVersionTag tag)
 {
 	BlockNumber firstblk;
 
 	if (!oversized)
-		return full;
+		return tag == InvalidIndexVersionTag ? full :
+			bark_form_tagged(full, &full->t_tid, tag);
 
 	firstblk = bark_write_overflow_chain(index, heaprel, full, fulllen);
 	{
 		IndexTuple	entry = bark_form_oversized_entry(&full->t_tid, fulllen,
 														 firstblk, true /* leaf */ , 0,
-														 InvalidIndexVersionTag);
+														 tag);
 
 		bark_set_oversized_prefix(entry, index, full);
 		return entry;
@@ -107,8 +109,9 @@ bark_leaf_free_space(BarkKeyInfo *keyinfo, Page page)
 }
 
 /*
- * Find the offset at which to insert key, with heap TID scantid, on a leaf
- * page: the first entry that sorts after (key, scantid).  When scantid lies
+ * Find the offset at which to insert key, with heap TID scantid and version
+ * tag scantag, on a leaf page: the first entry that sorts after (key,
+ * scantid, scantag).  When scantid lies
  * inside an equal-key entry's TID range, that entry is the one just before the
  * offset returned (see bark_coalesce_list).
  *
@@ -118,7 +121,8 @@ bark_leaf_free_space(BarkKeyInfo *keyinfo, Page page)
  */
 static OffsetNumber
 bark_leaf_insert_off_from(Relation index, BarkKeyInfo *keyinfo,
-						  IndexTuple key, ItemPointer scantid, Page page,
+						  IndexTuple key, ItemPointer scantid,
+						  IndexVersionTag scantag, Page page,
 						  OffsetNumber low)
 {
 	BarkPageOpaque opaque = BarkPageGetOpaque(page);
@@ -137,8 +141,8 @@ bark_leaf_insert_off_from(Relation index, BarkKeyInfo *keyinfo,
 		BarkItemBuf ibuf;
 		IndexTuple	mitup = BarkPageGetItem(page, mid, &ibuf);
 
-		if (bark_compare_itups_tid(keyinfo, index, key, scantid,
-								   InvalidIndexVersionTag, mitup) >= 0)
+		if (bark_compare_itups_tid(keyinfo, index, key, scantid, scantag,
+								   mitup) >= 0)
 			low = OffsetNumberNext(mid);
 		else
 			high = mid;
@@ -148,10 +152,10 @@ bark_leaf_insert_off_from(Relation index, BarkKeyInfo *keyinfo,
 
 static OffsetNumber
 bark_leaf_insert_off(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
-					 ItemPointer scantid, Page page)
+					 ItemPointer scantid, IndexVersionTag scantag, Page page)
 {
-	return bark_leaf_insert_off_from(index, keyinfo, key, scantid, page,
-									 InvalidOffsetNumber);
+	return bark_leaf_insert_off_from(index, keyinfo, key, scantid, scantag,
+									 page, InvalidOffsetNumber);
 }
 
 /*
@@ -827,6 +831,81 @@ bark_swap_tid_entry(Relation index, Buffer buf, OffsetNumber off,
 	if (rcoded != right)
 		pfree(rcoded);
 	return true;
+}
+
+/*
+ * Divide the LIST or POSTING entry at `off` on the exclusive-locked leaf
+ * `buf` at heap TID `tid` (bark_entry_divide), so that a tagged entry of
+ * `tid`, which sorts after the members up to `tid` and before the rest, can
+ * go between the two parts, and log it as an INSERT_SWAP record with `tag`
+ * after the stride: replay divides the entry, adding no TID.  The two parts
+ * are subsets of the entry, so the page grows by at most a line pointer and
+ * a few bytes of the second part's key.  Returns false, changing nothing,
+ * when they do not fit; the caller then splits the page with the parts in
+ * place of the entry.
+ */
+static bool
+bark_divide_entry(Relation index, Buffer buf, OffsetNumber off,
+				  IndexTuple left, IndexTuple right, ItemPointer tid,
+				  IndexVersionTag tag)
+{
+	Page		page = BufferGetPage(buf);
+	IndexTuple	lcoded = bark_prefix_encode(page, left);
+	IndexTuple	rcoded = bark_prefix_encode(page, right);
+	PageHeader	phdr = (PageHeader) page;
+	XLogRecPtr	recptr;
+	bool		fits;
+
+	/* As bark_swap_tid_entry: the line pointer is counted, not held back. */
+	fits = MAXALIGN(IndexTupleSize(lcoded)) + MAXALIGN(IndexTupleSize(rcoded)) +
+		sizeof(ItemIdData) <=
+		MAXALIGN(ItemIdGetLength(PageGetItemId(page, off))) +
+		phdr->pd_upper - phdr->pd_lower;
+	if (fits)
+	{
+		/* No ereport(ERROR) until changes are logged */
+		START_CRIT_SECTION();
+
+		if (!BarkPageOverwriteEntry(page, off, lcoded, IndexTupleSize(lcoded)) ||
+			PageAddItem(page, rcoded, IndexTupleSize(rcoded),
+						OffsetNumberNext(off), false, false) ==
+			InvalidOffsetNumber)
+			elog(PANIC, "failed to divide entry at offset %u of block %u in BARK index \"%s\"",
+				 off, BufferGetBlockNumber(buf), RelationGetRelationName(index));
+
+		MarkBufferDirty(buf);
+
+		if (RelationNeedsWAL(index))
+		{
+			xl_bark_insert_swap xlrec;
+			uint16		stride = bark_index_tid_stride(index);
+
+			xlrec.offnum = off;
+			xlrec.tid = *tid;
+
+			XLogBeginInsert();
+			XLogRegisterData(&xlrec, SizeOfBarkInsertSwap);
+			XLogRegisterData(&stride, sizeof(uint16));
+			XLogRegisterData(&tag, sizeof(IndexVersionTag));
+			XLogRegisterBuffer(0, buf, REGBUF_STANDARD);
+
+			recptr = XLogInsert(RM_BARK_ID, XLOG_BARK_INSERT_SWAP);
+		}
+		else
+			recptr = XLogGetFakeLSN(index);
+
+		PageSetLSN(page, recptr);
+
+		END_CRIT_SECTION();
+
+		bark_verify_entries_change(index, buf, off, OffsetNumberNext(off));
+	}
+
+	if (lcoded != left)
+		pfree(lcoded);
+	if (rcoded != right)
+		pfree(rcoded);
+	return fits;
 }
 
 static void bark_stack_resolve_parent(Relation index, BarkKeyInfo *keyinfo,
@@ -2110,9 +2189,11 @@ bark_coalesce_list(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 
 	/*
 	 * Only coalesce with a leaf-data entry whose key equals the new key, and
-	 * never with a marker, which names no row.
+	 * never with a marker, which names no row, or a tagged entry: tagged
+	 * entries never coalesce (see "Version tags" in the README).
 	 */
 	if (!BarkEntryIsLeafData(cur) || BarkEntryIsMarker(cur) ||
+		BarkEntryHasTag(cur) ||
 		bark_compare_itups(keyinfo, index, key, cur) != 0)
 		return BARK_COALESCE_NONE;
 
@@ -2316,7 +2397,7 @@ bark_belongs_on_leaf(Relation index, BarkKeyInfo *keyinfo, IndexTuple itup,
 		return true;
 	hikey = (IndexTuple) PageGetItem(page, PageGetItemId(page, BARK_P_HIKEY));
 	return bark_compare_itups_tid(keyinfo, index, itup, scantid,
-								  InvalidIndexVersionTag, hikey) <
+								  keyinfo->instag, hikey) <
 		(scantid != NULL ? 0 : 1);
 }
 
@@ -2401,7 +2482,7 @@ bark_fastpath_leaf(Relation index, BarkKeyInfo *keyinfo, IndexTuple itup,
 				BarkItemBuf ibuf;
 
 				if (bark_compare_itups_tid(keyinfo, index, itup, scantid,
-										   InvalidIndexVersionTag,
+										   keyinfo->instag,
 										   BarkPageGetItem(page, firstdata,
 														   &ibuf)) > 0)
 					return buf;
@@ -2468,6 +2549,7 @@ typedef enum BarkPlaceResult
 	BARK_PLACE_ONPAGE,			/* on the leaf, which is still locked */
 	BARK_PLACE_SPLIT,			/* by a split, which released the leaf */
 	BARK_PLACE_RETRY,			/* not placed; the leaf is released */
+	BARK_PLACE_RETRY_SPLIT,		/* not placed; a split released the leaf */
 } BarkPlaceResult;
 
 /*
@@ -2517,7 +2599,59 @@ bark_insert_key(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 	 * INCLUDE columns: a shared entry would return one row's bytes for all of
 	 * them (see bark_index_may_coalesce).
 	 */
-	coalesce = coalesce && !oversized;
+	coalesce = coalesce && !oversized && keyinfo->instag == InvalidIndexVersionTag;
+
+	/*
+	 * A tagged entry never coalesces, but its (key, TID) may fall inside the
+	 * TID range of an untagged LIST or POSTING of its key: the entry sorts
+	 * after the members up to its TID and before the rest.  Divide that entry
+	 * at the TID, so that the tagged entry goes between the parts, in place
+	 * or, when the parts do not fit, in a split that places the new entry
+	 * there too.
+	 */
+	if (keyinfo->instag != InvalidIndexVersionTag &&
+		off > BarkPageFirstDataKey(BarkPageGetOpaque(page)))
+	{
+		BarkItemBuf ibuf;
+		IndexTuple	prev = BarkPageGetItem(page, OffsetNumberPrev(off), &ibuf);
+
+		if ((BarkEntryGetShape(prev) == BARK_SHAPE_LIST ||
+			 BarkEntryGetShape(prev) == BARK_SHAPE_POSTING) &&
+			bark_compare_itups_tid(keyinfo, index, itup, &itup->t_tid,
+								   keyinfo->instag, prev) == 0)
+		{
+			if (fastpath)
+			{
+				UnlockReleaseBuffer(buf);
+				return BARK_PLACE_RETRY;
+			}
+			bark_entry_divide(prev, &itup->t_tid, &replace, &newitem,
+							  keyinfo->tidstride);
+			if (bark_divide_entry(index, buf, OffsetNumberPrev(off), replace,
+								  newitem, &itup->t_tid, keyinfo->instag))
+			{
+				pfree(replace);
+				pfree(newitem);
+				replace = newitem = NULL;
+				off = bark_leaf_insert_off(index, keyinfo, itup, &itup->t_tid,
+										   keyinfo->instag, page);
+			}
+			else
+			{
+				/*
+				 * Split with the parts in place of the entry; the tagged
+				 * entry then goes in by a new descent.
+				 */
+				*target = bark_split(index, heapRel, keyinfo, stack, buf, off,
+									 newitem, InvalidBuffer,
+									 OffsetNumberPrev(off), replace);
+				pfree(replace);
+				pfree(newitem);
+				return BARK_PLACE_RETRY_SPLIT;
+			}
+		}
+	}
+
 	if (coalesce)
 	{
 		BarkCoalesceResult cr;
@@ -2533,7 +2667,7 @@ bark_insert_key(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 			 */
 			(void) bark_simple_delete(index, heapRel, keyinfo, buf, itup, 0);
 			off = bark_leaf_insert_off(index, keyinfo, itup, &itup->t_tid,
-									   page);
+									   keyinfo->instag, page);
 			cr = bark_coalesce_list(index, keyinfo, itup, &itup->t_tid, buf,
 									off, true, &replace, &newitem);
 		}
@@ -2571,7 +2705,7 @@ bark_insert_key(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 				!bark_simple_delete(index, heapRel, keyinfo, buf, itup, need))
 				bark_merge_page(index, keyinfo, buf, InvalidOffsetNumber, need);
 			off = bark_leaf_insert_off(index, keyinfo, itup, &itup->t_tid,
-									   page);
+									   keyinfo->instag, page);
 			cr = bark_coalesce_list(index, keyinfo, itup, &itup->t_tid, buf,
 									off, true, &replace, &newitem);
 		}
@@ -2601,7 +2735,8 @@ bark_insert_key(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 	{
 		/* The entry actually placed on the page (OVERSIZED when oversized). */
 		IndexTuple	entry = bark_leaf_page_entry(index, heapRel, itup,
-												 oversized, fulllen);
+												 oversized, fulllen,
+												 keyinfo->instag);
 
 		/* The page footprint: the entry coded for the page, if it codes. */
 		if (bark_leaf_free_space(keyinfo, page) >= bark_coded_size(page, entry))
@@ -2639,7 +2774,7 @@ bark_insert_key(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 												   buf, itup,
 												   bark_coded_size(page, entry));
 				off = bark_leaf_insert_off(index, keyinfo, itup, &itup->t_tid,
-										   page);
+										   keyinfo->instag, page);
 			}
 			if (roomnow)
 				bark_insert_entry(index, buf, entry, off, InvalidBuffer);
@@ -2670,7 +2805,7 @@ bark_insert_key(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 				 * find the entry's place again.
 				 */
 				off = bark_leaf_insert_off(index, keyinfo, itup, &itup->t_tid,
-										   page);
+										   keyinfo->instag, page);
 				bark_insert_entry(index, buf, entry, off, InvalidBuffer);
 			}
 			else
@@ -2681,7 +2816,7 @@ bark_insert_key(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 				 */
 				if (coalesce)
 					off = bark_leaf_insert_off(index, keyinfo, itup,
-											   &itup->t_tid, page);
+											   &itup->t_tid, keyinfo->instag, page);
 				*target = bark_split(index, heapRel, keyinfo, stack, buf, off,
 									 entry, InvalidBuffer, InvalidOffsetNumber,
 									 NULL);
@@ -2743,14 +2878,15 @@ bark_plan_multi(Relation index, BarkKeyInfo *keyinfo, bool coalesce,
 		{
 			/* The offsets and the coalesce test rely on this; see above. */
 			Assert(bark_compare_itups_tid(keyinfo, index, itup, &itup->t_tid,
-										  InvalidIndexVersionTag,
+										  keyinfo->instag,
 										  itups[n - 1]) > 0);
 			if (checkkeys != NULL && checkkeys[n])
 				break;
 			if (!bark_belongs_on_leaf(index, keyinfo, itup, &itup->t_tid, buf))
 				break;
 			off = bark_leaf_insert_off_from(index, keyinfo, itup,
-											&itup->t_tid, page, off);
+											&itup->t_tid, keyinfo->instag,
+											page, off);
 		}
 		if (coalesce && off > firstdata)
 		{
@@ -2833,13 +2969,17 @@ bark_marker_present(Relation index, BarkKeyInfo *keyinfo, IndexTuple marker,
  * then.  UNIQUE_CHECK_EXISTING checks each entry and inserts none.  When `markers`,
  * the entries are marker keys: never coalesced, never the cause of a
  * bottom-up deletion pass, and not inserted again when already present.
+ * Otherwise every entry carries version tag `tag` (0 for none): a tagged
+ * entry is a tagged SINGLE or OVERSIZED entry, never coalesced, and placed
+ * by (key, TID, tag).
  */
 static bool
 bark_insert_entries(Relation index, BarkInsertState *state,
 					IndexTuple *itups, Size *fulllens, int nitups,
 					Relation heapRel, IndexUniqueCheck checkUnique,
 					const bool *checkkeys, const Datum *values,
-					const bool *isnull, bool indexUnchanged, bool markers)
+					const bool *isnull, bool indexUnchanged, bool markers,
+					IndexVersionTag tag)
 {
 	BarkKeyInfo *keyinfo = state->keyinfo;
 	bool		coalesce = state->coalesce && !markers;
@@ -2858,6 +2998,7 @@ bark_insert_entries(Relation index, BarkInsertState *state,
 
 	Assert(nitups >= 1);
 	keyinfo->heaprel = heapRel; /* for pages a split allocates */
+	keyinfo->instag = markers ? InvalidIndexVersionTag : tag;
 	if (markers)
 		indexUnchanged = false;
 
@@ -2906,7 +3047,7 @@ retry:
 	if (!fastpath)
 		buf = bark_search(index, keyinfo, itup,
 						  checking ? NULL : &itup->t_tid,
-						  InvalidIndexVersionTag, true, !checking, &stack);
+						  keyinfo->instag, true, !checking, &stack);
 
 	if (buf == InvalidBuffer)
 	{
@@ -3015,9 +3156,9 @@ check:
 	if (OffsetNumberIsValid(insertoff))
 		off = insertoff;
 	else
-		off = bark_leaf_insert_off(index, keyinfo, itup, &itup->t_tid, page);
+		off = bark_leaf_insert_off(index, keyinfo, itup, &itup->t_tid, keyinfo->instag, page);
 	Assert(off == bark_leaf_insert_off(index, keyinfo, itup, &itup->t_tid,
-									   page));
+									   keyinfo->instag, page));
 
 	for (;;)
 	{
@@ -3033,7 +3174,9 @@ check:
 		rightmost = BarkPageRightmost(BarkPageGetOpaque(page));
 		target = BufferGetBlockNumber(buf);
 
-		if (!markers && i + 1 < nitups)
+		/* A run is placed as plain entries: none for tagged ones. */
+		if (!markers && i + 1 < nitups &&
+			keyinfo->instag == InvalidIndexVersionTag)
 			nrun = bark_plan_multi(index, keyinfo, coalesce, itups + i,
 								   fulllens + i,
 								   checkkeys ? checkkeys + i : NULL,
@@ -3056,6 +3199,13 @@ check:
 		{
 			Assert(fastpath && stack == NULL);
 			RelationSetTargetBlock(index, InvalidBlockNumber);
+			goto retry;
+		}
+		if (placed == BARK_PLACE_RETRY_SPLIT)
+		{
+			/* The split made room for the entry, not the entry itself. */
+			if (stack)
+				bark_freestack(stack);
 			goto retry;
 		}
 
@@ -3098,7 +3248,7 @@ check:
 		if (checking)
 			goto check;
 		off = bark_leaf_insert_off_from(index, keyinfo, itup, &itup->t_tid,
-										page, off);
+										keyinfo->instag, page, off);
 	}
 
 	/*
@@ -3153,7 +3303,8 @@ bark_insert_markers(Relation index, BarkInsertState *state, BarkRowKeys *rk,
 		return;
 
 	(void) bark_insert_entries(index, state, itups, fulllens, n, heapRel,
-							   UNIQUE_CHECK_NO, NULL, NULL, NULL, false, true);
+							   UNIQUE_CHECK_NO, NULL, NULL, NULL, false, true,
+							   InvalidIndexVersionTag);
 	for (int i = 0; i < rk->nmarkers; i++)
 		bark_cache_marker(index, state->keyinfo, rk->markers[i]);
 }
@@ -3198,6 +3349,7 @@ bark_index_has_marker(Relation index, Datum key)
 										bark_leaf_insert_off(index, keyinfo,
 															 marker,
 															 &marker->t_tid,
+															 InvalidIndexVersionTag,
 															 page));
 			UnlockReleaseBuffer(buf);
 		}
@@ -3225,16 +3377,17 @@ bark_index_has_marker(Relation index, Datum key)
  * the row's other keys are (NULLS NOT DISTINCT is refused on such an index,
  * bark_check_multikey_index).  Returns bark_insert_entries's result.
  *
- * With oversizedonly, only the keys too large for CREATE INDEX's sort are
- * inserted: the build's second pass (bark_insert_oversized_keys) does that
- * for a row whose other keys the build loaded, after writing the flag and
- * the markers itself.
+ * With oversizedonly, only the keys CREATE INDEX's sort did not take are
+ * inserted: those too large for it, or every key of a tagged row (`tag`).
+ * The build's second pass (bark_insert_oversized_keys) does that for a row
+ * whose other keys the build loaded, after writing the flag and the markers
+ * itself.  Every entry carries `tag`.
  */
 static bool
 bark_insert_row_keys(Relation index, BarkInsertState *state, Datum *values,
 					 bool *isnull, ItemPointer ht_ctid, Relation heapRel,
 					 IndexUniqueCheck checkUnique, bool indexUnchanged,
-					 bool oversizedonly)
+					 bool oversizedonly, IndexVersionTag tag)
 {
 	TupleDesc	tupdesc = RelationGetDescr(index);
 	int			attno = state->extracted;
@@ -3281,7 +3434,8 @@ bark_insert_row_keys(Relation index, BarkInsertState *state, Datum *values,
 		knulls[attno - 1] = rk.nulls[i];
 		itups[n] = bark_form_full_tuple(tupdesc, kvalues, knulls,
 										&fulllens[n]);
-		if (oversizedonly && !bark_len_is_oversized(state->keyinfo, fulllens[n]))
+		if (oversizedonly && tag == InvalidIndexVersionTag &&
+			!bark_len_is_oversized(state->keyinfo, fulllens[n]))
 			continue;
 		itups[n]->t_tid = *ht_ctid;
 		if (checkkeys != NULL)
@@ -3291,7 +3445,7 @@ bark_insert_row_keys(Relation index, BarkInsertState *state, Datum *values,
 	if (n > 0)
 		result = bark_insert_entries(index, state, itups, fulllens, n,
 									 heapRel, checkUnique, checkkeys, values,
-									 isnull, indexUnchanged, false);
+									 isnull, indexUnchanged, false, tag);
 
 	MemoryContextSwitchTo(oldcxt);
 	MemoryContextReset(state->rowcxt);
@@ -3304,16 +3458,18 @@ bark_insert(Relation index, Datum *values, bool *isnull, ItemPointer ht_ctid,
 			bool indexUnchanged, IndexInfo *indexInfo)
 {
 	BarkInsertState *state = bark_insert_state(index, indexInfo);
+	IndexVersionTag tag = indexInfo->ii_VersionTag;
 	Size		fulllen;
 	IndexTuple	itup;
 	bool		checkingunique = false;
 	bool		result = false; /* significant only for UNIQUE_CHECK_PARTIAL */
 
 	bark_check_tid_offset(index, ht_ctid, state->keyinfo->tidstride);
+	bark_check_can_tag(index, state->keyinfo, tag);
 	if (state->extracted > 0)
 		return bark_insert_row_keys(index, state, values, isnull, ht_ctid,
 									heapRel, checkUnique, indexUnchanged,
-									false);
+									false, tag);
 
 	/*
 	 * A uniqueness check is skipped when the caller doesn't want it, and when
@@ -3346,11 +3502,12 @@ bark_insert(Relation index, Datum *values, bool *isnull, ItemPointer ht_ctid,
 	if (checkingunique)
 		result = bark_insert_entries(index, state, &itup, &fulllen, 1,
 									 heapRel, checkUnique, &checkingunique,
-									 values, isnull, indexUnchanged, false);
+									 values, isnull, indexUnchanged, false,
+									 tag);
 	else
 		(void) bark_insert_entries(index, state, &itup, &fulllen, 1, heapRel,
 								   checkUnique, NULL, values, isnull,
-								   indexUnchanged, false);
+								   indexUnchanged, false, tag);
 	pfree(itup);
 	return result;
 }
@@ -3370,8 +3527,33 @@ bark_insert_oversized_keys(Relation index, Datum *values, bool *isnull,
 	BarkInsertState *state = bark_insert_state(index, indexInfo);
 
 	Assert(state->extracted > 0);
+	bark_check_can_tag(index, state->keyinfo, indexInfo->ii_VersionTag);
 	(void) bark_insert_row_keys(index, state, values, isnull, ht_ctid,
-								heapRel, checkUnique, false, true);
+								heapRel, checkUnique, false, true,
+								indexInfo->ii_VersionTag);
+}
+
+/*
+ * Refuse a version tag for an index that cannot hold one: its meta page
+ * lacks BARK_META_VERSIONED (see "Version tags" in the README).
+ */
+void
+bark_check_can_tag(Relation index, BarkKeyInfo *keyinfo, IndexVersionTag tag)
+{
+	/*
+	 * shortcut: amcanversion is per access method, so the executor may send
+	 * a tagged entry to an index built before its table's locator was
+	 * versioned; such an index can only come from pg_upgrade of a pre-v3
+	 * BARK index on a versioned table.  Make the capability per index if
+	 * one appears.
+	 */
+	if (tag != InvalidIndexVersionTag && !keyinfo->versioned)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("BARK index \"%s\" cannot store version tags",
+						RelationGetRelationName(index)),
+				 errdetail("The index was built before its table's locator was versioned."),
+				 errhint("REINDEX the index.")));
 }
 
 #ifdef USE_ASSERT_CHECKING

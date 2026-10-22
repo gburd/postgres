@@ -383,6 +383,11 @@ typedef struct xl_bark_add_tid
  * is logged: redo calls bark_entry_swap_tid on the entry, as the primary did.
  * The TID stride follows as for xl_bark_add_tid.
  *
+ * The same record, with the stride and then a version tag after the struct,
+ * divides the entry at the TID without adding it (bark_divide_entry), to make
+ * room between the parts for a tagged entry of the TID, which an INSERT_LEAF
+ * record then adds; redo calls bark_entry_divide.
+ *
  * Backup Blk 0: leaf page
  */
 typedef struct xl_bark_insert_swap

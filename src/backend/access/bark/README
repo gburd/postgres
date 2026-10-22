@@ -2137,7 +2137,33 @@ otherwise a pivot has no tag, which is minus infinity on it.  A pivot with
 a tag has every key attribute and a heap TID.
 
 Version 2.  An index without BARK_META_VERSIONED, every version 2 index
-among them, never holds a tag.
+among them, never holds a tag: an insert or build that brings one is
+refused with an ERROR and a hint to REINDEX (bark_check_can_tag).
+amcanversion is per access method, so the executor could send a tag to
+such an index only if it was built before its table's locator became
+versioned, which only pg_upgrade of a pre-version-3 BARK index on a
+versioned table can produce.
+
+Writers.  barkhandler sets amcanversion.  aminsert and the build callback
+read IndexInfo.ii_VersionTag (the executor, or the table AM's build and
+validation scans, set it).  A tagged row's entry (each of its entries, for
+a multikey row) is placed by (key, TID, tag), as a tagged SINGLE or a tagged
+OVERSIZED entry, and never coalesces: bark_coalesce_list skips a tagged
+neighbour and a tagged insert, the merge pass (bark_merge_page) ends a group
+at a tagged entry, bark_load never sees one, and VACUUM's and bottom-up
+deletion's re-forms touch only LIST and POSTING entries.  A tagged row's
+(key, TID) can fall inside the TID range of an untagged LIST or POSTING of
+its key; the entry sorts after the members up to its TID and before the
+rest, so that entry is divided there first (bark_entry_divide, logged as
+INSERT_SWAP with the tag after the stride, which redo reads as "divide, add
+nothing"), then the tagged entry goes in between by INSERT_LEAF, or, when
+the parts do not fit, the page splits with the parts in place of the entry
+and the insert descends again.  CREATE INDEX defers tagged rows to its
+second pass (bark_build_oversized_pass), which inserts them one at a time
+as it does oversized rows; serial and parallel builds alike, since the
+leader's second scan sees the table AM's tags.  Every WAL record carries
+entry images or re-forms only LIST and POSTING entries, so tagged entries
+need no other record change.
 
 The page validator and amcheck check the shapes (BARK_HAS_TAG only on a
 SINGLE or OVERSIZED entry, the trailer at the MAXALIGNed end of the key and

@@ -1392,6 +1392,8 @@ typedef struct BarkKeyInfo
 	uint16		tidstride;		/* bark_index_tid_stride: the TID mappings'
 								 * stride */
 	bool		versioned;		/* bark_index_versioned: may hold tags */
+	IndexVersionTag instag;		/* the version tag of the entries an insert
+								 * is placing; set by bark_insert_entries */
 	BarkKeyColumn cols[FLEXIBLE_ARRAY_MEMBER];
 } BarkKeyInfo;
 
@@ -1645,6 +1647,9 @@ extern bool bark_entry_has_tid(IndexTuple itup, ItemPointer tid,
 extern void bark_entry_swap_tid(IndexTuple entry, ItemPointer tid,
 								IndexTuple *left, IndexTuple *right,
 								uint16 stride);
+extern void bark_entry_divide(IndexTuple entry, ItemPointer tid,
+							  IndexTuple *left, IndexTuple *right,
+							  uint16 stride);
 extern bool bark_entry_cut(IndexTuple entry, ItemPointer tid, Size leftmax,
 						   IndexTuple *left, IndexTuple *right,
 						   uint16 stride);
@@ -1953,6 +1958,8 @@ extern bool bark_insert(Relation index, Datum *values, bool *isnull,
 						 ItemPointer ht_ctid, Relation heapRel,
 						 IndexUniqueCheck checkUnique,
 						 bool indexUnchanged, IndexInfo *indexInfo);
+extern void bark_check_can_tag(Relation index, BarkKeyInfo *keyinfo,
+							   IndexVersionTag tag);
 extern void bark_insert_oversized_keys(Relation index, Datum *values,
 									   bool *isnull, ItemPointer ht_ctid,
 									   Relation heapRel,

@@ -156,6 +156,15 @@ bark_desc(StringInfo buf, XLogReaderState *record)
 				appendStringInfo(buf, "off: %u, tid: (%u,%u)", xlrec->offnum,
 								 ItemPointerGetBlockNumber(&xlrec->tid),
 								 ItemPointerGetOffsetNumber(&xlrec->tid));
+				if (XLogRecGetDataLen(record) >= SizeOfBarkInsertSwap +
+					sizeof(uint16) + sizeof(uint32))
+				{
+					uint32		tag;
+
+					memcpy(&tag, rec + SizeOfBarkInsertSwap + sizeof(uint16),
+						   sizeof(uint32));
+					appendStringInfo(buf, ", divide for tag: %u", tag);
+				}
 				break;
 			}
 		case XLOG_BARK_SPLIT:
