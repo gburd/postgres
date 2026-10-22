@@ -2918,6 +2918,12 @@ apply_concurrent_update(Relation rel, TupleTableSlot *spilled_tuple,
 	TM_FailureData tmfd;
 	TU_UpdateIndexes update_indexes;
 	TM_Result	res;
+	Bitmapset  *modified_idx_attrs;
+
+	modified_idx_attrs = ExecUpdateModifiedIdxAttrs(chgcxt->cc_rri,
+													ondisk_tuple,
+													spilled_tuple,
+													chgcxt->cc_estate);
 
 	/*
 	 * Carry out the update, skipping logical decoding for it.
@@ -2928,7 +2934,9 @@ apply_concurrent_update(Relation rel, TupleTableSlot *spilled_tuple,
 							 InvalidSnapshot,
 							 InvalidSnapshot,
 							 false,
-							 &tmfd, &lockmode, &update_indexes);
+							 &tmfd, &lockmode,
+							 modified_idx_attrs, &update_indexes);
+	bms_free(modified_idx_attrs);
 	if (res != TM_Ok)
 		ereport(ERROR,
 				errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
@@ -2937,7 +2945,7 @@ apply_concurrent_update(Relation rel, TupleTableSlot *spilled_tuple,
 
 	if (update_indexes != TU_None)
 	{
-		uint32		flags = EIIT_IS_UPDATE;
+		uint32		flags = EIIT_IS_UPDATE | EIIT_NEW_DATUMS;
 
 		if (update_indexes == TU_Summarizing)
 			flags |= EIIT_ONLY_SUMMARIZING;
@@ -2947,6 +2955,11 @@ apply_concurrent_update(Relation rel, TupleTableSlot *spilled_tuple,
 							  spilled_tuple,
 							  NIL, NULL);
 	}
+	if (update_indexes != TU_All)
+		(void) ExecCheckHotExclusion(chgcxt->cc_rri, chgcxt->cc_estate,
+									 EIIT_IS_UPDATE, spilled_tuple, NIL, NULL);
+	bms_free(chgcxt->cc_rri->ri_HotExclusionCheck);
+	chgcxt->cc_rri->ri_HotExclusionCheck = NULL;
 
 	pgstat_progress_incr_param(PROGRESS_REPACK_HEAP_TUPLES_UPDATED, 1);
 }

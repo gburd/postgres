@@ -989,6 +989,7 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 	bool		skip_tuple = false;
 	Relation	rel = resultRelInfo->ri_RelationDesc;
 	ItemPointer tid = &(searchslot->tts_tid);
+	Bitmapset  *modified_idx_attrs;
 
 	/*
 	 * We support only non-system tables, with
@@ -1027,6 +1028,10 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 		if (rel->rd_rel->relispartition)
 			ExecPartitionCheck(resultRelInfo, slot, estate, true);
 
+		modified_idx_attrs = ExecUpdateModifiedIdxAttrs(resultRelInfo,
+														searchslot, slot,
+														estate);
+
 		/*
 		 * The conflict report and AFTER ROW triggers below read searchslot
 		 * after the update.  If the table's AM overwrites rows in place, copy
@@ -1035,14 +1040,15 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 		if (RelationUpdatesInPlace(rel))
 			ExecMaterializeSlot(searchslot);
 
-		simple_table_tuple_update(rel, tid, slot, estate->es_snapshot,
-								  &update_indexes);
+		simple_table_tuple_update_ext(rel, tid, slot, estate->es_snapshot,
+									  modified_idx_attrs, &update_indexes);
+		bms_free(modified_idx_attrs);
 
 		conflictindexes = resultRelInfo->ri_onConflictArbiterIndexes;
 
 		if (resultRelInfo->ri_NumIndices > 0 && (update_indexes != TU_None))
 		{
-			uint32		flags = EIIT_IS_UPDATE;
+			uint32		flags = EIIT_IS_UPDATE | EIIT_NEW_DATUMS;
 
 			if (conflictindexes != NIL)
 				flags |= EIIT_NO_DUPE_ERROR;
@@ -1053,6 +1059,23 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 												   slot, conflictindexes,
 												   &conflict);
 		}
+
+		/*
+		 * If no non-summarizing index got an entry, check the exclusion
+		 * constraints whose entries the row kept although their values
+		 * changed.
+		 */
+		if (update_indexes != TU_All)
+			recheckIndexes =
+				list_concat(recheckIndexes,
+							ExecCheckHotExclusion(resultRelInfo, estate,
+												  conflictindexes != NIL ?
+												  EIIT_IS_UPDATE | EIIT_NO_DUPE_ERROR :
+												  EIIT_IS_UPDATE,
+												  slot, conflictindexes,
+												  &conflict));
+		bms_free(resultRelInfo->ri_HotExclusionCheck);
+		resultRelInfo->ri_HotExclusionCheck = NULL;
 
 		/*
 		 * Refer to the comments above the call to CheckAndReportConflict() in

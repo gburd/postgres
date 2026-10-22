@@ -733,6 +733,67 @@ SKIP:
 # demoted from replica identity
 # =============================================================================
 
+# =============================================================================
+# Testcase start: an applied UPDATE can be HOT on the subscriber although it
+# changes a column of an exclusion constraint, whose index keeps its entry
+# (hashint8() gives 1 and 2^32 the same hash code), and the constraint is
+# still checked there.
+
+$node_publisher->safe_psql('postgres',
+	"CREATE TABLE test_hot_excl (id int PRIMARY KEY, k int8)");
+$node_subscriber->safe_psql('postgres',
+	"CREATE TABLE test_hot_excl (id int PRIMARY KEY, k int8, EXCLUDE USING hash (k WITH =)) WITH (fillfactor = 10)"
+);
+$node_publisher->safe_psql('postgres',
+	"INSERT INTO test_hot_excl VALUES (1, 1), (2, 2)");
+$node_publisher->safe_psql('postgres',
+	"CREATE PUBLICATION tap_pub_hot_excl FOR TABLE test_hot_excl");
+$node_subscriber->safe_psql('postgres',
+	"CREATE SUBSCRIPTION tap_sub_hot_excl CONNECTION '$publisher_connstr application_name=$appname' PUBLICATION tap_pub_hot_excl"
+);
+$node_subscriber->wait_for_subscription_sync($node_publisher, $appname);
+
+$node_publisher->safe_psql('postgres',
+	"UPDATE test_hot_excl SET k = 4294967296 WHERE id = 1");
+$node_publisher->wait_for_catchup($appname);
+# the apply worker reports its counts asynchronously
+ok( $node_subscriber->poll_query_until(
+		'postgres',
+		"SELECT n_tup_upd = 1 AND n_tup_hot_upd = 1 FROM pg_stat_user_tables WHERE relname = 'test_hot_excl'"
+	),
+	'applied UPDATE of an exclusion constraint column is HOT');
+$result = $node_subscriber->safe_psql('postgres',
+	"SET enable_seqscan = off; SET enable_bitmapscan = off; SELECT id FROM test_hot_excl WHERE k = 4294967296"
+);
+is($result, qq(1), 'and the exclusion index finds the row under its new value');
+
+# A conflicting change is still caught by the subscriber's constraint.
+my $log_offset = -s $node_subscriber->logfile;
+$node_publisher->safe_psql('postgres',
+	"UPDATE test_hot_excl SET k = 4294967296 WHERE id = 2");
+$node_subscriber->wait_for_log(
+	qr/conflicting key value violates exclusion constraint "test_hot_excl_k_excl"/,
+	$log_offset);
+pass('a conflicting applied UPDATE is rejected');
+
+# make room for it on the subscriber, so that apply catches up before the
+# subscription is dropped
+$node_subscriber->safe_psql('postgres',
+	"UPDATE test_hot_excl SET k = 3 WHERE id = 1");
+$node_publisher->wait_for_catchup($appname);
+$result = $node_subscriber->safe_psql('postgres',
+	"SELECT id, k FROM test_hot_excl ORDER BY id");
+is( $result, qq(1|3
+2|4294967296), 'and is applied once the conflict is gone');
+
+$node_subscriber->safe_psql('postgres', "DROP SUBSCRIPTION tap_sub_hot_excl");
+$node_subscriber->safe_psql('postgres', "DROP TABLE test_hot_excl");
+$node_publisher->safe_psql('postgres', "DROP PUBLICATION tap_pub_hot_excl");
+$node_publisher->safe_psql('postgres', "DROP TABLE test_hot_excl");
+
+# Testcase end: an applied UPDATE can be HOT through an exclusion constraint
+# =============================================================================
+
 $node_subscriber->stop('fast');
 $node_publisher->stop('fast');
 
