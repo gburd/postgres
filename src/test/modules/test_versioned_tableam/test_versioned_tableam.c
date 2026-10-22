@@ -77,6 +77,7 @@
 #include "catalog/pg_type_d.h"
 #include "commands/defrem.h"
 #include "commands/vacuum.h"
+#include "executor/executor.h"
 #include "executor/tuptable.h"
 #include "fmgr.h"
 #include "funcapi.h"
@@ -433,6 +434,9 @@ typedef enum
 
 static int	keep_locator = KEEP_LOCATOR_OFF;
 
+/* percentage of rows its build scan tags; see tvh_build_callback */
+static int	build_tag_percent = 100;
+
 static const struct config_enum_entry keep_locator_options[] = {
 	{"off", KEEP_LOCATOR_OFF, false},
 	{"pretend", KEEP_LOCATOR_PRETEND, false},
@@ -459,12 +463,37 @@ tvh_relation_locator(Relation rel)
 	return &tvh_locator;
 }
 
+/*
+ * btree indexes are test_versioned_btree, unless default_btree_implementation
+ * names another implementation (bark), which then implements them.
+ */
 static Oid
 tvh_index_implementation(Relation rel, Oid amoid)
 {
-	if (amoid == BTREE_AM_OID)
+	if (amoid == BTREE_AM_OID && default_btree_implementation[0] == '\0')
 		return get_index_am_oid("test_versioned_btree", false);
 	return InvalidOid;
+}
+
+/*
+ * The root of the HOT chain that tid is a member of: the TID an index entry
+ * for that row names.  heap's index scan replaces xs_heaptid with the chain
+ * member it returns.
+ */
+static ItemPointerData
+tv_root_tid(Relation rel, ItemPointer tid)
+{
+	OffsetNumber roots[MaxHeapTuplesPerPage];
+	Buffer		buf = ReadBuffer(rel, ItemPointerGetBlockNumber(tid));
+	ItemPointerData root = *tid;
+
+	LockBuffer(buf, BUFFER_LOCK_SHARE);
+	heap_get_root_tuples(BufferGetPage(buf), roots);
+	UnlockReleaseBuffer(buf);
+	if (OffsetNumberIsValid(roots[ItemPointerGetOffsetNumber(tid) - 1]))
+		ItemPointerSetOffsetNumber(&root,
+								   roots[ItemPointerGetOffsetNumber(tid) - 1]);
+	return root;
 }
 
 /* heap's TOAST tables are plain heap */
@@ -525,9 +554,12 @@ tvh_index_getnext_slot(IndexScanDesc scan, ScanDirection direction,
 
 	if (result && scan->indexRelation->rd_indam->amcanversion)
 	{
-		Assert(tvb_last_scan == scan);
-		tv_check_tag(scan->heapRelation, &tvb_last_tid,
-					 scan->xs_heaptag, "index scan");
+		/* test_versioned_btree remembers its entry's TID; others: the root */
+		ItemPointerData tid = tvb_last_scan == scan ? tvb_last_tid :
+			tv_root_tid(scan->heapRelation, &scan->xs_heaptid);
+
+		tv_check_tag(scan->heapRelation, &tid, scan->xs_heaptag,
+					 "index scan");
 		tv_count(scan->xs_heaptag != InvalidIndexVersionTag ?
 				 TVC_SCAN_TAGGED : TVC_SCAN_UNTAGGED);
 	}
@@ -670,16 +702,26 @@ tvh_build_callback(Relation index, ItemPointer tid, Datum *values,
 	tuple.t_self = *tid;
 	if (heap_fetch(bs->heap, SnapshotAny, &tuple, &buf, true))
 	{
-		bs->indexInfo->ii_VersionTag = tv_tag_of(&tuple);
+		/*
+		 * Tag every row, as rows with history must be (see file header), or
+		 * with build_tag_percent < 100 only that share of them, chosen by
+		 * TID, which no row here needs since none has history.
+		 */
+		if ((ItemPointerGetBlockNumber(tid) * 7 +
+			 ItemPointerGetOffsetNumber(tid)) % 100 < build_tag_percent)
+		{
+			bs->indexInfo->ii_VersionTag = tv_tag_of(&tuple);
+			Assert(bs->indexInfo->ii_VersionTag != InvalidIndexVersionTag);
+		}
 		ReleaseBuffer(buf);
-		/* tag every row, as rows with history must be; see file header */
-		Assert(bs->indexInfo->ii_VersionTag != InvalidIndexVersionTag);
 	}
 	else if (BufferIsValid(buf))
 		ReleaseBuffer(buf);
 	bs->callback(index, tid, values, isnull, tupleIsAlive,
 				 bs->callback_state);
-	tvb_build_record(index, tid, bs->indexInfo);
+	/* an index AM that stores tags itself (bark) needs no record */
+	if (index->rd_indam->aminsert == tvb_insert)
+		tvb_build_record(index, tid, bs->indexInfo);
 }
 
 static double
@@ -934,6 +976,48 @@ test_versioned_fetch(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(found);
 }
 
+/*
+ * Insert one entry into `index` for the row version at `tid`, with its
+ * current key and tag `tag`, as a table AM that updates in place would
+ * insert the entry of a new version of the row: for tests that need an
+ * entry at a TID the index already has entries for.  The row's key is read
+ * from the tuple at `tid` (SnapshotAny).  heap_versioned's checks then hold
+ * the tag to that tuple's xmin.
+ */
+PG_FUNCTION_INFO_V1(test_versioned_insert_entry);
+Datum
+test_versioned_insert_entry(PG_FUNCTION_ARGS)
+{
+	Oid			indexoid = PG_GETARG_OID(0);
+	ItemPointerData tid = *PG_GETARG_ITEMPOINTER(1);
+	int64		tag = PG_GETARG_INT64(2);
+	Relation	index = index_open(indexoid, RowExclusiveLock);
+	Relation	heap = table_open(index->rd_index->indrelid, RowExclusiveLock);
+	IndexInfo  *indexInfo = BuildIndexInfo(index);
+	EState	   *estate = CreateExecutorState();
+	ExprContext *econtext = GetPerTupleExprContext(estate);
+	TupleTableSlot *slot = table_slot_create(heap, NULL);
+	Datum		values[INDEX_MAX_KEYS];
+	bool		isnull[INDEX_MAX_KEYS];
+
+	if (tag < 0 || tag > PG_UINT32_MAX)
+		elog(ERROR, "tag %lld is out of range", (long long) tag);
+	if (!table_tuple_fetch_row_version(heap, &tid, SnapshotAny, slot))
+		elog(ERROR, "no tuple at (%u,%u)", ItemPointerGetBlockNumber(&tid),
+			 ItemPointerGetOffsetNumber(&tid));
+	econtext->ecxt_scantuple = slot;
+	FormIndexDatum(indexInfo, slot, estate, values, isnull);
+	indexInfo->ii_VersionTag = (IndexVersionTag) tag;
+	index_insert(index, values, isnull, &tid, heap, UNIQUE_CHECK_NO, false,
+				 indexInfo);
+	index_insert_cleanup(index, indexInfo);
+	ExecDropSingleTupleTableSlot(slot);
+	FreeExecutorState(estate);
+	table_close(heap, RowExclusiveLock);
+	index_close(index, RowExclusiveLock);
+	PG_RETURN_VOID();
+}
+
 PG_FUNCTION_INFO_V1(test_versioned_counts);
 Datum
 test_versioned_counts(PG_FUNCTION_ARGS)
@@ -976,5 +1060,13 @@ _PG_init(void)
 							 PGC_USERSET,
 							 0,
 							 NULL, NULL, NULL);
+	DefineCustomIntVariable("test_versioned_tableam.build_tag_percent",
+							"Percentage of rows heap_versioned's index build scan tags.",
+							NULL,
+							&build_tag_percent,
+							100, 0, 100,
+							PGC_USERSET,
+							0,
+							NULL, NULL, NULL);
 	MarkGUCPrefixReserved("test_versioned_tableam");
 }
