@@ -2035,6 +2035,7 @@ typedef struct BarkKnnItem
 	double		dist;			/* distance of the entry's key from const */
 	int			firstTid;		/* the entry's heap TIDs are tids[firstTid]... */
 	int			ntids;			/* ...and there are this many, ascending */
+	IndexVersionTag tag;		/* the entry's version tag, 0 if untagged */
 	uint32		tupleOffset;	/* entry's key copy in tuples (IOS only) */
 	bool		recheck;		/* return its members with xs_recheck */
 } BarkKnnItem;
@@ -2173,6 +2174,7 @@ typedef struct BarkArrayKeyState
 typedef struct BarkScanPosItem
 {
 	ItemPointerData heapTid;	/* one member TID */
+	IndexVersionTag tag;		/* the entry's version tag, 0 if untagged */
 	OffsetNumber indexOffset;	/* entry's offset on the page when read */
 	uint32		tupleOffset;	/* entry's copy in currTuples (IOS only) */
 	bool		recheck;		/* return it with xs_recheck (multikey) */
