@@ -49,6 +49,7 @@ tests += {
       't/002_bark_tags.pl',
       't/003_bark_readers.pl',
       't/004_bark_vacuum.pl',
+      't/005_bark_more.pl',
     ],
   },
 }
