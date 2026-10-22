@@ -689,6 +689,76 @@ bark_xlog_unlink_page(XLogReaderState *record)
 }
 
 /*
+ * Replay the lowering of a leaf's lower bound (bark_lower_bound), the second
+ * form of an UNLINK_PAGE record (XLH_BARK_UNLINK_LOWER_SEP, no block 0): the
+ * left page's new high key, the right page's BARK_LOWBOUND_TAGGED cleared,
+ * the parent's new downlink at poffset, each when its block is in the
+ * record.  The blocks are locked left page, right page, parent, the order
+ * bark_xlog_unlink_page uses, and held until the record is applied.
+ */
+static void
+bark_xlog_lower_bound(XLogReaderState *record)
+{
+	XLogRecPtr	lsn = record->EndRecPtr;
+	xl_bark_unlink_page *xlrec = (xl_bark_unlink_page *) XLogRecGetData(record);
+	Buffer		leftbuf = InvalidBuffer;
+	Buffer		rightbuf = InvalidBuffer;
+	Buffer		parentbuf = InvalidBuffer;
+	Page		page;
+	char	   *item;
+	Size		len;
+
+	Assert(!XLogRecHasBlockRef(record, 0));
+
+	if (XLogRecHasBlockRef(record, 1) &&
+		XLogReadBufferForRedo(record, 1, &leftbuf) == BLK_NEEDS_REDO)
+	{
+		page = BufferGetPage(leftbuf);
+		item = XLogRecGetBlockData(record, 1, &len);
+		if (!PageIndexTupleOverwrite(page, BARK_P_HIKEY, item, len))
+			elog(PANIC, "failed to lower the high key of BARK block %u during replay",
+				 xlrec->leftsib);
+		PageSetLSN(page, lsn);
+		MarkBufferDirty(leftbuf);
+	}
+
+	if (XLogRecHasBlockRef(record, 2) &&
+		XLogReadBufferForRedo(record, 2, &rightbuf) == BLK_NEEDS_REDO)
+	{
+		page = BufferGetPage(rightbuf);
+		BarkPageGetOpaque(page)->bark_flags &= ~BARK_LOWBOUND_TAGGED;
+		PageSetLSN(page, lsn);
+		MarkBufferDirty(rightbuf);
+	}
+
+	if (XLogRecHasBlockRef(record, 3) &&
+		XLogReadBufferForRedo(record, 3, &parentbuf) == BLK_NEEDS_REDO)
+	{
+		page = BufferGetPage(parentbuf);
+		item = XLogRecGetBlockData(record, 3, &len);
+		if (!PageIndexTupleOverwrite(page, xlrec->poffset, item, len))
+			elog(PANIC, "failed to lower a downlink of BARK block %u during replay",
+				 xlrec->rightsib);
+		PageSetLSN(page, lsn);
+		MarkBufferDirty(parentbuf);
+	}
+
+	bark_verify_redo(record, 1, leftbuf, InvalidOffsetNumber,
+					 InvalidOffsetNumber);
+	bark_verify_redo(record, 2, rightbuf, InvalidOffsetNumber,
+					 InvalidOffsetNumber);
+	bark_verify_redo(record, 3, parentbuf, InvalidOffsetNumber,
+					 InvalidOffsetNumber);
+
+	if (BufferIsValid(leftbuf))
+		UnlockReleaseBuffer(leftbuf);
+	if (BufferIsValid(rightbuf))
+		UnlockReleaseBuffer(rightbuf);
+	if (BufferIsValid(parentbuf))
+		UnlockReleaseBuffer(parentbuf);
+}
+
+/*
  * Replay the freeing of an overflow page (bark_free_oversized).
  */
 static void
@@ -865,7 +935,11 @@ bark_redo(XLogReaderState *record)
 			bark_xlog_merge(record);
 			break;
 		case XLOG_BARK_UNLINK_PAGE:
-			bark_xlog_unlink_page(record);
+			if (((xl_bark_unlink_page *) XLogRecGetData(record))->flags &
+				XLH_BARK_UNLINK_LOWER_SEP)
+				bark_xlog_lower_bound(record);
+			else
+				bark_xlog_unlink_page(record);
 			break;
 		case XLOG_BARK_REUSE_PAGE:
 			bark_xlog_reuse_page(record);
