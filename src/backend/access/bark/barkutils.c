@@ -2497,6 +2497,40 @@ bark_entry_swap_tid(IndexTuple entry, ItemPointer tid, IndexTuple *left,
 }
 
 /*
+ * Divide `entry`, a LIST or POSTING entry with members on both sides of heap
+ * TID `tid`, into *left, its members up to and including `tid`, which
+ * replaces entry, and *right, the members after it, which goes just after
+ * it; each the smallest shape for its members (bark_form_entry), palloc'd.
+ * No TID is added: this makes room between the two parts for a tagged entry
+ * of `tid`, which sorts after (key, tid, 0) and before every later member
+ * (see "Version tags" in the README).  Each part is a subset of entry and so
+ * fits under BarkMaxItemSize.  Deterministic, so WAL replay repeats it
+ * (XLOG_BARK_INSERT_SWAP with a tag).
+ */
+void
+bark_entry_divide(IndexTuple entry, ItemPointer tid, IndexTuple *left,
+				  IndexTuple *right, uint16 stride)
+{
+	IndexTuple	key = bark_entry_key_part(entry);
+	int			n = bark_entry_count_tids(entry);
+	ItemPointer tids = palloc_array(ItemPointerData, n);
+	int			cut = 0;
+
+	n = bark_entry_get_tids(entry, tids, n, stride);
+	while (cut < n && ItemPointerCompare(&tids[cut], tid) <= 0)
+		cut++;
+	if (cut == 0 || cut == n)
+		elog(ERROR, "heap TID (%u,%u) is not inside the BARK entry to divide",
+			 ItemPointerGetBlockNumber(tid), ItemPointerGetOffsetNumber(tid));
+	*left = bark_form_entry(key, tids, cut, stride);
+	*right = bark_form_entry(key, tids + cut, n - cut, stride);
+	if (*left == NULL || *right == NULL)
+		elog(ERROR, "could not divide a BARK entry");
+	pfree(tids);
+	pfree(key);
+}
+
+/*
  * Divide `entry`, a LIST or POSTING entry, for heap TID `tid`, which sorts
  * after all its members: *left, which replaces entry, keeps the lowest
  * members, as many as fit in `leftmax` bytes, and *right, which goes just

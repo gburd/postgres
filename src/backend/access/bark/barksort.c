@@ -161,7 +161,9 @@ typedef struct BarkBuildState
 	bool		nullsnotdistinct;	/* unique index: NULLS NOT DISTINCT */
 	bool		allequalimage;	/* bark_allequalimage(index), for the meta page */
 	bool		coalesce;		/* bark_index_coalesces */
-	bool		has_oversized;	/* saw a key too large to sort/load inline */
+	bool		has_oversized;	/* deferred a row to the second pass: a key
+								 * too large to sort/load inline, or a tagged
+								 * row */
 	Size		sizebound;		/* row-independent part of the size bound */
 	bool		sizevaries;		/* any variable-width attribute? */
 	IndexInfo  *indexInfo;		/* for the oversized second-pass insert */
@@ -441,11 +443,15 @@ bark_build_row_keys(BarkBuildState *bs, ItemPointer tid, Datum *values,
 	Datum		kvalues[INDEX_MAX_KEYS];
 	bool		knulls[INDEX_MAX_KEYS];
 	BarkRowKeys rk;
+	bool		tagged;
 
 	bark_extract_row_keys(index, bs->keyinfo, values[attno - 1],
 						  isnull[attno - 1], &rk);
 	if (rk.nkeys > 1)
 		bs->multikey = true;
+	tagged = bs->indexInfo->ii_VersionTag != InvalidIndexVersionTag;
+	if (tagged)
+		bs->has_oversized = true;
 	if (!tupleIsAlive && bs->deadsort != NULL)
 	{
 		sortstate = bs->deadsort;
@@ -460,6 +466,8 @@ bark_build_row_keys(BarkBuildState *bs, ItemPointer tid, Datum *values,
 	{
 		kvalues[attno - 1] = rk.keys[i];
 		knulls[attno - 1] = rk.nulls[i];
+		if (tagged)
+			continue;
 		if (bark_build_row_oversized(bs, tupdesc, kvalues, knulls))
 			bs->has_oversized = true;
 		else
@@ -491,9 +499,30 @@ bark_build_callback(Relation index, ItemPointer tid, Datum *values,
 	Tuplesortstate *sortstate = bs->sortstate;
 
 	bark_check_tid_offset(index, tid, bs->keyinfo->tidstride);
+	bark_check_can_tag(index, bs->keyinfo, bs->indexInfo->ii_VersionTag);
 	if (bs->extracted > 0)
 	{
 		bark_build_row_keys(bs, tid, values, isnull, tupleIsAlive);
+		return;
+	}
+
+	/*
+	 * A row the table AM tagged (ii_VersionTag) is inserted by the second
+	 * pass, as an oversized row is: its entry is a tagged SINGLE or
+	 * OVERSIZED entry, which the sort and bark_load do not form.
+	 *
+	 * shortcut: tagged rows are inserted one at a time after the load.  At
+	 * 1M rows, all tagged, the build takes about 10x the time of an untagged
+	 * one, and the index is about 2x the size (retail inserts split pages
+	 * 50/50), with equal memory; the size lasts until REINDEX.  Heap never
+	 * tags, and a versioned table AM tags only rows whose history changed
+	 * the index's attributes.  Upgrade: carry the tag through the sort, so
+	 * that bark_load emits tagged SINGLEs packed as untagged entries are.
+	 */
+	if (bs->indexInfo->ii_VersionTag != InvalidIndexVersionTag)
+	{
+		bs->has_oversized = true;
+		bs->indtuples += 1;
 		return;
 	}
 
@@ -1239,10 +1268,12 @@ bark_load(BarkBuildState *bs)
 }
 
 /*
- * Second-pass callback: insert one oversized row into the just-loaded tree via
- * the normal overflow-aware insert path.  Non-oversized rows are already in the
- * tree from bark_load, so they are skipped here.  As in the first pass, every
- * row the table AM passes is indexed (bark_build_callback).
+ * Second-pass callback: insert one oversized or tagged row into the
+ * just-loaded tree via the normal insert path, which forms OVERSIZED and
+ * tagged entries.  Other rows are already in the tree from bark_load, so
+ * they are skipped here.  As in the first pass, every row the table AM
+ * passes is indexed (bark_build_callback), and the table AM set the row's
+ * tag in ii_VersionTag, which bark_insert reads, for this scan too.
  */
 static void
 bark_oversized_pass_callback(Relation index, ItemPointer tid, Datum *values,
@@ -1263,7 +1294,8 @@ bark_oversized_pass_callback(Relation index, ItemPointer tid, Datum *values,
 		return;
 	}
 
-	if (!bark_build_row_oversized(bs, RelationGetDescr(index), values, isnull))
+	if (bs->indexInfo->ii_VersionTag == InvalidIndexVersionTag &&
+		!bark_build_row_oversized(bs, RelationGetDescr(index), values, isnull))
 		return;					/* already loaded inline */
 
 	/*
@@ -1376,6 +1408,7 @@ bark_parallel_scan_and_sort(Relation heap, Relation index,
 
 	indexInfo = BuildIndexInfo(index);
 	indexInfo->ii_Concurrent = barkshared->isconcurrent;
+	bs.indexInfo = indexInfo;	/* the table AM's tags, ii_VersionTag */
 	scan = table_beginscan_parallel(heap,
 									ParallelTableScanFromBarkShared(barkshared),
 									SO_NONE);

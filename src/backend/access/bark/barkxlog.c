@@ -790,9 +790,16 @@ bark_xlog_insert_swap(XLogReaderState *record)
 		IndexTuple	lcoded;
 		IndexTuple	rcoded;
 
-		bark_entry_swap_tid(BarkPageGetItem(page, xlrec->offnum, &ibuf),
-							&xlrec->tid, &left, &right,
-							bark_xlog_tid_stride(record));
+		/* With a tag, divide the entry for a tagged entry of the TID. */
+		if (XLogRecGetDataLen(record) >= SizeOfBarkInsertSwap +
+			sizeof(uint16) + sizeof(IndexVersionTag))
+			bark_entry_divide(BarkPageGetItem(page, xlrec->offnum, &ibuf),
+							  &xlrec->tid, &left, &right,
+							  bark_xlog_tid_stride(record));
+		else
+			bark_entry_swap_tid(BarkPageGetItem(page, xlrec->offnum, &ibuf),
+								&xlrec->tid, &left, &right,
+								bark_xlog_tid_stride(record));
 		lcoded = bark_prefix_encode(page, left);
 		rcoded = bark_prefix_encode(page, right);
 		if (!BarkPageOverwriteEntry(page, xlrec->offnum, lcoded,

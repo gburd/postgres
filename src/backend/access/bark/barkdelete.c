@@ -637,7 +637,8 @@ bark_merge_form(Page page, IndexTuple key, ItemPointer tids, int n,
  * entry that does not fit starts the next group.  Equal-key entries are in
  * heap TID order with disjoint ranges, so the members of a group, read in
  * order, are already ascending.  SINGLE entries fold in like the rest;
- * OVERSIZED ones and markers are left alone, and end a group.  The pass runs
+ * OVERSIZED ones, markers and tagged entries (which never coalesce) are left
+ * alone, and end a group.  The pass runs
  * after simple deletion has deleted the entries marked LP_DEAD; one merged
  * all the same (an insert with no heap relation, or an entry past
  * PG_INT16_MAX TIDs) only loses its mark, since BarkPageOverwriteEntry
@@ -698,7 +699,7 @@ bark_merge_page(Relation index, BarkKeyInfo *keyinfo, Buffer buf,
 
 		off = OffsetNumberNext(off);
 		if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED ||
-			BarkEntryIsMarker(itup))
+			BarkEntryIsMarker(itup) || BarkEntryHasTag(itup))
 			continue;
 
 		/*
@@ -709,7 +710,7 @@ bark_merge_page(Relation index, BarkKeyInfo *keyinfo, Buffer buf,
 			continue;
 		next = BarkPageGetItem(page, off, &nbuf);
 		if (BarkEntryGetShape(next) == BARK_SHAPE_OVERSIZED ||
-			BarkEntryIsMarker(next) ||
+			BarkEntryIsMarker(next) || BarkEntryHasTag(next) ||
 			bark_compare_itups(keyinfo, index, itup, next) != 0)
 			continue;
 
@@ -732,7 +733,7 @@ bark_merge_page(Relation index, BarkKeyInfo *keyinfo, Buffer buf,
 			IndexTuple	candidate;
 
 			if (BarkEntryGetShape(cur) == BARK_SHAPE_OVERSIZED ||
-				BarkEntryIsMarker(cur) ||
+				BarkEntryIsMarker(cur) || BarkEntryHasTag(cur) ||
 				bark_compare_itups(keyinfo, index, key, cur) != 0)
 				break;
 			n = bark_entry_count_tids(cur);
