@@ -420,6 +420,59 @@ UPDATE tk SET a = 3;
 ERROR:  table access method kept a row's locator without tagging its new version
 RESET test_versioned_tableam.keep_locator;
 DROP TABLE tk;
+-- An index of an AM with amcanversion for which amindexcanversion says no
+-- (test_versioned_btree: a name ending in _notag) is treated as an index
+-- that stores no tags: an update affecting it moves the row (TU_All), its
+-- entries are untagged, and one not affecting it keeps the locator.
+CREATE TABLE tn (id int, a int, b int) USING heap_versioned;
+CREATE INDEX tn_a ON tn (a);
+CREATE INDEX tn_b_notag ON tn (b);
+INSERT INTO tn VALUES (1, 1, 1);
+SET test_versioned_tableam.keep_locator = pretend;
+SELECT test_versioned_reset();
+ test_versioned_reset 
+----------------------
+ 
+(1 row)
+
+UPDATE tn SET b = 2;
+SELECT * FROM test_versioned_seen;
+    counter    | n 
+---------------+---
+ insert_tagged | 1
+(1 row)
+
+SELECT test_versioned_tag('tn_a', ctid) = xmin::text::bigint AS a_tagged,
+       test_versioned_tag('tn_b_notag', ctid) AS b_tag
+  FROM tn;
+ a_tagged | b_tag 
+----------+-------
+ t        |     0
+(1 row)
+
+SELECT test_versioned_reset();
+ test_versioned_reset 
+----------------------
+ 
+(1 row)
+
+UPDATE tn SET a = 2;
+SELECT * FROM test_versioned_seen;
+    counter    | n 
+---------------+---
+ insert_tagged | 1
+ update_kept   | 1
+(2 rows)
+
+SELECT test_versioned_tag('tn_a', ctid) = xmin::text::bigint AS a_tagged
+  FROM tn;
+ a_tagged 
+----------
+ t
+(1 row)
+
+RESET test_versioned_tableam.keep_locator;
+DROP TABLE tn;
 -- An exclusion constraint's index that keeps its entries under TU_Affected
 -- gets no new entry, so its constraint is checked after the update
 -- (ExecCheckHotExclusion), as after a HOT update.  hashint8(1) =
