@@ -84,11 +84,12 @@ bark_split_itemsz(Size sz)
  * Are `lastleft` and `firstright`, adjacent leaf items, two entries of one
  * row equal on every key attribute (so of different tags), whose separator
  * would keep a tag (bark_truncate_pivot)?  Only then is firstright tagged
- * and its heap TID lastleft's highest, which is tested first.
+ * and its heap TID lastleft's highest, which is tested first.  CREATE INDEX
+ * asks too, before it ends a leaf (barksort.c).
  */
-static bool
-bark_split_in_run(Relation index, BarkKeyInfo *keyinfo, IndexTuple lastleft,
-				  IndexTuple firstright)
+bool
+bark_entries_in_run(Relation index, BarkKeyInfo *keyinfo, IndexTuple lastleft,
+					IndexTuple firstright)
 {
 	ItemPointerData llo;
 	ItemPointerData lhi;
@@ -266,7 +267,7 @@ bark_findsplitloc(Relation index, BarkKeyInfo *keyinfo, IndexTuple *items,
 		splits[nsplits].leftfree = leftfree;
 		splits[nsplits].rightfree = rightfree;
 		splits[nsplits].inrun = isleaf &&
-			bark_split_in_run(index, keyinfo, items[i - 1], items[i]);
+			bark_entries_in_run(index, keyinfo, items[i - 1], items[i]);
 		ninrun += splits[nsplits].inrun ? 1 : 0;
 		nsplits++;
 	}
