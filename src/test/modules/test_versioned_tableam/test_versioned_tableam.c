@@ -579,6 +579,9 @@ tvh_index_getnext_slot(IndexScanDesc scan, ScanDirection direction,
 		tv_count(scan->xs_heaptag != InvalidIndexVersionTag ?
 				 TVC_SCAN_TAGGED : TVC_SCAN_UNTAGGED);
 	}
+	else if (result && scan->xs_heaptag != InvalidIndexVersionTag)
+		elog(ERROR, "index scan: index \"%s\" stores no tags, but returned tag %u",
+			 RelationGetRelationName(scan->indexRelation), scan->xs_heaptag);
 	return result;
 }
 
