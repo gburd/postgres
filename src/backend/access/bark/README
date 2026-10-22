@@ -1095,6 +1095,22 @@ nbtsort.c does; keys too large for the sort go in afterwards, by a second
 heap scan and the normal insert path.  A parallel build lets workers scan
 and sort; only the leader writes pages.
 
+The sort is BARK's own tuplesort variant (bark_sort_begin), on the hooks
+tuplesort.h exports for variants: each key column's sort support comes from
+the index's operator family, as tuplesort_begin_index_btree sets it up, and
+key ties break on (heap TID, tag), read from a tagged SINGLE's trailer.
+nbtree's sort breaks ties on t_tid, which a tagged SINGLE uses for its
+trailer offset and status bits, so it cannot sort tagged entries.  The
+build forms a row the table AM tagged as a tagged SINGLE before sorting it,
+and bark_load writes it as it is, packed to the fill factor like any other
+entry (see "Version tags").  At 1M rows of distinct int4 keys on
+heap_versioned, release build, a build that tags every row takes 1.17x the
+time of one that tags none, serial, and its index is 1.8x the size (4922
+pages against 2737): a tagged SINGLE is 32 bytes, an untagged one 16.
+Inserting tagged rows after the load, as the build did before, took 5.8x
+the time and 5425 pages ("As built" under "Versioned locators" in
+BARK-Design.mediawiki).
+
 The build indexes every row the table AM passes to its callback.  The table
 AM passes some with tupleIsAlive false: RECENTLY_DEAD rows, and rows deleted
 by a transaction still in progress (heapam_index_build_range_scan).  Such a
@@ -2228,10 +2244,21 @@ BARK's own) holds tagged SINGLEs and orders by (key, heap TID, tag),
 reading the heap TID and tag from the trailer, where nbtree's sort would
 read t_tid.  bark_load packs them to the fill factor as it does untagged
 entries.  A leaf the load ends inside a run of entries equal on key and
-heap TID moves the run to the next leaf, unless the run fills the page or
+heap TID (one row's entries of one key and different tags, which a build
+sees only from a table AM that hands it a row's older versions) moves the
+run's part on that leaf to the next one, unless the part fills the page or
 takes more than a quarter of it (bark_build_run_tail), as a split avoids
 such a cut; a leaf whose lower bound keeps a tag gets
-BARK_LOWBOUND_TAGGED.  A tagged row whose key is too large to sort goes
+BARK_LOWBOUND_TAGGED.  The quarter bounds what a leaf gives up, so that
+the next leaf has room for the part, the entry that did not fit and one
+more (each at most BarkMaxItemSize).  A split chooses among all of a
+page's split points and avoids a run whenever the page has another; the
+load fills leaves in order, so it cuts a run longer than a quarter of a
+page where the leaf reaches its fill target, which costs only what the
+untag rule (above) keeps tagged.  t/002_bark_tags.pl in test_versioned_tableam builds both
+cases (its build_history setting hands each tagged row's older versions),
+and an injection point, bark-build-ignore-runs, turns the move off.  A
+tagged row whose key is too large to sort goes
 in by the second pass (bark_build_oversized_pass), as a tagged OVERSIZED
 entry; serial and parallel builds alike, since the leader's second scan
 sees the table AM's tags.  Every WAL record carries

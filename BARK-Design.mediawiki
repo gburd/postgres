@@ -316,6 +316,37 @@ tags and never interprets them.
   when the page has no other split point. The runs are one row's same-key
   versions between two VACUUMs, so tagged pivots, and flagged pages, come
   only from a page that is all one run.
+* '''CREATE INDEX (T1, 2026-10-22).''' The build sorts tagged rows with the
+  rest, in a tuplesort variant of BARK's own (<code>bark_sort_begin</code>)
+  ordered by (key, TID, tag); nbtree's sort breaks ties on
+  <code>t_tid</code>, which a tagged SINGLE uses for its trailer.
+  <code>bark_load</code> packs tagged SINGLEs and never coalesces them. A
+  leaf the load would end inside a run of one row's entries moves the run's
+  part to the next leaf, unless the part fills the page or takes more than
+  a quarter of it; then the high key keeps a tag and the next leaf gets
+  <code>BARK_LOWBOUND_TAGGED</code>, as after a split. Only rows too large
+  to sort take the second pass, as tagged OVERSIZED entries. Release
+  build, 1M rows on <code>heap_versioned</code>, median of 3:
+{| class="wikitable"
+! tagged !! workers !! before: time, pages !! after: time, pages
+|-
+| 0% || 0 || 296 ms, 2737 || 291 ms, 2737
+|-
+| 0% || 4 || 176 ms, 2737 || 175 ms, 2737
+|-
+| 50% || 0 || 1187 ms, 5470 || 333 ms, 3829
+|-
+| 50% || 4 || 1081 ms, 5470 || 198 ms, 3829
+|-
+| 100% || 0 || 1714 ms, 5425 || 341 ms, 4922
+|-
+| 100% || 4 || 1610 ms, 5425 || 194 ms, 4922
+|}
+  The keys are distinct int4s. At 100% tagged the build now takes 1.17x
+  the untagged time serial and 1.11x with 4 workers, against 5.8x and 9.2x
+  before. The index is 1.8x the untagged size, against 2.0x before: a
+  tagged SINGLE of an int4 is 32 bytes (key, then heap TID and tag in its
+  trailer), an untagged one 16.
 * '''Deletion (R3.3).''' Simple and bottom-up deletion hand the table AM
   each entry's tag in <code>TM_IndexStatus</code>, a TID once per entry.
   Before a leaf of an index that stores tags splits, BARK offers its tagged
@@ -340,9 +371,7 @@ sequence of updates and VACUUMs. All of them run under
 <code>wal_consistency_checking</code> with a standby. The validator's own
 test plants a zero tag.
 
-''Follow-ups.'' T1: the build inserts tagged rows one at a time (a second
-pass), about 10x slower when every row is tagged. Carrying the tag through
-the sort would fix it. T2: an entry whose page's lower bound may carry a
+''Follow-ups.'' T2: an entry whose page's lower bound may carry a
 tag stays tagged. Lowering the separator would clear it: once the run's
 dead entries are gone, set the left page's high key and the parent pivot
 to (K, L) untagged. A table AM that must clear every tag (xid-wraparound)
