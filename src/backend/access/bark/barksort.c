@@ -347,17 +347,18 @@ bark_sort_removeabbrev(Tuplesortstate *state, SortTuple *stups, int count)
 										tupdesc, &stups[i].isnull1);
 }
 
+/*
+ * Tape I/O as writetup_index and readtup_index do it, but for the trailing
+ * length word a random-access sort needs: bark_sort_begin never asks for one.
+ */
 static void
 bark_sort_writetup(Tuplesortstate *state, LogicalTape *tape, SortTuple *stup)
 {
-	TuplesortPublic *base = TuplesortstateGetPublic(state);
 	IndexTuple	tuple = (IndexTuple) stup->tuple;
 	unsigned int tuplen = IndexTupleSize(tuple) + sizeof(tuplen);
 
 	LogicalTapeWrite(tape, &tuplen, sizeof(tuplen));
 	LogicalTapeWrite(tape, tuple, IndexTupleSize(tuple));
-	if (base->sortopt & TUPLESORT_RANDOMACCESS)
-		LogicalTapeWrite(tape, &tuplen, sizeof(tuplen));
 }
 
 static void
@@ -369,8 +370,6 @@ bark_sort_readtup(Tuplesortstate *state, SortTuple *stup, LogicalTape *tape,
 	IndexTuple	tuple = (IndexTuple) tuplesort_readtup_alloc(state, tuplen);
 
 	LogicalTapeReadExact(tape, tuple, tuplen);
-	if (base->sortopt & TUPLESORT_RANDOMACCESS)
-		LogicalTapeReadExact(tape, &tuplen, sizeof(tuplen));
 	stup->tuple = tuple;
 	stup->datum1 = index_getattr(tuple, 1,
 								 RelationGetDescr(((BarkSortArg *) base->arg)->index),
@@ -441,7 +440,7 @@ bark_sort_put(Tuplesortstate *state, Relation index, ItemPointer tid,
 	}
 	else
 	{
-		/* the tuple context may be a bump context, which cannot pfree */
+		/* the tuple context is a bump context, which cannot pfree */
 		IndexTuple	key = index_form_tuple(tupdesc, values, isnull);
 		MemoryContext oldcxt = MemoryContextSwitchTo(base->tuplecontext);
 
@@ -451,11 +450,10 @@ bark_sort_put(Tuplesortstate *state, Relation index, ItemPointer tid,
 	}
 	stup.tuple = tuple;
 	stup.datum1 = index_getattr(tuple, 1, tupdesc, &stup.isnull1);
+	/* TUPLESORT_NONE: a bump context, which has no GetMemoryChunkSpace */
 	tuplesort_puttuple_common(state, &stup,
 							  base->sortKeys->abbrev_converter && !stup.isnull1,
-							  TupleSortUseBumpTupleCxt(base->sortopt) ?
-							  MAXALIGN(IndexTupleSize(tuple)) :
-							  GetMemoryChunkSpace(tuple));
+							  MAXALIGN(IndexTupleSize(tuple)));
 }
 
 /* True when any key attribute of `itup` is NULL. */
