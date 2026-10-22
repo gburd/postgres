@@ -1876,6 +1876,7 @@ barkhandler(PG_FUNCTION_ARGS)
 		VACUUM_OPTION_PARALLEL_BULKDEL | VACUUM_OPTION_PARALLEL_COND_CLEANUP,
 		.amkeytype = InvalidOid,
 		.amimplements = BTREE_AM_OID,
+		.amcanversion = true,
 
 		.ambuild = barkbuild,
 		.ambuildempty = barkbuildempty,
