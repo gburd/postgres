@@ -233,6 +233,7 @@ bark_page_flags(uint16 flagbits)
 		{BARK_INCOMPLETE_SPLIT, "incomplete_split"},
 		{BARK_HAS_GARBAGE, "has_garbage"},
 		{BARK_OVERFLOW, "overflow"},
+		{BARK_LOWBOUND_TAGGED, "lowbound_tagged"},
 		{BARK_PREFIX, "prefix"},
 	};
 	Datum		flags[lengthof(names) + 1];

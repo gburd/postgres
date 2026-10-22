@@ -73,13 +73,13 @@ sub s16 { substr(${ $_[0] }, $_[1], 2) = pack('S', $_[2]) }
 # pd_lower (offset 12) ends after bark_level, 24 + 16 bytes in.
 patch(0, sub { s16($_[0], 12, 24 + 16) });
 
-# A half-dead leaf (BARK_HALF_DEAD 0x10), with bit 0x100, which has no
+# A half-dead leaf (BARK_HALF_DEAD 0x10), with bit 0x200, which has no
 # name; bark_flags is 12 bytes into the special space (pd_special at 16).
 patch(
 	$leaves[0],
 	sub {
 		my $f = g16($_[0], 16) + 12;
-		s16($_[0], $f, g16($_[0], $f) | 0x10 | 0x100);
+		s16($_[0], $f, g16($_[0], $f) | 0x10 | 0x200);
 	});
 
 # The first line pointer LP_DEAD: lp_flags is bits 15-16 of the 32-bit
@@ -114,7 +114,7 @@ is( $node->safe_psql(
 is( $node->safe_psql(
 		'postgres',
 		"SELECT type, flags FROM bark_page_stats('t_idx', $leaves[0])"),
-	'half-dead|{leaf,half_dead,100}',
+	'half-dead|{leaf,half_dead,200}',
 	'a half-dead page, and a flag bit without a name in hex');
 is( $node->safe_psql(
 		'postgres',

@@ -175,6 +175,7 @@ bark_delete_empty_leaf(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno,
 	BlockNumber rightblk;
 	IndexTuple	hikey;
 	OffsetNumber downoff;
+	uint16		lowtag;
 	Page		lpage;
 	Page		rpage;
 	Page		ppage;
@@ -310,11 +311,18 @@ bark_delete_empty_leaf(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno,
 	rpage = BufferGetPage(rbuf);
 	ppage = BufferGetPage(pbuf);
 
+	/*
+	 * The right sibling's lower bound becomes the target's, so it takes the
+	 * target's BARK_LOWBOUND_TAGGED with it.
+	 */
+	lowtag = opaque->bark_flags & BARK_LOWBOUND_TAGGED;
+
 	/* No ereport(ERROR) until changes are logged */
 	START_CRIT_SECTION();
 
 	BarkPageGetOpaque(lpage)->bark_next = rightblk;
 	BarkPageGetOpaque(rpage)->bark_prev = leftblk;
+	BarkPageGetOpaque(rpage)->bark_flags |= lowtag;
 	/* Changed in place: internal items are always stored as they are read. */
 	downlink = (IndexTuple) PageGetItem(ppage, PageGetItemId(ppage, downoff));
 	BarkEntrySetDownLink(downlink, rightblk);
@@ -334,6 +342,7 @@ bark_delete_empty_leaf(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno,
 		xlrec.rightsib = rightblk;
 		xlrec.safexid = *safexid;
 		xlrec.poffset = downoff;
+		xlrec.flags = lowtag ? XLH_BARK_UNLINK_LOWTAG : 0;
 
 		/*
 		 * The target is rebuilt from the record in redo, so it needs no
@@ -404,19 +413,25 @@ barkinsert(Relation index, Datum *values, bool *isnull,
  * the entry it replaces, and already coded for the page), delete the entries at `deletable`, and clear the
  * vacuum cycle ID.  As nbtree's _bt_delitems_vacuum, the rewrites come first,
  * since PageIndexTupleOverwrite keeps offsets stable and the deletion
- * renumbers them.  `buf` is cleanup-locked.  Redo (bark_xlog_vacuum) makes
- * the same changes in the same order.
+ * renumbers them.  Then the entries at untagfrom[] are untagged in place:
+ * each is replaced by untagged[i] at untagto[i], one at a time, with
+ * offsets as of that step (bark_vacuum_untag).  `buf` is cleanup-locked.
+ * Redo (bark_xlog_vacuum) makes the same changes in the same order.
  */
 static void
 bark_delitems_vacuum(Relation index, Buffer buf,
 					 OffsetNumber *deletable, int ndeletable,
 					 OffsetNumber *updatedoffsets, IndexTuple *updated,
-					 int nupdated)
+					 int nupdated, OffsetNumber *untagfrom,
+					 OffsetNumber *untagto, IndexTuple *untagged,
+					 int nuntagged)
 {
 	Page		page = BufferGetPage(buf);
 	bool		needswal = RelationNeedsWAL(index);
 	char	   *updatedbuf = NULL;
 	Size		updatedbuflen = 0;
+	char	   *untaggedbuf = NULL;
+	Size		untaggedbuflen = 0;
 	XLogRecPtr	recptr;
 
 	/*
@@ -437,6 +452,19 @@ bark_delitems_vacuum(Relation index, Buffer buf,
 			updatedbuflen += MAXALIGN(IndexTupleSize(updated[i]));
 		}
 	}
+	if (needswal && nuntagged > 0)
+	{
+		for (int i = 0; i < nuntagged; i++)
+			untaggedbuflen += MAXALIGN(IndexTupleSize(untagged[i]));
+		untaggedbuf = palloc0(untaggedbuflen);
+		untaggedbuflen = 0;
+		for (int i = 0; i < nuntagged; i++)
+		{
+			memcpy(untaggedbuf + untaggedbuflen, untagged[i],
+				   IndexTupleSize(untagged[i]));
+			untaggedbuflen += MAXALIGN(IndexTupleSize(untagged[i]));
+		}
+	}
 
 	/* No ereport(ERROR) until changes are logged */
 	START_CRIT_SECTION();
@@ -451,6 +479,14 @@ bark_delitems_vacuum(Relation index, Buffer buf,
 	}
 	if (ndeletable > 0)
 		PageIndexMultiDelete(page, deletable, ndeletable);
+	for (int i = 0; i < nuntagged; i++)
+	{
+		if (!BarkPageMoveEntry(page, untagfrom[i], untagto[i], untagged[i],
+							   IndexTupleSize(untagged[i])))
+			elog(PANIC, "failed to untag BARK leaf entry at offset %u of block %u of index \"%s\"",
+				 untagfrom[i], BufferGetBlockNumber(buf),
+				 RelationGetRelationName(index));
+	}
 	BarkPageGetOpaque(page)->bark_cycleid = 0;
 	BarkPageGetOpaque(page)->bark_flags &= ~BARK_HAS_GARBAGE;	/* a hint */
 
@@ -462,6 +498,7 @@ bark_delitems_vacuum(Relation index, Buffer buf,
 
 		xlrec.ndeleted = ndeletable;
 		xlrec.nupdated = nupdated;
+		xlrec.nuntagged = nuntagged;
 
 		XLogBeginInsert();
 		XLogRegisterBuffer(0, buf, REGBUF_STANDARD);
@@ -474,6 +511,14 @@ bark_delitems_vacuum(Relation index, Buffer buf,
 			XLogRegisterBufData(0, updatedoffsets,
 								nupdated * sizeof(OffsetNumber));
 			XLogRegisterBufData(0, updatedbuf, updatedbuflen);
+		}
+		if (nuntagged > 0)
+		{
+			XLogRegisterBufData(0, untagfrom,
+								nuntagged * sizeof(OffsetNumber));
+			XLogRegisterBufData(0, untagto,
+								nuntagged * sizeof(OffsetNumber));
+			XLogRegisterBufData(0, untaggedbuf, untaggedbuflen);
 		}
 
 		recptr = XLogInsert(RM_BARK_ID, XLOG_BARK_VACUUM);
@@ -489,6 +534,8 @@ bark_delitems_vacuum(Relation index, Buffer buf,
 
 	if (updatedbuf != NULL)
 		pfree(updatedbuf);
+	if (untaggedbuf != NULL)
+		pfree(untaggedbuf);
 }
 
 /*
@@ -524,11 +571,142 @@ typedef struct BarkVacState
 	IndexBulkDeleteResult *stats;
 	IndexBulkDeleteCallback callback;
 	void	   *callback_state;
+	IndexBulkDeleteVersionCallback version_callback;	/* info's, or NULL */
+	BarkKeyInfo *keyinfo;		/* for untagging; NULL without version_callback */
+	int64		nuntagged;		/* entries untagged in place */
+	int64		nkeptbound;		/* LIVE_UNTAG, kept: lower bound may be tagged */
+	int64		nkeptdup;		/* LIVE_UNTAG, kept: (K, L, 0) is in an entry */
 	BarkCycleId	cycleid;
 	BlockNumber *emptyleaves;	/* empty interior leaves to delete */
 	int			nempty;
 	int			emptyalloc;
 } BarkVacState;
+
+/*
+ * The verdict on the leaf entry (tid, tag): the table AM's version callback
+ * when it gave one (IndexVacuumInfo.version_callback), asked about every
+ * entry, untagged ones with tag 0; else the plain callback, by TID, which is
+ * right for a tagged entry too: a dead TID means every version at that
+ * locator is dead.
+ */
+static IndexEntryVerdict
+bark_vacuum_verdict(BarkVacState *vstate, ItemPointer tid, IndexVersionTag tag)
+{
+	if (vstate->version_callback != NULL)
+		return vstate->version_callback(tid, tag,
+										vstate->info->version_state);
+	return vstate->callback(tid, vstate->callback_state) ?
+		INDEX_ENTRY_DEAD : INDEX_ENTRY_LIVE;
+}
+
+/*
+ * Plan the untagging of the tagged entries at untag[0..nuntag) (ascending
+ * offsets of `page` as it is after VACUUM's deletions and rewrites, which
+ * `page`, a scratch copy, already has), each answered LIVE_UNTAG.  Untagging
+ * moves an entry from (K, L, t) to (K, L, 0), which sorts before every entry
+ * of (K, L) with a tag, so it moves left, to its sorted slot on the page.
+ * It is done in place only when nothing below that slot can be greater than
+ * (K, L, 0) on another page: when the slot has an entry before it on the
+ * page (which sorts below (K, L, 0)), or the page is leftmost, or its lower
+ * bound has no tag (BARK_LOWBOUND_TAGGED unset), since an untagged lower
+ * bound <= (K, L, t) is <= (K, L, 0).  Moving an entry to another page is
+ * never done: a scan reading the two pages one at a time could miss the
+ * row or return it twice.  An entry that cannot move stays tagged, as does
+ * one whose (K, L, 0) falls in an entry already there: the row's untagged
+ * entry, or a LIST or POSTING whose TID range holds L, which would have to
+ * be divided.  The table AM's LIVE_UNTAG allows untagging, it does not
+ * require it (IndexEntryVerdict).
+ *
+ * shortcut: an entry whose page's lower bound may carry a tag stays tagged;
+ * lower the separator (P1's high key and the parent pivot to (K, L)
+ * untagged, once the run's dead entries are gone) if a table AM needs every
+ * tag cleared, e.g. for xid-wraparound (follow-up T2).
+ *
+ * Each planned move is applied to `page` before the next is planned, and
+ * recorded as from[i], to[i] and the untagged entry, coded for the page, in
+ * newitems[i], for bark_delitems_vacuum to repeat on the real page.  Returns
+ * the number of moves; the rest are counted in vstate->nkeptbound and
+ * nkeptdup.
+ */
+static int
+bark_vacuum_untag(BarkVacState *vstate, Page page, OffsetNumber *untag,
+				  int nuntag, OffsetNumber *from, OffsetNumber *to,
+				  IndexTuple *newitems)
+{
+	Relation	index = vstate->info->index;
+	BarkKeyInfo *keyinfo = vstate->keyinfo;
+	BarkPageOpaque opaque = BarkPageGetOpaque(page);
+	OffsetNumber firstdata = BarkPageFirstDataKey(opaque);
+	bool		boundok = BarkPageLeftmost(opaque) ||
+		(opaque->bark_flags & BARK_LOWBOUND_TAGGED) == 0;
+	int			nmoved = 0;
+
+	/* Tests break the rule, to show what it keeps (t/004_bark_vacuum.pl). */
+	if (IS_INJECTION_POINT_ATTACHED("bark-untag-ignore-bound"))
+		boundok = true;
+
+	for (int i = 0; i < nuntag; i++)
+	{
+		OffsetNumber off = untag[i];
+		BarkItemBuf ibuf;
+		IndexTuple	itup = BarkPageGetItem(page, off, &ibuf);
+		IndexTuple	plain = bark_entry_untag(itup);
+		ItemPointerData tid = *BarkEntryGetHeapTid(plain);
+		OffsetNumber lo = firstdata;
+		OffsetNumber hi = off;
+		bool		dup = false;
+		IndexTuple	coded;
+
+		Assert(BarkEntryHasTag(itup));
+
+		/* The first entry above (K, L, 0); every one from off on is. */
+		while (lo < hi)
+		{
+			OffsetNumber mid = lo + (hi - lo) / 2;
+			BarkItemBuf mbuf;
+			IndexTuple	mitup = BarkPageGetItem(page, mid, &mbuf);
+
+			if (bark_compare_itups_tid(keyinfo, index, plain, &tid,
+									   InvalidIndexVersionTag, mitup) >= 0)
+				lo = OffsetNumberNext(mid);
+			else
+				hi = mid;
+		}
+
+		/* An entry before the slot that holds (K, L, 0) already? */
+		if (lo > firstdata)
+		{
+			BarkItemBuf pbuf;
+			IndexTuple	prev = BarkPageGetItem(page, OffsetNumberPrev(lo),
+											   &pbuf);
+
+			dup = bark_compare_itups_tid(keyinfo, index, plain, &tid,
+										 InvalidIndexVersionTag, prev) == 0;
+		}
+
+		if (dup || (lo == firstdata && !boundok))
+		{
+			if (dup)
+				vstate->nkeptdup++;
+			else
+				vstate->nkeptbound++;
+			pfree(plain);
+			continue;
+		}
+
+		coded = bark_prefix_encode(page, plain);
+		if (coded != plain)
+			pfree(plain);
+		if (!BarkPageMoveEntry(page, off, lo, coded, IndexTupleSize(coded)))
+			elog(ERROR, "failed to untag BARK leaf entry at offset %u of index \"%s\"",
+				 off, RelationGetRelationName(index));
+		from[nmoved] = off;
+		to[nmoved] = lo;
+		newitems[nmoved++] = coded;
+	}
+	vstate->nuntagged += nmoved;
+	return nmoved;
+}
 
 /*
  * Process one block of bark_vacuum_scan's physical-order scan.  On a live
@@ -565,8 +743,8 @@ bark_vacuum_page(BarkVacState *vstate, Buffer buf)
 {
 	IndexVacuumInfo *info = vstate->info;
 	IndexBulkDeleteResult *stats = vstate->stats;
-	IndexBulkDeleteCallback callback = vstate->callback;
-	void	   *callback_state = vstate->callback_state;
+	bool		deleting = vstate->callback != NULL ||
+		vstate->version_callback != NULL;
 	BarkCycleId	cycleid = vstate->cycleid;
 	Relation	index = info->index;
 	BlockNumber scanblkno = BufferGetBlockNumber(buf);
@@ -586,6 +764,12 @@ bark_vacuum_page(BarkVacState *vstate, Buffer buf)
 		int			nupdated = 0;
 		BlockNumber oversized_free[MaxOffsetNumber];
 		int			noversized_free = 0;
+		OffsetNumber untag[MaxOffsetNumber];
+		int			nuntag = 0;
+		OffsetNumber untagfrom[MaxOffsetNumber];
+		OffsetNumber untagto[MaxOffsetNumber];
+		IndexTuple	untagged[MaxOffsetNumber];
+		int			nuntagged = 0;
 		bool		clearcycleid;
 		BlockNumber backtrack_to = BARK_P_NONE;
 
@@ -621,7 +805,7 @@ bark_vacuum_page(BarkVacState *vstate, Buffer buf)
 		 * again: it was unlocked in between.  A scan that only counts keeps
 		 * the share lock.
 		 */
-		if (callback != NULL)
+		if (deleting)
 		{
 			LockBuffer(buf, BUFFER_LOCK_UNLOCK);
 			LockBufferForCleanup(buf);
@@ -652,26 +836,37 @@ bark_vacuum_page(BarkVacState *vstate, Buffer buf)
 		 * OVERSIZED whose TID is dead, LIST or POSTING whose every member is
 		 * dead) are collected for deletion; LIST and POSTING entries that
 		 * lost some members are re-formed with the survivors and collected
-		 * as updates.
+		 * as updates.  A tagged SINGLE or OVERSIZED entry the version
+		 * callback answers LIVE_UNTAG is collected for untagging
+		 * (bark_vacuum_untag); LIST and POSTING members are untagged
+		 * already.
 		 */
 		for (OffsetNumber off = BarkPageFirstDataKey(opaque);
-			 callback != NULL && off <= maxoff; off = OffsetNumberNext(off))
+			 deleting && off <= maxoff; off = OffsetNumberNext(off))
 		{
 			BarkItemBuf ibuf;
 			IndexTuple	itup = BarkPageGetItem(page, off, &ibuf);
+			IndexEntryVerdict verdict;
 
 			/* A marker names no row; it is never removed. */
 			if (BarkEntryIsMarker(itup))
 				continue;
 			if (BarkEntryGetShape(itup) == BARK_SHAPE_SINGLE)
 			{
-				if (callback(BarkEntryGetHeapTid(itup), callback_state))
+				verdict = bark_vacuum_verdict(vstate, BarkEntryGetHeapTid(itup),
+											  BarkEntryGetTag(itup));
+				if (verdict == INDEX_ENTRY_DEAD)
 				{
 					todelete[ndelete++] = off;
 					ndelete_single++;
 				}
 				else
+				{
 					nlivetids++;
+					if (verdict == INDEX_ENTRY_LIVE_UNTAG &&
+						BarkEntryHasTag(itup))
+						untag[nuntag++] = off;
+				}
 			}
 			else if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED)
 			{
@@ -684,7 +879,9 @@ bark_vacuum_page(BarkVacState *vstate, Buffer buf)
 				 */
 				ItemPointerData loc = BarkOverflowGetRef(itup)->locator;
 
-				if (callback(&loc, callback_state))
+				verdict = bark_vacuum_verdict(vstate, &loc,
+											  BarkEntryGetTag(itup));
+				if (verdict == INDEX_ENTRY_DEAD)
 				{
 					oversized_free[noversized_free++] =
 						BarkOverflowGetFirstBlock(itup);
@@ -692,7 +889,12 @@ bark_vacuum_page(BarkVacState *vstate, Buffer buf)
 					ndelete_single++;
 				}
 				else
+				{
 					nlivetids++;
+					if (verdict == INDEX_ENTRY_LIVE_UNTAG &&
+						BarkEntryHasTag(itup))
+						untag[nuntag++] = off;
+				}
 			}
 			else
 			{
@@ -705,7 +907,9 @@ bark_vacuum_page(BarkVacState *vstate, Buffer buf)
 											bark_index_tid_stride(index));
 				for (int i = 0; i < ntids; i++)
 				{
-					if (!callback(&tids[i], callback_state))
+					if (bark_vacuum_verdict(vstate, &tids[i],
+											InvalidIndexVersionTag) !=
+						INDEX_ENTRY_DEAD)
 						tids[nlive++] = tids[i];
 				}
 				nlivetids += nlive;
@@ -745,12 +949,44 @@ bark_vacuum_page(BarkVacState *vstate, Buffer buf)
 		 */
 		clearcycleid = (cycleid != 0 && opaque->bark_cycleid == cycleid);
 
-		if (ndelete > 0 || nupdated > 0 || clearcycleid)
+		/*
+		 * Plan the untagging on a copy of the page as the deletions and
+		 * rewrites leave it, with the offsets of the entries to untag
+		 * renumbered as after the deletions (todelete[] ascends).
+		 */
+		if (nuntag > 0)
+		{
+			Page		scratch = PageGetTempPageCopy(page);
+			int			d = 0;
+
+			for (int i = 0; i < nupdated; i++)
+				if (!BarkPageOverwriteEntry(scratch, updatedoffsets[i],
+											updated[i],
+											IndexTupleSize(updated[i])))
+					elog(ERROR, "failed to rewrite BARK leaf entry at offset %u of block %u",
+						 updatedoffsets[i], blkno);
+			if (ndelete > 0)
+				PageIndexMultiDelete(scratch, todelete, ndelete);
+			for (int i = 0; i < nuntag; i++)
+			{
+				while (d < ndelete && todelete[d] < untag[i])
+					d++;
+				untag[i] -= d;
+			}
+			nuntagged = bark_vacuum_untag(vstate, scratch, untag, nuntag,
+										  untagfrom, untagto, untagged);
+			pfree(scratch);
+		}
+
+		if (ndelete > 0 || nupdated > 0 || nuntagged > 0 || clearcycleid)
 			bark_delitems_vacuum(index, buf, todelete, ndelete,
-								 updatedoffsets, updated, nupdated);
+								 updatedoffsets, updated, nupdated,
+								 untagfrom, untagto, untagged, nuntagged);
 		stats->tuples_removed += ndelete_single;
 		for (int i = 0; i < nupdated; i++)
 			pfree(updated[i]);
+		for (int i = 0; i < nuntagged; i++)
+			pfree(untagged[i]);
 
 		/*
 		 * Count the heap TIDs that remain, as btvacuumpage does: the planner
@@ -759,7 +995,7 @@ bark_vacuum_page(BarkVacState *vstate, Buffer buf)
 		 * not counted.  A scan that only counts reads each entry's count of
 		 * TIDs for itself.
 		 */
-		if (callback != NULL)
+		if (deleting)
 			stats->num_index_tuples += nlivetids;
 		else
 		{
@@ -917,7 +1153,8 @@ bark_pendingfsm_finalize(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
  */
 static void
 bark_vacuum_scan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
-				 IndexBulkDeleteCallback callback, void *callback_state)
+				 IndexBulkDeleteCallback callback, void *callback_state,
+				 IndexBulkDeleteVersionCallback version_callback)
 {
 	Relation	index = info->index;
 	BarkVacState vstate;
@@ -933,6 +1170,11 @@ bark_vacuum_scan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	vstate.stats = stats;
 	vstate.callback = callback;
 	vstate.callback_state = callback_state;
+	vstate.version_callback = version_callback;
+	vstate.keyinfo = NULL;
+	vstate.nuntagged = 0;
+	vstate.nkeptbound = 0;
+	vstate.nkeptdup = 0;
 	vstate.cycleid = 0;
 	vstate.emptyalloc = 64;
 	vstate.nempty = 0;
@@ -953,9 +1195,15 @@ bark_vacuum_scan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	 */
 	GetOldestNonRemovableTransactionId(info->heaprel);
 
+	if (version_callback != NULL)
+	{
+		vstate.keyinfo = bark_build_keyinfo(index);
+		vstate.keyinfo->heaprel = info->heaprel;
+	}
+
 	PG_ENSURE_ERROR_CLEANUP(bark_end_vacuum_callback, (Datum) 0);
 	{
-		if (callback != NULL)
+		if (callback != NULL || version_callback != NULL)
 			vstate.cycleid = bark_start_vacuum(index);
 
 		/*
@@ -1017,8 +1265,18 @@ bark_vacuum_scan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 		read_stream_end(stream);
 	}
 	PG_END_ENSURE_ERROR_CLEANUP(bark_end_vacuum_callback, (Datum) 0);
-	if (callback != NULL)
+	if (callback != NULL || version_callback != NULL)
 		bark_end_vacuum();
+
+	if (vstate.nuntagged > 0 || vstate.nkeptbound > 0 || vstate.nkeptdup > 0)
+		ereport(info->message_level,
+				(errmsg("index \"%s\": untagged %lld entries in place, kept %lld tagged whose page's lower bound may carry a tag and %lld whose untagged position is in another entry",
+						RelationGetRelationName(index),
+						(long long) vstate.nuntagged,
+						(long long) vstate.nkeptbound,
+						(long long) vstate.nkeptdup)));
+	if (vstate.keyinfo != NULL)
+		pfree(vstate.keyinfo);
 
 	stats->num_pages = npages;
 
@@ -1063,7 +1321,8 @@ barkbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	if (stats == NULL)
 		stats = palloc0_object(IndexBulkDeleteResult);
 
-	bark_vacuum_scan(info, stats, callback, callback_state);
+	bark_vacuum_scan(info, stats, callback, callback_state,
+					 info->version_callback);
 	return stats;
 }
 
@@ -1091,7 +1350,7 @@ barkvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 	if (stats == NULL)
 	{
 		stats = palloc0_object(IndexBulkDeleteResult);
-		bark_vacuum_scan(info, stats, NULL, NULL);
+		bark_vacuum_scan(info, stats, NULL, NULL, NULL);
 		stats->estimated_count = true;
 	}
 

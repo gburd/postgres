@@ -48,8 +48,9 @@ bark_desc(StringInfo buf, XLogReaderState *record)
 			{
 				xl_bark_vacuum *xlrec = (xl_bark_vacuum *) rec;
 
-				appendStringInfo(buf, "ndeleted: %u, nupdated: %u",
-								 xlrec->ndeleted, xlrec->nupdated);
+				appendStringInfo(buf, "ndeleted: %u, nupdated: %u, nuntagged: %u",
+								 xlrec->ndeleted, xlrec->nupdated,
+								 xlrec->nuntagged);
 
 				if (XLogRecHasBlockData(record, 0))
 					delitems_desc(buf, record, xlrec->ndeleted,
@@ -86,11 +87,13 @@ bark_desc(StringInfo buf, XLogReaderState *record)
 			{
 				xl_bark_unlink_page *xlrec = (xl_bark_unlink_page *) rec;
 
-				appendStringInfo(buf, "left: %u, right: %u, safexid: %u:%u, poffset: %u",
+				appendStringInfo(buf, "left: %u, right: %u, safexid: %u:%u, poffset: %u%s",
 								 xlrec->leftsib, xlrec->rightsib,
 								 EpochFromFullTransactionId(xlrec->safexid),
 								 XidFromFullTransactionId(xlrec->safexid),
-								 xlrec->poffset);
+								 xlrec->poffset,
+								 (xlrec->flags & XLH_BARK_UNLINK_LOWTAG) ?
+								 ", lower bound tagged" : "");
 				break;
 			}
 		case XLOG_BARK_REUSE_PAGE:
@@ -181,6 +184,10 @@ bark_desc(StringInfo buf, XLogReaderState *record)
 								 left, right, xlrec->cycleid,
 								 (xlrec->flags & XLH_BARK_SPLIT_LPREFIX) ? 'L' : '-',
 								 (xlrec->flags & XLH_BARK_SPLIT_RPREFIX) ? 'R' : '-');
+				if (xlrec->flags & (XLH_BARK_SPLIT_LLOWTAG | XLH_BARK_SPLIT_RLOWTAG))
+					appendStringInfo(buf, ", lower bound tagged: %s%s",
+									 (xlrec->flags & XLH_BARK_SPLIT_LLOWTAG) ? "L" : "",
+									 (xlrec->flags & XLH_BARK_SPLIT_RLOWTAG) ? "R" : "");
 				if (xlrec->flags & XLH_BARK_SPLIT_LWHOLE)
 					appendStringInfoString(buf, ", left logged whole");
 				else

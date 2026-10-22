@@ -270,6 +270,10 @@ bark_blk_cmp(const void *a, const void *b)
  * member's share of the entry; the table AM uses it only to judge when it
  * has found enough.
  *
+ * With `taggedonly` (bark_tagged_delete) only the tagged SINGLEs are
+ * offered, each promising.  Every TID goes with its entry's version tag
+ * (TM_IndexStatus.tag, 0 for an untagged entry).
+ *
  * OVERSIZED entries are not offered: deleting one must also free its overflow
  * chain, which VACUUM does once the leaf no longer references it
  * (bark_free_oversized), and this runs inside an insert that holds the leaf
@@ -285,7 +289,8 @@ bark_blk_cmp(const void *a, const void *b)
  */
 static bool
 bark_delete_pass(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
-				 Buffer buf, IndexTuple newitem, Size newitemsz, bool bottomup)
+				 Buffer buf, IndexTuple newitem, Size newitemsz, bool bottomup,
+				 bool taggedonly)
 {
 	Page		page = BufferGetPage(buf);
 	BarkPageOpaque opaque = BarkPageGetOpaque(page);
@@ -345,6 +350,8 @@ bark_delete_pass(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 		/* A marker's TID names no row to offer the table AM. */
 		if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED ||
 			BarkEntryIsMarker(itup))
+			continue;
+		if (taggedonly && !BarkEntryHasTag(itup))
 			continue;
 		n = bark_entry_count_tids(itup);
 		if (ntids + n > PG_INT16_MAX)
@@ -418,7 +425,8 @@ bark_delete_pass(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 			;					/* the table AM reads neither field */
 		else if (shape == BARK_SHAPE_SINGLE)
 		{
-			promising = bark_compare_itups(keyinfo, index, newitem, itup) == 0;
+			promising = taggedonly ||
+				bark_compare_itups(keyinfo, index, newitem, itup) == 0;
 			freespace = MAXALIGN(ItemIdGetLength(PageGetItemId(page, off))) +
 				sizeof(ItemIdData);
 		}
@@ -449,7 +457,7 @@ bark_delete_pass(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 			delstate.status[i].knowndeletable = known && !bottomup;
 			delstate.status[i].promising = promising;
 			delstate.status[i].freespace = freespace;
-			delstate.status[i].tag = InvalidIndexVersionTag; /* BARK has no tags */
+			delstate.status[i].tag = BarkEntryGetTag(itup);
 			noffered++;
 		}
 	}
@@ -460,7 +468,9 @@ bark_delete_pass(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 	/*
 	 * The table AM requires each TID at most once (heapam's sort asserts
 	 * that no two are equal), but a row of an index with an extracted column
-	 * has an entry per key, and several of them may be on this leaf.  Offer
+	 * has an entry per key, and several of them may be on this leaf.  (An
+	 * index that stores version tags offers each entry, a TID once per tag:
+	 * the table AM's verdict is per entry; see TM_IndexStatus.)  Offer
 	 * each TID once: sort by TID, keep the first of each run, and remember
 	 * the others in dupof[] so that the answer for the one offered applies to
 	 * all.  A TID offered more than once is promising if any of its entries
@@ -575,7 +585,7 @@ bark_simple_delete(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 				   Buffer buf, IndexTuple newitem, Size newitemsz)
 {
 	return bark_delete_pass(index, heapRel, keyinfo, buf, newitem, newitemsz,
-							false);
+							false, false);
 }
 
 /*
@@ -590,7 +600,40 @@ bark_bottomup_delete(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 					 Buffer buf, IndexTuple newitem, Size newitemsz)
 {
 	return bark_delete_pass(index, heapRel, keyinfo, buf, newitem, newitemsz,
-							true);
+							true, false);
+}
+
+/*
+ * Pre-split cleanup of version tags (R3.3 of the RethinkDB review) on the
+ * exclusive-locked leaf `buf` of an index that stores tags, which an insert
+ * of `newitem` would split after simple and bottom-up deletion: offer every
+ * tagged SINGLE on the page to the table AM, each with its tag
+ * (TM_IndexStatus.tag), as a bottom-up pass in which all of them are
+ * promising.  A stale entry of a live row, one valid for no version any
+ * snapshot can see, goes, which TID-keyed deletion cannot find: the TID's
+ * row is live.  Returns true if that made room.  See bark_delete_pass.
+ */
+bool
+bark_tagged_delete(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
+				   Buffer buf, IndexTuple newitem, Size newitemsz)
+{
+	Page		page = BufferGetPage(buf);
+	BarkPageOpaque opaque = BarkPageGetOpaque(page);
+	OffsetNumber off;
+
+	Assert(keyinfo->canversion);
+	for (off = BarkPageFirstDataKey(opaque);
+		 off <= PageGetMaxOffsetNumber(page); off = OffsetNumberNext(off))
+	{
+		BarkItemBuf ibuf;
+
+		if (BarkEntryHasTag(BarkPageGetItem(page, off, &ibuf)))
+			break;
+	}
+	if (off > PageGetMaxOffsetNumber(page))
+		return false;			/* no tagged entry to offer */
+	return bark_delete_pass(index, heapRel, keyinfo, buf, newitem, newitemsz,
+							true, true);
 }
 
 

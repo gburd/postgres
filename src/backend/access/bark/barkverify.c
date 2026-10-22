@@ -250,6 +250,12 @@ bark_page_verify_range(Relation index, BarkKeyInfo *keyinfo,
 							 v.relname, blkno);
 	}
 
+	/* Only a leaf has a lower bound that VACUUM's untagging reads. */
+	if ((opaque->bark_flags & BARK_LOWBOUND_TAGGED) != 0 &&
+		(!BarkPageIsLeaf(opaque) || BarkPageLeftmost(opaque)))
+		bark_verify_fail(&v, "BARK index \"%s\" has BARK_LOWBOUND_TAGGED on page %u, which is not a leaf with a left sibling",
+						 v.relname, blkno);
+
 	/*
 	 * The high key, when present, is the first item on a non-rightmost page.
 	 * It is a pivot with at least one key attribute: only a page's downlink

@@ -28,6 +28,14 @@
  *   the incoming item goes after its last entry, that entry is first cut to
  *   make the fill reachable (bark_singleval_cut).
  *
+ * - A leaf split point between two entries equal on every key attribute and
+ *   on heap TID (versions of one row's entry, with different tags) is used
+ *   only when the page has no other.  Its high key would need the tag, and
+ *   a page whose lower bound has a tag cannot have an entry untagged in
+ *   place at its start (BARK_LOWBOUND_TAGGED).  Such runs are short, one
+ *   row's versions with the same key between two VACUUMs, so a tagged
+ *   pivot is left only by a page that is all one run.
+ *
  * nbtree's "split after new item" heuristic for composite keys is not
  * ported, and an internal page is always split at the point closest to the
  * target rather than at the one with the smallest first-right item.
@@ -44,6 +52,7 @@
 
 #include "access/bark.h"
 #include "common/int.h"
+#include "utils/injection_point.h"
 #include "utils/rel.h"
 
 /* A legal split point: items[firstright..] go to the new right page. */
@@ -53,6 +62,7 @@ typedef struct BarkSplitPoint
 	int			leftfree;		/* bytes left free on the left page */
 	int			rightfree;		/* bytes left free on the right page */
 	int			delta;			/* distance from the target split */
+	bool		inrun;			/* between two entries of one (key, TID) */
 } BarkSplitPoint;
 
 /*
@@ -68,6 +78,29 @@ static inline int
 bark_split_itemsz(Size sz)
 {
 	return sz + sizeof(ItemIdData);
+}
+
+/*
+ * Are `lastleft` and `firstright`, adjacent leaf items, two entries of one
+ * row equal on every key attribute (so of different tags), whose separator
+ * would keep a tag (bark_truncate_pivot)?  Only then is firstright tagged
+ * and its heap TID lastleft's highest, which is tested first.
+ */
+static bool
+bark_split_in_run(Relation index, BarkKeyInfo *keyinfo, IndexTuple lastleft,
+				  IndexTuple firstright)
+{
+	ItemPointerData llo;
+	ItemPointerData lhi;
+	ItemPointerData rlo;
+	ItemPointerData rhi;
+
+	if (!BarkEntryHasTag(firstright))
+		return false;
+	bark_entry_tid_range(lastleft, &llo, &lhi, keyinfo->tidstride);
+	bark_entry_tid_range(firstright, &rlo, &rhi, keyinfo->tidstride);
+	return ItemPointerEquals(&lhi, &rlo) &&
+		bark_compare_itups(keyinfo, index, lastleft, firstright) == 0;
 }
 
 /*
@@ -198,6 +231,7 @@ bark_findsplitloc(Relation index, BarkKeyInfo *keyinfo, IndexTuple *items,
 	int			bestpenalty = INT_MAX;
 	int			best = 0;
 	int			firstright;
+	int			ninrun = 0;
 
 	Assert(n >= 2);
 	Assert(newitemidx >= 0 && newitemidx < n);
@@ -231,6 +265,9 @@ bark_findsplitloc(Relation index, BarkKeyInfo *keyinfo, IndexTuple *items,
 		splits[nsplits].firstright = i;
 		splits[nsplits].leftfree = leftfree;
 		splits[nsplits].rightfree = rightfree;
+		splits[nsplits].inrun = isleaf &&
+			bark_split_in_run(index, keyinfo, items[i - 1], items[i]);
+		ninrun += splits[nsplits].inrun ? 1 : 0;
 		nsplits++;
 	}
 
@@ -238,6 +275,23 @@ bark_findsplitloc(Relation index, BarkKeyInfo *keyinfo, IndexTuple *items,
 	if (nsplits == 0)
 		elog(ERROR, "could not find a feasible split point for BARK index \"%s\"",
 			 RelationGetRelationName(index));
+
+	/*
+	 * Drop the split points inside (key, TID) runs, unless they are all.
+	 * Tests turn this off to show the tagged pivot it avoids.
+	 */
+	if (ninrun > 0 && ninrun < nsplits &&
+		!IS_INJECTION_POINT_ATTACHED("bark-split-ignore-runs"))
+	{
+		int			nkept = 0;
+
+		for (int i = 0; i < nsplits; i++)
+		{
+			if (!splits[i].inrun)
+				splits[nkept++] = splits[i];
+		}
+		nsplits = nkept;
+	}
 
 	/* The page's extreme split points, before sorting loses key order. */
 	pagelow = splits[0].firstright;
