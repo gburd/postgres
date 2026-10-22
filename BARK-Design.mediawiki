@@ -262,6 +262,92 @@ The other fields ask nothing of an index AM: <code>stable</code> and
 callbacks are the table AM's. A wider locator would need a format change;
 none is planned.
 
+==== Versioned locators: BARK stores version tags ====
+
+''Design: <code>DESIGN-split-and-hot.md</code> sections 2, 5, 6.5b, 6.6
+and 8b; interface: "Versioned locators" in <code>amlocator.h</code>;
+details: "Version tags" in the README.''
+
+A table AM whose <code>LocatorDesc.versioned</code> is set hands each index
+entry a 4-byte version tag, and an entry names a row version as
+(key, TID, tag), 0 meaning untagged. The table AM decides whether an entry
+is valid for the version a snapshot sees; BARK stores, orders and returns
+tags and never interprets them.
+
+''As built (phase 5b, 2026-10-22).''
+* '''Format version 3.''' A tagged SINGLE sets the alt-TID bit with
+  <code>BARK_HAS_TAG</code> (0x4000, once reserved for delete-marking) and
+  keeps heap TID then tag in a MAXALIGNed trailer after its key; a tagged
+  OVERSIZED entry keeps its tag in an 8-byte trailer after its ref (the ref
+  had no free bytes, against the design's plan). LIST and POSTING entries
+  are never tagged: tagged entries never coalesce. Untagged entries are byte
+  for byte as in version 2, which is read and written as it is.
+* '''Order and pivots.''' Entries are ordered by (key, TID, tag), the tag
+  as a raw uint32. A pivot keeps a tag only between two entries of one row
+  equal on key and TID (<code>BARK_PIVOT_TAG</code>). The pivot suffix
+  reserve is 16 bytes only in an index built for a versioned table
+  (<code>BARK_META_VERSIONED</code>), so indexes of heap tables keep their
+  pages exactly.
+* '''Per index.''' <code>amindexcanversion</code>: an index stores tags
+  only with <code>BARK_META_VERSIONED</code> and no extracted column. A
+  multikey index returns each row once by TID, which per-entry tags would
+  break, so the executor moves a row whenever an update affects it.
+* '''Writers and readers.''' aminsert and the build read
+  <code>ii_VersionTag</code>; a tagged row's entry divides an untagged LIST
+  or POSTING whose TID range it falls in. Every amgettuple path returns the
+  entry's tag in <code>xs_heaptag</code>; a bitmap scan drops it. The unique
+  check asks <code>table_fetch_tid_version</code> with the entry's tag;
+  <code>UNIQUE_CHECK_EXISTING</code> recognizes the row's own entries by
+  TID. An LP_DEAD kill marks only the entry of the tag returned.
+* '''VACUUM and the untag rule (R3.2).''' VACUUM asks the table AM's
+  version callback about every entry. LIVE_UNTAG moves an entry from
+  (K, L, t) to (K, L, 0), before every entry of (K, L) with a tag. BARK
+  moves it only within its page, in the page's VACUUM record, and only when
+  nothing on another page can lie above (K, L, 0): an entry before its slot
+  on the page, a leftmost page, or a page without
+  <code>BARK_LOWBOUND_TAGGED</code>. That flag marks a leaf whose lower
+  bound may have a tag. A split sets it on its right half when the high key
+  keeps a tag, and page deletion hands it to the right sibling. It is never
+  cleared. An entry that cannot move stays tagged (LIVE), and VACUUM counts
+  it at DEBUG2. The design's other branch, delete and reinsert by a
+  descent, is not built: a scan reads one page at a time, so moving an
+  entry to another page could make it miss the row or return it twice.
+* '''Split points.''' A leaf split cuts a run of one row's entries only
+  when the page has no other split point. The runs are one row's same-key
+  versions between two VACUUMs, so tagged pivots, and flagged pages, come
+  only from a page that is all one run.
+* '''Deletion (R3.3).''' Simple and bottom-up deletion hand the table AM
+  each entry's tag in <code>TM_IndexStatus</code>, a TID once per entry.
+  Before a leaf of an index that stores tags splits, BARK offers its tagged
+  entries to <code>table_index_delete_tuples</code>, so stale entries of
+  live rows go.
+* '''CIC''' needs nothing more: validation's bulk delete hands the version
+  callback each entry's (TID, tag).
+* '''Checks.''' The page validator and amcheck check the tagged shapes,
+  the pivot rule, the (key, TID, tag) order, no tag in an index that does
+  not store them, and that a leaf whose lower bound has a tag has the flag.
+  pageinspect shows tags and the flag.
+
+''Tests'' (the table AM side, <code>test_versioned_tableam</code>'s
+<code>heap_versioned</code>, whose tag is a version's raw xmin, lives on a
+test branch and is not to be merged): tagged inserts and builds, serial and
+parallel; the tag on every scan path and at the unique checks; split
+points, the flag, its propagation, untagging in place, and the order
+violation that untagging without the rule causes (an injection point turns
+the rule off); LP_DEAD on tagged entries; the pre-split cleanup; CIC with
+heapallindexed; OVERSIZED tagged entries; crash recovery; a random
+sequence of updates and VACUUMs. All of them run under
+<code>wal_consistency_checking</code> with a standby. The validator's own
+test plants a zero tag.
+
+''Follow-ups.'' T1: the build inserts tagged rows one at a time (a second
+pass), about 10x slower when every row is tagged. Carrying the tag through
+the sort would fix it. T2: an entry whose page's lower bound may carry a
+tag stays tagged. Lowering the separator would clear it: once the run's
+dead entries are gone, set the left page's high key and the parent pivot
+to (K, L) untagged. A table AM that must clear every tag (xid-wraparound)
+needs T2. V2: versioned multikey indexes.
+
 === C-MVCC: visibility, SSI, and the index-only / recheck path ===
 
 BARK entries obey the same visibility rules as nbtree. Four obligations:

@@ -2101,8 +2101,8 @@ executor moves a row whenever an update affects it; its entries stay
 untagged, as an index of heap's.  (Versioned multikey indexes need
 deduplication after the table AM's verdict, or untagging a row's entries
 together, and are left as a follow-up.)  An index with BARK_META_VERSIONED
-has a pivot suffix reserve (BarkPivotSuffixReserve) is 16
-bytes, room for a pivot's heap TID and tag (6 + 4, MAXALIGNed); every other
+has a pivot suffix reserve (BarkPivotSuffixReserve) of 16 bytes, room for a
+pivot's heap TID and tag (6 + 4, MAXALIGNed); every other
 index keeps the 8-byte reserve, so an index of a heap table is laid out
 byte for byte as before tags existed.  The design text had the reserve grow
 to 16 for every index; per index keeps heap's indexes unchanged, which a

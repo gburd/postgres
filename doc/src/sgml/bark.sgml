@@ -1193,6 +1193,41 @@ CREATE INDEX orders_customer_idx ON orders (customer);
   </para>
  </sect3>
 
+ <sect3 id="bark-version-tags">
+  <title>Version Tags</title>
+
+  <para>
+   An index of a table whose access method's locators are versioned (see
+   <xref linkend="tableam-versioned-locators"/>) can store a version tag
+   with each entry.  A BARK index does so when it was built for such a
+   table (<command>CREATE INDEX</command>, <command>REINDEX</command>, or
+   the rebuild of <command>ALTER TABLE ... SET ACCESS METHOD</command>) and
+   has no multikey column; it reports this through
+   <function>amindexcanversion</function>.  Every other BARK index stores no
+   tags, and the table moves a row whenever an update changes one of its
+   columns, as for any index that stores none.  An index built by a version
+   of BARK without version tags stores none until it is rebuilt.
+  </para>
+
+  <para>
+   A tagged entry holds one row version and is never merged into a
+   <literal>LIST</literal> or <literal>POSTING</literal> entry.  Entries are
+   ordered by key, then heap TID, then tag.  Index scans return each entry's
+   tag to the table, which decides whether the entry is valid for the row
+   version a transaction sees; unique checks pass it too.
+   <command>VACUUM</command> asks the table about every entry, removes the
+   entries no transaction can use, and may clear the tags of the others,
+   which moves each entry to its untagged position on the same page.  An
+   entry whose untagged position would fall before its page's lower bound
+   keeps its tag; this happens only where the index had to split a run of
+   one row's entries.  Before splitting a leaf page, BARK offers the page's
+   tagged entries to the table, which may find some stale.
+   <xref linkend="pageinspect"/> shows each entry's tag, and the
+   <literal>lowbound_tagged</literal> flag of a leaf whose lower bound may
+   have one.
+  </para>
+ </sect3>
+
  <sect3 id="bark-wal">
   <title>WAL and Hot Standby</title>
 
