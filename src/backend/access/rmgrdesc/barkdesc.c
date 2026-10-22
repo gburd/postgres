@@ -87,6 +87,22 @@ bark_desc(StringInfo buf, XLogReaderState *record)
 			{
 				xl_bark_unlink_page *xlrec = (xl_bark_unlink_page *) rec;
 
+				/* The record's second form (see xl_bark_unlink_page). */
+				if (xlrec->flags & XLH_BARK_UNLINK_LOWER_SEP)
+				{
+					BlockNumber parent = InvalidBlockNumber;
+
+					if (XLogRecHasBlockRef(record, 3))
+						XLogRecGetBlockTag(record, 3, NULL, NULL, &parent);
+					appendStringInfo(buf, "lower separator, left: %u, right: %u, ",
+									 xlrec->leftsib, xlrec->rightsib);
+					if (XLogRecHasBlockRef(record, 3))
+						appendStringInfo(buf, "parent: %u, poffset: %u",
+										 parent, xlrec->poffset);
+					else
+						appendStringInfoString(buf, "flag only");
+					break;
+				}
 				appendStringInfo(buf, "left: %u, right: %u, safexid: %u:%u, poffset: %u%s",
 								 xlrec->leftsib, xlrec->rightsib,
 								 EpochFromFullTransactionId(xlrec->safexid),
