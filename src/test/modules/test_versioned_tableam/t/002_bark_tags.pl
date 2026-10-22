@@ -274,6 +274,37 @@ for my $pct (100, 50, 0)
 	}
 }
 
+# (a2) Tagged entries inserted into a packed build of untagged LISTs, as a
+# table AM that keeps locators adds them after CREATE INDEX: each divides
+# the LIST holding its TID, and on full leaves the leaf splits with the
+# divided parts in place.  (CREATE INDEX itself did this for tagged rows
+# before it sorted them.)
+$node->safe_psql(
+	'postgres', q{
+	SET test_versioned_tableam.build_tag_percent = 0;
+	CREATE INDEX tb_k ON tb USING bark (k) WITH (fillfactor = 100);
+	SELECT count(test_versioned_insert_entry('tb_k', ctid, x))
+	  FROM (SELECT ctid, xmin::text::int8 AS x FROM tb
+	         WHERE ((ctid::text::point)[0]::int * 7 + (ctid::text::point)[1]::int) % 100 < 50
+	         ORDER BY ctid) s;
+});
+my $nhalf = $node->safe_psql('postgres',
+	q{SELECT count(*) FROM tb WHERE ((ctid::text::point)[0]::int * 7 + (ctid::text::point)[1]::int) % 100 < 50});
+is(tags_right('tb_k', 'tb'), "$nhalf/$nhalf", 'a2: the tags are the rows\' xmin');
+is( $node->safe_psql(
+		'postgres', q{
+		SELECT count(*) FILTER (WHERE tag IS NULL) || ' ' || count(*) FILTER (WHERE tag IS NOT NULL)
+		  FROM (SELECT coalesce(m.tid, e.htid), e.tag FROM bark_entries('tb_k') e
+		          LEFT JOIN LATERAL unnest(e.tids) m(tid) ON true) s}),
+	"30000 $nhalf", 'a2: every row keeps its untagged entry');
+check_index('tb_k', 'a2');
+is( $node->safe_psql(
+		'postgres', q{
+		SET enable_seqscan = off; SET enable_bitmapscan = off;
+		SELECT count(*) FROM tb WHERE k >= 0}),
+	30000 + $nhalf, 'a2: an index scan returns every entry');
+$node->safe_psql('postgres', 'DROP INDEX tb_k; RESET test_versioned_tableam.build_tag_percent');
+
 # (b) Runs of entries equal on key and heap TID in one build.  With
 # build_history = n, heap_versioned's build scan hands each row it tags n
 # more times, tagged xmin - n .. xmin - 1 (see tvh_build_callback): one
@@ -411,6 +442,31 @@ for my $par (0, 2)
 		$node->safe_psql('postgres', 'DROP INDEX tr1_k') if !$rule || !$par;	# keep the last
 	}
 }
+
+# (b1p) The same with prefix-coded leaves (prefix_compression, a text key
+# whose values share a long prefix): the run's entries leave a coded page
+# and are coded again for the next leaf's prefix.
+$node->safe_psql(
+	'postgres', q{
+	CREATE TABLE tr3 (id int, t text) USING heap_versioned;
+	INSERT INTO tr3 SELECT g, 'a-prefix-every-key-shares-' || lpad((g % 500)::text, 4, '0')
+	  FROM generate_series(1, 2000) g;
+	SET test_versioned_tableam.build_tag_percent = 100;
+	SET test_versioned_tableam.build_history = 20;
+	CREATE INDEX tr3_t ON tr3 USING bark (t) WITH (prefix_compression = on);
+	RESET test_versioned_tableam.build_history;
+});
+is(history_right('tr3_t', 'tr3', 20), '2000/2000',
+	'b1p: every row has its 21 entries, tagged xmin - 20 .. xmin');
+cmp_ok( $node->safe_psql(
+		'postgres', q{
+		SELECT count(*) FROM leaf_runs('tr3_t') WHERE 'prefix' = ANY (flags)}),
+	'>', 50, 'b1p: the leaves are prefix-coded');
+is($node->safe_psql('postgres', q{SELECT * FROM run_cuts('tr3_t')}), '0|0',
+	'b1p: no leaf ends inside a run');
+is($node->safe_psql('postgres', q{SELECT tagged FROM tag_bounds('tr3_t')}), '0',
+	'b1p: no high key has a tag');
+check_index('tr3_t', 'b1p');
 
 # (b2) A long run: 100 rows, of which only row 100 (TID (0,100), the
 # highest key) is tagged, with 500 more entries.  The leaf that holds rows
