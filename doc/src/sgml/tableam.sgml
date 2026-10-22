@@ -374,10 +374,11 @@ my_tableam_handler(PG_FUNCTION_ARGS)
     </listitem>
     <listitem>
      <para>
-      An index access method that sets
-      <structfield>amcanversion</structfield> stores, orders and returns tags,
-      but never interprets them (see <xref linkend="index-api"/>).  Other
-      index access methods store no tags.
+      An index for which <function>index_can_version()</function> is true
+      (its access method sets <structfield>amcanversion</structfield>, and
+      its <function>amindexcanversion</function>, if any, says so) stores,
+      orders and returns tags, but never interprets them (see
+      <xref linkend="index-api"/>).  Other indexes store no tags.
      </para>
     </listitem>
    </itemizedlist>
@@ -448,8 +449,9 @@ my_tableam_handler(PG_FUNCTION_ARGS)
    <itemizedlist>
     <listitem>
      <para>
-      For an entry of an index whose access method sets
-      <structfield>amcanversion</structfield>, decide whether it is valid for
+      For an entry of an index for which
+      <function>index_can_version()</function> is true, decide whether it is
+      valid for
       the version of the row a snapshot sees, that is, whether its key is
       that version's key.  The rule this interface was designed for: the
       entry is valid if its tag names that version or an earlier one, and no
@@ -465,8 +467,8 @@ my_tableam_handler(PG_FUNCTION_ARGS)
     </listitem>
     <listitem>
      <para>
-      When building or validating an <structfield>amcanversion</structfield>
-      index, tag a row whose history changed an attribute the index reads
+      When building or validating an index for which
+      <function>index_can_version()</function> is true, tag a row whose history changed an attribute the index reads
       with the current version's tag; leave it untagged only if there is no
       such history.  Otherwise the new entry would be judged older than that
       history, and rejected.
@@ -505,8 +507,8 @@ my_tableam_handler(PG_FUNCTION_ARGS)
     <function>index_validate_scan</function> in a
     <structname>ValidateIndexState</structname>, whose
     <structfield>tuplesort</structfield> holds the entries' locators as
-    <type>int8</type> datums.  If the index access method sets
-    <structfield>amcanversion</structfield>, it instead sets
+    <type>int8</type> datums.  If <function>index_can_version()</function>
+    is true for the index, it instead sets
     <structfield>versioned</structfield> and collects one tuple per entry,
     with descriptor <structfield>tupdesc</structfield>: the locator, encoded
     in the same way, then the tag, both <type>int8</type>, sorted by locator
@@ -521,17 +523,16 @@ my_tableam_handler(PG_FUNCTION_ARGS)
     <command>VACUUM</command> can set <structfield>version_callback</structfield>
     and <structfield>version_state</structfield> in the
     <structname>IndexVacuumInfo</structname> it passes to
-    <function>index_bulk_delete</function> for an index whose access method
-    sets <structfield>amcanversion</structfield>.  The index access method
+    <function>index_bulk_delete</function> for an index for which
+    <function>index_can_version()</function> is true.  The index access method
     then asks it about every entry, giving the entry's locator and tag, and
     the callback answers <literal>INDEX_ENTRY_DEAD</literal> when no snapshot
     can see a version for which the entry is valid,
     <literal>INDEX_ENTRY_LIVE</literal>, or
     <literal>INDEX_ENTRY_LIVE_UNTAG</literal> for a live entry whose tag can
     be cleared to 0 without changing which versions it is valid for.  The
-    index is reachable through the state.  Indexes whose access method does
-    not set <structfield>amcanversion</structfield> are vacuumed with the
-    usual callback, by locator.  <literal>heap</literal> never sets the
+    index is reachable through the state.  Other indexes are vacuumed with
+    the usual callback, by locator.  <literal>heap</literal> never sets the
     callback.
    </para>
 

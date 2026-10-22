@@ -3635,7 +3635,7 @@ validate_index(Oid heapId, Oid indexId, Snapshot snapshot)
 	 * ValidateIndexState.
 	 */
 	state.versioned = table_locator_is_versioned(heapRelation) &&
-		indexRelation->rd_indam->amcanversion;
+		index_can_version(indexRelation);
 	state.tupdesc = NULL;
 	state.slot = NULL;
 	if (!state.versioned)
