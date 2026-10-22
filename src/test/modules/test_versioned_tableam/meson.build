@@ -35,6 +35,7 @@ tests += {
   'isolation': {
     'specs': [
       'cic_versioned',
+      'cic_bark',
     ],
     'regress_args': ['--temp-config', files('versioned.conf')],
     'runningcheck': false,
