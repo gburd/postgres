@@ -448,6 +448,12 @@ SELECT * FROM update_case(
     CREATE INDEX ON hot_expr_test (t) WHERE x >= 0;
     INSERT INTO hot_expr_test SELECT g, repeat('x', 3000) || g, 0 FROM generate_series(1, 10) g$$,
   $$UPDATE hot_expr_test SET t = repeat('x', 3000) || id, x = x + 1$$);
+-- The same through an expression that returns the column's value as is.
+SELECT * FROM update_case(
+  $$CREATE TABLE hot_expr_test (id int PRIMARY KEY, t text, x int) WITH (fillfactor = 50);
+    CREATE INDEX ON hot_expr_test ((coalesce(t, ''))) WHERE x >= 0;
+    INSERT INTO hot_expr_test SELECT g, repeat('x', 3000) || g, 0 FROM generate_series(1, 10) g$$,
+  $$UPDATE hot_expr_test SET t = repeat('x', 3000) || id, x = x + 1$$);
 -- ... but not for a column of a unique index, which the table's lock
 -- strength is decided by as stored.
 SELECT * FROM update_case(
