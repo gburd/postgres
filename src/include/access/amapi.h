@@ -112,6 +112,9 @@ typedef CompareType (*amtranslate_strategy_function) (StrategyNumber strategy, O
 /* translate general operator types to AM-specific strategies */
 typedef StrategyNumber (*amtranslate_cmptype_function) (CompareType cmptype, Oid opfamily);
 
+/* can this index, of an AM with amcanversion, store version tags? */
+typedef bool (*amindexcanversion_function) (Relation indexRelation);
+
 /* would two non-null values of an index column give the same entries? */
 typedef bool (*amcomparedatums_function) (Relation indexRelation,
 										  IndexInfo *indexInfo,
@@ -318,7 +321,8 @@ typedef struct IndexAmRoutine
 	 * Can this AM store a version tag with each entry?  An AM that sets this
 	 * stores, orders and returns the IndexVersionTag of each entry it is
 	 * given, but never interprets it; see "Versioned locators" in
-	 * amlocator.h.
+	 * amlocator.h.  It may do so for only some of its indexes; see
+	 * amindexcanversion.
 	 */
 	bool		amcanversion;
 	/* OR of parallel vacuum flags.  See vacuum.h for flags. */
@@ -389,6 +393,14 @@ typedef struct IndexAmRoutine
 
 	/* interface function to support HOT updates */
 	amcomparedatums_function amcomparedatums;	/* can be NULL */
+
+	/*
+	 * Does this index store version tags?  For an AM with amcanversion that
+	 * supports tags for only some of its indexes (by the format an index was
+	 * built in, or by the kind of its operator classes, say); NULL means
+	 * every index of the AM does.  Ask index_can_version().
+	 */
+	amindexcanversion_function amindexcanversion;	/* can be NULL */
 } IndexAmRoutine;
 
 

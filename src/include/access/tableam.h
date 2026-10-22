@@ -254,8 +254,9 @@ typedef struct TM_FailureData
  * deletions are possible.  Simple deletion callers can rely on any entries
  * they know to be deletable appearing in the final array as deletable.
  *
- * If the table's locator is versioned (see amlocator.h), an index AM with
- * amcanversion puts each entry's version tag in its TM_IndexStatus, and an
+ * If the table's locator is versioned (see amlocator.h), an index that can
+ * store tags (index_can_version()) puts each entry's version tag in its
+ * TM_IndexStatus, and an
  * entry is deletable when no snapshot can see a version for which the entry
  * (tid, tag) is valid.  That lets the table AM reclaim the stale entries of
  * a row whose current version is still live.  Every other caller leaves the
@@ -1546,9 +1547,10 @@ table_fetch_tid(Relation rel,
  * may be InvalidIndexVersionTag.  Otherwise there are no tags, `tag` must be
  * InvalidIndexVersionTag, and this is table_fetch_tid().
  *
- * Only an index AM with amcanversion needs this.  Every other index's
- * entries are resolved by locator alone, as table_fetch_tid() does, even on
- * a table whose locator is versioned; see amlocator.h.
+ * Only an index that can store tags (index_can_version()) needs this.
+ * Every other index's entries are resolved by locator alone, as
+ * table_fetch_tid() does, even on a table whose locator is versioned; see
+ * amlocator.h.
  *
  * (This and the tepid patch set's fetch_tid_check, which also fills a slot
  * and reports whether the caller must recheck the key, answer the same

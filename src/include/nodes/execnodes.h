@@ -243,8 +243,9 @@ typedef struct IndexInfo
 	 * InvalidIndexVersionTag if none; see "Versioned locators" in
 	 * amlocator.h.  Whoever hands an entry to the index AM sets it first: the
 	 * executor before index_insert, and a table AM whose locator is versioned
-	 * before each callback of its index build and validation scans.  An index
-	 * AM with amcanversion reads it in aminsert and in its build callback
+	 * before each callback of its index build and validation scans, and only
+	 * for an index that can store tags (index_can_version()), which reads it
+	 * in aminsert and in its build callback
 	 * (which finds this IndexInfo through its own callback state).  Passing
 	 * it here rather than as an argument leaves the signatures of aminsert
 	 * and IndexBuildCallback, which every index AM implements, unchanged.
