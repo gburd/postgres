@@ -42,6 +42,7 @@ tests += {
   'tap': {
     'tests': [
       't/001_apply.pl',
+      't/002_bark_tags.pl',
     ],
   },
 }
