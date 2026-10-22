@@ -43,6 +43,7 @@ tests += {
     'tests': [
       't/001_apply.pl',
       't/002_bark_tags.pl',
+      't/003_bark_readers.pl',
     ],
   },
 }
