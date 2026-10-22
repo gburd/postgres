@@ -866,7 +866,9 @@ bark_verify_page_change_impl(Relation index, Buffer buf, OffsetNumber lo,
  * then corrupt on this server only, as a buggy change would leave it.
  * bark-verify-fault-far swaps the page's first two data entries instead,
  * which must lie more than one entry before `off`, outside what the bounded
- * check of the change looks at (bark_verify_page_change_impl).
+ * check of the change looks at (bark_verify_page_change_impl).  With
+ * bark-verify-fault-tag, a tagged entry's tag is set to 0, keeping
+ * BARK_HAS_TAG (a SHAPES check reports it); other entries are left alone.
  */
 void
 bark_verify_plant_fault(Page page, OffsetNumber off)
@@ -889,6 +891,15 @@ bark_verify_plant_fault(Page page, OffsetNumber off)
 
 		*PageGetItemId(page, off) = *PageGetItemId(page, off - 1);
 		*PageGetItemId(page, off - 1) = tmp;
+	}
+	if (IS_INJECTION_POINT_ATTACHED("bark-verify-fault-tag"))
+	{
+		IndexTuple	itup = (IndexTuple) PageGetItem(page,
+													PageGetItemId(page, off));
+
+		if (BarkEntryHasTag(itup) &&
+			BarkEntryGetShape(itup) == BARK_SHAPE_SINGLE)
+			memset(&BarkSingleGetTrailer(itup)->tag, 0, sizeof(IndexVersionTag));
 	}
 	if (IS_INJECTION_POINT_ATTACHED("bark-verify-fault-far"))
 	{
