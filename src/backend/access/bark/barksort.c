@@ -70,6 +70,7 @@
 #include "storage/proc.h"
 #include "tcop/tcopprot.h"
 #include "utils/datum.h"
+#include "utils/injection_point.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/tuplesort.h"
@@ -893,6 +894,10 @@ bark_build_run_tail(BarkBuildState *bs, BarkPageState *st,
 	IndexTuple	right = firstright;
 	Size		bytes = 0;
 	int			n = 0;
+
+	/* Tests break the rule, to show what it keeps (t/002_bark_tags.pl). */
+	if (IS_INJECTION_POINT_ATTACHED("bark-build-ignore-runs"))
+		return 0;
 
 	for (; off >= first; off--)
 	{
