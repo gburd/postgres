@@ -115,7 +115,17 @@ typedef BarkPageOpaqueData *BarkPageOpaque;
 #define BARK_INCOMPLETE_SPLIT (1 << 5)	/* right sibling's downlink is missing */
 #define BARK_HAS_GARBAGE	(1 << 6)	/* page has known-dead entries */
 #define BARK_OVERFLOW		(1 << 7)	/* holds a chunk of an oversized value */
+#define BARK_LOWBOUND_TAGGED (1 << 8)	/* leaf's lower bound may have a tag */
 #define BARK_PREFIX			(1 << 10)	/* leaf keys coded against a prefix */
+
+/*
+ * BARK_LOWBOUND_TAGGED is set on a leaf whose lower bound (its left
+ * sibling's high key) may carry a version tag: the right half of a split
+ * whose high key has one, and the right sibling of a deleted leaf that had
+ * the flag, which takes over that leaf's lower bound.  It is never cleared:
+ * it only says "may", so keeping it is always safe.  VACUUM reads it to
+ * decide whether an entry may be untagged in place (bark_vacuum_untag).
+ */
 
 #define BarkPageIsLeaf(opaque)		(((opaque)->bark_flags & BARK_LEAF) != 0)
 #define BarkPageIsRoot(opaque)		(((opaque)->bark_flags & BARK_ROOT) != 0)
@@ -359,6 +369,20 @@ BarkPageOverwriteEntry(Page page, OffsetNumber off, const void *item,
 		return false;
 	PageGetItemId(page, off)->lp_flags = LP_NORMAL;
 	return true;
+}
+
+/*
+ * Move the leaf entry at `from` to `to` <= from, replaced by `item`: VACUUM's
+ * in-place untagging (bark_vacuum_untag) and its redo.  The entries between
+ * shift up by one; those after `from` keep their offsets.
+ */
+static inline bool
+BarkPageMoveEntry(Page page, OffsetNumber from, OffsetNumber to,
+				  const void *item, Size size)
+{
+	Assert(to <= from);
+	PageIndexTupleDelete(page, from);
+	return PageAddItem(page, item, size, to, false, false) != InvalidOffsetNumber;
 }
 
 /*
@@ -1404,6 +1428,7 @@ extern BarkKeyInfo *bark_build_keyinfo_stride(Relation index, uint16 stride,
 extern bool bark_index_versioned(Relation index);
 extern bool bark_indexcanversion(Relation index);
 extern bool bark_heap_versioned(Relation heap);
+extern IndexTuple bark_entry_untag(IndexTuple itup);
 extern IndexTuple bark_form_tagged(IndexTuple key, ItemPointer tid,
 								   IndexVersionTag tag);
 extern int	bark_compare_tag(IndexVersionTag a, IndexVersionTag b);
@@ -1786,6 +1811,9 @@ extern bool bark_simple_delete(Relation index, Relation heapRel,
 extern bool bark_bottomup_delete(Relation index, Relation heapRel,
 								 BarkKeyInfo *keyinfo, Buffer buf,
 								 IndexTuple newitem, Size newitemsz);
+extern bool bark_tagged_delete(Relation index, Relation heapRel,
+							   BarkKeyInfo *keyinfo, Buffer buf,
+							   IndexTuple newitem, Size newitemsz);
 extern IndexTuple bark_reform_entry(Relation index, Buffer buf,
 									OffsetNumber off, IndexTuple itup,
 									ItemPointer tids, int nlive);

@@ -3676,6 +3676,10 @@ bark_drop_lock_and_maybe_pin(BarkScanOpaque so)
  * chain is dead to every snapshot, so any entry holding only killed TIDs may
  * be marked, whichever row of a multikey index's it was returned for.
  *
+ * In an index that stores version tags a kill is about one entry, the
+ * (TID, tag) the table AM was handed: the entry must have the item's tag
+ * too, so another entry of the same row, of another version, is not marked.
+ *
  * SINGLE and OVERSIZED entries have one TID, so a kill marks them.  Scans
  * skip a marked OVERSIZED entry without reading its overflow chain; simple
  * deletion leaves it, as bottom-up deletion does, for VACUUM, which frees
@@ -3768,6 +3772,10 @@ bark_killitems(IndexScanDesc scan)
 			bark_entry_tid_range(itup, &lo, &hi, so->keyinfo->tidstride);
 			if (ItemPointerCompare(&kitem->heapTid, &lo) < 0 ||
 				ItemPointerCompare(&kitem->heapTid, &hi) > 0)
+				continue;
+
+			/* A kill is of one entry: (TID, tag), of a row's versions. */
+			if (BarkEntryGetTag(itup) != kitem->tag)
 				continue;
 
 			/* Every member must be killed, from this item on. */

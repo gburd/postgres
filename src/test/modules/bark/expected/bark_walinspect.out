@@ -170,10 +170,10 @@ CREATE TEMP TABLE wi_rec AS
   WHERE resource_manager = 'Bark';
 -- Every record type, and the full shape of every one of its descriptions.
 WITH f(rtype, pat) AS (VALUES
-  ('VACUUM', '^ndeleted: \d+, nupdated: \d+(, deleted: \[[0-9, ]*\], updated: \[[0-9, ]*\])?$'),
+  ('VACUUM', '^ndeleted: \d+, nupdated: \d+, nuntagged: \d+(, deleted: \[[0-9, ]*\], updated: \[[0-9, ]*\])?$'),
   ('DELETE', '^snapshotConflictHorizon: \d+, ndeleted: \d+, nupdated: \d+, isCatalogRel: [TF](, deleted: \[[0-9, ]*\], updated: \[[0-9, ]*\])?$'),
   ('MERGE', '^ndeleted: \d+, nupdated: \d+(, deleted: \[[0-9, ]*\], updated: \[[0-9, ]*\])?$'),
-  ('UNLINK_PAGE', '^left: \d+, right: \d+, safexid: \d+:\d+, poffset: \d+$'),
+  ('UNLINK_PAGE', '^left: \d+, right: \d+, safexid: \d+:\d+, poffset: \d+(, lower bound tagged)?$'),
   ('REUSE_PAGE', '^rel: \d+/\d+/\d+, blk: \d+, snapshotConflictHorizon: \d+:\d+, isCatalogRel: [TF]$'),
   ('MARK_DELETED', '^next: \d+, safexid: \d+:\d+$'),
   ('INSERT_LEAF', '^off: \d+$'),
@@ -181,7 +181,7 @@ WITH f(rtype, pat) AS (VALUES
   ('INSERT_MULTI', '^nentries: ([2-9]|\d\d+), offsets: \[\d+(, \d+)+\]$'),
   ('OVERWRITE', '^off: \d+$'),
   ('ADD_TID', '^off: \d+, tid: \(\d+,\d+\)$'),
-  ('SPLIT', '^level: \d+, leaf: [TF], left: \d+, right: \d+, cycleid: \d+, prefix: [L-][R-](, left logged whole|, firstrightoff: \d+(, newitemoff: \d+)?(, replaceoff: \d+)?)$'),
+  ('SPLIT', '^level: \d+, leaf: [TF], left: \d+, right: \d+, cycleid: \d+, prefix: [L-][R-](, lower bound tagged: L?R?)?(, left logged whole|, firstrightoff: \d+(, newitemoff: \d+)?(, replaceoff: \d+)?)$'),
   ('OVERFLOW', '^npages: [1-9]\d*$'),
   ('NEWROOT', '^root: \d+, level: [1-9]\d*$'),
   ('CREATE_ROOT', '^root: \d+$'),
