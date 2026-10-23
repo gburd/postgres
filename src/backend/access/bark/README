@@ -409,6 +409,27 @@ the right sibling's, which shares its chain only with the deleted leaf's high
 key, since it is never its internal page's first data item.  So the sharing
 needs no reference count.
 
+Reading an overflow chain
+-------------------------
+
+bark_fetch_oversized follows a chain's bark_next links, one page at a
+time.  A chunk directory on the first page, listing the chain's other
+blocks so that a read_stream could request them together (RethinkDB's
+blob reference, RETHINKDB-REVIEW F3, backlog R4b), was built, measured
+and not adopted, because it made no cold lookup faster.  Release builds,
+4000 keys of 30 to 60 kB (4 to 8 pages each), 400 cold point lookups,
+median of 3, on NVMe: with contiguous chains, as a build or ascending
+inserts write them, it was 46% slower with io_method=worker (3115 against
+2140 ms) and 25% with sync, since following the links already reads
+sequentially and the kernel's readahead serves the later pages; with
+chains on scattered recycled pages it was 1% to 7% slower, since each
+lookup's 25-odd descent and comparison reads dominate; warm lookups and
+inserts did not change (within 1%).  Skipping the stream for a
+contiguous directory gave back the contiguous case but no win elsewhere.
+The branch is kept as archive/bark/r4b-chunkdir, and the measurements are
+in the BARK team's BENCHMARK-2026-10.md, "R4b (parked)".  Storage with a
+much higher read latency than local NVMe might change the answer.
+
 Heap TID order
 --------------
 
