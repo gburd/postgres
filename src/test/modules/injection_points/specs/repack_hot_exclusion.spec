@@ -1,17 +1,18 @@
 # REPACK (CONCURRENTLY) replaying an UPDATE that kept an exclusion
 # constraint's index entries.
 #
-# hashint8() gives 1 and 2^32 the same hash code, so changing a row's k
-# from 1 to 2^32 keeps its hash index entry (a HOT update).  When REPACK
+# An interval's hash code is hashint8() of its span in microseconds, so
+# spans of 1 and 2^32 microseconds collide, and changing a row's k from one
+# to the other keeps its hash index entry (a HOT update).  When REPACK
 # replays that update on the new table, the index there must find the row
 # under its new value, and the constraint must still hold.
 setup
 {
 	CREATE EXTENSION injection_points;
 
-	CREATE TABLE repack_hot_excl (id int PRIMARY KEY, k int8,
+	CREATE TABLE repack_hot_excl (id int PRIMARY KEY, k interval,
 		EXCLUDE USING hash (k WITH =)) WITH (fillfactor = 10);
-	INSERT INTO repack_hot_excl VALUES (1, 1), (2, 2);
+	INSERT INTO repack_hot_excl VALUES (1, '00:00:00.000001'), (2, '00:00:00.000002');
 }
 
 teardown
@@ -34,14 +35,14 @@ step check_after_repack
 {
 	SET enable_seqscan = off;
 	SET enable_bitmapscan = off;
-	SELECT id, k FROM repack_hot_excl WHERE k = 4294967296;
-	SELECT id, k FROM repack_hot_excl WHERE k = 1;
+	SELECT id, k FROM repack_hot_excl WHERE k = '01:11:34.967296';
+	SELECT id, k FROM repack_hot_excl WHERE k = '00:00:00.000001';
 	RESET enable_seqscan;
 	RESET enable_bitmapscan;
 }
 step insert_conflict
 {
-	INSERT INTO repack_hot_excl VALUES (3, 4294967296);
+	INSERT INTO repack_hot_excl VALUES (3, '01:11:34.967296');
 }
 teardown
 {
@@ -51,7 +52,7 @@ teardown
 session s2
 step update_hot
 {
-	UPDATE repack_hot_excl SET k = 4294967296 WHERE id = 1;
+	UPDATE repack_hot_excl SET k = '01:11:34.967296' WHERE id = 1;
 	SELECT pg_stat_get_xact_tuples_hot_updated('repack_hot_excl'::regclass)
 		AS hot;
 }

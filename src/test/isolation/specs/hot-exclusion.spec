@@ -1,17 +1,19 @@
 # HOT updates and exclusion constraints, concurrently.
 #
-# hashint8() folds the high half of a value into the low half, so 1 and
-# 2^32 have the same hash code: a hash index gives them the same entry, and
-# changing a row's k from 1 to 2^32 can be a HOT update.  The exclusion
+# An interval hashes as hashint8() of its span in microseconds, which folds
+# the high half into the low half, so spans of 1 and 2^32 microseconds have
+# the same hash code: a hash index gives them the same entry, and changing a
+# row's k from one to the other can be a HOT update.  (Not int8: its
+# equality implies image equality, so the index is not asked.)  The exclusion
 # constraint must still be checked against the new value, and a concurrent
 # insertion of the same value must still see the update, and the update
 # the insertion, whichever comes first.
 
 setup
 {
-	CREATE TABLE hot_excl (id int, k int8, EXCLUDE USING hash (k WITH =))
+	CREATE TABLE hot_excl (id int, k interval, EXCLUDE USING hash (k WITH =))
 		WITH (fillfactor = 10);
-	INSERT INTO hot_excl VALUES (1, 1);
+	INSERT INTO hot_excl VALUES (1, '00:00:00.000001');
 }
 
 teardown
@@ -21,22 +23,22 @@ teardown
 
 session s1
 step s1_begin	{ BEGIN; }
-step s1_upd		{ UPDATE hot_excl SET k = 4294967296 WHERE id = 1; }
+step s1_upd		{ UPDATE hot_excl SET k = '01:11:34.967296' WHERE id = 1; }
 step s1_hot		{ SELECT pg_stat_get_xact_tuples_hot_updated('hot_excl'::regclass) AS hot; }
 step s1_commit	{ COMMIT; }
 step s1_abort	{ ROLLBACK; }
 
 session s2
 step s2_begin	{ BEGIN; }
-step s2_ins		{ INSERT INTO hot_excl VALUES (2, 4294967296); }
-step s2_ins_old	{ INSERT INTO hot_excl VALUES (3, 1); }
+step s2_ins		{ INSERT INTO hot_excl VALUES (2, '01:11:34.967296'); }
+step s2_ins_old	{ INSERT INTO hot_excl VALUES (3, '00:00:00.000001'); }
 step s2_commit	{ COMMIT; }
 step s2_abort	{ ROLLBACK; }
 step s2_check
 {
 	SET enable_seqscan = off;
 	SET enable_bitmapscan = off;
-	SELECT id, k FROM hot_excl WHERE k IN (1, 4294967296) ORDER BY id;
+	SELECT id, k FROM hot_excl WHERE k IN ('00:00:00.000001', '01:11:34.967296') ORDER BY id;
 	RESET enable_seqscan;
 	RESET enable_bitmapscan;
 }

@@ -591,9 +591,8 @@ IndexUnaffected(ResultRelInfo *resultRelInfo, int i, Bitmapset *mine,
  * that are equal but stored differently count as changed; that costs an
  * index entry, never a missed one.
  *
- * simple_heap_update() makes the same determination from a TID and a
- * HeapTuple in HeapUpdateModifiedIdxAttrs(), and simple_table_tuple_update()
- * with table_slot_modified_idx_attrs().
+ * simple_heap_update() and simple_table_tuple_update() make the same
+ * determination with table_slot_modified_idx_attrs().
  *
  * The set is then narrowed to what the indexes see, using estate.  An
  * attribute that non-summarizing indexes reference only through expressions

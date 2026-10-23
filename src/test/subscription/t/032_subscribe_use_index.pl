@@ -736,16 +736,16 @@ SKIP:
 # =============================================================================
 # Testcase start: an applied UPDATE can be HOT on the subscriber although it
 # changes a column of an exclusion constraint, whose index keeps its entry
-# (hashint8() gives 1 and 2^32 the same hash code), and the constraint is
-# still checked there.
+# (an interval's hash code is hashint8() of its span in microseconds, so
+# spans of 1 and 2^32 collide), and the constraint is still checked there.
 
 $node_publisher->safe_psql('postgres',
-	"CREATE TABLE test_hot_excl (id int PRIMARY KEY, k int8)");
+	"CREATE TABLE test_hot_excl (id int PRIMARY KEY, k interval)");
 $node_subscriber->safe_psql('postgres',
-	"CREATE TABLE test_hot_excl (id int PRIMARY KEY, k int8, EXCLUDE USING hash (k WITH =)) WITH (fillfactor = 10)"
+	"CREATE TABLE test_hot_excl (id int PRIMARY KEY, k interval, EXCLUDE USING hash (k WITH =)) WITH (fillfactor = 10)"
 );
 $node_publisher->safe_psql('postgres',
-	"INSERT INTO test_hot_excl VALUES (1, 1), (2, 2)");
+	"INSERT INTO test_hot_excl VALUES (1, '00:00:00.000001'), (2, '00:00:00.000002')");
 $node_publisher->safe_psql('postgres',
 	"CREATE PUBLICATION tap_pub_hot_excl FOR TABLE test_hot_excl");
 $node_subscriber->safe_psql('postgres',
@@ -754,7 +754,7 @@ $node_subscriber->safe_psql('postgres',
 $node_subscriber->wait_for_subscription_sync($node_publisher, $appname);
 
 $node_publisher->safe_psql('postgres',
-	"UPDATE test_hot_excl SET k = 4294967296 WHERE id = 1");
+	"UPDATE test_hot_excl SET k = '01:11:34.967296' WHERE id = 1");
 $node_publisher->wait_for_catchup($appname);
 # the apply worker reports its counts asynchronously
 ok( $node_subscriber->poll_query_until(
@@ -763,14 +763,14 @@ ok( $node_subscriber->poll_query_until(
 	),
 	'applied UPDATE of an exclusion constraint column is HOT');
 $result = $node_subscriber->safe_psql('postgres',
-	"SET enable_seqscan = off; SET enable_bitmapscan = off; SELECT id FROM test_hot_excl WHERE k = 4294967296"
+	"SET enable_seqscan = off; SET enable_bitmapscan = off; SELECT id FROM test_hot_excl WHERE k = '01:11:34.967296'"
 );
 is($result, qq(1), 'and the exclusion index finds the row under its new value');
 
 # A conflicting change is still caught by the subscriber's constraint.
 my $log_offset = -s $node_subscriber->logfile;
 $node_publisher->safe_psql('postgres',
-	"UPDATE test_hot_excl SET k = 4294967296 WHERE id = 2");
+	"UPDATE test_hot_excl SET k = '01:11:34.967296' WHERE id = 2");
 $node_subscriber->wait_for_log(
 	qr/conflicting key value violates exclusion constraint "test_hot_excl_k_excl"/,
 	$log_offset);
@@ -779,12 +779,12 @@ pass('a conflicting applied UPDATE is rejected');
 # make room for it on the subscriber, so that apply catches up before the
 # subscription is dropped
 $node_subscriber->safe_psql('postgres',
-	"UPDATE test_hot_excl SET k = 3 WHERE id = 1");
+	"UPDATE test_hot_excl SET k = '00:00:00.000003' WHERE id = 1");
 $node_publisher->wait_for_catchup($appname);
 $result = $node_subscriber->safe_psql('postgres',
 	"SELECT id, k FROM test_hot_excl ORDER BY id");
-is( $result, qq(1|3
-2|4294967296), 'and is applied once the conflict is gone');
+is( $result, qq(1|00:00:00.000003
+2|01:11:34.967296), 'and is applied once the conflict is gone');
 
 $node_subscriber->safe_psql('postgres', "DROP SUBSCRIPTION tap_sub_hot_excl");
 $node_subscriber->safe_psql('postgres', "DROP TABLE test_hot_excl");

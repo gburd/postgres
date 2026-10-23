@@ -76,10 +76,10 @@ static void check_lock_if_inplace_updateable_rel(Relation relation,
 												 const ItemPointerData *otid,
 												 HeapTuple newtup);
 static void check_inplace_rel_lock(HeapTuple oldtup);
-#endif
 static Bitmapset *HeapUpdateModifiedIdxAttrs(Relation relation,
 											 const Bitmapset *attrs,
 											 HeapTuple oldtup, HeapTuple newtup);
+#endif
 static bool heap_acquire_tuplock(Relation relation, const ItemPointerData *tid,
 								 LockTupleMode mode, LockWaitPolicy wait_policy,
 								 bool *have_tuple_lock);
@@ -4565,7 +4565,6 @@ check_inplace_rel_lock(HeapTuple oldtup)
 			 ItemPointerGetBlockNumber(&oldtup->t_self),
 			 ItemPointerGetOffsetNumber(&oldtup->t_self));
 }
-#endif
 
 /*
  * Check if the specified attribute's values are the same.  Subroutine for
@@ -4611,6 +4610,7 @@ heap_attr_equals(TupleDesc tupdesc, int attrnum, Datum value1, Datum value2,
 		return datumIsEqual(value1, value2, att->attbyval, att->attlen);
 	}
 }
+#endif
 
 /*
  * HOT updates are possible when either: a) there are no modified indexed
@@ -4672,10 +4672,13 @@ HeapUpdateDetermineLockmode(Relation relation, const Bitmapset *modified_idx_att
 	return lockmode;
 }
 
+#ifdef USE_ASSERT_CHECKING
 /*
  * Return a Bitmapset that contains the members of attrs, a set of indexed
  * attributes, whose values differ between oldtup and newtup.  Reads no
- * catalogs, so it may be called with the buffer locked.
+ * catalogs, so it may be called with the buffer locked.  heap_update() uses
+ * it to check its caller's set; it compares the tuples independently of
+ * table_slot_modified_idx_attrs(), which the callers use.
  */
 static Bitmapset *
 HeapUpdateModifiedIdxAttrs(Relation relation, const Bitmapset *attrs,
@@ -4742,6 +4745,7 @@ HeapUpdateModifiedIdxAttrs(Relation relation, const Bitmapset *attrs,
 
 	return modified_idx_attrs;
 }
+#endif
 
 /*
  *	simple_heap_update - replace a tuple
@@ -4759,9 +4763,8 @@ simple_heap_update(Relation relation, const ItemPointerData *otid, HeapTuple tup
 	TM_FailureData tmfd;
 	LockTupleMode lockmode;
 	TupleTableSlot *slot;
+	TupleTableSlot *newslot;
 	BufferHeapTupleTableSlot *bslot;
-	HeapTuple	oldtup;
-	Bitmapset  *indexed_attrs;
 	Bitmapset  *modified_idx_attrs;
 	bool		hot_allowed,
 				summarized_only;
@@ -4817,13 +4820,16 @@ simple_heap_update(Relation relation, const ItemPointerData *otid, HeapTuple tup
 
 	/* Store in slot, transferring existing pin */
 	ExecStorePinnedBufferHeapTuple(&bslot->base.tupdata, slot, buffer);
-	oldtup = ExecFetchSlotHeapTuple(slot, false, NULL);
 
-	indexed_attrs = RelationGetIndexAttrBitmap(relation,
-											   INDEX_ATTR_BITMAP_INDEXED);
-	modified_idx_attrs = HeapUpdateModifiedIdxAttrs(relation, indexed_attrs,
-													oldtup, tup);
-	bms_free(indexed_attrs);
+	/*
+	 * Compare the two as the executor does, through slots, which deform each
+	 * tuple once and only as far as the last indexed attribute.
+	 */
+	newslot = MakeSingleTupleTableSlot(RelationGetDescr(relation),
+									   &TTSOpsHeapTuple);
+	ExecStoreHeapTuple(tup, newslot, false);
+	modified_idx_attrs = table_slot_modified_idx_attrs(relation, slot, newslot);
+	ExecDropSingleTupleTableSlot(newslot);
 	lockmode = HeapUpdateDetermineLockmode(relation, modified_idx_attrs);
 	hot_allowed = HeapUpdateHotAllowable(relation, modified_idx_attrs, &summarized_only);
 
