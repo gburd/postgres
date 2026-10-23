@@ -671,6 +671,7 @@ DependencyGeneratorData
 DependencyType
 DeserialIOData
 DestReceiver
+DictCompressRoutine
 DictISpell
 DictInt
 DictSimple

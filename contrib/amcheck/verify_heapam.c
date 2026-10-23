@@ -1833,6 +1833,7 @@ check_tuple_attribute(HeapCheckContext *ctx)
 			case TOAST_LZ4_COMPRESSION_ID:
 			case TOAST_ZSTD_COMPRESSION_ID:
 			case TOAST_ZSTD_DICT_COMPRESSION_ID:
+			case TOAST_LZ4_DICT_COMPRESSION_ID:
 				valid = (toast_compression_id_needs_cmid_byte(cmid) ==
 						 VARTAG_IS_ONDISK_LONG(va_tag_value));
 				break;

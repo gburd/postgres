@@ -51,6 +51,10 @@
 #include <zdict.h>
 #endif
 
+#ifdef USE_LZ4
+#include <lz4.h>
+#endif
+
 #include "access/detoast.h"
 #include "access/genam.h"
 #include "access/htup_details.h"
@@ -71,6 +75,7 @@
 #include "utils/fmgroids.h"
 #include "utils/inval.h"
 #include "utils/lsyscache.h"
+#include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
@@ -80,6 +85,12 @@
 			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED), \
 			 errmsg("compression method %s not supported", "zstd_dict"), \
 			 errdetail("This functionality requires the server to be built with %s support.", "zstd")))
+
+#define NO_LZ4_SUPPORT() \
+	ereport(ERROR, \
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED), \
+			 errmsg("compression method %s not supported", "lz4_dict"), \
+			 errdetail("This functionality requires the server to be built with %s support.", "lz4")))
 
 #define DICT_MIN_SIZE		256
 #define DICT_MAX_SIZE		(1024 * 1024)
@@ -101,6 +112,14 @@ dict_owner_relid(Relation rel)
 	return RelationGetRelid(rel);
 }
 
+/* Does this compression method char use a TOAST dictionary? */
+static inline bool
+dict_method(char cmethod)
+{
+	return (cmethod == TOAST_ZSTD_DICT_COMPRESSION ||
+			cmethod == TOAST_LZ4_DICT_COMPRESSION);
+}
+
 /*
  * Does relid.attnum (still) use zstd_dict?  A dropped column does not: a
  * rewrite has replaced its values with nulls.
@@ -117,8 +136,7 @@ dict_column_uses_dict(Oid relid, AttrNumber attnum)
 	if (!HeapTupleIsValid(tp))
 		return false;
 	att = (Form_pg_attribute) GETSTRUCT(tp);
-	result = !att->attisdropped &&
-		att->attcompression == TOAST_ZSTD_DICT_COMPRESSION;
+	result = !att->attisdropped && dict_method(att->attcompression);
 	ReleaseSysCache(tp);
 	return result;
 }
@@ -198,8 +216,7 @@ toast_dictionary_keep(Relation rel, AttrNumber attnum, const varlena *value)
 	bool		result = false;
 	Oid			relid = dict_owner_relid(rel);
 
-	if (TupleDescAttr(RelationGetDescr(rel), attnum - 1)->attcompression !=
-		TOAST_ZSTD_DICT_COMPRESSION)
+	if (!dict_method(TupleDescAttr(RelationGetDescr(rel), attnum - 1)->attcompression))
 		return false;
 
 	tup = SearchSysCache1(TOASTDICTOID,
@@ -398,6 +415,158 @@ zstd_dict_decompress_datum_slice(const varlena *value, int32 slicelength)
 	return result;
 }
 
+#ifdef USE_LZ4
+/*
+ * Per-backend cache of the raw dictionary bytes most recently used, keyed by
+ * OID.  Unlike zstd, lz4 has no digested dictionary object: LZ4_loadDict()
+ * and LZ4_decompress_safe_usingDict() take the dictionary bytes directly, so
+ * caching the bytea is all that is needed.  Dropped on invalidation of
+ * pg_toast_dictionary.
+ */
+static Oid	lz4dict_id = InvalidOid;
+static bytea *lz4dict = NULL;
+
+static void
+lz4_dict_cache_invalidate(Datum arg, SysCacheIdentifier cacheid, uint32 hashvalue)
+{
+	if (lz4dict)
+		pfree(lz4dict);
+	lz4dict = NULL;
+	lz4dict_id = InvalidOid;
+}
+
+static bytea *
+lz4_dict_get(Oid dictid)
+{
+	static bool registered = false;
+
+	if (!registered)
+	{
+		CacheRegisterSyscacheCallback(TOASTDICTOID, lz4_dict_cache_invalidate,
+									  (Datum) 0);
+		registered = true;
+	}
+	if (lz4dict_id != dictid)
+	{
+		bytea	   *d = dict_fetch(dictid);
+		bytea	   *cached;
+
+		/*
+		 * dict_fetch() allocates in the caller's (often short-lived) context,
+		 * but this cache outlives one call, so keep a copy in
+		 * CacheMemoryContext.  Unlike zstd, lz4 has no digested object to hold
+		 * instead, so the bytes themselves are the cache.
+		 */
+		cached = (bytea *) MemoryContextAlloc(CacheMemoryContext, VARSIZE(d));
+		memcpy(cached, d, VARSIZE(d));
+		pfree(d);
+		if (lz4dict)
+			pfree(lz4dict);
+		lz4dict = cached;
+		lz4dict_id = dictid;
+	}
+	return lz4dict;
+}
+#endif							/* USE_LZ4 */
+
+/*
+ * Compress with the given dictionary using lz4.  Layout matches
+ * zstd_dict_compress_datum(): VARHDRSZ_COMPRESSED_DICT header then the lz4
+ * block.  The uncompressed size is recovered from va_tcinfo at read time, so
+ * lz4's block format (which does not store it) is enough.
+ */
+static varlena *
+lz4_dict_compress_datum(const varlena *value, Oid dictid)
+{
+#ifndef USE_LZ4
+	NO_LZ4_SUPPORT();
+	return NULL;
+#else
+	int32		valsize = VARSIZE_ANY_EXHDR(value);
+	int32		max_size = LZ4_compressBound(valsize);
+	bytea	   *dict = lz4_dict_get(dictid);
+	LZ4_stream_t *stream;
+	varlena    *tmp;
+	int32		len;
+
+	stream = LZ4_createStream();
+	if (stream == NULL)
+		elog(ERROR, "could not create lz4 stream");
+	LZ4_loadDict(stream, VARDATA_ANY(dict), VARSIZE_ANY_EXHDR(dict));
+
+	tmp = (varlena *) palloc(max_size + VARHDRSZ_COMPRESSED_DICT);
+	len = LZ4_compress_fast_continue(stream,
+									 VARDATA_ANY(value),
+									 (char *) tmp + VARHDRSZ_COMPRESSED_DICT,
+									 valsize, max_size, 1);
+	LZ4_freeStream(stream);
+	if (len <= 0)
+		elog(ERROR, "lz4 compression failed");
+	if (len > valsize)
+	{
+		pfree(tmp);
+		return NULL;
+	}
+	memcpy((char *) tmp + VARHDRSZ_COMPRESSED_LONG, &dictid, sizeof(dictid));
+	SET_VARSIZE_COMPRESSED(tmp, len + VARHDRSZ_COMPRESSED_DICT);
+	return tmp;
+#endif
+}
+
+static varlena *
+lz4_dict_decompress_datum(const varlena *value)
+{
+#ifndef USE_LZ4
+	NO_LZ4_SUPPORT();
+	return NULL;
+#else
+	Oid			dictid = dict_datum_get_id(value);
+	uint32		extsize = VARDATA_COMPRESSED_GET_EXTSIZE(value);
+	bytea	   *dict = lz4_dict_get(dictid);
+	varlena    *result;
+	int32		rawsize;
+
+	result = (varlena *) palloc(extsize + VARHDRSZ);
+	rawsize = LZ4_decompress_safe_usingDict((const char *) value + VARHDRSZ_COMPRESSED_DICT,
+											VARDATA(result),
+											VARSIZE(value) - VARHDRSZ_COMPRESSED_DICT,
+											extsize,
+											VARDATA_ANY(dict),
+											VARSIZE_ANY_EXHDR(dict));
+	if (rawsize < 0 || (uint32) rawsize != extsize)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg_internal("compressed lz4 data is corrupt")));
+	SET_VARSIZE(result, rawsize + VARHDRSZ);
+	return result;
+#endif
+}
+
+/*
+ * Prefix decompression.  lz4's block API cannot stop early, so a prefix of a
+ * dictionary-compressed value decodes the whole value and then truncates,
+ * exactly as the non-dictionary lz4 slice path does for values whose true
+ * size exceeds the slice.
+ */
+static varlena *
+lz4_dict_decompress_datum_slice(const varlena *value, int32 slicelength)
+{
+	varlena    *result = lz4_dict_decompress_datum(value);
+
+	if (VARSIZE(result) - VARHDRSZ > slicelength)
+		SET_VARSIZE(result, slicelength + VARHDRSZ);
+	return result;
+}
+
+/*
+ * The lz4 dictionary codec.  See DictCompressRoutine in toast_dictionary.h.
+ */
+static const DictCompressRoutine lz4_dict_routine = {
+	.compress = lz4_dict_compress_datum,
+	.decompress = lz4_dict_decompress_datum,
+	.decompress_slice = lz4_dict_decompress_datum_slice,
+};
+
 /*
  * The zstd dictionary codec.  See DictCompressRoutine in
  * toast_dictionary.h.
@@ -420,6 +589,8 @@ dict_routine_for_method(char cmethod)
 	{
 		case TOAST_ZSTD_DICT_COMPRESSION:
 			return &zstd_dict_routine;
+		case TOAST_LZ4_DICT_COMPRESSION:
+			return &lz4_dict_routine;
 		default:
 			elog(ERROR, "invalid dictionary compression method %d", cmethod);
 			return NULL;		/* keep compiler quiet */
@@ -433,6 +604,8 @@ dict_routine_for_id(ToastCompressionId cmid)
 	{
 		case TOAST_ZSTD_DICT_COMPRESSION_ID:
 			return &zstd_dict_routine;
+		case TOAST_LZ4_DICT_COMPRESSION_ID:
+			return &lz4_dict_routine;
 		default:
 			elog(ERROR, "invalid dictionary compression method id %d", cmid);
 			return NULL;		/* keep compiler quiet */
@@ -598,11 +771,11 @@ dict_check_column(Relation rel, const char *colname)
 				 errmsg("column \"%s\" of relation \"%s\" does not exist",
 						colname, RelationGetRelationName(rel))));
 	att = TupleDescAttr(RelationGetDescr(rel), attnum - 1);
-	if (att->attcompression != TOAST_ZSTD_DICT_COMPRESSION)
+	if (!dict_method(att->attcompression))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("column \"%s\" does not use compression method %s",
-						colname, "zstd_dict")));
+				 errmsg("column \"%s\" does not use a dictionary compression method",
+						colname)));
 	return attnum;
 }
 #endif							/* USE_ZSTD */

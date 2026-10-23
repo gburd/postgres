@@ -53,6 +53,7 @@ typedef enum ToastCompressionId
 	TOAST_ZSTD_COMPRESSION_ID = 2,
 	TOAST_INVALID_COMPRESSION_ID = 3,
 	TOAST_ZSTD_DICT_COMPRESSION_ID = 4,
+	TOAST_LZ4_DICT_COMPRESSION_ID = 5,
 } ToastCompressionId;
 
 StaticAssertDecl(TOAST_INVALID_COMPRESSION_ID == VARLENA_COMPRESS_METHOD_LONG,
@@ -83,10 +84,13 @@ toast_compression_id_needs_cmid_byte(ToastCompressionId cmid)
 static inline bool
 VARATT_IS_COMPRESSED_DICT(const void *PTR)
 {
+	ToastCompressionId cmid;
+
 	if (!VARATT_IS_COMPRESSED(PTR))
 		return false;
-	return VARDATA_COMPRESSED_GET_COMPRESS_METHOD(PTR) ==
-		TOAST_ZSTD_DICT_COMPRESSION_ID;
+	cmid = (ToastCompressionId) VARDATA_COMPRESSED_GET_COMPRESS_METHOD(PTR);
+	return (cmid == TOAST_ZSTD_DICT_COMPRESSION_ID ||
+			cmid == TOAST_LZ4_DICT_COMPRESSION_ID);
 }
 
 /*
@@ -98,6 +102,7 @@ VARATT_IS_COMPRESSED_DICT(const void *PTR)
 #define TOAST_LZ4_COMPRESSION			'l'
 #define TOAST_ZSTD_COMPRESSION			'z'
 #define TOAST_ZSTD_DICT_COMPRESSION		'd'
+#define TOAST_LZ4_DICT_COMPRESSION		'e'
 #define InvalidCompressionMethod		'\0'
 
 #define CompressionMethodIsValid(cm)  ((cm) != InvalidCompressionMethod)

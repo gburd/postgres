@@ -522,6 +522,7 @@ toast_decompress_datum(varlena *attr)
 		case TOAST_ZSTD_COMPRESSION_ID:
 			return zstd_decompress_datum(attr);
 		case TOAST_ZSTD_DICT_COMPRESSION_ID:
+		case TOAST_LZ4_DICT_COMPRESSION_ID:
 			return toast_dict_decompress_datum(attr);
 		default:
 			elog(ERROR, "invalid compression method id %d", cmid);
@@ -569,6 +570,7 @@ toast_decompress_datum_slice(varlena *attr, int32 slicelength)
 		case TOAST_ZSTD_COMPRESSION_ID:
 			return zstd_decompress_datum_slice(attr, slicelength);
 		case TOAST_ZSTD_DICT_COMPRESSION_ID:
+		case TOAST_LZ4_DICT_COMPRESSION_ID:
 			return toast_dict_decompress_datum_slice(attr, slicelength);
 		default:
 			elog(ERROR, "invalid compression method id %d", cmid);

@@ -45,7 +45,7 @@ ERROR:  must be owner of table cmdict
 RESET ROLE;
 CREATE TABLE cmplain (f1 text COMPRESSION zstd);
 SELECT pg_train_toast_dictionary('cmplain', 'f1');
-ERROR:  column "f1" does not use compression method zstd_dict
+ERROR:  column "f1" does not use a dictionary compression method
 SELECT pg_train_toast_dictionary('cmdict', 'nosuchcol');
 ERROR:  column "nosuchcol" of relation "cmdict" does not exist
 SELECT pg_train_toast_dictionary('cmdict', 'f1', 10);

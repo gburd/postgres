@@ -145,6 +145,26 @@ toast_compress_datum_rel(Datum value, char cmethod, Relation rel,
 				}
 			}
 			break;
+		case TOAST_LZ4_DICT_COMPRESSION:
+			{
+				Oid			dictid = InvalidOid;
+
+				if (rel != NULL)
+					dictid = toast_dictionary_current(rel, attnum);
+				if (OidIsValid(dictid))
+				{
+					tmp = toast_dict_compress_datum((const varlena *) DatumGetPointer(value),
+													TOAST_LZ4_DICT_COMPRESSION,
+												dictid);
+					cmid = TOAST_LZ4_DICT_COMPRESSION_ID;
+				}
+				else
+				{
+					tmp = lz4_compress_datum((const varlena *) DatumGetPointer(value));
+					cmid = TOAST_LZ4_COMPRESSION_ID;
+				}
+			}
+			break;
 		default:
 			elog(ERROR, "invalid compression method %c", cmethod);
 	}
@@ -319,7 +339,8 @@ toast_save_datum(Relation rel, Datum value,
 		Assert(cmid == TOAST_PGLZ_COMPRESSION_ID ||
 			   cmid == TOAST_LZ4_COMPRESSION_ID ||
 			   cmid == TOAST_ZSTD_COMPRESSION_ID ||
-			   cmid == TOAST_ZSTD_DICT_COMPRESSION_ID);
+			   cmid == TOAST_ZSTD_DICT_COMPRESSION_ID ||
+			   cmid == TOAST_LZ4_DICT_COMPRESSION_ID);
 		if (toast_compression_id_needs_cmid_byte(cmid))
 		{
 			pointer_long = true;

@@ -17889,6 +17889,9 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 					case 'd':
 						cmname = "zstd_dict";
 						break;
+					case 'e':
+						cmname = "lz4_dict";
+						break;
 					default:
 						cmname = NULL;
 						break;
