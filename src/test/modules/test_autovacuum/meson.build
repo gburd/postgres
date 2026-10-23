@@ -13,4 +13,12 @@ tests += {
       't/002_toast_relopts.pl',
     ],
   },
+  'pytest': {
+    'env': {
+       'enable_injection_points': get_option('injection_points') ? 'yes' : 'no',
+    },
+    'tests': [
+      'pyt/test_001_parallel_autovacuum.py',
+    ],
+  },
 }

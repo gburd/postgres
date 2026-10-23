@@ -31,4 +31,9 @@ tests += {
       't/001_auto_explain.pl',
     ],
   },
+  'pytest': {
+    'tests': [
+      'pyt/test_001_auto_explain.py',
+    ],
+  },
 }

@@ -29,4 +29,10 @@ tests += {
     ],
     'deps': [libpq_pipeline],
   },
+  'pytest': {
+    'tests': [
+      'pyt/test_001_libpq_pipeline.py',
+    ],
+    'deps': [libpq_pipeline],
+  },
 }

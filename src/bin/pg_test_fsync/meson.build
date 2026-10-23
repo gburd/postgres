@@ -26,6 +26,11 @@ tests += {
       't/001_basic.pl',
     ],
   },
+  'pytest': {
+    'tests': [
+      'pyt/test_001_basic.py',
+    ],
+  },
 }
 
 subdir('po', if_found: libintl)
