@@ -2145,12 +2145,14 @@ typedef struct BarkKeySample
 {
 	BlockNumber root;			/* the root the sample was read under */
 	int			nkeys;
+	double	   *density;		/* per key, its leaf's TIDs, -1 unread */
 	IndexTuple	keys[FLEXIBLE_ARRAY_MEMBER];
 } BarkKeySample;
 
 #define BARK_SAMPLE_KEYS	1024	/* separator keys kept */
 #define BARK_SAMPLE_PAGES	64		/* pages read per level */
 #define BARK_SAMPLE_LEAVES	4		/* leaves an exact count reads */
+#define BARK_SAMPLE_PROBES	3		/* leaves a wide range's density reads */
 #define BARK_SAMPLE_CXT		"BARK key sample"
 
 /*
@@ -2301,10 +2303,13 @@ bark_sample_get(Relation index)
 								nsample * sizeof(IndexTuple));
 	sample->root = root;
 	sample->nkeys = nsample;
+	sample->density = MemoryContextAlloc(cxt, nsample * sizeof(double));
 	for (int i = 0; i < nsample; i++)
 	{
 		/* The middle key of each of nsample equal runs of the keys read. */
 		IndexTuple	key = keys[(int) (((int64) 2 * i + 1) * nkeys / (2 * nsample))];
+
+		sample->density[i] = -1;
 
 		sample->keys[i] = MemoryContextAlloc(cxt, IndexTupleSize(key));
 		memcpy(sample->keys[i], key, IndexTupleSize(key));
@@ -2449,6 +2454,54 @@ bark_sample_count(Relation index, BarkKeyInfo *keyinfo,
 }
 
 /*
+ * The heap TIDs of the live entries on the leaf that begins at sample key
+ * k (its low key, when the sample is level 1's), read once per sample: a
+ * descent for an upper bound at the key's first column lands right of the
+ * separator, share-locked.  The answer is kept in sample->density, so it is
+ * as of the probe, as the keys are as of the build.  -1 when the index is
+ * empty.
+ */
+static double
+bark_sample_probe(Relation index, BarkKeyInfo *keyinfo, BarkKeySample *sample,
+				  int k)
+{
+	BarkScanBound at;
+	bool		isnull;
+	Buffer		buf;
+	Page		page;
+	BarkPageOpaque opaque;
+	OffsetNumber maxoff;
+	BarkItemBuf ibuf;
+	double		ntids = 0;
+
+	if (sample->density[k] >= 0)
+		return sample->density[k];
+	at.args[0] = index_getattr(sample->keys[k], 1, RelationGetDescr(index),
+							   &isnull);
+	Assert(!isnull);			/* a sample key has its first column */
+	at.nkeys = 1;
+	at.upper = true;
+	at.backward = false;
+	at.procs[0] = &keyinfo->cols[0].cmp;
+	at.collations[0] = keyinfo->cols[0].collation;
+	buf = bark_search_bound(index, keyinfo, &at, true);
+	if (!BufferIsValid(buf))
+		return -1;
+	page = BufferGetPage(buf);
+	opaque = BarkPageGetOpaque(page);
+	maxoff = PageGetMaxOffsetNumber(page);
+	for (OffsetNumber off = BarkPageFirstDataKey(opaque); off <= maxoff;
+		 off = OffsetNumberNext(off))
+	{
+		if (!ItemIdIsDead(PageGetItemId(page, off)))
+			ntids += bark_entry_count_tids(BarkPageGetItem(page, off, &ibuf));
+	}
+	UnlockReleaseBuffer(buf);
+	sample->density[k] = ntids;
+	return ntids;
+}
+
+/*
  * bark_estimate_qual_selectivity -- the fraction of the heap's rows that
  * clause, an operator with a constant on extracted column indexcol of
  * index, matches, read from the index; -1 when the index cannot say.
@@ -2457,22 +2510,28 @@ bark_sample_count(Relation index, BarkKeyInfo *keyinfo,
  * boundary is located among the separator sample (bark_sample_get): with m
  * sample keys inside, it covers m - 1 of the sample's nkeys + 1 intervals
  * whole and two in part, each counted half, so m intervals (half of one
- * when m is 0).  That fraction of the key space holds that fraction of the
- * index's members, fraction * K * rows of them, where K is the members per
- * row (bark_cost_keys_per_row); a qual on one path matches a row through
- * about one member, so the selectivity is fraction * K.  (The RethinkDB
+ * when m is 0).  If members were spread evenly over the leaves, that
+ * fraction of the key space would hold that fraction of the index's
+ * members, fraction * K * rows of them, where K is the members per row
+ * (bark_cost_keys_per_row); a qual on one path matches a row through about
+ * one member, so the selectivity would be fraction * K.  (The RethinkDB
  * review's sketch divided by K; that counts members per row the wrong way
  * round.)
  *
- * A separator is a leaf, not a member: a value whose rows coalesce into
- * LIST and POSTING entries packs many members per leaf, and the fraction
- * misses them.  So a boundary that covers at most two intervals, or is a
- * point, is counted instead, from the leaves (bark_sample_count): a row has
- * one member per key, so the TIDs are rows, and the selectivity their share
- * of the heap's.  This is get_actual_variable_range's reading of the index
- * at plan time.  A boundary that runs past the leaf limit is estimated from
+ * They are not spread evenly: a separator is a leaf, and a value whose rows
+ * coalesce into LIST and POSTING entries packs ten times the members of a
+ * leaf of distinct keys, or more.  So the leaves are read instead, which
+ * is get_actual_variable_range's reading of the index at plan time.  A row
+ * has one member per key, so the TIDs read are rows.  A boundary that
+ * covers at most two intervals, or is a point, is counted exactly
+ * (bark_sample_count); one that runs past the leaf limit is estimated from
  * the TIDs per leaf read, over the leaves its intervals cover, or from the
- * fraction when that is higher.
+ * fraction when that is higher.  Any other boundary with a sample key
+ * inside, open at one end or not, reads the leaves at up to three of them
+ * (bark_sample_probe, once per key for the sample's life) and takes their
+ * TIDs per leaf over the leaves it covers.  The fraction alone is left for
+ * a boundary open at one end with no sample key inside, and for an index
+ * whose probes find it empty.
  *
  * -1 for a hypothetical index, an empty one or one whose root is a leaf,
  * an extracted column that is not the first key column, a non-Const or
@@ -2564,7 +2623,7 @@ bark_estimate_qual_selectivity(IndexOptInfo *index, int indexcol, Expr *clause)
 		inside = Max(hi - lo, 0);
 		bsel = (inside > 0 ? inside : 0.5) / (sample->nkeys + 1) * keysperrow;
 
-		if (hasstart && hasend && (inside <= 1 || point))
+		if (hasstart && hasend && (inside <= 2 || point))
 		{
 			double		ntids;
 			int			nleaves;
@@ -2575,6 +2634,27 @@ bark_estimate_qual_selectivity(IndexOptInfo *index, int indexcol, Expr *clause)
 			else if (nleaves > 0)
 				bsel = Max(bsel, Max(ntids, ntids / nleaves * (inside + 1) *
 									 leavesper) / reltuples);
+		}
+		else if (inside > 0)
+		{
+			double		ntids = 0;
+			int			nprobes = 0;
+
+			/* The leaves at up to three sample keys spread across the range. */
+			for (int j = 0; j < Min(inside, BARK_SAMPLE_PROBES); j++)
+			{
+				int			k = lo + (int) (((int64) 2 * j + 1) * inside /
+											(2 * Min(inside, BARK_SAMPLE_PROBES)));
+				double		n = bark_sample_probe(indexRel, keyinfo, sample, k);
+
+				if (n >= 0)
+				{
+					ntids += n;
+					nprobes++;
+				}
+			}
+			if (nprobes > 0)
+				bsel = ntids / nprobes * inside * leavesper / reltuples;
 		}
 		selec += Min(bsel, 1.0);
 	}

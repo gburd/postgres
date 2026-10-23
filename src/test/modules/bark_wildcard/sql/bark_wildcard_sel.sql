@@ -42,6 +42,9 @@ SELECT n, q, act, est BETWEEN act / 3.0 AND act * 3.0 AS within_3x
   FROM wc_sel_q, LATERAL wc_est('wc_sel', q) ORDER BY n;
 
 -- p1 is in most documents, p2 in few: a seqscan for p1, the index for p2.
+-- (Before the index read its leaf densities, the wide ranges, #? 'p1' and
+-- the 99% head of p3, whose keys share POSTING entries, were estimated
+-- from the separators alone and missed by about 10x.)
 SELECT a.est = b.est AS same_estimate
   FROM wc_est('wc_sel', 'doc #= ''["p1", true]''') a,
        wc_est('wc_sel', 'doc #= ''["p2", true]''') b;
