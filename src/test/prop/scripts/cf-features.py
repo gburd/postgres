@@ -1,87 +1,152 @@
 #!/usr/bin/env python3
 """cf-features.py -- extract the SQL-surface features a commitfest patch touches,
-so the query generator can bias toward exercising them (task #3).
+so the query generator can bias toward exercising them (PG_PROP_GEN_BIAS).
 
 Input: one or more unified-diff / git-format-patch files (the CF patch).
-Output: a PG_PROP_GEN_BIAS value -- a comma-separated list of feature tags the
-generator understands -- printed to stdout.
+Output: a comma-separated list of feature tags on stdout, or nothing.
 
-The mapping is deliberately conservative: a tag is emitted only when the diff
-touches a file or identifier strongly associated with that SQL surface, so a
-biased run still generates everything, just with extra weight on the area the
-patch changed.  Over-biasing would narrow the search and miss neighbouring
-bugs; under-biasing costs only a little focus.  When nothing matches, print
-nothing (the generator runs unbiased).
+Design, after testing v1 on 12 real CF entries:
+
+* A tag needs a *distinctive* signal, not an incidental C token.  v1 tagged a
+  pure build-config patch (port/atomics.h) as "numeric,cast" because its C
+  code contains `int8` and `::`.  So the hunk patterns are split:
+    - SYM rules match a distinctive backend identifier (e.g. PlaceHolderVar,
+      ExecConstraints) anywhere in a changed C line.  These are specific
+      enough to trust.
+    - SQL rules match a SQL keyword (JOIN, UNION, PARTITION, ...) but only on
+      lines that are actually SQL: a hunk in a .sql/.out file, or a quoted
+      string / ereport message inside C.  A bare `int`/`::`/`UNION` in C code
+      no longer counts.
+* Rank tags by their share of the signal and emit only the top few, so a
+  focused fix yields a focused bias.
+* Refuse to bias a patch too large to focus (a new subsystem, not a bug
+  fix): it prints nothing and the generator runs unbiased.
+
+Path signal (the file a hunk touches) is the strongest and is weighted
+highest; it is immune to the C-token noise above.
+
+Limits (seen on the 12 CF entries this was calibrated against): a fix in
+backend-internal code with no SQL surface (e.g. an executor tuple-slot fix
+touching tts_tid / ExecForceStoreHeapTuple) yields a weak or empty bias --
+correctly, since there is little SQL surface to aim a query generator at.
+That is the intended behaviour: a weak/empty bias is better than a
+confident wrong one, and such a patch is a poor biased-hunt target anyway.
 
 Tags (kept in sync with the bias table in query_gen.c):
-  joins        FULL/RIGHT/outer-join planning, join removal, PlaceHolderVar
-  setops       UNION/INTERSECT/EXCEPT, append, setop planning
-  aggregation  GROUP BY / aggregates / grouping sets / eager aggregate
-  window       window functions / frames
-  distinct     DISTINCT / DISTINCT ON / unique-ification
-  subquery     subquery pull-up, LATERAL, correlated, sublink
-  nulls        NULL / three-valued logic / strictness
-  collation    collation, especially nondeterministic
-  numeric      numeric scale / float / cast
-  partition    partitioning, pruning, partitionwise
-  toast        TOAST / detoast / external storage / rewrite
-  index        index scan / index-only / amcanreturn / opclass
-  constraint   CHECK / NOT NULL / FK / domain / unique
-  cast         coercion / cast / type input-output
+  joins setops aggregation window distinct subquery nulls collation
+  numeric partition toast index constraint cast
 """
 import re
 import sys
 
-# (compiled regex over added/removed diff lines and touched paths) -> tag
-# Each rule is (where, pattern, tag): where is 'path' (the +++/--- file) or
-# 'hunk' (a +/- code line).
-RULES = [
-    ('path', r'optimizer/(path|plan)/(join|analyzejoins|initsplan)', 'joins'),
-    ('hunk', r'\b(FULL|RIGHT|LEFT)\s+(OUTER\s+)?JOIN\b|PlaceHolderVar|nullingrel|outerjoin|join_is_removable|JoinExpr', 'joins'),
-    ('path', r'optimizer/(prep/prepunion|path/.*setop)|executor/nodeSetOp|nodeAppend', 'setops'),
-    ('hunk', r'\b(UNION|INTERSECT|EXCEPT)\b|SetOp|generate_union|append_rel', 'setops'),
-    ('path', r'executor/nodeAgg|optimizer/.*agg|parser/parse_agg', 'aggregation'),
-    ('hunk', r'\bGROUP\s+BY\b|\bHAVING\b|Aggref|grouping\s*set|GroupingFunc|eager.?aggregat|aggsplit|partial.?aggregat', 'aggregation'),
-    ('path', r'executor/nodeWindowAgg|optimizer/.*window|parser/parse_(clause|func).*window', 'window'),
-    ('hunk', r'\bWINDOW\b|WindowFunc|window\s*frame|\bOVER\b\s*\(|ROWS\s+BETWEEN|RANGE\s+BETWEEN|GROUPS\s+BETWEEN', 'window'),
-    ('hunk', r'\bDISTINCT\b|DISTINCT\s+ON|unique.?if|rel_is_distinct|distinctClause', 'distinct'),
-    ('path', r'optimizer/(prep/prepjointree|plan/subselect)|parser/parse_(clause|relation)', 'subquery'),
-    ('hunk', r'\bLATERAL\b|pull_up_subqueries|SubLink|SubPlan|flatten|convert_ANY|convert_EXISTS|correlat', 'subquery'),
-    ('hunk', r'\bIS\s+(NOT\s+)?NULL\b|\bIS\s+(NOT\s+)?DISTINCT\b|nonstrict|strictness|contain_nonstrict|null.?frac|three.?valued|ExecEvalCase', 'nulls'),
-    ('path', r'utils/adt/(varlena|pg_locale|like)|backend/utils/mb', 'collation'),
-    ('hunk', r'\bCOLLATE\b|collation|deterministic\s*=\s*false|nondeterministic|lc_collate|towlower|iswupper|pg_ascii_tolower|varstr_cmp', 'collation'),
-    ('path', r'utils/adt/(numeric|float|cash|int8?)\b', 'numeric'),
-    ('hunk', r'\bnumeric\b|\bfloat[48]\b|trim_scale|\bNaN\b|Infinity|scale\s*\(|rint|pg_ascii', 'numeric'),
-    ('path', r'(partitioning|partdesc|partprune|partbounds)|executor/nodeAppend|optimizer/.*partition', 'partition'),
-    ('hunk', r'\bPARTITION\b|partition.?wise|partition.?prun|RelationGetPartition|ATTACH\s+PARTITION|DETACH\s+PARTITION', 'partition'),
-    ('path', r'access/(heap|common)/.*toast|access/table/toast|detoast|heaptoast|tuptoaster|rewriteheap', 'toast'),
-    ('hunk', r'\bTOAST\b|detoast|toast_fetch|SET\s+STORAGE|EXTERNAL|EXTENDED|varatt|missing\s+chunk|reltoastrelid', 'toast'),
-    ('path', r'access/(nbtree|gist|gin|spgist|hash|brin)|optimizer/path/indxpath|executor/nodeIndex', 'index'),
-    ('hunk', r'index.?only|amcanreturn|IndexOnlyScan|opclass|operator\s+class|index_(get|rescan)|\bamsearch|skip\s*scan', 'index'),
-    ('path', r'commands/(trigger|tablecmds)|executor/execConstr|catalog/pg_constraint|utils/adt/ri_triggers', 'constraint'),
-    ('hunk', r'\bCHECK\b|\bNOT\s+NULL\b|\bFOREIGN\s+KEY\b|\bUNIQUE\b|ExecConstraints|\bdomain\b|RI_\w+|constraint', 'constraint'),
-    ('path', r'parser/parse_coerce|utils/adt/.*(in|out|recv|send)\b', 'cast'),
-    ('hunk', r'\bCAST\b|coerc|::\s*\w+|input\s+function|CoerceViaIO|typmod|RelabelType', 'cast'),
+# PATH rules: (regex over the touched file path) -> tag.  Weight 4 (strong).
+PATH_RULES = [
+    (r'optimizer/(path|plan)/(join|analyzejoins|initsplan)|paths?/joinpath|joinrels', 'joins'),
+    (r'optimizer/prep/prepunion|path/.*setop|executor/nodeSetOp|executor/nodeAppend', 'setops'),
+    (r'executor/nodeAgg|optimizer/.*/.*agg|parser/parse_agg|nodeGroup', 'aggregation'),
+    (r'executor/nodeWindowAgg|optimizer/.*window|nodeWindowFunc', 'window'),
+    (r'optimizer/prep/prepjointree|plan/subselect|nodeSubplan|nodeSubqueryscan', 'subquery'),
+    (r'utils/adt/(varlena|pg_locale|like_|formatting)|backend/utils/mb|regc_|collationcmds', 'collation'),
+    (r'utils/adt/(numeric|float|cash)\.c|utils/adt/int8\.c', 'numeric'),
+    (r'partitioning/|partdesc|partprune|partbounds|optimizer/.*partition|execPartition', 'partition'),
+    (r'access/(heap|common)/.*toast|access/table/toast|heaptoast|tuptoaster|rewriteheap|detoast', 'toast'),
+    (r'access/(nbtree|gist|gin|spgist|hash|brin)/|optimizer/path/indxpath|executor/nodeIndex', 'index'),
+    (r'commands/(trigger|tablecmds)\.c|executor/execConstr|catalog/pg_constraint|utils/adt/ri_triggers|commands/typecmds', 'constraint'),
+    (r'parser/parse_coerce|utils/adt/.*(_in|_out|_recv|_send)\b', 'cast'),
 ]
+
+# SYM rules: distinctive backend identifier in any changed C line.  Weight 2.
+SYM_RULES = [
+    (r'\b(PlaceHolderVar|nullingrel\w*|join_is_removable|remove_useless_join|JoinExpr|make_outerjoininfo|deconstruct_jointree)\b', 'joins'),
+    (r'\b(SetOperationStmt|generate_(union|nonunion)_paths|plan_set_operations|make_setop)\b', 'setops'),
+    (r'\b(Aggref|GroupingFunc|make_agg|AggState|create_agg_path|grouping_sets?|create_groupingsets_path|eager.?aggregat\w*)\b', 'aggregation'),
+    (r'\b(WindowFunc|WindowAggState|create_windowagg_path|frameOptions|WindowClause)\b', 'window'),
+    (r'\b(SubLink|SubPlan|pull_up_subqueries|convert_ANY_sublink|convert_EXISTS_sublink|hashed.?subplan)\b', 'subquery'),
+    (r'\b(DistinctExpr|create_distinct_paths|distinctClause|rel_is_distinct_for|query_is_distinct_for)\b', 'distinct'),
+    (r'\b(contain_nonstrict\w*|clause_is_strict\w*|not?_?null\w*frac|nulltesttype|BoolExprType|ExecEvalCase\w*|expr_is_nonnullable)\b', 'nulls'),
+    (r'\b(varstr_cmp|pg_ascii_tolower|towlower|iswupper|lc_collate\w*|get_collation_isdeterministic|pg_newlocale\w*|OidIsValid\(.*collid)\b', 'collation'),
+    (r'\b(numeric_\w+|float[48]_\w+|trim_scale|make_numeric|NUMERIC_\w+|cash_\w+)\b', 'numeric'),
+    (r'\b(RelationGetPartition\w*|get_partition_\w+|apply_scanjoin_target|partition_bounds\w*|PartitionPruneState|ExecFindPartition)\b', 'partition'),
+    (r'\b(toast_\w+|detoast\w*|heap_(fetch|tuple)_?toast|TOAST_\w+|varatt\w*|reltoastrelid|init_toast_snapshot)\b', 'toast'),
+    (r'\b(amcanreturn|IndexOnlyScan\w*|index_(getnext|rescan|beginscan)|ScanKeyEntry|BTScanOpaque|_bt_\w+|gistget\w*|skip.?scan\w*)\b', 'index'),
+    (r'\b(ExecConstraints|RI_\w+|ri_\w+|ATExecAddConstraint|check_constraint|DomainConstraint\w*|CheckConstraintFetch)\b', 'constraint'),
+    (r'\b(coerce_type|CoerceViaIO|coerce_to_target_type|RelabelType|CoerceToDomain|find_coercion_pathway)\b', 'cast'),
+]
+
+# SQL rules: a SQL keyword, counted only on a SQL-ish line (see sql_context).
+# Weight 1.
+SQL_RULES = [
+    (r'\b(FULL|RIGHT|LEFT)\s+(OUTER\s+)?JOIN\b', 'joins'),
+    (r'\b(UNION|INTERSECT|EXCEPT)\b', 'setops'),
+    (r'\bGROUP\s+BY\b|\bHAVING\b|\bGROUPING\s+SETS\b|\bROLLUP\b|\bCUBE\b', 'aggregation'),
+    (r'\bWINDOW\b|\bOVER\s*\(|\b(ROWS|RANGE|GROUPS)\s+BETWEEN\b', 'window'),
+    (r'\bDISTINCT\b', 'distinct'),
+    (r'\bLATERAL\b|\bEXISTS\s*\(|\bIN\s*\(\s*SELECT\b', 'subquery'),
+    (r'\bIS\s+(NOT\s+)?NULL\b|\bIS\s+(NOT\s+)?DISTINCT\s+FROM\b', 'nulls'),
+    (r'\bCOLLATE\b|deterministic\s*=\s*false', 'collation'),
+    (r"\bnumeric\s*\(|\bNaN\b|'Infinity'|::numeric\b|::float[48]\b|\bscale\s*\(", 'numeric'),
+    (r'\bPARTITION\s+(BY|OF)\b|\b(ATTACH|DETACH)\s+PARTITION\b', 'partition'),
+    (r'\bSET\s+STORAGE\b|\b(EXTERNAL|EXTENDED|MAIN)\b|missing\s+chunk', 'toast'),
+    (r'\bUSING\s+(gist|gin|spgist|hash|brin|btree)\b|\btext_pattern_ops\b|\bINDEX\s+ONLY\b', 'index'),
+    (r'\bCHECK\s*\(|\bNOT\s+NULL\b|\bFOREIGN\s+KEY\b|\bREFERENCES\b|\bUNIQUE\b|\bEXCLUDE\s+USING\b', 'constraint'),
+    (r'\bCAST\s*\(|::\w+|\bWITHOUT\s+OVERLAPS\b', 'cast'),
+]
+
+PATH_W, SYM_W, SQL_W = 4, 2, 1
+
+# A patch larger than this many changed lines is a new subsystem, not a bug
+# fix a focused bias helps -> emit nothing.  (Tag count alone is a poor
+# gate: a focused fix can touch several surfaces loosely; ranking handles
+# that.)
+MAX_DIFF_LINES = 50000
+
+# Keep at most this many top tags, and drop any whose score is below this
+# fraction of the leader's (a negligible tail tag only dilutes the bias).
+MAX_KEEP = 3
+TAIL_FRACTION = 0.10
+
+
+def is_sql_file(path):
+    return bool(re.search(r'\.(sql|out)(\s|$)', path))
+
+
+def sql_context(line, in_sql_file):
+    """True if a SQL keyword on this C/SQL line should count as SQL surface:
+    the whole file is SQL, or the token sits inside a quoted string / an
+    ereport/errmsg in C (where SQL keywords denote real surface, not C code)."""
+    if in_sql_file:
+        return True
+    # a quoted string on the line, or an ereport/errmsg/appendStringInfo call
+    return ('"' in line and re.search(r'"[^"]*\b[A-Z]{2,}\b', line) is not None) \
+        or re.search(r'errmsg|ereport|appendStringInfo|elog\s*\(', line) is not None
 
 
 def extract(difftext):
-    tags = {}  # tag -> hit count, for ranking
+    tags = {}
+    changed = 0
     cur_path = ''
+    in_sql_file = False
     for line in difftext.splitlines():
         if line.startswith('+++ ') or line.startswith('--- '):
             cur_path = line[4:]
-            for where, pat, tag in RULES:
-                if where == 'path' and re.search(pat, cur_path, re.I):
-                    tags[tag] = tags.get(tag, 0) + 3  # path match is a strong signal
-        elif line.startswith('+') or line.startswith('-'):
-            if line.startswith('+++') or line.startswith('---'):
-                continue
-            body = line[1:]
-            for where, pat, tag in RULES:
-                if where == 'hunk' and re.search(pat, body):
-                    tags[tag] = tags.get(tag, 0) + 1
-    return tags
+            in_sql_file = is_sql_file(cur_path)
+            if line.startswith('+++ '):          # count the file once
+                for pat, tag in PATH_RULES:
+                    if re.search(pat, cur_path, re.I):
+                        tags[tag] = tags.get(tag, 0) + PATH_W
+            continue
+        if not (line.startswith('+') or line.startswith('-')):
+            continue
+        body = line[1:]
+        changed += 1
+        for pat, tag in SYM_RULES:
+            if re.search(pat, body):
+                tags[tag] = tags.get(tag, 0) + SYM_W
+        if in_sql_file or sql_context(body, in_sql_file):
+            for pat, tag in SQL_RULES:
+                if re.search(pat, body):
+                    tags[tag] = tags.get(tag, 0) + SQL_W
+    return tags, changed
 
 
 def main(argv):
@@ -92,12 +157,21 @@ def main(argv):
     for fn in argv[1:]:
         with open(fn, encoding='utf-8', errors='replace') as f:
             text += f.read()
-    tags = extract(text)
-    # keep tags with a meaningful signal (>= 2: a path hit, or two hunk hits)
-    ranked = sorted((t for t, n in tags.items() if n >= 2),
-                    key=lambda t: -tags[t])
-    if ranked:
-        print(','.join(ranked))
+    tags, changed = extract(text)
+    # a tag needs at least a path hit, a symbol hit, or two SQL-context hits
+    strong = {t: n for t, n in tags.items() if n >= SYM_W}
+    if not strong:
+        return 0
+    # a new subsystem (huge diff) is not something a focused bias helps
+    if changed > MAX_DIFF_LINES:
+        sys.stderr.write("cf-features: patch too large to bias (%d changed lines); "
+                         "run unbiased\n" % changed)
+        return 0
+    ranked = sorted(strong, key=lambda t: -strong[t])
+    lead = strong[ranked[0]]
+    # keep the top MAX_KEEP, dropping any negligible tail relative to the leader
+    keep = [t for t in ranked[:MAX_KEEP] if strong[t] >= lead * TAIL_FRACTION]
+    print(','.join(keep))
     return 0
 
 
