@@ -18,6 +18,11 @@
 #    the deleted leaf's high key: VACUUM frees the chain, and the check
 #    reports no orphaned pages, on the primary and on a standby that
 #    replays the deletion under wal_consistency_checking.
+# 4. A multikey row whose first key goes on the rightmost leaf an insert
+#    cached, and whose oversized second key does not fit there: the fast
+#    path cannot split, so the insert writes the second key's chain, finds
+#    no room, and descends again.  The chain it wrote is freed, and the
+#    check reports no orphaned pages.
 
 use strict;
 use warnings FATAL => 'all';
@@ -46,6 +51,7 @@ $node->safe_psql(
 CREATE EXTENSION amcheck;
 CREATE EXTENSION injection_points;
 CREATE EXTENSION pageinspect;
+CREATE EXTENSION bark_multikey;
 CREATE FUNCTION big(s int, n int) RETURNS text LANGUAGE sql IMMUTABLE AS
 $$ SELECT substr(string_agg(md5(s::text || ':' || g::text), ''), 1, n)
    FROM generate_series(1, (n + 31) / 32) g $$;
@@ -221,6 +227,61 @@ SET enable_seqscan = off; SET enable_bitmapscan = off;
 SELECT count(*) FROM vac_t WHERE k > '0']),
 	$node->safe_psql('postgres', 'SELECT count(*) FROM vac_t'),
 	'an index scan on the standby finds every row');
+
+## 4: the fast path gives up a leaf after writing an oversized key's chain
+# Keys of 2.4 kB inserted in ascending order, enough for the levels above
+# the leaves that make an insert cache the rightmost leaf
+# (BARK_FASTPATH_MIN_LEVEL).  The cache is the backend's, so the inserts
+# that fill the leaf and the row that tries it share one session.
+my $pages = q[SELECT count(*) FILTER (WHERE type = 'overflow') || ',' ||
+  count(*) FILTER (WHERE type = 'deleted') FROM bark_multi_page_stats('fp_idx', 1, -1)];
+my ($level, $free, $before, $after) = split /\n/, $node->safe_psql(
+	'postgres', qq[
+CREATE TABLE fp_t (id int, a text[] COLLATE "C");
+CREATE INDEX fp_idx ON fp_t USING bark (a bark_text_prefix_ops);
+INSERT INTO fp_t SELECT g, ARRAY['k' || lpad(g::text, 6, '0') || big(g, 2400)]
+  FROM generate_series(1, 30) g;
+CREATE FUNCTION fp_free() RETURNS int LANGUAGE sql AS
+\$\$ SELECT free_size FROM bark_multi_page_stats('fp_idx', 1, -1)
+   WHERE type = 'leaf' AND bark_next = 0 \$\$;
+-- Fill the rightmost leaf, in ascending order, to 48 bytes free.
+DO \$\$
+DECLARE i int := 0; f int;
+BEGIN
+  LOOP
+    f := fp_free();
+    EXIT WHEN f < 140;
+    INSERT INTO fp_t VALUES (1000 + i,
+      ARRAY['l' || lpad(i::text, 6, '0') || big(i, least(f - 140, 2400))]);
+    i := i + 1;
+  END LOOP;
+  INSERT INTO fp_t VALUES (5000, ARRAY['lz' || repeat('x', f - 66)]);
+END \$\$;
+SELECT level FROM bark_metap('fp_idx');
+SELECT fp_free();
+$pages;
+INSERT INTO fp_t VALUES (9999, ARRAY['m', 'n' || big(7, 20000)]);
+$pages;
+]);
+cmp_ok($level, '>=', 2, 'fp_idx has two levels above its leaves');
+# Room for the 16-byte entry of 'm' and the 8-byte reserve, not for an
+# OVERSIZED entry's 64 bytes.
+ok($free >= 24 && $free < 72, "the rightmost leaf has $free bytes free");
+is($before, '0,0', 'fp_idx has no overflow pages before the row');
+# A 20 kB key takes a chain of 3 pages: the insert wrote one on the cached
+# leaf, gave the leaf up, and wrote another after its descent.
+is($after, '3,3',
+	'the insert freed the chain it wrote before giving up the cached leaf');
+($rc, @w) = parent_check('fp_idx');
+is($rc, 0, 'the parent check passes fp_idx');
+is(scalar @w, 0, 'and reports no orphaned pages') or diag(join("\n", @w));
+is( $node->safe_psql(
+		'postgres', q[
+SET enable_seqscan = off;
+SELECT count(*) FROM fp_t WHERE a %^% 'n']),
+	'1', 'an index scan finds the oversized key');
+
+$node->wait_for_replay_catchup($standby);
 $standby->stop;
 ok(!$standby->log_contains('inconsistent page found'),
 	'wal_consistency_checking found every replayed page consistent');

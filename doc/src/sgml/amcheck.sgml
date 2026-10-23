@@ -295,7 +295,12 @@ ORDER BY c.relpages DESC LIMIT 10;
       which names the first page of the orphaned chain and its number of
       pages, not as corruption: an oversized key's overflow chain is written
       before the entry that references it, so a crash in between leaves the
-      chain's pages unreferenced.  Such pages are wasted space only.
+      chain's pages unreferenced; so does a crash while
+      <command>VACUUM</command> frees a chain, one page at a time, and an
+      error, such as running out of disk space, that ends an insert after
+      it wrote a chain and before it placed the entry.  No other path leaves
+      such pages, so in an index that has been through no crash and no such
+      error the warning means a bug.  Such pages are wasted space only.
       Nothing reclaims them but <command>REINDEX</command>.
      </para>
     </listitem>

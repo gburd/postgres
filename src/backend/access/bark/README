@@ -1636,7 +1636,12 @@ reported with a WARNING, by orphaned chain (its first page and its number
 of pages), and not as corruption: a chain is written before the entry
 that references it, so a crash, or an error such as running out of disk
 space, between the two leaves the chain's pages unreferenced (see
-XLOG_BARK_OVERFLOW).  A deleted overflow page, which VACUUM freed and
+XLOG_BARK_OVERFLOW), as does a crash while VACUUM frees a chain page by
+page.  Every other path frees a chain it stops referencing: VACUUM the
+chain of each OVERSIZED entry it removes, and of the downlink the deletion
+of an empty leaf removes, and an insert that writes a chain and then gives
+up the leaf it found by the fast path (bark_insert_key) the chain it
+wrote.  A deleted overflow page, which VACUUM freed and
 which awaits recycling, is not an overflow page and is not reported.
 Nothing reclaims orphaned pages but REINDEX (follow-up R4c: VACUUM would
 free a chain no entry references once the transaction that wrote it is
