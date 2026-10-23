@@ -24,7 +24,10 @@
 # k = 5, under which ORDER BY k DESC would be redundant and the scan
 # forward.  A buffer-lock wait is invisible
 # to isolationtester, hence (*), and the step after it waits for it
-# (wait_for_buffer_lock) before waking VACUUM.
+# (wait_for_buffer_lock) before waking VACUUM.  In 3 and 4 the woken insert
+# and s1_check would finish in either order, so s2_done, an empty step of
+# the insert's session, comes between them: isolationtester starts it only
+# once the insert is done (and in 4 has been reported, after VACUUM).
 
 setup
 {
@@ -170,6 +173,7 @@ step s2_insert
 {
 	SELECT test_versioned_insert_entry('tl_k', '(0,1)', t0 - 1) IS NOT NULL AS inserted FROM exp;
 }
+step s2_done	{ }
 
 session s3
 setup
@@ -214,6 +218,6 @@ step s4_wakeup_descend
 permutation s2_open s1_attach s1_vacuum s2_drain(*, s1_vacuum) s4_wakeup_s2 s1_check
 permutation s3_open s1_attach s1_vacuum s3_drain(*, s1_vacuum) s4_wakeup_s3 s1_check
 # 3. an insert that read the old downlink
-permutation s2_descend_attach s2_insert s1_vacuum s4_wakeup_descend s1_check s1_inserted
+permutation s2_descend_attach s2_insert s1_vacuum s4_wakeup_descend s2_done s1_check s1_inserted
 # 4. an insert that waits for the lowering's locks
-permutation s1_attach s1_vacuum s2_insert(*, s1_vacuum) s4_wakeup_s2 s1_check s1_inserted
+permutation s1_attach s1_vacuum s2_insert(*, s1_vacuum) s4_wakeup_s2 s2_done s1_check s1_inserted
