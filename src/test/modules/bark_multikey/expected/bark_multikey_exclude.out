@@ -6,8 +6,10 @@
 -- conflicting row, and each row once: the check skips the row's own TID,
 -- and fails if it meets it twice.
 CREATE EXTENSION IF NOT EXISTS bark_multikey;
--- (updates, HOT updates) of a table so far in this transaction.  The HOT
--- count does not roll back with a subtransaction.
+-- (updates, HOT updates) of a table so far in this transaction, or since
+-- the backend last reported its statistics: read it only for a table no
+-- earlier transaction updated.  The HOT count does not roll back with a
+-- subtransaction.
 CREATE FUNCTION x_count(rel regclass, OUT upd bigint, OUT hot bigint)
 LANGUAGE sql AS $$
   SELECT pg_stat_get_xact_tuples_updated(rel),
@@ -20,108 +22,99 @@ LANGUAGE sql AS $$
 -- keys still conflict.
 CREATE TABLE xo (id int, a int4[],
   CONSTRAINT xo_excl EXCLUDE USING bark (a bark_int4_array_ops WITH |&&|));
-ERROR:  exclusion constraints are not supported for multikey operator classes in M1
 INSERT INTO xo VALUES (1, '{1,2}'), (2, '{3}'), (3, '{4,4,5}');
-ERROR:  relation "xo" does not exist
-LINE 1: INSERT INTO xo VALUES (1, '{1,2}'), (2, '{3}'), (3, '{4,4,5}...
-                    ^
 INSERT INTO xo VALUES (4, '{2,9}');
-ERROR:  relation "xo" does not exist
-LINE 1: INSERT INTO xo VALUES (4, '{2,9}');
-                    ^
+ERROR:  conflicting key value violates exclusion constraint "xo_excl"
+DETAIL:  Key (a)=({2,9}) conflicts with existing key (a)=({1,2}).
 INSERT INTO xo VALUES (4, '{9,3,3}');
-ERROR:  relation "xo" does not exist
-LINE 1: INSERT INTO xo VALUES (4, '{9,3,3}');
-                    ^
+ERROR:  conflicting key value violates exclusion constraint "xo_excl"
+DETAIL:  Key (a)=({9,3,3}) conflicts with existing key (a)=({3}).
 -- the shared key is the new value's largest
 INSERT INTO xo VALUES (4, '{0,1}');
-ERROR:  relation "xo" does not exist
-LINE 1: INSERT INTO xo VALUES (4, '{0,1}');
-                    ^
+ERROR:  conflicting key value violates exclusion constraint "xo_excl"
+DETAIL:  Key (a)=({0,1}) conflicts with existing key (a)=({1,2}).
 INSERT INTO xo VALUES (10, NULL), (11, NULL), (12, '{}'), (13, '{}'),
   (14, '{NULL}'), (15, '{NULL,NULL}'), (16, '{NULL,7}');
-ERROR:  relation "xo" does not exist
-LINE 1: INSERT INTO xo VALUES (10, NULL), (11, NULL), (12, '{}'), (1...
-                    ^
 INSERT INTO xo VALUES (17, '{7,NULL}');
-ERROR:  relation "xo" does not exist
-LINE 1: INSERT INTO xo VALUES (17, '{7,NULL}');
-                    ^
+ERROR:  conflicting key value violates exclusion constraint "xo_excl"
+DETAIL:  Key (a)=({7,NULL}) conflicts with existing key (a)=({NULL,7}).
 INSERT INTO xo VALUES (17, '{NULL,1}');
-ERROR:  relation "xo" does not exist
-LINE 1: INSERT INTO xo VALUES (17, '{NULL,1}');
-                    ^
+ERROR:  conflicting key value violates exclusion constraint "xo_excl"
+DETAIL:  Key (a)=({NULL,1}) conflicts with existing key (a)=({1,2}).
 INSERT INTO xo VALUES (17, '{NULL,8}');
-ERROR:  relation "xo" does not exist
-LINE 1: INSERT INTO xo VALUES (17, '{NULL,8}');
-                    ^
 -- UPDATE to a new key set makes a new version with new entries, checked
 -- as an insert is.  The keys a row keeps meet only its old version, which
 -- the updater deleted.
 UPDATE xo SET a = '{1,2,6}' WHERE id = 1;
-ERROR:  relation "xo" does not exist
-LINE 1: UPDATE xo SET a = '{1,2,6}' WHERE id = 1;
-               ^
 UPDATE xo SET a = '{3,6}' WHERE id = 2;
-ERROR:  relation "xo" does not exist
-LINE 1: UPDATE xo SET a = '{3,6}' WHERE id = 2;
-               ^
+ERROR:  conflicting key value violates exclusion constraint "xo_excl"
+DETAIL:  Key (a)=({3,6}) conflicts with existing key (a)=({1,2,6}).
 UPDATE xo SET a = a || 1 WHERE id = 16;
-ERROR:  relation "xo" does not exist
-LINE 1: UPDATE xo SET a = a || 1 WHERE id = 16;
-               ^
+ERROR:  conflicting key value violates exclusion constraint "xo_excl"
+DETAIL:  Key (a)=({NULL,7,1}) conflicts with existing key (a)=({1,2,6}).
 UPDATE xo SET a = '{}' WHERE id = 16;
-ERROR:  relation "xo" does not exist
-LINE 1: UPDATE xo SET a = '{}' WHERE id = 16;
-               ^
 SELECT id, a FROM xo ORDER BY id;
-ERROR:  relation "xo" does not exist
-LINE 1: SELECT id, a FROM xo ORDER BY id;
-                          ^
+ id |      a      
+----+-------------
+  1 | {1,2,6}
+  2 | {3}
+  3 | {4,4,5}
+ 10 | 
+ 11 | 
+ 12 | {}
+ 13 | {}
+ 14 | {NULL}
+ 15 | {NULL,NULL}
+ 16 | {}
+ 17 | {NULL,8}
+(11 rows)
+
 -- No two rows share a key, by a sequential scan of the heap.
 SELECT e, count(DISTINCT id) FROM xo, unnest(a) e WHERE e IS NOT NULL
 GROUP BY e HAVING count(DISTINCT id) > 1;
-ERROR:  relation "xo" does not exist
-LINE 1: SELECT e, count(DISTINCT id) FROM xo, unnest(a) e WHERE e IS...
-                                          ^
-SELECT bark_index_check('xo_excl', true);
-ERROR:  relation "xo_excl" does not exist
-LINE 1: SELECT bark_index_check('xo_excl', true);
-                                ^
+ e | count 
+---+-------
+(0 rows)
+
+SELECT bark_index_parent_check('xo_excl', true);
+ bark_index_parent_check 
+-------------------------
+ 
+(1 row)
+
 -- ON CONFLICT DO NOTHING takes an exclusion constraint as its arbiter with
 -- no conflict target or with the constraint named, not inferred from a
 -- column; DO UPDATE is not supported for one.  Of one statement's rows,
 -- one that conflicts with an earlier one is skipped.
 INSERT INTO xo VALUES (20, '{1,20}') ON CONFLICT DO NOTHING;
-ERROR:  relation "xo" does not exist
-LINE 1: INSERT INTO xo VALUES (20, '{1,20}') ON CONFLICT DO NOTHING;
-                    ^
 INSERT INTO xo VALUES (20, '{20,21}') ON CONFLICT ON CONSTRAINT xo_excl DO NOTHING;
-ERROR:  relation "xo" does not exist
-LINE 1: INSERT INTO xo VALUES (20, '{20,21}') ON CONFLICT ON CONSTRA...
-                    ^
 INSERT INTO xo VALUES (21, '{21,22}'), (22, '{22,23}'), (23, '{NULL}'),
   (24, '{23,24}') ON CONFLICT DO NOTHING RETURNING id, a;
-ERROR:  relation "xo" does not exist
-LINE 1: INSERT INTO xo VALUES (21, '{21,22}'), (22, '{22,23}'), (23,...
-                    ^
+ id |    a    
+----+---------
+ 22 | {22,23}
+ 23 | {NULL}
+(2 rows)
+
 INSERT INTO xo VALUES (25, '{25}') ON CONFLICT (a) DO NOTHING;
-ERROR:  relation "xo" does not exist
-LINE 1: INSERT INTO xo VALUES (25, '{25}') ON CONFLICT (a) DO NOTHIN...
-                    ^
+ERROR:  there is no unique or exclusion constraint matching the ON CONFLICT specification
 INSERT INTO xo VALUES (25, '{1}') ON CONFLICT ON CONSTRAINT xo_excl
   DO UPDATE SET a = '{25}';
-ERROR:  relation "xo" does not exist
-LINE 1: INSERT INTO xo VALUES (25, '{1}') ON CONFLICT ON CONSTRAINT ...
-                    ^
+ERROR:  ON CONFLICT DO UPDATE not supported with exclusion constraints
 SELECT id, a FROM xo WHERE id >= 20 ORDER BY id;
-ERROR:  relation "xo" does not exist
-LINE 1: SELECT id, a FROM xo WHERE id >= 20 ORDER BY id;
-                          ^
+ id |    a    
+----+---------
+ 20 | {20,21}
+ 22 | {22,23}
+ 23 | {NULL}
+(3 rows)
+
 SELECT bark_index_check('xo_excl', true);
-ERROR:  relation "xo_excl" does not exist
-LINE 1: SELECT bark_index_check('xo_excl', true);
-                                ^
+ bark_index_check 
+------------------
+ 
+(1 row)
+
 -- Any operator of the class that core accepts for a constraint
 -- (commutative, with a strategy in the family) is scanned by the class's
 -- procedure 8, as in a WHERE clause.  = is not exact on the keys: its
@@ -132,41 +125,35 @@ LINE 1: SELECT bark_index_check('xo_excl', true);
 -- conflicts with nothing.
 CREATE TABLE xe (id int, a int4[],
   CONSTRAINT xe_excl EXCLUDE USING bark (a bark_int4_array_ops WITH =));
-ERROR:  exclusion constraints are not supported for multikey operator classes in M1
 INSERT INTO xe VALUES (1, '{1,2}'), (2, '{2,1}'), (3, '{1,2,2}'), (4, '{}'),
   (5, '{NULL}'), (6, '{NULL,NULL}'), (7, NULL), (8, NULL), (9, '{1,NULL}'),
   (10, '{NULL,1}');
-ERROR:  relation "xe" does not exist
-LINE 1: INSERT INTO xe VALUES (1, '{1,2}'), (2, '{2,1}'), (3, '{1,2,...
-                    ^
 INSERT INTO xe VALUES (11, '{2,1}');
-ERROR:  relation "xe" does not exist
-LINE 1: INSERT INTO xe VALUES (11, '{2,1}');
-                    ^
+ERROR:  conflicting key value violates exclusion constraint "xe_excl"
+DETAIL:  Key (a)=({2,1}) conflicts with existing key (a)=({2,1}).
 INSERT INTO xe VALUES (11, '{}');
-ERROR:  relation "xe" does not exist
-LINE 1: INSERT INTO xe VALUES (11, '{}');
-                    ^
+ERROR:  conflicting key value violates exclusion constraint "xe_excl"
+DETAIL:  Key (a)=({}) conflicts with existing key (a)=({}).
 INSERT INTO xe VALUES (11, '{NULL}');
-ERROR:  relation "xe" does not exist
-LINE 1: INSERT INTO xe VALUES (11, '{NULL}');
-                    ^
+ERROR:  conflicting key value violates exclusion constraint "xe_excl"
+DETAIL:  Key (a)=({NULL}) conflicts with existing key (a)=({NULL}).
 INSERT INTO xe VALUES (11, '{NULL,NULL}');
-ERROR:  relation "xe" does not exist
-LINE 1: INSERT INTO xe VALUES (11, '{NULL,NULL}');
-                    ^
+ERROR:  conflicting key value violates exclusion constraint "xe_excl"
+DETAIL:  Key (a)=({NULL,NULL}) conflicts with existing key (a)=({NULL,NULL}).
 INSERT INTO xe VALUES (11, '{1,NULL}');
-ERROR:  relation "xe" does not exist
-LINE 1: INSERT INTO xe VALUES (11, '{1,NULL}');
-                    ^
+ERROR:  conflicting key value violates exclusion constraint "xe_excl"
+DETAIL:  Key (a)=({1,NULL}) conflicts with existing key (a)=({1,NULL}).
 INSERT INTO xe VALUES (11, '{2,2,1}');
-ERROR:  relation "xe" does not exist
-LINE 1: INSERT INTO xe VALUES (11, '{2,2,1}');
-                    ^
+-- With row 4 gone, a scan for {} reads only NULL entries of rows that are
+-- not {}: NULL values and {NULL}, {NULL,NULL}.  The recheck rejects each.
+DELETE FROM xe WHERE id = 4;
+INSERT INTO xe VALUES (12, '{}');
 SELECT bark_index_check('xe_excl', true);
-ERROR:  relation "xe_excl" does not exist
-LINE 1: SELECT bark_index_check('xe_excl', true);
-                                ^
+ bark_index_check 
+------------------
+ 
+(1 row)
+
 -- @> is not commutative, so core refuses it.
 CREATE TABLE xbad (a int4[],
   EXCLUDE USING bark (a bark_int4_array_ops WITH @>));
@@ -181,35 +168,42 @@ DETAIL:  Only commutative operators can be used in exclusion constraints.
 CREATE TABLE xc (tenant int, a int4[],
   CONSTRAINT xc_ta EXCLUDE USING bark (tenant WITH =, a bark_int4_array_ops WITH &&),
   CONSTRAINT xc_at EXCLUDE USING bark (a bark_int4_array_range_ops WITH &&, tenant WITH =));
-ERROR:  exclusion constraints are not supported for multikey operator classes in M1
 INSERT INTO xc VALUES (1, '{1,2}'), (2, '{1,2}'), (NULL, '{1,2}'), (NULL, '{1,2}');
-ERROR:  relation "xc" does not exist
-LINE 1: INSERT INTO xc VALUES (1, '{1,2}'), (2, '{1,2}'), (NULL, '{1...
-                    ^
 INSERT INTO xc VALUES (1, '{5,2}');
-ERROR:  relation "xc" does not exist
-LINE 1: INSERT INTO xc VALUES (1, '{5,2}');
-                    ^
+ERROR:  conflicting key value violates exclusion constraint "xc_ta"
+DETAIL:  Key (tenant, a)=(1, {5,2}) conflicts with existing key (tenant, a)=(1, {1,2}).
 INSERT INTO xc VALUES (2, '{3,4}'), (3, '{2}');
-ERROR:  relation "xc" does not exist
-LINE 1: INSERT INTO xc VALUES (2, '{3,4}'), (3, '{2}');
-                    ^
+ALTER TABLE xc DROP CONSTRAINT xc_ta;
+INSERT INTO xc VALUES (3, '{9,2}');
+ERROR:  conflicting key value violates exclusion constraint "xc_at"
+DETAIL:  Key (a, tenant)=({9,2}, 3) conflicts with existing key (a, tenant)=({2}, 3).
 SELECT tenant, a FROM xc ORDER BY tenant, a;
-ERROR:  relation "xc" does not exist
-LINE 1: SELECT tenant, a FROM xc ORDER BY tenant, a;
-                              ^
-SELECT bark_index_check('xc_ta', true), bark_index_check('xc_at', true);
-ERROR:  relation "xc_ta" does not exist
-LINE 1: SELECT bark_index_check('xc_ta', true), bark_index_check('xc...
-                                ^
+ tenant |   a   
+--------+-------
+      1 | {1,2}
+      2 | {1,2}
+      2 | {3,4}
+      3 | {2}
+        | {1,2}
+        | {1,2}
+(6 rows)
+
+SELECT bark_index_check('xc_at', true);
+ bark_index_check 
+------------------
+ 
+(1 row)
+
 -- Refused: a class that answers scans through GIN's query interface
 -- (procedure 10, no procedure 8), whose index scans need an MVCC snapshot;
 -- a class with neither, which cannot be scanned; two extracted columns.
 CREATE TABLE xr (a int4[], b int4[]);
 ALTER TABLE xr ADD EXCLUDE USING bark (a bark_gin_int4_array_ops WITH &&);
-ERROR:  exclusion constraints are not supported for multikey operator classes in M1
+ERROR:  exclusion constraints are not supported for operator family "bark_gin_int4_array_ops" of access method bark
+DETAIL:  An exclusion constraint on a column with a multikey operator class needs support function 8.
 ALTER TABLE xr ADD EXCLUDE USING bark (a bark_int4_array_marked_ops WITH &&);
-ERROR:  exclusion constraints are not supported for multikey operator classes in M1
+ERROR:  exclusion constraints are not supported for operator family "bark_int4_array_marked_ops" of access method bark
+DETAIL:  An exclusion constraint on a column with a multikey operator class needs support function 8.
 ALTER TABLE xr ADD EXCLUDE USING bark
   (a bark_int4_array_ops WITH &&, b bark_int4_array_ops WITH &&);
 ERROR:  index "xr_a_b_excl" has more than one column with a multikey operator class
@@ -217,27 +211,29 @@ DETAIL:  A BARK index may extract keys from at most one column.
 DROP TABLE xr;
 -- Adding the constraint checks every live row (IndexCheckExclusion, an
 -- index scan per row): two rows sharing a key fail.  A deleted row and an
--- updated row's old version are in the index but dead, so they conflict
--- with nothing, and the scan for a row with several keys meets the row
--- once.  REINDEX checks again.
+-- updated row's old version conflict with nothing, and the scan for a row
+-- with several keys meets the row once.  REINDEX checks again.
 CREATE TABLE xb (id int, a int4[]);
 INSERT INTO xb VALUES (1, '{1,2,3}'), (2, '{4,5}'), (3, '{6,NULL}'), (4, '{}'),
   (5, NULL), (6, '{NULL}'), (7, '{7,3}');
 ALTER TABLE xb ADD CONSTRAINT xb_excl
   EXCLUDE USING bark (a bark_int4_array_ops WITH |&&|);
-ERROR:  exclusion constraints are not supported for multikey operator classes in M1
+ERROR:  could not create exclusion constraint "xb_excl"
+DETAIL:  Key (a)=({1,2,3}) conflicts with key (a)=({7,3}).
 DELETE FROM xb WHERE id = 7;
 UPDATE xb SET a = '{2,3,8}' WHERE id = 1;
 ALTER TABLE xb ADD CONSTRAINT xb_excl
   EXCLUDE USING bark (a bark_int4_array_ops WITH |&&|);
-ERROR:  exclusion constraints are not supported for multikey operator classes in M1
 REINDEX INDEX xb_excl;
-ERROR:  relation "xb_excl" does not exist
 INSERT INTO xb VALUES (8, '{8}');
+ERROR:  conflicting key value violates exclusion constraint "xb_excl"
+DETAIL:  Key (a)=({8}) conflicts with existing key (a)=({2,3,8}).
 SELECT bark_index_check('xb_excl', true);
-ERROR:  relation "xb_excl" does not exist
-LINE 1: SELECT bark_index_check('xb_excl', true);
-                                ^
+ bark_index_check 
+------------------
+ 
+(1 row)
+
 -- HOT.  Core asks barkcomparedatums about the extracted column of an
 -- immediate constraint's index.  An update to a value with the same keys
 -- keeps the old entries and is HOT, and core then checks the constraint
@@ -248,43 +244,43 @@ LINE 1: SELECT bark_index_check('xb_excl', true);
 CREATE TABLE xh (id int, a int4[],
   CONSTRAINT xh_excl EXCLUDE USING bark (a bark_int4_array_ops WITH |&&|))
   WITH (fillfactor = 10, autovacuum_enabled = off);
-ERROR:  exclusion constraints are not supported for multikey operator classes in M1
 INSERT INTO xh VALUES (1, '{1,2}'), (2, '{3,4}'), (3, '{}');
-ERROR:  relation "xh" does not exist
-LINE 1: INSERT INTO xh VALUES (1, '{1,2}'), (2, '{3,4}'), (3, '{}');
-                    ^
 BEGIN;
 UPDATE xh SET a = '{2,1,1}' WHERE id = 1;
-ERROR:  relation "xh" does not exist
-LINE 1: UPDATE xh SET a = '{2,1,1}' WHERE id = 1;
-               ^
 SELECT 'same keys' AS step, * FROM x_count('xh');
-ERROR:  current transaction is aborted, commands ignored until end of transaction block
+   step    | upd | hot 
+-----------+-----+-----
+ same keys |   1 |   1
+(1 row)
+
 UPDATE xh SET a = '{4,5}' WHERE id = 2;
-ERROR:  current transaction is aborted, commands ignored until end of transaction block
 SELECT 'other keys' AS step, * FROM x_count('xh');
-ERROR:  current transaction is aborted, commands ignored until end of transaction block
+    step    | upd | hot 
+------------+-----+-----
+ other keys |   2 |   1
+(1 row)
+
 UPDATE xh SET a = '{NULL}' WHERE id = 3;
-ERROR:  current transaction is aborted, commands ignored until end of transaction block
 SELECT '{} to {NULL}' AS step, * FROM x_count('xh');
-ERROR:  current transaction is aborted, commands ignored until end of transaction block
+     step     | upd | hot 
+--------------+-----+-----
+ {} to {NULL} |   3 |   2
+(1 row)
+
 COMMIT;
 INSERT INTO xh VALUES (4, '{1}');
-ERROR:  relation "xh" does not exist
-LINE 1: INSERT INTO xh VALUES (4, '{1}');
-                    ^
+ERROR:  conflicting key value violates exclusion constraint "xh_excl"
+DETAIL:  Key (a)=({1}) conflicts with existing key (a)=({2,1,1}).
 INSERT INTO xh VALUES (4, '{5}');
-ERROR:  relation "xh" does not exist
-LINE 1: INSERT INTO xh VALUES (4, '{5}');
-                    ^
+ERROR:  conflicting key value violates exclusion constraint "xh_excl"
+DETAIL:  Key (a)=({5}) conflicts with existing key (a)=({4,5}).
 INSERT INTO xh VALUES (4, '{3}');
-ERROR:  relation "xh" does not exist
-LINE 1: INSERT INTO xh VALUES (4, '{3}');
-                    ^
 SELECT bark_index_check('xh_excl', true);
-ERROR:  relation "xh_excl" does not exist
-LINE 1: SELECT bark_index_check('xh_excl', true);
-                                ^
+ bark_index_check 
+------------------
+ 
+(1 row)
+
 -- Under = they need not: {1,2,2} and {2,1} have row 1's keys.  The first
 -- equals no row and is HOT.  The second equals row 2, and the check after
 -- the HOT update raises the violation; the HOT count shows the update was
@@ -293,41 +289,52 @@ LINE 1: SELECT bark_index_check('xh_excl', true);
 CREATE TABLE xhe (id int, a int4[],
   CONSTRAINT xhe_excl EXCLUDE USING bark (a bark_int4_array_ops WITH =))
   WITH (fillfactor = 10, autovacuum_enabled = off);
-ERROR:  exclusion constraints are not supported for multikey operator classes in M1
 INSERT INTO xhe VALUES (1, '{1,2}'), (2, '{2,1}'), (3, '{NULL}'), (4, '{}');
-ERROR:  relation "xhe" does not exist
-LINE 1: INSERT INTO xhe VALUES (1, '{1,2}'), (2, '{2,1}'), (3, '{NUL...
-                    ^
 BEGIN;
 UPDATE xhe SET a = '{1,2,2}' WHERE id = 1;
-ERROR:  relation "xhe" does not exist
-LINE 1: UPDATE xhe SET a = '{1,2,2}' WHERE id = 1;
-               ^
 SELECT 'same keys, no conflict' AS step, * FROM x_count('xhe');
-ERROR:  current transaction is aborted, commands ignored until end of transaction block
+          step          | upd | hot 
+------------------------+-----+-----
+ same keys, no conflict |   1 |   1
+(1 row)
+
 SAVEPOINT s;
-ERROR:  current transaction is aborted, commands ignored until end of transaction block
 UPDATE xhe SET a = '{2,1}' WHERE id = 1;
-ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ERROR:  conflicting key value violates exclusion constraint "xhe_excl"
+DETAIL:  Key (a)=({2,1}) conflicts with existing key (a)=({2,1}).
 ROLLBACK TO s;
-ERROR:  savepoint "s" does not exist
 SELECT 'same keys, conflict' AS step, hot FROM x_count('xhe');
-ERROR:  current transaction is aborted, commands ignored until end of transaction block
+        step         | hot 
+---------------------+-----
+ same keys, conflict |   2
+(1 row)
+
 UPDATE xhe SET a = '{}' WHERE id = 3;
-ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ERROR:  conflicting key value violates exclusion constraint "xhe_excl"
+DETAIL:  Key (a)=({}) conflicts with existing key (a)=({}).
 ROLLBACK TO s;
-ERROR:  savepoint "s" does not exist
 SELECT '{NULL} to {}, conflict' AS step, hot FROM x_count('xhe');
-ERROR:  current transaction is aborted, commands ignored until end of transaction block
+          step          | hot 
+------------------------+-----
+ {NULL} to {}, conflict |   3
+(1 row)
+
 COMMIT;
 SELECT id, a FROM xhe ORDER BY id;
-ERROR:  relation "xhe" does not exist
-LINE 1: SELECT id, a FROM xhe ORDER BY id;
-                          ^
+ id |    a    
+----+---------
+  1 | {1,2,2}
+  2 | {2,1}
+  3 | {NULL}
+  4 | {}
+(4 rows)
+
 SELECT bark_index_check('xhe_excl', true);
-ERROR:  relation "xhe_excl" does not exist
-LINE 1: SELECT bark_index_check('xhe_excl', true);
-                                ^
+ bark_index_check 
+------------------
+ 
+(1 row)
+
 -- DEFERRABLE: a conflicting insert or update is checked again at commit
 -- or at SET CONSTRAINTS (unique_key_recheck), and fails only if the
 -- conflict is still there.  Core does not ask barkcomparedatums about a
@@ -336,62 +343,51 @@ CREATE TABLE xd (id int, a int4[],
   CONSTRAINT xd_excl EXCLUDE USING bark (a bark_int4_array_ops WITH |&&|)
     DEFERRABLE INITIALLY DEFERRED)
   WITH (fillfactor = 10, autovacuum_enabled = off);
-ERROR:  exclusion constraints are not supported for multikey operator classes in M1
 INSERT INTO xd VALUES (1, '{1,2}'), (2, '{3,4}');
-ERROR:  relation "xd" does not exist
-LINE 1: INSERT INTO xd VALUES (1, '{1,2}'), (2, '{3,4}');
-                    ^
 BEGIN;
 INSERT INTO xd VALUES (3, '{2,5}');
-ERROR:  relation "xd" does not exist
-LINE 1: INSERT INTO xd VALUES (3, '{2,5}');
-                    ^
 UPDATE xd SET a = '{5,6}' WHERE id = 3;
-ERROR:  current transaction is aborted, commands ignored until end of transaction block
 COMMIT;
 BEGIN;
 INSERT INTO xd VALUES (4, '{1,9}');
-ERROR:  relation "xd" does not exist
-LINE 1: INSERT INTO xd VALUES (4, '{1,9}');
-                    ^
 DELETE FROM xd WHERE id = 1;
-ERROR:  current transaction is aborted, commands ignored until end of transaction block
 COMMIT;
 BEGIN;
 INSERT INTO xd VALUES (5, '{9,4}');
-ERROR:  relation "xd" does not exist
-LINE 1: INSERT INTO xd VALUES (5, '{9,4}');
-                    ^
 COMMIT;
+ERROR:  conflicting key value violates exclusion constraint "xd_excl"
+DETAIL:  Key (a)=({9,4}) conflicts with existing key (a)=({3,4}).
 BEGIN;
 INSERT INTO xd VALUES (5, '{3,10}');
-ERROR:  relation "xd" does not exist
-LINE 1: INSERT INTO xd VALUES (5, '{3,10}');
-                    ^
 SET CONSTRAINTS xd_excl IMMEDIATE;
-ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ERROR:  conflicting key value violates exclusion constraint "xd_excl"
+DETAIL:  Key (a)=({3,10}) conflicts with existing key (a)=({3,4}).
 ROLLBACK;
 BEGIN;
 UPDATE xd SET a = '{4,3}' WHERE id = 2;
-ERROR:  relation "xd" does not exist
-LINE 1: UPDATE xd SET a = '{4,3}' WHERE id = 2;
-               ^
-SELECT 'deferrable, same keys' AS step, * FROM x_count('xd');
-ERROR:  current transaction is aborted, commands ignored until end of transaction block
+SELECT 'deferrable, same keys' AS step, hot FROM x_count('xd');
+         step          | hot 
+-----------------------+-----
+ deferrable, same keys |   0
+(1 row)
+
 COMMIT;
 -- a deferrable constraint cannot be an arbiter
 INSERT INTO xd VALUES (6, '{6}') ON CONFLICT DO NOTHING;
-ERROR:  relation "xd" does not exist
-LINE 1: INSERT INTO xd VALUES (6, '{6}') ON CONFLICT DO NOTHING;
-                    ^
+ERROR:  ON CONFLICT does not support deferrable unique constraints/exclusion constraints as arbiters
 SELECT id, a FROM xd ORDER BY id;
-ERROR:  relation "xd" does not exist
-LINE 1: SELECT id, a FROM xd ORDER BY id;
-                          ^
+ id |   a   
+----+-------
+  2 | {4,3}
+  3 | {5,6}
+  4 | {1,9}
+(3 rows)
+
 SELECT bark_index_check('xd_excl', true);
-ERROR:  relation "xd_excl" does not exist
-LINE 1: SELECT bark_index_check('xd_excl', true);
-                                ^
+ bark_index_check 
+------------------
+ 
+(1 row)
+
 DROP TABLE xo, xe, xc, xb, xh, xhe, xd;
-ERROR:  table "xo" does not exist
 DROP FUNCTION x_count;

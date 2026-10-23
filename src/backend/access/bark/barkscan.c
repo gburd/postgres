@@ -5134,10 +5134,12 @@ bark_mk_gin_load(BarkMkScanState *mk, int k)
  * an entry, and the heap reuse its slot for a new row, before the scan
  * returns its TID.  Only an MVCC snapshot makes that harmless: the new row
  * is not visible to it, nbtree's argument for dropping its pin
- * (so->dropPin).  A scan with any other snapshot (the dirty snapshot of an
- * exclusion constraint's check) gets an error.  The scan has no leaf
- * position to mark LP_DEAD hints on (bark_killitems), so kill_prior_tuple
- * is ignored; its reads skip the entries other scans marked.
+ * (so->dropPin).  A scan with any other snapshot gets an error, so such a
+ * column cannot be in an exclusion constraint, whose check scans with a
+ * dirty snapshot (bark_check_multikey_index refuses one).  The scan has no
+ * leaf position to mark LP_DEAD hints on (bark_killitems), so
+ * kill_prior_tuple is ignored; its reads skip the entries other scans
+ * marked.
  * The planner makes no index-only, ordered or parallel scan of such an index
  * (bark_canreturn; the column has no sort family, and bark_property keeps an
  * index with columns before it to bitmap scans; plancat.c's amcanparallel);

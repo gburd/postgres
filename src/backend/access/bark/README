@@ -673,9 +673,11 @@ them to bark_insert_entries, which inserts them in ascending (key, TID)
 order in one pass.  CREATE INDEX extracts in its build callback
 (bark_build_row_keys) and spools one tuple per key; keys too large for the
 sort are inserted by the second pass (bark_insert_oversized_keys), which
-runs procedure 7 again.  An exclusion constraint on an extracted column,
-NULLS NOT DISTINCT on a unique one, and two extracted columns are refused
-before anything is built (bark_check_multikey_index).  The first descends as any insert does, or takes the cached
+runs procedure 7 again.  NULLS NOT DISTINCT on a unique index with an
+extracted column, an exclusion constraint on one whose class has no
+procedure 8, and two extracted columns are refused before anything is
+built (bark_check_multikey_index).
+The first descends as any insert does, or takes the cached
 rightmost leaf; each later one goes on the leaf the previous one went on
 when it belongs there (searched from that offset), else on the right
 sibling, locked before the leaf is released, when it belongs there, else by
@@ -725,6 +727,51 @@ its own row twice.  A foreign key (transformFkeyCheckAttrs), REFRESH
 MATERIALIZED VIEW CONCURRENTLY (is_usable_unique_index) and REPLICA
 IDENTITY (ATExecReplicaIdentity) need equality on every column, so the
 first two pass such an index by and the third refuses it.
+
+Exclusion constraints.  An exclusion constraint on an extracted column may
+use any operator core accepts for one: commutative, and in the column's
+operator family with a strategy (ComputeIndexAttrs).  BARK adds no rule of
+its own about the operator.  The executor checks the constraint by scanning
+the index for the new row's value under the operator with a dirty snapshot,
+skipping the row's own TID, and calling the operator on the values of the
+rows the scan returns with xs_recheck
+(check_exclusion_or_unique_constraint).  So the scan must return every
+conflicting row, once; a row that does not conflict may come back with
+xs_recheck, and the recheck drops it.  That is what a WHERE clause on the
+operator already needs of procedure 8.  For array overlap, as the test
+class bark_int4_array_ops scans it, the boundaries are the value's distinct
+non-NULL keys, exact: a row that shares one has an entry there.  The NULL
+key, which stands for a NULL value, an empty value and a NULL element, is
+in no overlap boundary, so a row whose only key it is conflicts with
+nothing, and a NULL element beside keys is ignored, as overlap ignores it.
+For array = the points are rechecked, and a value with no key reads the
+NULL entries, also rechecked.  A NULL entry is only ever read with
+xs_recheck, so the operator tells {} from {NULL}, and the recheck drops a
+row whose value is NULL (index_recheck_constraint takes the operator to be
+strict, as the check does for a new NULL value, which it passes without a
+scan).  A scan with a dirty snapshot always keeps the seen set
+(bark_mk_rescan), so a row that matches through several entries comes back
+once, at its first; that is needed, not only cheaper: the new row matches
+itself through every key it shares, and the check raises "found self tuple
+multiple times" for its own TID seen twice.  The row's own entries all have
+its TID, so the check skips them as one.  An insert puts in all of a row's
+entries before the check runs, so of two concurrent inserters of
+conflicting rows the later to scan meets the other's entry and waits for
+it, as with any index.  That also covers the seen set's one blind spot
+under a dirty snapshot: once a dead row's TID is in the set, VACUUM may
+remove the row's entries the scan has not reached yet and the heap give the
+TID to a new row, whose entries the set then drops.  That row's entries
+went in after this row's, so its own check meets this row.  The class must
+scan by procedure 8: a GIN-interface scan requires an MVCC snapshot, so
+bark_check_multikey_index refuses such a column, and one with neither
+procedure, in a constraint.  The same check runs for each row when the
+index is built (IndexCheckExclusion: ADD CONSTRAINT, REINDEX), at commit
+for a deferrable constraint (unique_key_recheck), and as ON CONFLICT DO
+NOTHING's pre-check; ON CONFLICT DO UPDATE refuses an exclusion constraint
+in core.  The index stores no version tags (bark_indexcanversion), as no
+multikey index does: an update that keeps the row's locator (TU_Affected)
+leaves its entries, and core checks the constraint after the update as
+after a HOT one (below).
 
 The meta page's BARK_META_MULTIKEY bit says the index has held a row with
 two or more entries.  An insert sets it before the first entry of such a
@@ -989,9 +1036,12 @@ value stored plain as unchanged for every index.  That leaves the
 extracted column, and the other columns, scalar keys and INCLUDE columns,
 of an index whose extracted column uses GIN's query interface, which
 returns no column.  Those are stored as given, so yes means the same bytes
-once detoasted (datum_image_eq): numeric 1.0 and 1.00 differ.  Core never
-asks about an exclusion constraint's index: an extracted column cannot be
-in one (bark_check_multikey_index), so all of its columns can be returned.
+once detoasted (datum_image_eq): numeric 1.0 and 1.00 differ.  The
+extracted column of an exclusion constraint's index scans by procedure 8
+(bark_check_multikey_index), so the index's other columns can be returned
+and core compares them itself.  Core asks about the extracted column only
+for a constraint checked immediately (IndexDatumsDiffer): a deferred check
+takes the value the entries were made from to be every version's.
 
 For the extracted column both values go through bark_extract_row_keys, as
 an insert's do, and yes means the same number of keys, NULL in the same
@@ -1021,6 +1071,16 @@ equal key meets them and its check (table_fetch_tid follows the chain)
 finds the conflict.  Core does not ask about the columns of a unique index
 without a predicate (they can be referenced as keys, and core decides
 them by value), so in practice this matters for partial unique indexes.
+
+Nor does an exclusion constraint's index, whatever its operator.  Values
+with the same keys need not have the same conflicts: under array =,
+{1,2} and {2,1} have one key set and are not equal, and {NULL} and {} have
+the single NULL key.  But yes is an answer about the entries.  When it
+lets an update keep them although the value changed, core checks the
+constraint for the new value after the update (ExecCheckHotExclusion), as
+inserting an entry would have; a concurrent inserter reaches the new
+version through the old entries.  Under overlap, which reads only the
+keys, that check finds what the old value's would have.
 
 The call reuses the statement's BarkInsertState from ii_AmCache, and the
 keys are allocated in the caller's per-row context.  Core's cassert
