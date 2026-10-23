@@ -2182,7 +2182,8 @@ bark_sample_level(Relation index, BlockNumber blkno, IndexTuple **keys,
 		LockBuffer(buf, BUFFER_LOCK_SHARE);
 		page = BufferGetPage(buf);
 		opaque = BarkPageGetOpaque(page);
-		if (!BarkPageIgnore(opaque) && !BarkPageIsLeaf(opaque))
+		/* Internal pages are never deleted, so every page here is live. */
+		Assert(!BarkPageIgnore(opaque) && !BarkPageIsLeaf(opaque));
 		{
 			OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
 
@@ -2268,8 +2269,8 @@ bark_sample_get(Relation index)
 
 		ndown = bark_sample_level(index, blkno, &keys, &nkeys, &maxkeys,
 								  &complete, &down);
-		if (level <= 1 || !complete || ndown > BARK_SAMPLE_PAGES ||
-			down == BARK_P_NONE)
+		Assert(down != BARK_P_NONE);
+		if (level <= 1 || !complete || ndown > BARK_SAMPLE_PAGES)
 			break;
 		for (int i = 0; i < nkeys; i++)
 			pfree(keys[i]);
@@ -2290,11 +2291,8 @@ bark_sample_get(Relation index)
 	}
 	cache = bark_get_amcache(index);
 	cache->sample = NULL;
-	if (nkeys == 0)
-	{
-		pfree(keys);
-		return NULL;
-	}
+	/* A level above the leaves has two downlinks or more, so a separator. */
+	Assert(nkeys > 0);
 
 	cxt = AllocSetContextCreate(index->rd_indexcxt, BARK_SAMPLE_CXT,
 								ALLOCSET_SMALL_SIZES);
@@ -2328,27 +2326,18 @@ bark_sample_get(Relation index)
  * when it is the start and not strict, or the end and strict, and after
  * them otherwise.  An entry is then inside the boundary when
  * bark_compare_bound puts the start before it and the end after it.
- * Returns false for a strategy that cannot end that side.
  */
-static bool
+static void
 bark_sample_side(BarkKeyInfo *keyinfo, const BarkSearchElement *e, bool lower,
 				 BarkScanBound *start, BarkScanBound *end, bool *hasstart,
 				 bool *hasend)
 {
 	BarkKeyColumn *col = &keyinfo->cols[0];
-	bool		strict;
+	/* The scan refuses any other strategy (bark_mk_set_side). */
+	bool		strict = e->strategy == BTGreaterStrategyNumber ||
+		e->strategy == BTLessStrategyNumber;
 	bool		isstart;
 	BarkScanBound *bound;
-
-	if (e->strategy == BTEqualStrategyNumber ||
-		e->strategy == (lower ? BTGreaterEqualStrategyNumber :
-						BTLessEqualStrategyNumber))
-		strict = false;
-	else if (e->strategy == (lower ? BTGreaterStrategyNumber :
-							 BTLessStrategyNumber))
-		strict = true;
-	else
-		return false;
 
 	/* In index order a DESC column's upper element comes first. */
 	isstart = lower != col->reverse;
@@ -2360,7 +2349,6 @@ bark_sample_side(BarkKeyInfo *keyinfo, const BarkSearchElement *e, bool lower,
 	bound->args[0] = e->argument;
 	bound->procs[0] = &col->cmp;
 	bound->collations[0] = col->collation;
-	return true;
 }
 
 /* The number of sample keys bound sorts after (bark_compare_bound). */
@@ -2389,46 +2377,43 @@ bark_sample_find(Relation index, BarkKeyInfo *keyinfo, BarkKeySample *sample,
  * time, at most BARK_SAMPLE_LEAVES of them.  Returns true when the count is
  * complete (an entry past end, or the last leaf, was reached), false when
  * the leaf limit, or a right link to a page that is no longer a leaf,
- * stopped it; *ntids is the count so far, *nleaves the leaves read.  There is no snapshot: an entry not yet marked dead counts, though
- * its row may be.
+ * stopped it; *ntids is the count so far, *nleaves the leaves read (one at
+ * least).  There is no snapshot: an entry not yet marked dead counts,
+ * though its row may be.
  */
 static bool
 bark_sample_count(Relation index, BarkKeyInfo *keyinfo,
 				  const BarkScanBound *start, const BarkScanBound *end,
 				  double *ntids, int *nleaves)
 {
+	/* The sample has keys, so the index is not empty. */
 	Buffer		buf = bark_search_bound(index, keyinfo, start, start->upper);
-	OffsetNumber off;
+	OffsetNumber off = bark_binsrch_bound(index, keyinfo, start,
+										  BufferGetPage(buf));
 	BarkItemBuf ibuf;
 
 	*ntids = 0;
 	*nleaves = 0;
-	if (!BufferIsValid(buf))
-		return true;
-	off = bark_binsrch_bound(index, keyinfo, start, BufferGetPage(buf));
 	for (;;)
 	{
 		Page		page = BufferGetPage(buf);
 		BarkPageOpaque opaque = BarkPageGetOpaque(page);
+		/* The first entry past end, found by binary search, as a scan's. */
+		OffsetNumber endoff = bark_binsrch_bound(index, keyinfo, end, page);
 		BlockNumber next;
 
-		if (!BarkPageIgnore(opaque))
+		/* A half-dead or deleted leaf has no entries, so counts nothing. */
+		(*nleaves)++;
+		for (; off < endoff; off = OffsetNumberNext(off))
 		{
-			/* The first entry past end, found by binary search, as a scan's. */
-			OffsetNumber endoff = bark_binsrch_bound(index, keyinfo, end, page);
-
-			(*nleaves)++;
-			for (; off < endoff; off = OffsetNumberNext(off))
-			{
-				if (!ItemIdIsDead(PageGetItemId(page, off)))
-					*ntids += bark_entry_count_tids(BarkPageGetItem(page, off,
-																	&ibuf));
-			}
-			if (endoff <= PageGetMaxOffsetNumber(page))
-			{
-				UnlockReleaseBuffer(buf);
-				return true;
-			}
+			if (!ItemIdIsDead(PageGetItemId(page, off)))
+				*ntids += bark_entry_count_tids(BarkPageGetItem(page, off,
+																&ibuf));
+		}
+		if (endoff <= PageGetMaxOffsetNumber(page))
+		{
+			UnlockReleaseBuffer(buf);
+			return true;
 		}
 		next = opaque->bark_next;
 		UnlockReleaseBuffer(buf);
@@ -2458,8 +2443,7 @@ bark_sample_count(Relation index, BarkKeyInfo *keyinfo,
  * k (its low key, when the sample is level 1's), read once per sample: a
  * descent for an upper bound at the key's first column lands right of the
  * separator, share-locked.  The answer is kept in sample->density, so it is
- * as of the probe, as the keys are as of the build.  -1 when the index is
- * empty.
+ * as of the probe, as the keys are as of the build.
  */
 static double
 bark_sample_probe(Relation index, BarkKeyInfo *keyinfo, BarkKeySample *sample,
@@ -2485,8 +2469,6 @@ bark_sample_probe(Relation index, BarkKeyInfo *keyinfo, BarkKeySample *sample,
 	at.procs[0] = &keyinfo->cols[0].cmp;
 	at.collations[0] = keyinfo->cols[0].collation;
 	buf = bark_search_bound(index, keyinfo, &at, true);
-	if (!BufferIsValid(buf))
-		return -1;
 	page = BufferGetPage(buf);
 	opaque = BarkPageGetOpaque(page);
 	maxoff = PageGetMaxOffsetNumber(page);
@@ -2530,8 +2512,7 @@ bark_sample_probe(Relation index, BarkKeyInfo *keyinfo, BarkKeySample *sample,
  * inside, open at one end or not, reads the leaves at up to three of them
  * (bark_sample_probe, once per key for the sample's life) and takes their
  * TIDs per leaf over the leaves it covers.  The fraction alone is left for
- * a boundary open at one end with no sample key inside, and for an index
- * whose probes find it empty.
+ * a boundary open at one end with no sample key inside.
  *
  * -1 for a hypothetical index, an empty one or one whose root is a leaf,
  * an extracted column that is not the first key column, a non-Const or
@@ -2603,16 +2584,12 @@ bark_estimate_qual_selectivity(IndexOptInfo *index, int indexcol, Expr *clause)
 		int			inside;
 		double		bsel;
 
-		if ((result[i].lower != NULL &&
-			 !bark_sample_side(keyinfo, result[i].lower, true, &start, &end,
-							   &hasstart, &hasend)) ||
-			(result[i].upper != NULL &&
-			 !bark_sample_side(keyinfo, result[i].upper, false, &start, &end,
-							   &hasstart, &hasend)))
-		{
-			selec = -1;
-			break;
-		}
+		if (result[i].lower != NULL)
+			bark_sample_side(keyinfo, result[i].lower, true, &start, &end,
+							 &hasstart, &hasend);
+		if (result[i].upper != NULL)
+			bark_sample_side(keyinfo, result[i].upper, false, &start, &end,
+							 &hasstart, &hasend);
 		point = result[i].lower != NULL && result[i].upper != NULL &&
 			result[i].lower->strategy == BTEqualStrategyNumber &&
 			result[i].upper->strategy == BTEqualStrategyNumber;
@@ -2631,7 +2608,7 @@ bark_estimate_qual_selectivity(IndexOptInfo *index, int indexcol, Expr *clause)
 			if (bark_sample_count(indexRel, keyinfo, &start, &end, &ntids,
 								  &nleaves))
 				bsel = ntids / reltuples;
-			else if (nleaves > 0)
+			else
 				bsel = Max(bsel, Max(ntids, ntids / nleaves * (inside + 1) *
 									 leavesper) / reltuples);
 		}
@@ -2645,23 +2622,16 @@ bark_estimate_qual_selectivity(IndexOptInfo *index, int indexcol, Expr *clause)
 			{
 				int			k = lo + (int) (((int64) 2 * j + 1) * inside /
 											(2 * Min(inside, BARK_SAMPLE_PROBES)));
-				double		n = bark_sample_probe(indexRel, keyinfo, sample, k);
 
-				if (n >= 0)
-				{
-					ntids += n;
-					nprobes++;
-				}
+				ntids += bark_sample_probe(indexRel, keyinfo, sample, k);
+				nprobes++;
 			}
-			if (nprobes > 0)
-				bsel = ntids / nprobes * inside * leavesper / reltuples;
+			bsel = ntids / nprobes * inside * leavesper / reltuples;
 		}
 		selec += Min(bsel, 1.0);
 	}
 	index_close(indexRel, NoLock);
 
-	if (selec < 0)
-		return -1;
 	CLAMP_PROBABILITY(selec);
 	return selec;
 }
