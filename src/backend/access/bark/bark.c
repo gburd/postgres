@@ -645,8 +645,8 @@ bark_lower_bound(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno)
 
 	/*
 	 * Tests stop here, holding every lock the change needs, to run scans and
-	 * inserts against it; and leave P1's high key alone (the parent only), to
-	 * show that amcheck catches the mismatch.
+	 * inserts against it; and lower the parent's downlink alone, leaving P1
+	 * and P2 as they were, to show that amcheck catches the mismatch.
 	 */
 	INJECTION_POINT("bark-lower-bound-locked", NULL);
 	if (!flagonly && IS_INJECTION_POINT_ATTACHED("bark-lower-bound-skip-hikey"))
@@ -677,11 +677,13 @@ bark_lower_bound(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno)
 								 IndexTupleSize(newdownlink)))
 		elog(PANIC, "failed to lower a downlink in block %u of index \"%s\"",
 			 BufferGetBlockNumber(pbuf), RelationGetRelationName(index));
-	opaque->bark_flags &= ~BARK_LOWBOUND_TAGGED;
+	if (!skiphikey)
+		opaque->bark_flags &= ~BARK_LOWBOUND_TAGGED;
 
 	if (!flagonly && !skiphikey)
 		MarkBufferDirty(lbuf);
-	MarkBufferDirty(buf);
+	if (!skiphikey)
+		MarkBufferDirty(buf);
 	if (!flagonly)
 		MarkBufferDirty(pbuf);
 
@@ -702,7 +704,8 @@ bark_lower_bound(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno)
 			XLogRegisterBuffer(1, lbuf, REGBUF_STANDARD);
 			XLogRegisterBufData(1, newhikey, IndexTupleSize(newhikey));
 		}
-		XLogRegisterBuffer(2, buf, REGBUF_STANDARD);
+		if (!skiphikey)
+			XLogRegisterBuffer(2, buf, REGBUF_STANDARD);
 		if (!flagonly)
 		{
 			XLogRegisterBuffer(3, pbuf, REGBUF_STANDARD);
@@ -717,7 +720,8 @@ bark_lower_bound(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno)
 
 	if (!flagonly && !skiphikey)
 		PageSetLSN(lpage, recptr);
-	PageSetLSN(page, recptr);
+	if (!skiphikey)
+		PageSetLSN(page, recptr);
 	if (!flagonly)
 		PageSetLSN(BufferGetPage(pbuf), recptr);
 
@@ -725,7 +729,8 @@ bark_lower_bound(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno)
 
 	if (!flagonly && !skiphikey)
 		bark_verify_page_change(index, lbuf);
-	bark_verify_page_change(index, buf);
+	if (!skiphikey)
+		bark_verify_page_change(index, buf);
 	if (!flagonly)
 		bark_verify_page_change(index, pbuf);
 	ok = true;
