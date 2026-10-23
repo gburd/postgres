@@ -16,8 +16,10 @@ RESET client_min_messages;
 CREATE FUNCTION v6_plain_len(ntids int) RETURNS int LANGUAGE sql
   AS $$ SELECT 16 + 6 * ntids $$;
 -- Key k has n rows inserted together, so their heap TIDs are consecutive on
--- one page: the deltas are 1, a byte each, and the entry codes.
-CREATE TABLE v6c (k int4) WITH (autovacuum_enabled = off);
+-- one page: the deltas are 1, a byte each, and the entry codes.  A temporary
+-- table, so that the VACUUM below removes the deleted rows whatever
+-- snapshots other backends hold.
+CREATE TEMP TABLE v6c (k int4) WITH (autovacuum_enabled = off);
 INSERT INTO v6c SELECT k FROM generate_series(1, 10) n, generate_series(3, 11) k
   ORDER BY k, n;
 CREATE INDEX v6c_k ON v6c USING bark (k);
