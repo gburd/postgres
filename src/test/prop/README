@@ -197,11 +197,14 @@ checks only the shapes the generator already makes.
 The single-table generator (qg_build_table) and the oracles over it are
 reproducible: a counterexample replays from its seed.  The deep multi-table
 generator (qg_build_db / qg_build_query, used by the query_deep, query_multi
-and diff_deep_* properties under PG_PROP_DEEP) is not currently reproducible
-for a fixed seed -- the engine's failure-replay can build a different query
-(see findings 041).  Treat a deep disagreement as a lead to reproduce by
-hand, not as a replayable counterexample, and do not use a deep run as a
-regression gate until that is fixed.
+and diff_deep_* properties under PG_PROP_DEEP) was once seen to be
+non-reproducible for a fixed seed on one environment (finding 041), but that
+no longer reproduces on the current libhegel in any profile, same-seed or
+across-seed.  For determinism that does not depend on the engine's
+draw-replay behaviour at all, set PG_PROP_GEN_PRNG=1: the deep case is then
+reproducible by construction (one engine draw drives a local PRNG).  A deep
+disagreement is still best reproduced by hand before it is believed, but a
+deep run is no longer disqualified as a regression gate on that ground.
 
 
 Commitfest properties and retirement
