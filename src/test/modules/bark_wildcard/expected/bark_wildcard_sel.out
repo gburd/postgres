@@ -40,32 +40,30 @@ SELECT n, q, act, est BETWEEN act / 3.0 AND act * 3.0 AS within_3x
   FROM wc_sel_q, LATERAL wc_est('wc_sel', q) ORDER BY n;
  n |            q            |  act  | within_3x 
 ---+-------------------------+-------+-----------
- 1 | doc #= '["p1", true]'   | 90000 | f
- 2 | doc #= '["p2", true]'   |   100 | f
+ 1 | doc #= '["p1", true]'   | 90000 | t
+ 2 | doc #= '["p2", true]'   |   100 | t
  3 | doc #? 'p1'             | 90000 | f
- 4 | doc #? 'p2'             |   100 | f
- 5 | doc #< '["p3", 10]'     | 99000 | t
- 6 | doc #> '["p3", 1000]'   |   990 | f
+ 4 | doc #? 'p2'             |   100 | t
+ 5 | doc #< '["p3", 10]'     | 99000 | f
+ 6 | doc #> '["p3", 1000]'   |   990 | t
  7 | doc #>= '["id", 50001]' | 50000 | t
 (7 rows)
 
--- Today p1 and p2 get one estimate, so one plan.
+-- p1 is in most documents, p2 in few: a seqscan for p1, the index for p2.
 SELECT a.est = b.est AS same_estimate
   FROM wc_est('wc_sel', 'doc #= ''["p1", true]''') a,
        wc_est('wc_sel', 'doc #= ''["p2", true]''') b;
  same_estimate 
 ---------------
- t
+ f
 (1 row)
 
 EXPLAIN (COSTS OFF) SELECT * FROM wc_sel WHERE doc #= '["p1", true]';
-                     QUERY PLAN                     
-----------------------------------------------------
- Bitmap Heap Scan on wc_sel
-   Recheck Cond: (doc #= '["p1", true]'::jsonb)
-   ->  Bitmap Index Scan on wc_sel_doc
-         Index Cond: (doc #= '["p1", true]'::jsonb)
-(4 rows)
+                QUERY PLAN                
+------------------------------------------
+ Seq Scan on wc_sel
+   Filter: (doc #= '["p1", true]'::jsonb)
+(2 rows)
 
 EXPLAIN (COSTS OFF) SELECT * FROM wc_sel WHERE doc #= '["p2", true]';
                      QUERY PLAN                     
@@ -104,6 +102,44 @@ SELECT est, act FROM wc_est('wc_small', 'doc #= ''["p1", true]''');
  est | act  
 -----+------
    5 | 1000
+(1 row)
+
+-- A hypothetical index cannot say either: the default again.
+SELECT bark_wildcard_hypothetical(true);
+ bark_wildcard_hypothetical 
+----------------------------
+ 
+(1 row)
+
+SELECT est, act FROM wc_est('wc_sel', 'doc #= ''["p1", true]''');
+ est |  act  
+-----+-------
+ 500 | 90000
+(1 row)
+
+SELECT bark_wildcard_hypothetical(false);
+ bark_wildcard_hypothetical 
+----------------------------
+ 
+(1 row)
+
+-- The sample is rebuilt after each invalidation, in a memory context that
+-- replaces the old one: a hundred ANALYZEs, each followed by a plan, must
+-- not grow the index's relcache memory.
+CREATE TEMP TABLE wc_cxt AS
+  SELECT bark_wildcard_cxt_size('wc_sel_doc') AS before
+    FROM wc_est('wc_sel', 'doc #= ''["p2", true]''');
+DO $$
+BEGIN
+  FOR i IN 1..100 LOOP
+    ANALYZE wc_sel;
+    PERFORM wc_est('wc_sel', 'doc #= ''["p2", true]''');
+  END LOOP;
+END $$;
+SELECT bark_wildcard_cxt_size('wc_sel_doc') - before AS grown FROM wc_cxt;
+ grown 
+-------
+     0
 (1 row)
 
 DROP TABLE wc_sel, wc_sel_q, wc_small;

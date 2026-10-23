@@ -41,7 +41,7 @@ INSERT INTO wc_sel_q VALUES
 SELECT n, q, act, est BETWEEN act / 3.0 AND act * 3.0 AS within_3x
   FROM wc_sel_q, LATERAL wc_est('wc_sel', q) ORDER BY n;
 
--- Today p1 and p2 get one estimate, so one plan.
+-- p1 is in most documents, p2 in few: a seqscan for p1, the index for p2.
 SELECT a.est = b.est AS same_estimate
   FROM wc_est('wc_sel', 'doc #= ''["p1", true]''') a,
        wc_est('wc_sel', 'doc #= ''["p2", true]''') b;
@@ -57,6 +57,26 @@ INSERT INTO wc_small SELECT g, '{"p1": true}' FROM generate_series(1, 1000) g;
 CREATE INDEX wc_small_doc ON wc_small USING bark (doc bark_jsonb_wildcard_ops);
 ANALYZE wc_small;
 SELECT est, act FROM wc_est('wc_small', 'doc #= ''["p1", true]''');
+
+-- A hypothetical index cannot say either: the default again.
+SELECT bark_wildcard_hypothetical(true);
+SELECT est, act FROM wc_est('wc_sel', 'doc #= ''["p1", true]''');
+SELECT bark_wildcard_hypothetical(false);
+
+-- The sample is rebuilt after each invalidation, in a memory context that
+-- replaces the old one: a hundred ANALYZEs, each followed by a plan, must
+-- not grow the index's relcache memory.
+CREATE TEMP TABLE wc_cxt AS
+  SELECT bark_wildcard_cxt_size('wc_sel_doc') AS before
+    FROM wc_est('wc_sel', 'doc #= ''["p2", true]''');
+DO $$
+BEGIN
+  FOR i IN 1..100 LOOP
+    ANALYZE wc_sel;
+    PERFORM wc_est('wc_sel', 'doc #= ''["p2", true]''');
+  END LOOP;
+END $$;
+SELECT bark_wildcard_cxt_size('wc_sel_doc') - before AS grown FROM wc_cxt;
 
 DROP TABLE wc_sel, wc_sel_q, wc_small;
 DROP FUNCTION wc_est;
