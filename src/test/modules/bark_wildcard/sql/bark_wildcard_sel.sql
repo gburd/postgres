@@ -66,6 +66,22 @@ SELECT bark_wildcard_hypothetical(true);
 SELECT est, act FROM wc_est('wc_sel', 'doc #= ''["p1", true]''');
 SELECT bark_wildcard_hypothetical(false);
 
+-- A user who may not read every row (here, under row-level security)
+-- gets the default too, as jsonb_cmp is not leakproof: the index's counts
+-- would tell them how many rows the policy hides.  The policy passes every row, so its own selectivity
+-- is about 1: 500 rows is the default, 90000 would be the index's count.
+CREATE ROLE regress_wc_sel;
+GRANT SELECT ON wc_sel TO regress_wc_sel;
+ALTER TABLE wc_sel ENABLE ROW LEVEL SECURITY;
+CREATE POLICY wc_sel_few ON wc_sel TO regress_wc_sel USING (id > 0);
+SET ROLE regress_wc_sel;
+SELECT (wc_est('wc_sel', 'doc #= ''["p1", true]''')).est;
+RESET ROLE;
+ALTER TABLE wc_sel DISABLE ROW LEVEL SECURITY;
+DROP POLICY wc_sel_few ON wc_sel;
+REVOKE SELECT ON wc_sel FROM regress_wc_sel;
+DROP ROLE regress_wc_sel;
+
 -- The sample is rebuilt after each invalidation, in a memory context that
 -- replaces the old one: a hundred ANALYZEs, each followed by a plan, must
 -- not grow the index's relcache memory.
