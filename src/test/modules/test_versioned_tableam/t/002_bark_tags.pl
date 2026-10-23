@@ -602,6 +602,42 @@ for my $idx (qw(tmk_s tmk_a))
 		'', "mk: $idx checks");
 }
 
+# An exclusion constraint on a multikey column stores no tags either.  An
+# update that keeps the column's keys (barkcomparedatums) and changes a
+# partial scalar index's column keeps the locator (TU_Affected): the
+# constraint's index keeps its entries, and core checks the constraint for
+# the new value after the update (ExecCheckHotExclusion).  Under = values
+# with the same keys need not conflict alike: {2,1} has {1,2,2}'s keys and
+# equals row 2.  (The scalar index is partial so that core can tell it is
+# affected without making the update move the row.)
+$node->safe_psql(
+	'postgres', q{
+	CREATE TABLE tmx (id int, s int, a int4[],
+	  CONSTRAINT tmx_a EXCLUDE USING bark (a bark_int4_array_ops WITH =))
+	  USING heap_versioned;
+	CREATE INDEX tmx_s ON tmx USING bark (s) WHERE s > 0;
+	INSERT INTO tmx VALUES (1, 1, '{1,2}'), (2, 2, '{2,1}');
+});
+is(update_kept(q{UPDATE tmx SET s = 10, a = '{1,2,2}' WHERE id = 1}),
+	'1', 'mx: same keys, scalar changed: the locator is kept');
+my ($mxret, $mxout, $mxerr) = $node->psql(
+	'postgres', q{
+	SET test_versioned_tableam.keep_locator = pretend;
+	UPDATE tmx SET s = 11, a = '{2,1}' WHERE id = 1});
+like(
+	$mxerr,
+	qr/conflicting key value violates exclusion constraint "tmx_a"/,
+	'mx: the constraint is checked after an update that kept the locator');
+# tmx_s's tagged entries: the update's, and the failed update's, made
+# before the check failed
+is( $node->safe_psql(
+		'postgres', q{
+		SELECT (SELECT count(*) FROM bark_entries('tmx_s') WHERE tag IS NOT NULL) || ' ' ||
+		       (SELECT count(*) FROM bark_entries('tmx_a') WHERE tag IS NOT NULL)}),
+	'2 0', 'mx: the scalar index has tagged entries, the constraint\'s none');
+is($node->safe_psql('postgres', q{SELECT bark_index_parent_check('tmx_a')}),
+	'', 'mx: tmx_a checks');
+
 $node->safe_psql(
 	'postgres', q{
 	CREATE TABLE tv2 (id int, k int) USING heap_versioned;
