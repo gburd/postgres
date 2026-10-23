@@ -37,14 +37,12 @@ SELECT bark_multikey_boundaries(mk_opc('bark_int4_array_ops'), 0, 15::int2);
 SELECT a, a |<| 0 AS least, a |>>| 0 AS greatest
 FROM (VALUES ('{4,2,9}'::int4[]), ('{}'), ('{NULL,8}'), (NULL)) AS t(a);
 
--- What is never allowed on an extracted column: two of them, an exclusion
--- constraint, and NULLS NOT DISTINCT.  A unique index is allowed
--- (bark_multikey_unique has its tests).
+-- What is never allowed on an extracted column: two of them, and NULLS
+-- NOT DISTINCT.  A unique index and an exclusion constraint are allowed
+-- (bark_multikey_unique and bark_multikey_exclude have their tests).
 CREATE TABLE mk (id int, a int4[], b int4[]);
 INSERT INTO mk VALUES (1, '{1,2}', '{3}'), (2, '{}', NULL);
 CREATE INDEX ON mk USING bark (a bark_int4_array_ops, b bark_int4_array_ops);
-ALTER TABLE mk ADD CONSTRAINT mk_excl
-  EXCLUDE USING bark (a bark_int4_array_ops WITH =);
 CREATE UNIQUE INDEX ON mk USING bark (a bark_int4_array_ops) NULLS NOT DISTINCT;
 -- With no unique index on an extracted column, ON CONFLICT has no arbiter
 -- on one.

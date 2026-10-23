@@ -7,8 +7,10 @@
 -- and fails if it meets it twice.
 CREATE EXTENSION IF NOT EXISTS bark_multikey;
 
--- (updates, HOT updates) of a table so far in this transaction.  The HOT
--- count does not roll back with a subtransaction.
+-- (updates, HOT updates) of a table so far in this transaction, or since
+-- the backend last reported its statistics: read it only for a table no
+-- earlier transaction updated.  The HOT count does not roll back with a
+-- subtransaction.
 CREATE FUNCTION x_count(rel regclass, OUT upd bigint, OUT hot bigint)
 LANGUAGE sql AS $$
   SELECT pg_stat_get_xact_tuples_updated(rel),
@@ -43,7 +45,7 @@ SELECT id, a FROM xo ORDER BY id;
 -- No two rows share a key, by a sequential scan of the heap.
 SELECT e, count(DISTINCT id) FROM xo, unnest(a) e WHERE e IS NOT NULL
 GROUP BY e HAVING count(DISTINCT id) > 1;
-SELECT bark_index_check('xo_excl', true);
+SELECT bark_index_parent_check('xo_excl', true);
 
 -- ON CONFLICT DO NOTHING takes an exclusion constraint as its arbiter with
 -- no conflict target or with the constraint named, not inferred from a
@@ -78,6 +80,10 @@ INSERT INTO xe VALUES (11, '{NULL}');
 INSERT INTO xe VALUES (11, '{NULL,NULL}');
 INSERT INTO xe VALUES (11, '{1,NULL}');
 INSERT INTO xe VALUES (11, '{2,2,1}');
+-- With row 4 gone, a scan for {} reads only NULL entries of rows that are
+-- not {}: NULL values and {NULL}, {NULL,NULL}.  The recheck rejects each.
+DELETE FROM xe WHERE id = 4;
+INSERT INTO xe VALUES (12, '{}');
 SELECT bark_index_check('xe_excl', true);
 -- @> is not commutative, so core refuses it.
 CREATE TABLE xbad (a int4[],
@@ -93,8 +99,10 @@ CREATE TABLE xc (tenant int, a int4[],
 INSERT INTO xc VALUES (1, '{1,2}'), (2, '{1,2}'), (NULL, '{1,2}'), (NULL, '{1,2}');
 INSERT INTO xc VALUES (1, '{5,2}');
 INSERT INTO xc VALUES (2, '{3,4}'), (3, '{2}');
+ALTER TABLE xc DROP CONSTRAINT xc_ta;
+INSERT INTO xc VALUES (3, '{9,2}');
 SELECT tenant, a FROM xc ORDER BY tenant, a;
-SELECT bark_index_check('xc_ta', true), bark_index_check('xc_at', true);
+SELECT bark_index_check('xc_at', true);
 
 -- Refused: a class that answers scans through GIN's query interface
 -- (procedure 10, no procedure 8), whose index scans need an MVCC snapshot;
@@ -108,9 +116,8 @@ DROP TABLE xr;
 
 -- Adding the constraint checks every live row (IndexCheckExclusion, an
 -- index scan per row): two rows sharing a key fail.  A deleted row and an
--- updated row's old version are in the index but dead, so they conflict
--- with nothing, and the scan for a row with several keys meets the row
--- once.  REINDEX checks again.
+-- updated row's old version conflict with nothing, and the scan for a row
+-- with several keys meets the row once.  REINDEX checks again.
 CREATE TABLE xb (id int, a int4[]);
 INSERT INTO xb VALUES (1, '{1,2,3}'), (2, '{4,5}'), (3, '{6,NULL}'), (4, '{}'),
   (5, NULL), (6, '{NULL}'), (7, '{7,3}');
@@ -197,7 +204,7 @@ SET CONSTRAINTS xd_excl IMMEDIATE;
 ROLLBACK;
 BEGIN;
 UPDATE xd SET a = '{4,3}' WHERE id = 2;
-SELECT 'deferrable, same keys' AS step, * FROM x_count('xd');
+SELECT 'deferrable, same keys' AS step, hot FROM x_count('xd');
 COMMIT;
 -- a deferrable constraint cannot be an arbiter
 INSERT INTO xd VALUES (6, '{6}') ON CONFLICT DO NOTHING;

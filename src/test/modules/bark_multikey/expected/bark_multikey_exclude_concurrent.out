@@ -1,4 +1,202 @@
 Parsed test spec with 2 sessions
 
 starting permutation: s1_begin s1_ins15 s2_ins59 s1_commit s1_check
-setup failed: ERROR:  exclusion constraints are not supported for multikey operator classes in M1
+step s1_begin: BEGIN;
+step s1_ins15: INSERT INTO mkx VALUES (1, ARRAY[1,5]);
+step s2_ins59: INSERT INTO mkx VALUES (5, ARRAY[5,9]); <waiting ...>
+step s1_commit: COMMIT;
+step s2_ins59: <... completed>
+ERROR:  conflicting key value violates exclusion constraint "mkx_a"
+step s1_check: 
+	SELECT id, a FROM mkx ORDER BY id;
+	SELECT id, a FROM mkxd ORDER BY id;
+	SELECT bark_index_check('mkx_a', true), bark_index_check('mkxd_a', true);
+
+id|a      
+--+-------
+ 0|{20,21}
+ 1|{1,5}  
+(2 rows)
+
+id|a
+--+-
+(0 rows)
+
+bark_index_check|bark_index_check
+----------------+----------------
+                |                
+(1 row)
+
+
+starting permutation: s1_begin s1_ins15 s2_ins59 s1_abort s1_check
+step s1_begin: BEGIN;
+step s1_ins15: INSERT INTO mkx VALUES (1, ARRAY[1,5]);
+step s2_ins59: INSERT INTO mkx VALUES (5, ARRAY[5,9]); <waiting ...>
+step s1_abort: ROLLBACK;
+step s2_ins59: <... completed>
+step s1_check: 
+	SELECT id, a FROM mkx ORDER BY id;
+	SELECT id, a FROM mkxd ORDER BY id;
+	SELECT bark_index_check('mkx_a', true), bark_index_check('mkxd_a', true);
+
+id|a      
+--+-------
+ 0|{20,21}
+ 5|{5,9}  
+(2 rows)
+
+id|a
+--+-
+(0 rows)
+
+bark_index_check|bark_index_check
+----------------+----------------
+                |                
+(1 row)
+
+
+starting permutation: s1_begin s1_insd s2_begin s2_insd s2_commit s1_commit s1_check
+step s1_begin: BEGIN;
+step s1_insd: INSERT INTO mkxd VALUES (1, ARRAY[1,5]);
+step s2_begin: BEGIN;
+step s2_insd: INSERT INTO mkxd VALUES (5, ARRAY[5,9]);
+step s2_commit: COMMIT; <waiting ...>
+step s1_commit: COMMIT;
+step s2_commit: <... completed>
+ERROR:  conflicting key value violates exclusion constraint "mkxd_a"
+step s1_check: 
+	SELECT id, a FROM mkx ORDER BY id;
+	SELECT id, a FROM mkxd ORDER BY id;
+	SELECT bark_index_check('mkx_a', true), bark_index_check('mkxd_a', true);
+
+id|a      
+--+-------
+ 0|{20,21}
+(1 row)
+
+id|a    
+--+-----
+ 1|{1,5}
+(1 row)
+
+bark_index_check|bark_index_check
+----------------+----------------
+                |                
+(1 row)
+
+
+starting permutation: s1_begin s1_insd s2_begin s2_insd s2_commit s1_abort s1_check
+step s1_begin: BEGIN;
+step s1_insd: INSERT INTO mkxd VALUES (1, ARRAY[1,5]);
+step s2_begin: BEGIN;
+step s2_insd: INSERT INTO mkxd VALUES (5, ARRAY[5,9]);
+step s2_commit: COMMIT; <waiting ...>
+step s1_abort: ROLLBACK;
+step s2_commit: <... completed>
+step s1_check: 
+	SELECT id, a FROM mkx ORDER BY id;
+	SELECT id, a FROM mkxd ORDER BY id;
+	SELECT bark_index_check('mkx_a', true), bark_index_check('mkxd_a', true);
+
+id|a      
+--+-------
+ 0|{20,21}
+(1 row)
+
+id|a    
+--+-----
+ 5|{5,9}
+(1 row)
+
+bark_index_check|bark_index_check
+----------------+----------------
+                |                
+(1 row)
+
+
+starting permutation: s1_begin s1_oc s2_oc s1_commit s1_check
+step s1_begin: BEGIN;
+step s1_oc: INSERT INTO mkx VALUES (11, ARRAY[11,12]) ON CONFLICT DO NOTHING;
+step s2_oc: INSERT INTO mkx VALUES (12, ARRAY[12,13]) ON CONFLICT DO NOTHING; <waiting ...>
+step s1_commit: COMMIT;
+step s2_oc: <... completed>
+step s1_check: 
+	SELECT id, a FROM mkx ORDER BY id;
+	SELECT id, a FROM mkxd ORDER BY id;
+	SELECT bark_index_check('mkx_a', true), bark_index_check('mkxd_a', true);
+
+id|a      
+--+-------
+ 0|{20,21}
+11|{11,12}
+(2 rows)
+
+id|a
+--+-
+(0 rows)
+
+bark_index_check|bark_index_check
+----------------+----------------
+                |                
+(1 row)
+
+
+starting permutation: s1_begin s1_hot s1_hotcount s2_ins21 s1_commit s1_check
+step s1_begin: BEGIN;
+step s1_hot: UPDATE mkx SET a = ARRAY[21, 20, 20] WHERE id = 0;
+step s1_hotcount: SELECT pg_stat_get_xact_tuples_hot_updated('mkx'::regclass) AS hot;
+hot
+---
+  1
+(1 row)
+
+step s2_ins21: INSERT INTO mkx VALUES (2, ARRAY[21]); <waiting ...>
+step s1_commit: COMMIT;
+step s2_ins21: <... completed>
+ERROR:  conflicting key value violates exclusion constraint "mkx_a"
+step s1_check: 
+	SELECT id, a FROM mkx ORDER BY id;
+	SELECT id, a FROM mkxd ORDER BY id;
+	SELECT bark_index_check('mkx_a', true), bark_index_check('mkxd_a', true);
+
+id|a         
+--+----------
+ 0|{21,20,20}
+(1 row)
+
+id|a
+--+-
+(0 rows)
+
+bark_index_check|bark_index_check
+----------------+----------------
+                |                
+(1 row)
+
+
+starting permutation: s1_begin s1_hot s2_ins21 s1_abort s1_check
+step s1_begin: BEGIN;
+step s1_hot: UPDATE mkx SET a = ARRAY[21, 20, 20] WHERE id = 0;
+step s2_ins21: INSERT INTO mkx VALUES (2, ARRAY[21]); <waiting ...>
+step s1_abort: ROLLBACK;
+step s2_ins21: <... completed>
+ERROR:  conflicting key value violates exclusion constraint "mkx_a"
+step s1_check: 
+	SELECT id, a FROM mkx ORDER BY id;
+	SELECT id, a FROM mkxd ORDER BY id;
+	SELECT bark_index_check('mkx_a', true), bark_index_check('mkxd_a', true);
+
+id|a      
+--+-------
+ 0|{20,21}
+(1 row)
+
+id|a
+--+-
+(0 rows)
+
+bark_index_check|bark_index_check
+----------------+----------------
+                |                
+(1 row)
+

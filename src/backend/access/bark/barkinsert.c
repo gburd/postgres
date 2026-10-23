@@ -3734,11 +3734,19 @@ bark_entries_same(Relation index, BarkInsertState *state, int attnum,
  * reach the live version through the HOT chain, so a later insert of an
  * equal key meets them and its check (table_fetch_tid follows the chain)
  * reports the conflict, as it would against new entries; and the updated
- * row shares no key with another row that it did not share before.  Core
- * never asks about the index of an exclusion constraint: an extracted
- * column cannot be in one (bark_check_multikey_index), so every column of
- * such an index can be returned.  An index that is not ready or not valid
- * is refused.
+ * row shares no key with another row that it did not share before.
+ *
+ * Nor does the index of an exclusion constraint on the extracted column,
+ * whatever its operator.  Values with the same keys need not have the same
+ * conflicts (under array =, {1,2} and {2,1}), but the answer is about the
+ * entries: when it lets the update keep them although the value changed,
+ * core checks the constraint for the new value after the update
+ * (ExecCheckHotExclusion), and it asks only about an immediate
+ * constraint's index (IndexDatumsDiffer), since a deferred check takes the
+ * entries' value to be every version's.  Such a column's class scans by
+ * procedure 8 (bark_check_multikey_index), so the index's other columns
+ * can be returned and core compares them itself.  An index that is not
+ * ready or not valid is refused.
  *
  * Nothing here locks a buffer or writes the index.  The statement's insert
  * state (BarkInsertState, in ii_AmCache) is reused; the keys are allocated

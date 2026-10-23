@@ -1017,11 +1017,22 @@ bark_property(Oid index_oid, int attno, IndexAMProperty prop,
  * Also refuse an index with two extracted columns, which would store the
  * cross product of their keys, N times M entries per row ("parallel
  * arrays", which MongoDB refuses for the same reason), and an index with an
- * extracted column that carries an exclusion constraint or is unique with
- * NULLS NOT DISTINCT.  A unique one is unique over its keys ("M4" in
- * BARK-Design.mediawiki); its NULL key stands for a NULL value, an empty
- * value and a NULL element alike, so under NULLS NOT DISTINCT a row with
- * an empty array would conflict with one holding {7,NULL}.
+ * extracted column that is unique with NULLS NOT DISTINCT.  A unique one is
+ * unique over its keys ("M4" in BARK-Design.mediawiki); its NULL key stands
+ * for a NULL value, an empty value and a NULL element alike, so under NULLS
+ * NOT DISTINCT a row with an empty array would conflict with one holding
+ * {7,NULL}.
+ *
+ * An exclusion constraint on an extracted column may use any operator core
+ * accepts for one (commutative, with a strategy in the family): the
+ * executor scans the index for the new value under the operator, with a
+ * dirty snapshot, and rechecks on the values the rows that come back with
+ * xs_recheck, so the scan need only return every conflicting row, once,
+ * which a WHERE clause on the operator already needs ("Exclusion
+ * constraints" under "Multikey keys" in the README).  The class must scan
+ * by procedure 8: a scan through GIN's query interface requires an MVCC
+ * snapshot (bark_mk_gin_gettuple), and a class with neither cannot be
+ * scanned.
  *
  * A unique one must also name its conflict operator: the class's procedure
  * 15 must translate COMPARE_OVERLAP to an operator registered under the
@@ -1069,10 +1080,15 @@ bark_check_multikey_index(Relation index, IndexInfo *indexInfo)
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("NULLS NOT DISTINCT is not supported for multikey operator classes"),
 				 errdetail("A NULL value, an empty value and a NULL element all have the NULL key.")));
-	if (indexInfo->ii_ExclusionOps != NULL)
+	if (indexInfo->ii_ExclusionOps != NULL &&
+		!OidIsValid(index_getprocid(index, extracted + 1, BARK_EXTRACTQUERY_PROC)))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("exclusion constraints are not supported for multikey operator classes in M1")));
+				 errmsg("exclusion constraints are not supported for operator family \"%s\" of access method %s",
+						get_opfamily_name(index->rd_opfamily[extracted], false),
+						"bark"),
+				 errdetail("An exclusion constraint on a column with a multikey operator class needs support function %d.",
+						   BARK_EXTRACTQUERY_PROC)));
 	if (indexInfo->ii_Unique)
 	{
 		Oid			opfamily = index->rd_opfamily[extracted];

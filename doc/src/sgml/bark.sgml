@@ -492,8 +492,12 @@ int2 translate_cmptype(int4 cmptype)
    An index may have at most one multikey column, in any key position;
    the other key columns use ordinary operator classes, and every entry of
    a row carries the same values for them.  An <literal>INCLUDE</literal>
-   column is never multikey.  An exclusion constraint cannot have a
-   multikey column.
+   column is never multikey.  An exclusion constraint may have a multikey
+   column, with any operator of the column's operator class that
+   <command>CREATE TABLE</command> accepts for one, such as
+   <literal>EXCLUDE USING bark (tags my_int4_array_ops WITH
+   &amp;&amp;)</literal>, which says that no two rows share an element; the
+   class must have support function 8.
   </para>
 
   <para>
@@ -1151,7 +1155,13 @@ CREATE INDEX orders_customer_idx ON orders (customer);
    interface and its class has no <function>equalimage</function>
    function, keys need only compare equal, as in GIN, since the index
    keeps one image of such keys.  The index of an exclusion constraint
-   follows the scalar rule, whether the constraint is deferrable or not.
+   follows the scalar rule for its scalar columns, whether the constraint
+   is deferrable or not.  Its multikey column follows the multikey rule
+   when the constraint is checked immediately, and the server then checks
+   the constraint for the new value, since values with the same keys, such
+   as <literal>'{1,2}'</literal> and <literal>'{2,1}'</literal>, can conflict
+   with different rows under <literal>=</literal>; under a deferrable
+   constraint it follows the scalar rule.
   </para>
  </sect3>
 

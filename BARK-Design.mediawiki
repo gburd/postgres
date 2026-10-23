@@ -1578,8 +1578,9 @@ deletes by a filter with <code>SELECT ... LIMIT 1 FOR UPDATE</code>, which
 with bitmap scans only planned a seqscan (9 against RUM's 490 updates a
 second on 1M documents). The TIDs are collected with no leaf pinned, so the
 scan requires an MVCC snapshot (nbtree's dropPin argument) and errors
-otherwise; no SQL reaches that today, since exclusion constraints are
-refused for multikey classes. The seen set is off for these scans (a TID in
+otherwise; no SQL reaches that, since an exclusion constraint, whose check
+scans with a dirty snapshot, is refused on a column whose class has no
+procedure 8. The seen set is off for these scans (a TID in
 several boundaries' streams is merged into one row already), and
 kill_prior_tuple is ignored (no leaf position to mark), though its reads
 skip the entries other scans marked LP_DEAD.
@@ -2114,11 +2115,13 @@ must be among the old value's, since a new marker is an insert the index
 needs and markers are never removed. A GIN-interface column that is not
 equalimage and coalesces compares by procedure 1 only: its entries keep
 the first row's image of an equal key, as GIN's do. Not-ready and
-invalid indexes answer no. Core does not ask about an
-exclusion-constraint index: only a scalar column can be in a BARK
-exclusion constraint, so every column of one can be returned, and core
-keeps its entries only for the same value, which needs no new check of
-the constraint. Unique indexes are
+invalid indexes answer no. Core asks about the extracted column of an
+exclusion constraint's index only when the constraint is immediate, and
+after a yes for a changed value checks the constraint for the new value
+itself (ExecCheckHotExclusion), so the answer stays one about entries even
+for an operator such as array <code>=</code>, under which values with the
+same keys conflict with different rows; the other columns of such an
+index can be returned, and core compares them itself. Unique indexes are
 answered like any other (the HOT chain keeps the old entries pointing at the live
 version, so later inserts still conflict), though core asks only about a
 partial one. An optional opclass procedure that answers without
@@ -2685,8 +2688,12 @@ reported and cleared when the duplicate goes.
 
 * NULLS NOT DISTINCT on an index with an extracted column, or over its
   fixed columns alone.
-* Exclusion constraints on an extracted column (the conflict operator would
-  serve them, but they come with U1's constraint surface).
+* Exclusion constraints on an extracted column. ''Done since (backlog
+  U1):'' any operator core accepts for an exclusion constraint, on a class
+  with procedure 8; the README's "Exclusion constraints" paragraph under
+  "Multikey keys" has the argument. They needed none of the PRIMARY KEY
+  and UNIQUE constraint surface of the roadmap's U1, since
+  <code>EXCLUDE USING bark</code> already worked on scalar columns.
 * Deferrable uniqueness and primary keys on the index (U1), and foreign
   keys that reference an extracted column, which need an equality.
 * A unique wildcard index (M5): it is a unique index whose key is (path,
