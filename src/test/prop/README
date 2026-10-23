@@ -157,6 +157,27 @@ iteration count of a meson test run without editing anything:
     PG_PROP_ITERATIONS=10000 PG_PROP_SEED=42 meson test --suite prop
     PG_PROP_TESTS="pruning_preserves_rows" meson test prop/002_sql_props
 
+Two further knobs tune the deep multi-table generator:
+
+* PG_PROP_GEN_PRNG=1 -- make the deep generator reproducible from a seed.
+  The multi-table builder makes hundreds of data-dependent draws per case,
+  a sequence the engine did not replay reliably (so a deep counterexample
+  could not be reproduced).  With this set, the builder takes one engine
+  draw per case and drives all structural choices from a deterministic PRNG
+  seeded by it, so the case replays exactly; the cost is coarser shrinking
+  of deep structure.  Unset (the default) keeps the historical behaviour.
+
+* PG_PROP_GEN_BIAS=tag,tag,... -- bias the deep generator toward the SQL
+  surface a patch under review touches, when vetting a commitfest entry.
+  scripts/cf-features.py scans the patch diff and prints the tag list; feed
+  it in so the generator weights joins / setops / subquery / nulls / ... as
+  the patch does.  Biasing only reweights -- every shape is still reachable
+  -- so a biased run focuses without losing neighbouring-bug coverage.
+
+    PG_PROP_GEN_BIAS=$(scripts/cf-features.py /tmp/cfpatch/6824/*.patch) \
+      PG_PROP_GEN_PRNG=1 PG_PROP_DEEP=fast \
+      pg_prop query_diff -n 500 diff_deep_join
+
 
 Active and frozen areas
 =======================

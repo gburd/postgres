@@ -176,6 +176,27 @@ run_diff(pg_prop_tc *tc, pg_prop_conn *conn, const char *query)
 	int			i;
 
 	/*
+	 * Debug knob: when PG_PROP_DIFF_DEBUG names a file, append every query
+	 * this oracle runs to it.  Used to verify generator reproducibility --
+	 * repeated same-seed runs should log an identical query (see
+	 * PG_PROP_GEN_PRNG) -- and to inspect what the generator produces.
+	 */
+	{
+		const char *dbg = getenv("PG_PROP_DIFF_DEBUG");
+
+		if (dbg && dbg[0])
+		{
+			FILE	   *fp = fopen(dbg, "a");
+
+			if (fp)
+			{
+				fprintf(fp, "QUERY: %s\n", query);
+				fclose(fp);
+			}
+		}
+	}
+
+	/*
 	 * The reference is config[0], the planner's free choice.  If it errors,
 	 * the case is vacuous only for a plan-dependent runtime error; anything
 	 * else fails the case so a malformed generated query cannot pass silently.

@@ -27,6 +27,184 @@
 
 #include "query_gen.h"
 
+/* ---- deterministic internal PRNG (task #1: deep-generator reproducibility) --
+ *
+ * The deep multi-table generator makes hundreds of data-dependent draws per
+ * case (a draw's range depends on prior drawn values: parent row counts,
+ * column counts, table counts).  Threaded straight through the engine, that
+ * long, variable-shape draw sequence did not replay from a fixed seed
+ * (finding 041): the engine's failure-replay could rebuild a different query,
+ * so a deep counterexample could not be reproduced.
+ *
+ * The fix: the generator draws ONE 64-bit integer from the engine per deep
+ * case (so the engine still seeds, shrinks that one value, and replays it)
+ * and drives every structural and value choice from a small deterministic
+ * PRNG (splitmix64) seeded by it.  The engine therefore sees a single,
+ * fixed-shape draw per case -- trivially reproducible regardless of its
+ * internal buffer semantics -- while the generator keeps its rich
+ * data-dependent branching.
+ *
+ * This is opt-in via qg_rng_begin()/qg_rng_end() around a generation region.
+ * While a region is active, qg_draw_int/bool pull from the PRNG; outside one
+ * they fall through to the engine unchanged, so the single-table generator
+ * and every existing property behave exactly as before.  The tradeoff is
+ * coarser shrinking of deep structure (the engine can only shrink the seed),
+ * which for a hunt/review tool is worth far less than the ability to replay
+ * a hit at all.
+ */
+static bool qg_rng_active = false;
+static uint64 qg_rng_state = 0;
+
+static inline uint64
+qg_splitmix64(void)
+{
+	uint64		z = (qg_rng_state += UINT64CONST(0x9E3779B97F4A7C15));
+
+	z = (z ^ (z >> 30)) * UINT64CONST(0xBF58476D1CE4E5B9);
+	z = (z ^ (z >> 27)) * UINT64CONST(0x94D049BB133111EB);
+	return z ^ (z >> 31);
+}
+
+/*
+ * Begin a deterministic generation region: draw one engine integer as the
+ * seed and switch qg_draw_* to the PRNG.  Honours PG_PROP_GEN_PRNG; when the
+ * variable is unset or 0 the region is a no-op and the generator draws from
+ * the engine as it always did (so the change is A/B-testable and default-off
+ * until verified on a build host).
+ */
+static void
+qg_rng_begin(pg_prop_tc *tc)
+{
+	const char *v = getenv("PG_PROP_GEN_PRNG");
+
+	if (v == NULL || v[0] == '\0' || strcmp(v, "0") == 0)
+	{
+		qg_rng_active = false;
+		return;
+	}
+	qg_rng_state = (uint64) pg_prop_draw_int(tc, INT64_MIN, INT64_MAX);
+	qg_rng_active = true;
+}
+
+static void
+qg_rng_end(void)
+{
+	qg_rng_active = false;
+}
+
+/*
+ * Draw an integer in [min,max].  Inside a qg_rng region this is deterministic
+ * from the region seed (unbiased rejection sampling over splitmix64 output);
+ * outside, it is the engine draw.  A degenerate or inverted range returns min
+ * rather than asking the engine for an empty interval (which was itself a
+ * non-determinism hazard).
+ */
+static int64
+qg_draw_int(pg_prop_tc *tc, int64 min, int64 max)
+{
+	if (max <= min)
+		return min;
+	if (!qg_rng_active)
+		return pg_prop_draw_int(tc, min, max);
+	{
+		uint64		span = (uint64) (max - min) + 1;
+		uint64		limit = span == 0 ? 0 : (UINT64_MAX - (UINT64_MAX % span));
+		uint64		r;
+
+		if (span == 0)			/* full 64-bit range */
+			return (int64) qg_splitmix64();
+		do
+			r = qg_splitmix64();
+		while (limit != 0 && r >= limit);
+		return min + (int64) (r % span);
+	}
+}
+
+static bool
+qg_draw_bool(pg_prop_tc *tc)
+{
+	if (!qg_rng_active)
+		return pg_prop_draw_bool(tc);
+	return (qg_splitmix64() & 1) != 0;
+}
+
+/* ---- patch-biased generation (task #3) ------------------------------------
+ *
+ * cf-features.py scans a commitfest patch's diff and emits PG_PROP_GEN_BIAS, a
+ * comma-separated list of feature tags for the SQL surface the patch touches
+ * (joins, setops, aggregation, window, distinct, subquery, nulls, collation,
+ * numeric, partition, toast, index, constraint, cast).  The generator reads
+ * it once and, at the handful of "which shape" draws that matter, boosts the
+ * weight of shapes exercising a wanted tag.  Biasing only reweights; every
+ * shape is still reachable, so a biased run focuses on the patched surface
+ * without losing the neighbouring-bug coverage that an unbiased run gives.
+ *
+ * qg_bias_wants(tag) answers "did the patch touch this surface".  qg_biased()
+ * is a weighted pick over a small set of options, each labelled with the tag
+ * it exercises (or NULL for "neutral"); a wanted tag's options get WEIGHT
+ * extra draws' worth of probability.  It uses qg_draw_int so it stays inside
+ * the deterministic region.
+ */
+#define QG_BIAS_WEIGHT 4
+
+static bool qg_bias_inited = false;
+static char qg_bias_tags[256];
+
+static bool
+qg_bias_wants(const char *tag)
+{
+	const char *v;
+
+	if (!qg_bias_inited)
+	{
+		v = getenv("PG_PROP_GEN_BIAS");
+		snprintf(qg_bias_tags, sizeof(qg_bias_tags), ",%s,", v ? v : "");
+		qg_bias_inited = true;
+	}
+	if (tag == NULL || qg_bias_tags[1] == '\0')
+		return false;
+	{
+		char		needle[40];
+
+		snprintf(needle, sizeof(needle), ",%s,", tag);
+		return strstr(qg_bias_tags, needle) != NULL;
+	}
+}
+
+/*
+ * Weighted pick over n options.  opt_tags[i] is the feature tag option i
+ * exercises, or NULL if neutral.  Each wanted option is entered
+ * QG_BIAS_WEIGHT times in the lottery; others once.  Returns the chosen index
+ * 0..n-1.  With no bias active (no wanted tag present) this is a uniform draw
+ * in [0, n-1], identical to the unbiased generator.
+ */
+static int
+qg_biased(pg_prop_tc *tc, int n, const char *const opt_tags[])
+{
+	int			weights[32];
+	int			total = 0;
+	int			i;
+	int			r;
+
+	if (n > 32)
+		n = 32;
+	for (i = 0; i < n; i++)
+	{
+		weights[i] = qg_bias_wants(opt_tags[i]) ? QG_BIAS_WEIGHT : 1;
+		total += weights[i];
+	}
+	if (total == n)				/* nothing wanted: plain uniform draw */
+		return (int) qg_draw_int(tc, 0, n - 1);
+	r = (int) qg_draw_int(tc, 0, total - 1);
+	for (i = 0; i < n; i++)
+	{
+		if (r < weights[i])
+			return i;
+		r -= weights[i];
+	}
+	return n - 1;
+}
+
 /*
  * Value domains deliberately favour the cases that break planners and
  * executors, not uniform small noise: boundary integers (INT_MIN/MAX, 0, +-1),
@@ -54,7 +232,7 @@
 static void
 draw_int_or_null(pg_prop_tc *tc, StringInfo buf)
 {
-	int			roll = (int) pg_prop_draw_int(tc, 0, 99);
+	int			roll = (int) qg_draw_int(tc, 0, 99);
 
 	if (roll < 18)
 		appendStringInfoString(buf, "NULL");
@@ -63,13 +241,13 @@ draw_int_or_null(pg_prop_tc *tc, StringInfo buf)
 		static const char *const edge[] =
 		{SQL_INT_MIN, SQL_INT_MAX, "0", "(-1)", "1"};
 
-		appendStringInfoString(buf, edge[pg_prop_draw_int(tc, 0, 4)]);
+		appendStringInfoString(buf, edge[qg_draw_int(tc, 0, 4)]);
 	}
 	else if (roll < 75)
 		appendStringInfoString(buf, "0");	/* skew: 0 dominates */
 	else
 		appendStringInfo(buf, "%d",
-						 (int) pg_prop_draw_int(tc, QG_VAL_MIN, QG_VAL_MAX));
+						 (int) qg_draw_int(tc, QG_VAL_MIN, QG_VAL_MAX));
 }
 
 /*
@@ -80,7 +258,7 @@ draw_int_or_null(pg_prop_tc *tc, StringInfo buf)
 static void
 draw_text_or_null(pg_prop_tc *tc, StringInfo buf)
 {
-	int			roll = (int) pg_prop_draw_int(tc, 0, 99);
+	int			roll = (int) qg_draw_int(tc, 0, 99);
 	int			len;
 	int			i;
 
@@ -99,19 +277,19 @@ draw_text_or_null(pg_prop_tc *tc, StringInfo buf)
 		appendStringInfoString(buf, "'a'");	/* skew: 'a' dominates */
 		return;
 	}
-	len = (int) pg_prop_draw_int(tc, 0, 3);
+	len = (int) qg_draw_int(tc, 0, 3);
 	appendStringInfoChar(buf, '\'');
 	for (i = 0; i < len; i++)
 	{
 		/* mostly a-c; occasionally an uppercase letter or a trailing space */
-		int			k = (int) pg_prop_draw_int(tc, 0, 9);
+		int			k = (int) qg_draw_int(tc, 0, 9);
 
 		if (k == 0)
-			appendStringInfoChar(buf, (char) ('A' + pg_prop_draw_int(tc, 0, 2)));
+			appendStringInfoChar(buf, (char) ('A' + qg_draw_int(tc, 0, 2)));
 		else if (k == 1)
 			appendStringInfoChar(buf, ' ');
 		else
-			appendStringInfoChar(buf, (char) ('a' + pg_prop_draw_int(tc, 0, 2)));
+			appendStringInfoChar(buf, (char) ('a' + qg_draw_int(tc, 0, 2)));
 	}
 	appendStringInfoChar(buf, '\'');
 }
@@ -120,7 +298,7 @@ draw_text_or_null(pg_prop_tc *tc, StringInfo buf)
 static void
 draw_float_or_null(pg_prop_tc *tc, StringInfo buf)
 {
-	int			roll = (int) pg_prop_draw_int(tc, 0, 99);
+	int			roll = (int) qg_draw_int(tc, 0, 99);
 
 	if (roll < 15)
 		appendStringInfoString(buf, "NULL");
@@ -130,19 +308,19 @@ draw_float_or_null(pg_prop_tc *tc, StringInfo buf)
 		{"'0'::float8", "'-0'::float8", "'Infinity'::float8",
 			"'-Infinity'::float8", "'NaN'::float8"};
 
-		appendStringInfoString(buf, edge[pg_prop_draw_int(tc, 0, 4)]);
+		appendStringInfoString(buf, edge[qg_draw_int(tc, 0, 4)]);
 	}
 	else
 		appendStringInfo(buf, "%d.%d",
-						 (int) pg_prop_draw_int(tc, QG_VAL_MIN, QG_VAL_MAX),
-						 (int) pg_prop_draw_int(tc, 0, 9));
+						 (int) qg_draw_int(tc, QG_VAL_MIN, QG_VAL_MAX),
+						 (int) qg_draw_int(tc, 0, 9));
 }
 
 /* numeric: NULL, boundary (0, huge, tiny-scale), or a scaled value. */
 static void
 draw_numeric_or_null(pg_prop_tc *tc, StringInfo buf)
 {
-	int			roll = (int) pg_prop_draw_int(tc, 0, 99);
+	int			roll = (int) qg_draw_int(tc, 0, 99);
 
 	if (roll < 15)
 		appendStringInfoString(buf, "NULL");
@@ -151,19 +329,19 @@ draw_numeric_or_null(pg_prop_tc *tc, StringInfo buf)
 		static const char *const edge[] =
 		{"0", "0.00", "999.99", "-999.99", "'NaN'::numeric"};
 
-		appendStringInfoString(buf, edge[pg_prop_draw_int(tc, 0, 4)]);
+		appendStringInfoString(buf, edge[qg_draw_int(tc, 0, 4)]);
 	}
 	else
 		appendStringInfo(buf, "%d.%02d",
-						 (int) pg_prop_draw_int(tc, QG_VAL_MIN, QG_VAL_MAX),
-						 (int) pg_prop_draw_int(tc, 0, 99));
+						 (int) qg_draw_int(tc, QG_VAL_MIN, QG_VAL_MAX),
+						 (int) qg_draw_int(tc, 0, 99));
 }
 
 /* boolean literal or SQL NULL (balanced three-valued). */
 static void
 draw_bool_or_null(pg_prop_tc *tc, StringInfo buf)
 {
-	int			k = (int) pg_prop_draw_int(tc, 0, 2);
+	int			k = (int) qg_draw_int(tc, 0, 2);
 
 	appendStringInfoString(buf, k == 0 ? "NULL" : k == 1 ? "true" : "false");
 }
@@ -249,7 +427,7 @@ qg_build_table(pg_prop_tc *tc, pg_prop_conn *conn, int *nrows)
 		appendStringInfo(&ddl, ", %s %s", s->cols[col].name, s->cols[col].sqltype);
 	appendStringInfoString(&ddl, "); ");
 
-	n = (int) pg_prop_draw_int(tc, 0, QG_MAX_ROWS);
+	n = (int) qg_draw_int(tc, 0, QG_MAX_ROWS);
 	for (r = 1; r <= n; r++)
 	{
 		appendStringInfo(&ddl, "INSERT INTO " QG_TABLE " VALUES (%d", r);
@@ -269,9 +447,9 @@ qg_build_table(pg_prop_tc *tc, pg_prop_conn *conn, int *nrows)
 	 * is skewed the same way the drawn values are (a dominant 0, NULLs, the
 	 * int extremes) and deterministic in the drawn size, so cases replay.
 	 */
-	if (qg_deep_requested() && pg_prop_draw_bool(tc))
+	if (qg_deep_requested() && qg_draw_bool(tc))
 	{
-		int			bulk = (int) pg_prop_draw_int(tc, 500, 20000);
+		int			bulk = (int) qg_draw_int(tc, 500, 20000);
 
 		appendStringInfo(&ddl,
 						 "INSERT INTO " QG_TABLE " (id, a, b, c, d, f, g) "
@@ -297,15 +475,15 @@ qg_build_table(pg_prop_tc *tc, pg_prop_conn *conn, int *nrows)
 	 * a plan with itself.  Single-column, composite, partial and expression
 	 * indexes open index, index-only, bitmap-AND/OR and presorted paths.
 	 */
-	if (pg_prop_draw_bool(tc))
+	if (qg_draw_bool(tc))
 		appendStringInfoString(&ddl, "CREATE INDEX ON " QG_TABLE " (a); ");
-	if (pg_prop_draw_bool(tc))
+	if (qg_draw_bool(tc))
 		appendStringInfoString(&ddl, "CREATE INDEX ON " QG_TABLE " (b, a); ");
-	if (pg_prop_draw_bool(tc))
+	if (qg_draw_bool(tc))
 		appendStringInfoString(&ddl, "CREATE INDEX ON " QG_TABLE " (c); ");
-	if (pg_prop_draw_int(tc, 0, 2) == 0)
+	if (qg_draw_int(tc, 0, 2) == 0)
 		appendStringInfoString(&ddl, "CREATE INDEX ON " QG_TABLE " (d) WHERE d IS NOT NULL; ");
-	if (pg_prop_draw_int(tc, 0, 2) == 0)
+	if (qg_draw_int(tc, 0, 2) == 0)
 		appendStringInfoString(&ddl, "CREATE INDEX ON " QG_TABLE " ((coalesce(a, 0)::bigint + 1)); ");
 
 	/* ANALYZE so the planner has stats and will actually consider plans. */
@@ -324,7 +502,7 @@ qg_build_table(pg_prop_tc *tc, pg_prop_conn *conn, int *nrows)
 static const char *
 pick_num_col(pg_prop_tc *tc)
 {
-	int			col = (int) pg_prop_draw_int(tc, 0, 2);
+	int			col = (int) qg_draw_int(tc, 0, 2);
 
 	return (col == 0) ? "a" : (col == 1) ? "b" : "f";
 }
@@ -342,7 +520,7 @@ draw_leaf(pg_prop_tc *tc, StringInfo buf)
 	int			have_ext = pg_prop_hooks_count("query_gen.predicate") > 0 ? 1 : 0;
 	/* kinds 0..10 are built-in; 11 is the extension leaf when present. */
 	int			n_builtin = 11;
-	int			kind = (int) pg_prop_draw_int(tc, 0, n_builtin - 1 + have_ext);
+	int			kind = (int) qg_draw_int(tc, 0, n_builtin - 1 + have_ext);
 	const char *colname;
 
 	switch (kind)
@@ -355,7 +533,7 @@ draw_leaf(pg_prop_tc *tc, StringInfo buf)
 			break;
 		case 2:					/* c comparison against text */
 			appendStringInfoString(buf, "c ");
-			appendStringInfoString(buf, cmp[pg_prop_draw_int(tc, 0, 5)]);
+			appendStringInfoString(buf, cmp[qg_draw_int(tc, 0, 5)]);
 			appendStringInfoChar(buf, ' ');
 			draw_text_or_null(tc, buf);
 			break;
@@ -363,7 +541,7 @@ draw_leaf(pg_prop_tc *tc, StringInfo buf)
 			colname = pick_num_col(tc);
 			appendStringInfo(buf, "%s IN (", colname);
 			{
-				int			m = (int) pg_prop_draw_int(tc, 1, 3);
+				int			m = (int) qg_draw_int(tc, 1, 3);
 				int			i;
 
 				for (i = 0; i < m; i++)
@@ -380,23 +558,23 @@ draw_leaf(pg_prop_tc *tc, StringInfo buf)
 			break;
 		case 4:					/* col BETWEEN lo AND hi */
 			appendStringInfo(buf, "%s BETWEEN %d AND %d", pick_num_col(tc),
-							 (int) pg_prop_draw_int(tc, QG_VAL_MIN, QG_VAL_MAX),
-							 (int) pg_prop_draw_int(tc, QG_VAL_MIN, QG_VAL_MAX));
+							 (int) qg_draw_int(tc, QG_VAL_MIN, QG_VAL_MAX),
+							 (int) qg_draw_int(tc, QG_VAL_MIN, QG_VAL_MAX));
 			break;
 		case 5:					/* numeric column d compared, or bool g */
-			if (pg_prop_draw_bool(tc))
+			if (qg_draw_bool(tc))
 				appendStringInfo(buf, "d %s %d.%02d",
-								 cmp[pg_prop_draw_int(tc, 0, 5)],
-								 (int) pg_prop_draw_int(tc, QG_VAL_MIN, QG_VAL_MAX),
-								 (int) pg_prop_draw_int(tc, 0, 99));
+								 cmp[qg_draw_int(tc, 0, 5)],
+								 (int) qg_draw_int(tc, QG_VAL_MIN, QG_VAL_MAX),
+								 (int) qg_draw_int(tc, 0, 99));
 			else
 				appendStringInfo(buf, "g IS %s",
-								 pg_prop_draw_bool(tc) ? "TRUE" : "NOT TRUE");
+								 qg_draw_bool(tc) ? "TRUE" : "NOT TRUE");
 			break;
 		case 7:					/* col IS [NOT] DISTINCT FROM const (3VL edge) */
 			colname = pick_num_col(tc);
 			appendStringInfo(buf, "%s IS %sDISTINCT FROM ", colname,
-							 pg_prop_draw_bool(tc) ? "" : "NOT ");
+							 qg_draw_bool(tc) ? "" : "NOT ");
 			if (strcmp(colname, "f") == 0)
 				draw_float_or_null(tc, buf);
 			else
@@ -404,27 +582,27 @@ draw_leaf(pg_prop_tc *tc, StringInfo buf)
 			break;
 		case 8:					/* CASE expression used as a boolean */
 			appendStringInfoString(buf, "(CASE WHEN ");
-			appendStringInfo(buf, "a %s ", cmp[pg_prop_draw_int(tc, 0, 5)]);
+			appendStringInfo(buf, "a %s ", cmp[qg_draw_int(tc, 0, 5)]);
 			draw_int_or_null(tc, buf);
 			appendStringInfoString(buf, " THEN b ELSE ");
 			draw_int_or_null(tc, buf);
-			appendStringInfo(buf, " END) %s ", cmp[pg_prop_draw_int(tc, 0, 5)]);
+			appendStringInfo(buf, " END) %s ", cmp[qg_draw_int(tc, 0, 5)]);
 			draw_int_or_null(tc, buf);
 			break;
 		case 9:					/* cross-type: int column vs numeric/text cast */
-			if (pg_prop_draw_bool(tc))
+			if (qg_draw_bool(tc))
 				appendStringInfo(buf, "a::numeric %s %d.%02d",
-								 cmp[pg_prop_draw_int(tc, 0, 5)],
-								 (int) pg_prop_draw_int(tc, QG_VAL_MIN, QG_VAL_MAX),
-								 (int) pg_prop_draw_int(tc, 0, 99));
+								 cmp[qg_draw_int(tc, 0, 5)],
+								 (int) qg_draw_int(tc, QG_VAL_MIN, QG_VAL_MAX),
+								 (int) qg_draw_int(tc, 0, 99));
 			else
 				appendStringInfo(buf, "a::text %s c",
-								 cmp[pg_prop_draw_int(tc, 0, 5)]);
+								 cmp[qg_draw_int(tc, 0, 5)]);
 			break;
 		case 10:				/* COALESCE in the comparison (NULL coalescing) */
 			appendStringInfo(buf, "coalesce(a, b, %d) %s ",
-							 (int) pg_prop_draw_int(tc, QG_VAL_MIN, QG_VAL_MAX),
-							 cmp[pg_prop_draw_int(tc, 0, 5)]);
+							 (int) qg_draw_int(tc, QG_VAL_MIN, QG_VAL_MAX),
+							 cmp[qg_draw_int(tc, 0, 5)]);
 			draw_int_or_null(tc, buf);
 			break;
 		case 11:				/* extension-contributed leaf */
@@ -435,12 +613,12 @@ draw_leaf(pg_prop_tc *tc, StringInfo buf)
 				pctx.schema = &the_schema;
 				pctx.buf = buf;
 				pg_prop_run_hook_n(tc, "query_gen.predicate",
-								   (int) pg_prop_draw_int(tc, 0, n - 1), &pctx);
+								   (int) qg_draw_int(tc, 0, n - 1), &pctx);
 			}
 			break;
 		default:				/* col <cmp> const */
 			colname = pick_num_col(tc);
-			appendStringInfo(buf, "%s %s ", colname, cmp[pg_prop_draw_int(tc, 0, 5)]);
+			appendStringInfo(buf, "%s %s ", colname, cmp[qg_draw_int(tc, 0, 5)]);
 			if (strcmp(colname, "f") == 0)
 				draw_float_or_null(tc, buf);
 			else
@@ -457,7 +635,7 @@ draw_predicate_rec(pg_prop_tc *tc, StringInfo buf, int depth)
 	if (depth >= 3)
 		kind = 0;
 	else
-		kind = (int) pg_prop_draw_int(tc, 0, 4);
+		kind = (int) qg_draw_int(tc, 0, 4);
 
 	switch (kind)
 	{
@@ -496,7 +674,7 @@ qg_draw_predicate(pg_prop_tc *tc, StringInfo buf)
 void
 qg_draw_int_expr(pg_prop_tc *tc, StringInfo buf)
 {
-	int			kind = (int) pg_prop_draw_int(tc, 0, 4);
+	int			kind = (int) qg_draw_int(tc, 0, 4);
 
 	switch (kind)
 	{
@@ -508,7 +686,7 @@ qg_draw_int_expr(pg_prop_tc *tc, StringInfo buf)
 			break;
 		case 2:
 			appendStringInfo(buf, "%d",
-							 (int) pg_prop_draw_int(tc, QG_VAL_MIN, QG_VAL_MAX));
+							 (int) qg_draw_int(tc, QG_VAL_MIN, QG_VAL_MAX));
 			break;
 		case 3:
 			/* coalesce so NULLs don't dominate; a + b, bigint-safe vs INT_MAX */
@@ -531,20 +709,20 @@ qg_draw_int_expr(pg_prop_tc *tc, StringInfo buf)
 static void
 draw_lowcard_or_null(pg_prop_tc *tc, StringInfo buf)
 {
-	if (pg_prop_draw_int(tc, 0, 9) == 0)
+	if (qg_draw_int(tc, 0, 9) == 0)
 		appendStringInfoString(buf, "NULL");
 	else
-		appendStringInfo(buf, "%d", (int) pg_prop_draw_int(tc, 0, 2));
+		appendStringInfo(buf, "%d", (int) qg_draw_int(tc, 0, 2));
 }
 
 /* A high-cardinality int column: wide domain, so values are near-unique. */
 static void
 draw_highcard_or_null(pg_prop_tc *tc, StringInfo buf)
 {
-	if (pg_prop_draw_int(tc, 0, 19) == 0)
+	if (qg_draw_int(tc, 0, 19) == 0)
 		appendStringInfoString(buf, "NULL");
 	else
-		appendStringInfo(buf, "%d", (int) pg_prop_draw_int(tc, 0, 100000));
+		appendStringInfo(buf, "%d", (int) qg_draw_int(tc, 0, 100000));
 }
 
 /*
@@ -564,12 +742,12 @@ draw_toast_text_or_null(pg_prop_tc *tc, StringInfo buf)
 	int			reps;
 	int			i;
 
-	if (pg_prop_draw_int(tc, 0, 9) == 0)
+	if (qg_draw_int(tc, 0, 9) == 0)
 	{
 		appendStringInfoString(buf, "NULL");
 		return;
 	}
-	roll = (int) pg_prop_draw_int(tc, 0, 9);
+	roll = (int) qg_draw_int(tc, 0, 9);
 	switch (qg_toast_profile)
 	{
 		case 0:
@@ -589,16 +767,16 @@ draw_toast_text_or_null(pg_prop_tc *tc, StringInfo buf)
 	if (big)
 	{
 		/* ~3KB of a repeated unit -> past the 2KB TOAST threshold */
-		reps = 600 + (int) pg_prop_draw_int(tc, 0, 400);
+		reps = 600 + (int) qg_draw_int(tc, 0, 400);
 		for (i = 0; i < reps; i++)
 			appendStringInfoString(buf, "xy");
 	}
 	else
 	{
-		int			len = (int) pg_prop_draw_int(tc, 0, 4);
+		int			len = (int) qg_draw_int(tc, 0, 4);
 
 		for (i = 0; i < len; i++)
-			appendStringInfoChar(buf, (char) ('a' + pg_prop_draw_int(tc, 0, 2)));
+			appendStringInfoChar(buf, (char) ('a' + qg_draw_int(tc, 0, 2)));
 	}
 	appendStringInfoChar(buf, '\'');
 }
@@ -716,14 +894,14 @@ build_table_schema(pg_prop_tc *tc, qg_table *t, int ncols, int fkref,
 
 	for (i = 0; i < ncols; i++)
 	{
-		int			kind = (int) pg_prop_draw_int(tc, 0, 5);
+		int			kind = (int) qg_draw_int(tc, 0, 5);
 		qg_value_fn draw;
 		const char *type;
 		bool		textlike = false;
 		bool		numlike = false;
 
 		/* a cardinality bias favours low-card columns for grouping stress */
-		if (cardinality_bias == 1 && pg_prop_draw_bool(tc))
+		if (cardinality_bias == 1 && qg_draw_bool(tc))
 			kind = 0;
 
 		switch (kind)
@@ -769,7 +947,7 @@ build_table_schema(pg_prop_tc *tc, qg_table *t, int ncols, int fkref,
 		 * allow-list (6.3) harder to reason about.  The column is marked so
 		 * draw_leaf_on restricts it to the nondeterministic-safe operators.
 		 */
-		if (nondet && draw == draw_text_or_null && pg_prop_draw_int(tc, 0, 2) == 0)
+		if (nondet && draw == draw_text_or_null && qg_draw_int(tc, 0, 2) == 0)
 		{
 			qg_add_column(&t->schema, namebuf, "text COLLATE qg_ci", draw,
 						  textlike, numlike);
@@ -805,13 +983,13 @@ emit_storage_modes(pg_prop_tc *tc, StringInfo ddl, const qg_table *t)
 			continue;
 
 		if (c->draw == draw_toast_text_or_null)
-			mode = pg_prop_draw_bool(tc) ? "EXTERNAL" : "EXTENDED";
+			mode = qg_draw_bool(tc) ? "EXTERNAL" : "EXTENDED";
 		else
 		{
 			static const char *const modes[] = {"PLAIN", "MAIN",
 				"EXTERNAL", "EXTENDED"};
 
-			mode = modes[pg_prop_draw_int(tc, 0, 3)];
+			mode = modes[qg_draw_int(tc, 0, 3)];
 		}
 		(void) toastable;
 		appendStringInfo(ddl, "ALTER TABLE %s ALTER COLUMN %s SET STORAGE %s; ",
@@ -862,7 +1040,14 @@ qg_build_db(pg_prop_tc *tc, pg_prop_conn *conn, const qg_db_params *p)
 	 */
 	nondet = p->allow_nondet_collation && qg_server_has_icu(tc, conn);
 
-	nt = (int) pg_prop_draw_int(tc, p->min_tables, p->max_tables);
+	/*
+	 * Enter a deterministic generation region (task #1): one engine draw seeds
+	 * the PRNG, all structural choices below come from it.  No-op unless
+	 * PG_PROP_GEN_PRNG is set, so default behaviour is unchanged.
+	 */
+	qg_rng_begin(tc);
+
+	nt = (int) qg_draw_int(tc, p->min_tables, p->max_tables);
 	if (nt < 1)
 		nt = 1;
 	if (nt > QG_MAX_TABLES)
@@ -908,10 +1093,10 @@ qg_build_db(pg_prop_tc *tc, pg_prop_conn *conn, const qg_db_params *p)
 
 		/* a child may reference any earlier table (so parents build first) */
 		fkref = -1;
-		if (p->allow_fk && ti > 0 && pg_prop_draw_bool(tc))
-			fkref = (int) pg_prop_draw_int(tc, 0, ti - 1);
+		if (p->allow_fk && ti > 0 && qg_draw_bool(tc))
+			fkref = (int) qg_draw_int(tc, 0, ti - 1);
 
-		ncols = (int) pg_prop_draw_int(tc, p->min_cols, p->max_cols);
+		ncols = (int) qg_draw_int(tc, p->min_cols, p->max_cols);
 		build_table_schema(tc, t, ncols, fkref, p->cardinality_bias, nondet);
 
 		/* DROP first (reverse order handled by qg_drop_db; here just reset) */
@@ -936,7 +1121,7 @@ qg_build_db(pg_prop_tc *tc, pg_prop_conn *conn, const qg_db_params *p)
 		 * tables, so the relation carries trigger metadata and the write path
 		 * runs the trigger.  Result-neutral, so SELECT oracles stay sound.
 		 */
-		if (p->allow_triggers && pg_prop_draw_bool(tc))
+		if (p->allow_triggers && qg_draw_bool(tc))
 			appendStringInfo(&ddl,
 							 "CREATE TRIGGER %s_trig BEFORE INSERT OR UPDATE ON %s "
 							 "FOR EACH ROW EXECUTE FUNCTION qg_noop_trig(); ",
@@ -947,7 +1132,7 @@ qg_build_db(pg_prop_tc *tc, pg_prop_conn *conn, const qg_db_params *p)
 	for (ti = 0; ti < nt; ti++)
 	{
 		qg_table   *t = &db->tables[ti];
-		int			n = (int) pg_prop_draw_int(tc, p->min_rows, p->max_rows);
+		int			n = (int) qg_draw_int(tc, p->min_rows, p->max_rows);
 		int			parent_rows = (t->fkref >= 0) ? db->tables[t->fkref].nrows : 0;
 		int			r;
 		int			col;
@@ -968,11 +1153,11 @@ qg_build_db(pg_prop_tc *tc, pg_prop_conn *conn, const qg_db_params *p)
 					 * exists.)  If the parent is empty, the only satisfiable
 					 * value is NULL.
 					 */
-					if (parent_rows == 0 || pg_prop_draw_int(tc, 0, 4) == 0)
+					if (parent_rows == 0 || qg_draw_int(tc, 0, 4) == 0)
 						appendStringInfoString(&ddl, "NULL");
 					else
 						appendStringInfo(&ddl, "%d",
-										 (int) pg_prop_draw_int(tc, 1, parent_rows));
+										 (int) qg_draw_int(tc, 1, parent_rows));
 				}
 				else
 					t->schema.cols[col].draw(tc, &ddl);
@@ -989,7 +1174,7 @@ qg_build_db(pg_prop_tc *tc, pg_prop_conn *conn, const qg_db_params *p)
 		 * merge-join-on-presorted paths, plus Memoize over a parameterized
 		 * inner index scan.
 		 */
-		if (t->fkcol >= 0 && pg_prop_draw_int(tc, 0, 3) != 0)
+		if (t->fkcol >= 0 && qg_draw_int(tc, 0, 3) != 0)
 			appendStringInfo(&ddl, "CREATE INDEX ON %s (%s); ", t->name,
 							 t->schema.cols[t->fkcol].name);
 		for (col = 0; col < t->schema.ncols; col++)
@@ -1001,9 +1186,9 @@ qg_build_db(pg_prop_tc *tc, pg_prop_conn *conn, const qg_db_params *p)
 			 * btree tuple limit, so only scalar columns are indexed.
 			 */
 			if (col == t->fkcol || t->schema.cols[col].is_text_like ||
-				pg_prop_draw_int(tc, 0, 2) != 0)
+				qg_draw_int(tc, 0, 2) != 0)
 				continue;
-			k = (int) pg_prop_draw_int(tc, 0, 2);
+			k = (int) qg_draw_int(tc, 0, 2);
 			if (k == 1 && (col + 1 >= t->schema.ncols ||
 						   t->schema.cols[col + 1].is_text_like))
 				k = 0;
@@ -1029,16 +1214,16 @@ qg_build_db(pg_prop_tc *tc, pg_prop_conn *conn, const qg_db_params *p)
 		 * elimination, uniqueness-based join removal, DISTINCT elision -- is
 		 * unsound there, while "ONLY parent" must still see only the parent.
 		 */
-		if (p->allow_inherit && n > 0 && pg_prop_draw_int(tc, 0, 2) == 0)
+		if (p->allow_inherit && n > 0 && qg_draw_int(tc, 0, 2) == 0)
 		{
-			int			m = (int) pg_prop_draw_int(tc, 1, n < 5 ? n : 5);
+			int			m = (int) qg_draw_int(tc, 1, n < 5 ? n : 5);
 
 			appendStringInfo(&ddl, "CREATE TABLE %s_c () INHERITS (%s); ",
 							 t->name, t->name);
 			for (r = 1; r <= m; r++)
 			{
 				appendStringInfo(&ddl, "INSERT INTO %s_c VALUES (%d", t->name,
-								 (int) pg_prop_draw_int(tc, 1, n));
+								 (int) qg_draw_int(tc, 1, n));
 				for (col = 0; col < t->schema.ncols; col++)
 				{
 					appendStringInfoString(&ddl, ", ");
@@ -1054,6 +1239,7 @@ qg_build_db(pg_prop_tc *tc, pg_prop_conn *conn, const qg_db_params *p)
 		appendStringInfo(&ddl, "ANALYZE %s; ", t->name);
 	}
 
+	qg_rng_end();				/* all structural draws done */
 	if (!pg_prop_sql_exec(conn, ddl.data, &err))
 		pg_prop_fail(tc, "database DDL/DML failed: %s", err ? err : "");
 
@@ -1097,11 +1283,11 @@ draw_leaf_on(pg_prop_tc *tc, StringInfo buf, const qg_table *t,
 	{
 		/* no data columns: fall back to a key predicate */
 		appendStringInfo(buf, "%s.id %s %d", alias,
-						 cmp[pg_prop_draw_int(tc, 0, 5)],
-						 (int) pg_prop_draw_int(tc, 0, 10));
+						 cmp[qg_draw_int(tc, 0, 5)],
+						 (int) qg_draw_int(tc, 0, 10));
 		return;
 	}
-	ci = (int) pg_prop_draw_int(tc, 0, t->schema.ncols - 1);
+	ci = (int) qg_draw_int(tc, 0, t->schema.ncols - 1);
 	c = &t->schema.cols[ci];
 
 	/*
@@ -1116,7 +1302,7 @@ draw_leaf_on(pg_prop_tc *tc, StringInfo buf, const qg_table *t,
 	 */
 	if (c->nondet_collation)
 	{
-		switch ((int) pg_prop_draw_int(tc, 0, 3))
+		switch ((int) qg_draw_int(tc, 0, 3))
 		{
 			case 0:
 				appendStringInfo(buf, "%s.%s IS NULL", alias, c->name);
@@ -1126,19 +1312,20 @@ draw_leaf_on(pg_prop_tc *tc, StringInfo buf, const qg_table *t,
 				break;
 			case 2:
 				appendStringInfo(buf, "%s.%s IS %sDISTINCT FROM ", alias, c->name,
-								 pg_prop_draw_bool(tc) ? "NOT " : "");
+								 qg_draw_bool(tc) ? "NOT " : "");
 				draw_text_or_null(tc, buf);
 				break;
 			default:
 				appendStringInfo(buf, "%s.%s %s ", alias, c->name,
-								 cmp[pg_prop_draw_int(tc, 0, 5)]);
+								 cmp[qg_draw_int(tc, 0, 5)]);
 				draw_text_or_null(tc, buf);
 				break;
 		}
 		return;
 	}
 
-	switch ((int) pg_prop_draw_int(tc, 0, 7))
+	switch (qg_biased(tc, 8, (const char *const[])
+					  {"nulls", "nulls", "nulls", "nulls", "cast", NULL, NULL, NULL}))
 	{
 		case 0:
 			appendStringInfo(buf, "%s.%s IS NULL", alias, c->name);
@@ -1148,7 +1335,7 @@ draw_leaf_on(pg_prop_tc *tc, StringInfo buf, const qg_table *t,
 			break;
 		case 2:					/* IS [NOT] DISTINCT FROM: null-safe equality */
 			appendStringInfo(buf, "%s.%s IS %sDISTINCT FROM ", alias, c->name,
-							 pg_prop_draw_bool(tc) ? "NOT " : "");
+							 qg_draw_bool(tc) ? "NOT " : "");
 			if (c->is_text_like)
 				draw_text_or_null(tc, buf);
 			else
@@ -1156,8 +1343,8 @@ draw_leaf_on(pg_prop_tc *tc, StringInfo buf, const qg_table *t,
 			break;
 		case 3:					/* = ANY / <> ALL over an array that may hold NULL */
 			{
-				int			n = (int) pg_prop_draw_int(tc, 0, 3);
-				bool		any = pg_prop_draw_bool(tc);
+				int			n = (int) qg_draw_int(tc, 0, 3);
+				bool		any = qg_draw_bool(tc);
 
 				appendStringInfo(buf, "%s.%s %s (ARRAY[", alias, c->name,
 								 any ? "= ANY" : "<> ALL");
@@ -1178,15 +1365,15 @@ draw_leaf_on(pg_prop_tc *tc, StringInfo buf, const qg_table *t,
 		case 4:					/* cross-type: compare through a cast */
 			if (c->is_text_like)
 				appendStringInfo(buf, "%s.%s::varchar %s 'b'", alias, c->name,
-								 cmp[pg_prop_draw_int(tc, 0, 5)]);
+								 cmp[qg_draw_int(tc, 0, 5)]);
 			else
 				appendStringInfo(buf, "%s.%s::numeric %s %d.5", alias, c->name,
-								 cmp[pg_prop_draw_int(tc, 0, 5)],
-								 (int) pg_prop_draw_int(tc, -3, 9));
+								 cmp[qg_draw_int(tc, 0, 5)],
+								 (int) qg_draw_int(tc, -3, 9));
 			break;
 		default:
 			appendStringInfo(buf, "%s.%s %s ", alias, c->name,
-							 cmp[pg_prop_draw_int(tc, 0, 5)]);
+							 cmp[qg_draw_int(tc, 0, 5)]);
 			if (c->is_text_like)
 				draw_text_or_null(tc, buf);
 			else
@@ -1199,7 +1386,7 @@ static void
 draw_predicate_on_rec(pg_prop_tc *tc, StringInfo buf, const qg_table *t,
 					  const char *alias, int depth)
 {
-	int			kind = (depth >= 2) ? 0 : (int) pg_prop_draw_int(tc, 0, 4);
+	int			kind = (depth >= 2) ? 0 : (int) qg_draw_int(tc, 0, 4);
 
 	switch (kind)
 	{
@@ -1319,7 +1506,15 @@ build_join_chain(pg_prop_tc *tc, const qg_db *db, int start, int max_joins,
 		{
 			const char *tn = db->tables[nexttab].name;
 			const char *prev = aliases[n - 1];
-			int			shape = (int) pg_prop_draw_int(tc, 0, 6);
+			/*
+			 * Member shape: 0 plain, 1 ONLY, 2 DISTINCT-derived, 3 UNION ALL,
+			 * 4/5 LATERAL, 6 LATERAL UNION ALL.  Bias toward the subquery /
+			 * appendrel shapes when the patch touches those surfaces.
+			 */
+			static const char *const shape_tags[] = {
+				NULL, "index", "distinct", "setops", "subquery", "subquery", "subquery"
+			};
+			int			shape = qg_biased(tc, 7, shape_tags);
 			/* derived shapes expose id, plus fk when the table has one */
 			const char *cols = db->tables[nexttab].fkcol >= 0 ? "id, fk" : "id";
 			const char *xcols = db->tables[nexttab].fkcol >= 0 ? "x.id, x.fk" : "x.id";
@@ -1335,13 +1530,16 @@ build_join_chain(pg_prop_tc *tc, const qg_db *db, int start, int max_joins,
 			 * LATERAL shapes (4-6) stay INNER / LEFT.  A FULL/RIGHT join can
 			 * leave every projected key NULL in an unmatched row, so the
 			 * oracle must compare the row multiset, not a key-ordered
-			 * sequence (rowhash_unordered); the deep oracles do.
+			 * sequence (rowhash_unordered); the deep oracles do.  The join
+			 * type is biased toward the outer joins when the patch touches
+			 * join planning.
 			 */
 			static const char *const jts[] = {"", "LEFT", "RIGHT", "FULL"};
+			static const char *const jt_tags[] = {NULL, "joins", "joins", "joins"};
 			bool		lateral = (shape == 4 || shape == 5 || shape == 6);
 			const char *jt = lateral
-				? (pg_prop_draw_bool(tc) ? "" : "LEFT")
-				: jts[pg_prop_draw_int(tc, 0, 3)];
+				? (qg_draw_bool(tc) ? "" : "LEFT")
+				: jts[qg_biased(tc, 4, jt_tags)];
 
 			switch (shape)
 			{
@@ -1474,7 +1672,8 @@ qg_build_query(pg_prop_tc *tc, const qg_db *db, int max_depth, qg_query *q)
 	if (db->ntables == 0)
 		return false;
 
-	start = (int) pg_prop_draw_int(tc, 0, db->ntables - 1);
+	qg_rng_begin(tc);			/* deterministic region for the query shape */
+	start = (int) qg_draw_int(tc, 0, db->ntables - 1);
 	maxj = (max_depth < 1) ? 1 : max_depth;
 	if (maxj > db->ntables - 1)
 		maxj = db->ntables - 1;
@@ -1530,6 +1729,7 @@ qg_build_query(pg_prop_tc *tc, const qg_db *db, int max_depth, qg_query *q)
 	pfree(from.data);
 	pfree(keys.data);
 	pfree(sel.data);
+	qg_rng_end();
 	return true;
 }
 
