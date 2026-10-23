@@ -572,3 +572,165 @@ PG_PROP(update_preserves_check)
 	pg_prop_disconnect(conn);
 }
 
+/*
+ * CF 6270, generated-column variant.  The patch calls
+ * expand_generated_columns_in_expr on each CHECK before collecting its
+ * attnos, so a CHECK that references a stored generated column g is, after
+ * expansion, a CHECK over g's base columns.  An UPDATE that touches a base
+ * column of g must therefore still verify such a CHECK even though g itself is
+ * not named in SET.  This is the subtle case where "columns being updated"
+ * and "columns a CHECK depends on" can disagree if the expansion or the
+ * updated-column set is computed wrong.
+ *
+ * Table: a, b (base), g = a + b STORED, h = a - b STORED, with CHECK (g >= 0)
+ * and CHECK (h <= 100) over the generated columns, plus a plain CHECK (a >= -6)
+ * over a base column.  We UPDATE a random subset of {a,b} and require the
+ * server to accept IFF every resulting row satisfies all CHECKs, with the
+ * same no-surviving-violator assertion.  The expectation is computed by
+ * projecting the new base values and the recomputed generated values.
+ */
+PG_PROP(update_preserves_check_generated)
+{
+	pg_prop_conn *conn = connect_c(tc);
+	char	   *err = NULL;
+	int			nseed = (int) pg_prop_draw_int(tc, 1, 20);
+	int			nupd = (int) pg_prop_draw_int(tc, 1, 25);
+	int			i;
+
+	if (!pg_prop_sql_exec(conn,
+						  "DROP TABLE IF EXISTS upg_c; "
+						  "CREATE TABLE upg_c (id serial PRIMARY KEY, "
+						  "a int, b int, "
+						  "g int GENERATED ALWAYS AS (a + b) STORED, "
+						  "h int GENERATED ALWAYS AS (a - b) STORED, "
+						  "CONSTRAINT ckg_a CHECK (a >= -6), "
+						  "CONSTRAINT ckg_g CHECK (g >= 0), "
+						  "CONSTRAINT ckg_h CHECK (h <= 100))",
+						  &err))
+	{
+		/* generated columns unavailable (very old server): skip cleanly */
+		if (err)
+			pg_free(err);
+		pg_prop_skip(tc, "stored generated columns not available");
+	}
+
+	for (i = 0; i < nseed; i++)
+	{
+		StringInfoData q;
+		int			a = (int) pg_prop_draw_int(tc, 0, C_K_MAX);
+		int			b = (int) pg_prop_draw_int(tc, 0, a);		/* a-b <= 100, a+b >= 0 */
+
+		initStringInfo(&q);
+		appendStringInfo(&q, "INSERT INTO upg_c (a,b) VALUES (%d,%d)", a, b);
+		if (!pg_prop_sql_exec(conn, q.data, &err))
+			pg_prop_fail(tc, "seed insert rejected (%s): %s",
+						 q.data, err ? err : "");
+		pfree(q.data);
+	}
+
+	for (i = 0; i < nupd; i++)
+	{
+		static const char *const base[] = {"a", "b"};
+		StringInfoData set;
+		StringInfoData proj;	/* na, nb projected new base values */
+		StringInfoData where;
+		StringInfoData chk;
+		StringInfoData upd;
+		bool		any = false;
+		bool		accepted;
+		bool		expect_accept;
+		bool		failed = false;
+		char	   *v;
+		int			j;
+
+		initStringInfo(&set);
+		initStringInfo(&proj);
+		initStringInfo(&where);
+
+		if (pg_prop_draw_int(tc, 0, 2) == 0)
+			appendStringInfo(&where, " WHERE id %% 2 = %d",
+							 (int) pg_prop_draw_int(tc, 0, 1));
+
+		for (j = 0; j < 2; j++)
+		{
+			char		expr[64];
+			bool		assign = (pg_prop_draw_int(tc, 0, 1) == 1);
+
+			if (j == 1 && !any)
+				assign = true;
+
+			if (assign)
+			{
+				if (pg_prop_draw_int(tc, 0, 1) == 0)
+					snprintf(expr, sizeof(expr), "%d",
+							 (int) pg_prop_draw_int(tc, C_K_MIN - 3, C_K_MAX + 60));
+				else
+					snprintf(expr, sizeof(expr), "%s %c %d",
+							 base[(j + 1) % 2],
+							 pg_prop_draw_int(tc, 0, 1) ? '+' : '-',
+							 (int) pg_prop_draw_int(tc, 0, 50));
+				if (any)
+					appendStringInfoString(&set, ", ");
+				appendStringInfo(&set, "%s = %s", base[j], expr);
+				any = true;
+			}
+			if (j > 0)
+				appendStringInfoString(&proj, ", ");
+			appendStringInfo(&proj, "(%s) AS %s", assign ? expr : base[j], base[j]);
+		}
+
+		/* expected: project new a,b; recompute g=a+b, h=a-b; test all CHECKs */
+		initStringInfo(&chk);
+		appendStringInfo(&chk,
+						 "SELECT bool_and(a >= -6 AND (a + b) >= 0 AND (a - b) <= 100) "
+						 "FROM (SELECT %s FROM upg_c%s) s",
+						 proj.data, where.data);
+		v = pg_prop_sql_scalar(conn, chk.data, &failed, &err);
+		expect_accept = (v == NULL) || (v[0] == '\0') || (strcmp(v, "t") == 0);
+		if (v)
+			pg_free(v);
+		if (failed)
+			pg_prop_fail(tc, "expectation query failed (%s): %s",
+						 chk.data, err ? err : "");
+
+		initStringInfo(&upd);
+		appendStringInfo(&upd, "UPDATE upg_c SET %s%s", set.data, where.data);
+		accepted = try_insert(tc, conn, upd.data);
+
+		if (accepted != expect_accept)
+			pg_prop_fail(tc,
+						 "UPDATE(gen) accept/reject wrong: expect_accept=%d "
+						 "accepted=%d; sql=[%s]",
+						 (int) expect_accept, (int) accepted, upd.data);
+
+		{
+			bool		f2 = false;
+			char	   *bad = pg_prop_sql_scalar(conn,
+												 "SELECT count(*) FROM upg_c "
+												 "WHERE NOT (a >= -6 AND g >= 0 AND h <= 100)",
+												 &f2, &err);
+			long		nbad = bad ? atol(bad) : 0;
+
+			if (bad)
+				pg_free(bad);
+			if (f2)
+				pg_prop_fail(tc, "violation scan failed: %s", err ? err : "");
+			if (nbad > 0)
+				pg_prop_fail(tc,
+							 "CHECK(gen) violated after UPDATE: %ld bad row(s); "
+							 "sql=[%s]",
+							 nbad, upd.data);
+		}
+
+		pfree(set.data);
+		pfree(proj.data);
+		pfree(where.data);
+		pfree(chk.data);
+		pfree(upd.data);
+	}
+
+	pg_prop_sql_exec(conn, "DROP TABLE IF EXISTS upg_c", &err);
+	if (err)
+		pg_free(err);
+	pg_prop_disconnect(conn);
+}
