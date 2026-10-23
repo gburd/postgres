@@ -79,6 +79,12 @@ bark_leaf_page_entry(Relation index, Relation heaprel, IndexTuple full,
 			bark_form_tagged(full, &full->t_tid, tag);
 
 	firstblk = bark_write_overflow_chain(index, heaprel, full, fulllen);
+
+	/*
+	 * Tests stop here, with the chain written and no entry referencing it
+	 * yet, to crash and leave the chain orphaned.
+	 */
+	INJECTION_POINT("bark-overflow-chain-written", NULL);
 	{
 		IndexTuple	entry = bark_form_oversized_entry(&full->t_tid, fulllen,
 														 firstblk, true /* leaf */ , 0,

@@ -60,6 +60,10 @@ tests += {
       't/007_subattr_proof.pl',
       't/007_verify_bark.pl',
       't/008_verify_bark_parent.pl',
+      't/009_verify_bark_chains.pl',
     ],
+    'env': {
+       'enable_injection_points': get_option('injection_points') ? 'yes' : 'no',
+    },
   },
 }

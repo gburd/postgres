@@ -35,6 +35,7 @@ $node->safe_psql(
 	CREATE TABLE t_mk (id int, a int4[]);
 	CREATE TABLE t_empty (a int);
 	CREATE TABLE t_deep (a int);
+	CREATE TABLE t_ovf (k text COLLATE "C");
 	INSERT INTO t_deep SELECT g FROM generate_series(1, 40000) g;
 	INSERT INTO t_pfx SELECT 'a shared prefix of the keys ' || g FROM generate_series(1, 50) g;
 ));
@@ -57,7 +58,9 @@ my %idx = (
 	i_mk_notnull => [ 't_mk', 'id, a bark_int4_array_marked_ops' ],
 	i_mk_nomark => [ 't_mk', 'a bark_int4_array_ops' ],
 	map({ $_ => [ 't_deep', 'a', 'fillfactor = 10' ] }
-		qw(i_deep_notpivot i_deep_hikey i_deep_hktid i_deep_lastempty)));
+		qw(i_deep_notpivot i_deep_hikey i_deep_hktid i_deep_lastempty)),
+	map({ $_ => [ 't_ovf', 'k' ] }
+		qw(i_ovf_long i_ovf_loop i_ovf_leaf i_ovf_past i_ovf_hkblk i_ovf_orphloop)));
 for my $i (sort keys %idx)
 {
 	my ($t, $cols, $opt) = @{ $idx{$i} };
@@ -78,6 +81,9 @@ $node->safe_psql(
 	INSERT INTO t_post SELECT g / 1000 FROM generate_series(0, 4999) g;
 	INSERT INTO t_mk VALUES (1, '{1,2}'), (2, '{3}'), (3, '{4}');
 	INSERT INTO t_mk SELECT g, '{5}' FROM generate_series(10, 19) g;
+	INSERT INTO t_ovf SELECT (SELECT string_agg(md5(s::text || g::text), '')
+	                          FROM generate_series(1, 600) g)
+	  FROM generate_series(1, 200) s;
 ));
 
 for my $i (sort keys %idx)
@@ -118,6 +124,23 @@ for my $i (qw(i_mk_null i_mk_notnull))
   @{ items('i_mk_list', $info{i_mk_list}{root}, 'itemoffset', "WHERE shape = 'LIST'") };
 ($info{i_post1}{off_POSTING}) =
   @{ items('i_post1', $info{i_post1}{root}, 'itemoffset', "WHERE shape = 'POSTING'") };
+# t_ovf: 200 keys of 19 kB, over several leaves, so every entry and high
+# key is OVERSIZED, with a chain of three pages.  The leftmost leaf's first
+# data entry's chain.  The keys' first 32 bytes differ and the column is
+# "C", so the per-page checks order them by their inline prefixes.
+for my $i (qw(i_ovf_long i_ovf_loop i_ovf_leaf i_ovf_past i_ovf_hkblk i_ovf_orphloop))
+{
+	my $c = $info{$i};
+	my $leaf = $c->{kids}[0];
+	$c->{leaf} = $leaf;
+	my @chain = (
+		items($i, $leaf, 'overflow_blkno', "WHERE itemoffset = 2")->[0]);
+	push @chain, $node->safe_psql('postgres',
+		"SELECT bark_next FROM bark_page_stats('$i', $chain[-1])")
+	  for 1 .. 2;
+	$c->{chain} = \@chain;
+}
+
 # Level 1 of t_deep: the leftmost internal page, and its last child.
 for my $i (qw(i_deep_lastempty))
 {
@@ -126,6 +149,16 @@ for my $i (qw(i_deep_lastempty))
 }
 
 is($info{i_toobig}{level}, 0, 't_small is a single leaf');
+is(scalar @{ $info{i_ovf_long}{chain} }, 3, 't_ovf has chains of three pages');
+cmp_ok(scalar @{ $info{i_ovf_long}{kids} }, '>=', 2, 't_ovf has 2+ leaves');
+is( $node->safe_psql(
+		'postgres',
+		"SELECT shape FROM bark_page_items('i_ovf_hkblk', $info{i_ovf_hkblk}{leaf}) WHERE itemoffset = 1"),
+	'OVERSIZED', "t_ovf's leftmost leaf has an OVERSIZED high key");
+is( $node->safe_psql(
+		'postgres',
+		"SELECT bark_next FROM bark_page_stats('i_ovf_long', $info{i_ovf_long}{chain}[2])"),
+	'0', "the chain's third page is its last");
 cmp_ok(scalar @{ $info{i_tidhikey}{kids} }, '>=', 4, 't_multi has 4+ leaves');
 is($info{i_deep_hikey}{level}, 2, 't_deep has three levels');
 cmp_ok(scalar @{ $info{i_deep_hikey}{kids} }, '>=', 2, 't_deep has 2+ internal pages below its root');
@@ -330,6 +363,45 @@ patch('i_deep_hktid', $info{i_deep_hktid}{kids}[0],
 # That page's last child emptied: it has no high key to match the page's.
 patch('i_deep_lastempty', $info{i_deep_lastempty}{lastkid}, sub { set_lower($_[0], 24) });
 
+# Overflow chains, as bark_index_parent_check follows them past their
+# entries' length (the per-page checks read a chain only that far): the
+# last page linked on to one more overflow page, to its own first page (a
+# loop), to a leaf, and past the end of the index; the leftmost leaf's high
+# key's first block out of range; and an orphaned chain made into a loop of
+# its own.
+sub append_pages
+{
+	my ($i, @pages) = @_;
+	my $n = (-s $info{$i}{path}) / $blksz;
+	open(my $fh, '>>:raw', $info{$i}{path}) or die "open: $!";
+	print $fh @pages;
+	close $fh;
+	return $n;
+}
+{
+	my %c = map { $_ => $info{$_} } qw(i_ovf_long i_ovf_loop i_ovf_leaf i_ovf_past i_ovf_hkblk i_ovf_orphloop);
+
+	# A copy of the chain's last page, appended: an overflow page, linked
+	# to nothing, that only the corrupt link reaches.
+	my $last = rd($c{i_ovf_long}{path}, $c{i_ovf_long}{chain}[2]);
+	my $extra = append_pages('i_ovf_long', $last);
+	patch('i_ovf_long', $c{i_ovf_long}{chain}[2], sub { s32($_[0], opq($_[0], 4), $extra) });
+	patch('i_ovf_loop', $c{i_ovf_loop}{chain}[2], sub { s32($_[0], opq($_[0], 4), $c{i_ovf_loop}{chain}[0]) });
+	patch('i_ovf_leaf', $c{i_ovf_leaf}{chain}[2], sub { s32($_[0], opq($_[0], 4), $c{i_ovf_leaf}{leaf}) });
+	patch('i_ovf_past', $c{i_ovf_past}{chain}[2], sub { s32($_[0], opq($_[0], 4), 999999) });
+	patch('i_ovf_hkblk', $c{i_ovf_hkblk}{leaf},
+		sub { s16($_[0], item($_[0], 1), 0x7fff); s16($_[0], item($_[0], 1) + 2, 0) });
+
+	# Copies of a whole chain appended, linked n -> n + 1 -> n + 2 -> n:
+	# three orphaned pages, each linked to by another.
+	my $g = $c{i_ovf_orphloop};
+	my $n = (-s $g->{path}) / $blksz;
+	my @pages = map { rd($g->{path}, $_) } @{ $g->{chain} };
+	s32(\$pages[$_], opq(\$pages[$_], 4), $n + ($_ + 1) % 3) for 0 .. 2;
+	append_pages('i_ovf_orphloop', @pages);
+	$g->{orphan} = $n;
+}
+
 $node->start;
 
 sub check
@@ -409,6 +481,27 @@ for my $i (qw(i_del_ok i_del_left))
 check($_, 'i_empty', undef, ', true') for qw(bark_index_check bark_index_parent_check);
 check('bark_index_check', 'i_empty_u', undef, ', true, true');
 parent_only('i_deep_lastempty', "has a high key on page $I0 that is not the high key of its last child");
+
+my %o = map { $_ => $info{$_} } qw(i_ovf_long i_ovf_loop i_ovf_leaf i_ovf_past i_ovf_hkblk i_ovf_orphloop);
+parent_only('i_ovf_long',
+	"has an overflow chain of 4 pages from block $o{i_ovf_long}{chain}[0], where its entry's length takes 3");
+parent_only('i_ovf_loop',
+	"has an overflow chain from block $o{i_ovf_loop}{chain}[0] that reaches block $o{i_ovf_loop}{chain}[0], which an overflow chain already reached");
+parent_only('i_ovf_leaf',
+	"has an overflow chain from block $o{i_ovf_leaf}{chain}[0] that reaches block $o{i_ovf_leaf}{leaf}, which is not an overflow page");
+parent_only('i_ovf_past',
+	"has an overflow chain from block $o{i_ovf_past}{chain}[0] that reaches block 999999, which is not an overflow page");
+# The parent check records the chains before it checks the page, so it
+# reports the block; bark_index_check, which reads the high key's chain
+# only to compare it, fails in the read.
+check('bark_index_parent_check', 'i_ovf_hkblk',
+	"oversized entry on page $o{i_ovf_hkblk}{leaf} at offset 1 points at out-of-range overflow block 2147418112");
+{
+	my ($rc, $out, $err) = $node->psql('postgres', "SELECT bark_index_parent_check('i_ovf_orphloop')");
+	is($rc, 0, 'an orphaned loop is not corruption');
+	like($err, qr/orphaned overflow chain of 3 pages at block $o{i_ovf_orphloop}{orphan}/,
+		'the parent check reports an orphaned loop from its lowest block');
+}
 
 # No check crashed the server.
 is($node->safe_psql('postgres', 'SELECT 1'), '1', 'server is up');
