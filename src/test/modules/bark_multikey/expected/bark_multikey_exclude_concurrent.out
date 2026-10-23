@@ -1,0 +1,4 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1_begin s1_ins15 s2_ins59 s1_commit s1_check
+setup failed: ERROR:  exclusion constraints are not supported for multikey operator classes in M1
