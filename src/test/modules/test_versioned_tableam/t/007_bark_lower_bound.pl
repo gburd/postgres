@@ -63,10 +63,14 @@ $node->safe_psql(
 	         (SELECT i.tag FROM bark_page_items(idx::text, b) i
 	           WHERE s.bark_next <> 0 AND i.itemoffset = 1),
 	         (SELECT i.tag FROM bark_page_items(idx::text, b) i
-	           WHERE i.shape = 'SINGLE' ORDER BY i.itemoffset LIMIT 1),
-	         (SELECT min(i.tag) FROM bark_page_items(idx::text, b) i WHERE i.shape = 'SINGLE'),
-	         (SELECT max(i.tag) FROM bark_page_items(idx::text, b) i WHERE i.shape = 'SINGLE'),
-	         (SELECT count(*) FROM bark_page_items(idx::text, b) i WHERE i.shape = 'SINGLE')
+	           WHERE i.shape IN ('SINGLE', 'OVERSIZED') AND i.itemoffset > (s.bark_next <> 0)::int
+	           ORDER BY i.itemoffset LIMIT 1),
+	         (SELECT min(i.tag) FROM bark_page_items(idx::text, b) i
+	           WHERE i.shape IN ('SINGLE', 'OVERSIZED') AND i.itemoffset > (s.bark_next <> 0)::int),
+	         (SELECT max(i.tag) FROM bark_page_items(idx::text, b) i
+	           WHERE i.shape IN ('SINGLE', 'OVERSIZED') AND i.itemoffset > (s.bark_next <> 0)::int),
+	         (SELECT count(*) FROM bark_page_items(idx::text, b) i
+	           WHERE i.shape IN ('SINGLE', 'OVERSIZED') AND i.itemoffset > (s.bark_next <> 0)::int)
 	    FROM generate_series(1, pg_relation_size(idx) / 8192 - 1) b,
 	         LATERAL bark_page_stats(idx::text, b) s
 	   WHERE s.type = 'leaf' $$;
@@ -268,6 +272,7 @@ make_run('tb', 1, 5);
 $node->safe_psql('postgres',
 	q{SELECT injection_points_attach('bark-lower-bound-start', 'wait')});
 my $vac = $node->background_psql('postgres', on_error_stop => 0);
+my $p2max;
 $vac->query_until(qr/start/, qq{
 	SET test_versioned_tableam.stale_tags = live;
 	SET test_versioned_tableam.stale_dead_min = $lo;
@@ -281,7 +286,7 @@ $node->wait_for_event('client backend', 'bark-lower-bound-start');
 $node->safe_psql('postgres',
 	q{SELECT injection_points_attach('bark-leave-leaf-split-incomplete', 'wait')});
 my $ins = $node->background_psql('postgres', on_error_stop => 0);
-my $p2max = $node->safe_psql('postgres', qq{SELECT maxtag FROM leaves('tb_k') WHERE blk = $p2});
+$p2max = $node->safe_psql('postgres', qq{SELECT maxtag FROM leaves('tb_k') WHERE blk = $p2});
 $ins->query_until(qr/start/, qq{
 	SET test_versioned_tableam.stale_tags = live;
 	\\echo start
@@ -379,6 +384,128 @@ $node->safe_psql('postgres', q{
 unlike($node->safe_psql('postgres', qq{SELECT flags FROM leaves('ts_k') WHERE blk = $p1}),
 	qr/incomplete_split/, 'P1 splits: an insert finished the split');
 check_index('ts_k', 'P1 splits');
+
+# (4c) Decline: P1 splits, completely, before VACUUM locks the parent: P2's
+# left sibling is then the split's right half, whose downlink is just
+# before P2's, so the parent's downlinks do not match the left sibling
+# VACUUM read.
+make_run('tc', 1, 5);
+($p2, $p1, $lo, $hi, $first, $t0) = pages('tc_k', 'p1.prev = 0');
+is_deeply(
+	[ vacuum_around('tc', 'tc_k',
+		"SET test_versioned_tableam.stale_dead_min = $lo; SET test_versioned_tableam.stale_dead_max = $hi; SET test_versioned_tableam.untag_tag = $first;",
+		sub { $node->safe_psql('postgres', split_p1('tc', $t0)); }) ],
+	[ 'untagged 0, kept 1, dup 0, lowered 0', "its parent's downlinks do not match its left sibling" ],
+	'P1 split: VACUUM keeps the bound');
+isnt($node->safe_psql('postgres', qq{SELECT prev FROM leaves('tc_k') WHERE blk = $p2}),
+	$p1, 'P1 split: P2 has a new left sibling');
+check_index('tc_k', 'P1 split');
+
+# (4d) Decline: an empty P1 whose own lower bound is in the run.  The run
+# spans the leftmost leaf Pa, then P1 and P2, both flagged.  VACUUM
+# empties P1 (every tag on it dead) but cannot delete it: an insert into
+# P2 stopped mid-split (odd tags after P2's first, below the row's own
+# entry, which is on P2 here) holds P2 when the deletion tries its lock.  The
+# insert goes on once VACUUM waits for P2 in bark_lower_bound, which then
+# finds P1's own downlink, Pa's high key, tagged in the run, which (K, L)
+# would not sort above.  INDEX_CLEANUP off leaves heap_versioned's version
+# pass the only scan of the index, which stops after its last block
+# (bark-bulkdelete-after-page) for the insert.
+make_run('te', 1, 5);
+($p2, $p1, $lo, $hi, $first, $t0) = pages('te_k',
+	q{p1.prev <> 0 AND (SELECT l.prev FROM leaves('te_k') l WHERE l.blk = p1.prev) = 0});
+like($node->safe_psql('postgres', qq{SELECT flags FROM leaves('te_k') WHERE blk = $p1}),
+	qr/lowbound_tagged/, 'empty P1: P1\'s own bound is tagged too');
+my $last = $node->safe_psql('postgres', q{SELECT pg_relation_size('te_k') / 8192 - 1});
+$node->safe_psql('postgres',
+	qq{SELECT injection_points_attach('bark-bulkdelete-after-page', 'wait', '$last')});
+$vac = $node->background_psql('postgres', on_error_stop => 0);
+$vac->query_until(qr/start/, qq{
+	SET test_versioned_tableam.stale_tags = live;
+	SET test_versioned_tableam.stale_dead_min = $lo;
+	SET test_versioned_tableam.stale_dead_max = $hi;
+	SET test_versioned_tableam.untag_tag = $first;
+	SET client_min_messages = debug2;
+	\\echo start
+	VACUUM (INDEX_CLEANUP OFF) te;
+});
+$node->wait_for_event('client backend', 'bark-bulkdelete-after-page');
+$node->safe_psql('postgres',
+	q{SELECT injection_points_attach('bark-leave-leaf-split-incomplete', 'wait')});
+$ins = $node->background_psql('postgres', on_error_stop => 0);
+$ins->query_until(qr/start/, qq{
+	SET test_versioned_tableam.stale_tags = live;
+	\\echo start
+	SELECT count(test_versioned_insert_entry('te_k', ctid, g))
+	  FROM te, generate_series($first + 1, $first + 401, 2) g WHERE id = 1;
+});
+$node->wait_for_event('client backend', 'bark-leave-leaf-split-incomplete');
+$node->safe_psql('postgres', q{
+	SELECT injection_points_detach('bark-bulkdelete-after-page');
+	SELECT injection_points_wakeup('bark-bulkdelete-after-page')});
+$node->poll_query_until('postgres', q{
+	SELECT wait_event_type = 'Buffer' FROM pg_stat_activity WHERE query LIKE 'VACUUM (INDEX_CLEANUP OFF) te%'})
+  or die 'VACUUM did not wait for P2';
+$node->safe_psql('postgres', q{
+	SELECT injection_points_detach('bark-leave-leaf-split-incomplete');
+	SELECT injection_points_wakeup('bark-leave-leaf-split-incomplete')});
+$ins->query('SELECT 1');
+$ins->quit;
+$vac->query('SELECT 1');
+is_deeply([ vacuum_line('te_k', $vac->{stderr}) ],
+	[ 'untagged 0, kept 1, dup 0, lowered 0',
+	  "its left sibling's own lower bound is not below the new bound" ],
+	'empty P1: VACUUM keeps the bound');
+$vac->quit;
+is($node->safe_psql('postgres', qq{SELECT n FROM leaves('te_k') WHERE blk = $p1}),
+	'0', 'empty P1: P1 is empty and still linked');
+check_index('te_k', 'empty P1');
+
+# (4e) Decline: an OVERSIZED bound.  A run of one row's entries whose key
+# is too long for a pivot inline leaves OVERSIZED tagged high keys.
+$node->safe_psql(
+	'postgres', q{
+	CREATE TABLE to1 (id int, k text) USING heap_versioned;
+	ALTER TABLE to1 ALTER COLUMN k SET STORAGE EXTERNAL;
+	INSERT INTO to1 SELECT g, CASE WHEN g = 1 THEN 'a' ELSE 'b' || g END ||
+	  (SELECT string_agg(md5(g::text || i::text), '') FROM generate_series(1, 120) i)
+	  FROM generate_series(1, 3) g;
+	SET test_versioned_tableam.build_tag_percent = 100;
+	CREATE INDEX to1_k ON to1 USING bark (k);
+	SET test_versioned_tableam.stale_tags = live;
+	SELECT count(test_versioned_insert_entry('to1_k', ctid, 2 * g))
+	  FROM to1, generate_series(1, 600) g WHERE id = 1;
+});
+my ($op2, $op1, $olo, $ohi, $ofirst) = pages('to1_k', 'p1.prev = 0');
+is( $node->safe_psql(
+		'postgres', qq{SELECT shape FROM bark_page_items('to1_k', $op1) WHERE itemoffset = 1}),
+	'OVERSIZED', 'OVERSIZED bound: P1\'s high key is OVERSIZED');
+is_deeply(
+	[ vacuum('to1', 'to1_k',
+		"SET test_versioned_tableam.stale_dead_min = $olo; SET test_versioned_tableam.stale_dead_max = $ohi; SET test_versioned_tableam.untag_tag = $ofirst;") ],
+	[ 'untagged 0, kept 1, dup 0, lowered 0', 'its lower bound is OVERSIZED' ],
+	'OVERSIZED bound: VACUUM keeps it');
+check_index('to1_k', 'OVERSIZED bound');
+
+# (4f) An unlogged index: the lowering takes a fake LSN instead of a record.
+$node->safe_psql(
+	'postgres', q{
+	CREATE UNLOGGED TABLE tu (id int, k int) USING heap_versioned;
+	INSERT INTO tu SELECT g, CASE WHEN g = 1 THEN 5 ELSE 10 * g END FROM generate_series(1, 300) g;
+	SET test_versioned_tableam.build_tag_percent = 100;
+	CREATE INDEX tu_k ON tu USING bark (k);
+	SET test_versioned_tableam.stale_tags = live;
+	SELECT count(test_versioned_insert_entry('tu_k', ctid, 2 * g))
+	  FROM tu, generate_series(1, 600) g WHERE id = 1;
+});
+($p2, $p1, $lo, $hi, $first, $t0) = pages('tu_k', 'p1.prev = 0');
+is_deeply(
+	[ vacuum('tu', 'tu_k',
+		"SET test_versioned_tableam.stale_dead_min = $lo; SET test_versioned_tableam.stale_dead_max = $hi; SET test_versioned_tableam.untag_tag = $first;") ],
+	[ 'untagged 1, kept 0, dup 0, lowered 1', '' ],
+	'unlogged: VACUUM lowers the bound');
+is($node->safe_psql('postgres', qq{SELECT bark_index_parent_check('tu_k', true)}),
+	'', 'unlogged: bark_index_parent_check');
 
 # (5) Decline: P2 is its parent's first child, so the bound is also the
 # parent's lower bound, the high key of the parent's left sibling.  Long

@@ -381,23 +381,20 @@ bark_delete_empty_leaf(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno,
 }
 
 /*
- * Are two pivots the same separator: the same key attributes, heap TID (or
- * none) and tag (or none)?  A downlink is a copy of the high key of the
- * child to its left (amcheck's bark_check_same_pivot).
+ * Is the plain PIVOT `a` the same as `b`, byte for byte, but for the
+ * downlink block in t_tid?  Every downlink is a copy of the high key of the
+ * child to its left with the child's block set (bark_split,
+ * bark_finish_split, and CREATE INDEX's bark_flush_page), and page deletion
+ * only re-points one, so a downlink and that high key match exactly.
  */
 static bool
-bark_same_pivot(BarkKeyInfo *keyinfo, Relation index, IndexTuple a,
-				IndexTuple b)
+bark_same_pivot(IndexTuple a, IndexTuple b)
 {
-	ItemPointer atid = bark_pivot_heap_tid(a);
-	ItemPointer btid = bark_pivot_heap_tid(b);
+	Size		off = offsetof(IndexTupleData, t_tid.ip_posid);
 
-	if (BarkEntryGetPivotNAtts(a) != BarkEntryGetPivotNAtts(b) ||
-		bark_pivot_tag(a) != bark_pivot_tag(b) ||
-		(atid == NULL) != (btid == NULL))
-		return false;
-	return (atid == NULL || ItemPointerEquals(atid, btid)) &&
-		bark_compare_itups(keyinfo, index, a, b) == 0;
+	return IndexTupleSize(a) == IndexTupleSize(b) &&
+		memcmp((char *) a + off, (char *) b + off,
+			   IndexTupleSize(a) - off) == 0;
 }
 
 /*
@@ -412,15 +409,12 @@ bark_pivot_drop_tag(IndexTuple pivot)
 		(BarkPivotSuffixReserveFor(true) - BarkPivotSuffixReserveFor(false));
 	IndexTuple	plain = (IndexTuple) palloc0(size);
 
-	Assert(BarkEntryGetShape(pivot) == BARK_SHAPE_PIVOT);
-	Assert(BarkPivotGetTag(pivot) != InvalidIndexVersionTag);
 	memcpy(plain, pivot, size - sizeof(ItemPointerData));
 	plain->t_info = (plain->t_info & ~INDEX_SIZE_MASK) | (uint16) size;
 	ItemPointerSetOffsetNumber(&plain->t_tid,
 							   ItemPointerGetOffsetNumberNoCheck(&plain->t_tid) &
 							   ~BARK_PIVOT_TAG);
 	*BarkPivotGetHeapTID(plain) = *BarkPivotGetHeapTID(pivot);
-	Assert(BarkPivotGetTag(plain) == InvalidIndexVersionTag);
 	return plain;
 }
 
@@ -500,9 +494,10 @@ bark_lower_bound(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno)
 	LockBuffer(buf, BUFFER_LOCK_SHARE);
 	page = BufferGetPage(buf);
 	opaque = BarkPageGetOpaque(page);
-	Assert(BarkPageIsLeaf(opaque) && !BarkPageIgnore(opaque));
+	Assert((opaque->bark_flags & (BARK_LEAF | BARK_DELETED | BARK_HALF_DEAD |
+								  BARK_LOWBOUND_TAGGED)) ==
+		   (BARK_LEAF | BARK_LOWBOUND_TAGGED));
 	Assert(!BarkPageLeftmost(opaque));
-	Assert((opaque->bark_flags & BARK_LOWBOUND_TAGGED) != 0);
 	leftblk = opaque->bark_prev;
 	UnlockReleaseBuffer(buf);
 
@@ -510,7 +505,8 @@ bark_lower_bound(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno)
 	LockBuffer(lbuf, BUFFER_LOCK_SHARE);
 	lpage = BufferGetPage(lbuf);
 	lopaque = BarkPageGetOpaque(lpage);
-	Assert(BarkPageIsLeaf(lopaque) && !BarkPageIgnore(lopaque));
+	Assert((lopaque->bark_flags & (BARK_LEAF | BARK_DELETED | BARK_HALF_DEAD)) ==
+		   BARK_LEAF);
 	hikey = CopyIndexTuple((IndexTuple)
 						   PageGetItem(lpage, PageGetItemId(lpage, BARK_P_HIKEY)));
 	UnlockReleaseBuffer(lbuf);
@@ -549,8 +545,7 @@ bark_lower_bound(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno)
 		if (BarkEntryGetDownLink(BarkPageGetItem(ppage,
 												 OffsetNumberPrev(downoff),
 												 &ibuf)) != leftblk ||
-			!bark_same_pivot(keyinfo, index,
-							 (IndexTuple) PageGetItem(ppage,
+			!bark_same_pivot((IndexTuple) PageGetItem(ppage,
 													  PageGetItemId(ppage, downoff)),
 							 hikey))
 			goto done;
@@ -607,9 +602,8 @@ bark_lower_bound(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno)
 		goto unlock;
 	/* Implied by P1's right link, given the argument above. */
 	Assert(opaque->bark_prev == leftblk);
-	Assert((opaque->bark_flags & BARK_LOWBOUND_TAGGED) != 0);
-	Assert(bark_same_pivot(keyinfo, index,
-						   (IndexTuple) PageGetItem(lpage,
+	Assert(opaque->bark_flags & BARK_LOWBOUND_TAGGED);
+	Assert(bark_same_pivot((IndexTuple) PageGetItem(lpage,
 													PageGetItemId(lpage, BARK_P_HIKEY)),
 						   hikey));
 
@@ -1526,8 +1520,8 @@ bark_vacuum_lower_bounds(BarkVacState *vstate)
 		LockBufferForCleanup(buf);
 		page = BufferGetPage(buf);
 		opaque = BarkPageGetOpaque(page);
-		Assert(BarkPageIsLeaf(opaque) && !BarkPageIgnore(opaque));
-		Assert((opaque->bark_flags & BARK_LOWBOUND_TAGGED) == 0);
+		Assert((opaque->bark_flags & (BARK_LEAF | BARK_DELETED | BARK_HALF_DEAD |
+									  BARK_LOWBOUND_TAGGED)) == BARK_LEAF);
 
 		/* Find each entry again, by (key, TID, tag). */
 		for (OffsetNumber off = BarkPageFirstDataKey(opaque);
@@ -1564,7 +1558,7 @@ bark_vacuum_lower_bounds(BarkVacState *vstate)
 			pfree(items[j]);
 		UnlockReleaseBuffer(buf);
 	}
-	/* bark_vacuum_untag keeps nothing for the bound of a page without the flag */
+	/* bark_vacuum_untag keeps nothing for a page without the flag */
 	Assert(vstate->kept == NIL);
 	foreach_ptr(BarkKeptBound, kb, kept)
 		pfree(kb->entry);
