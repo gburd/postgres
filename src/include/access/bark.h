@@ -122,9 +122,10 @@ typedef BarkPageOpaqueData *BarkPageOpaque;
  * BARK_LOWBOUND_TAGGED is set on a leaf whose lower bound (its left
  * sibling's high key) may carry a version tag: the right half of a split
  * whose high key has one, and the right sibling of a deleted leaf that had
- * the flag, which takes over that leaf's lower bound.  It is never cleared:
- * it only says "may", so keeping it is always safe.  VACUUM reads it to
- * decide whether an entry may be untagged in place (bark_vacuum_untag).
+ * the flag, which takes over that leaf's lower bound.  It only says "may",
+ * so keeping it is always safe.  VACUUM reads it to decide whether an entry
+ * may be untagged in place (bark_vacuum_untag), and clears it when it lowers
+ * the bound to an untagged one, or finds it untagged (bark_lower_bound).
  */
 
 #define BarkPageIsLeaf(opaque)		(((opaque)->bark_flags & BARK_LEAF) != 0)
