@@ -613,7 +613,9 @@ bark_verify_posting(BarkVerify *v, OffsetNumber off, IndexTuple itup)
  * entry's position in key order (checked implicitly by the per-page order and
  * high-key checks, which fetch the chain through bark_compare_itups).  Here we
  * verify the chain structure directly: every page a BARK_OVERFLOW page, linked
- * through to the recorded length, with no premature terminus.
+ * through to the recorded length, with no premature terminus, and a chunk
+ * directory, on the first page only, that lists the pages the links reach,
+ * as many as the chain has after its first up to BARK_OVERFLOW_DIR_MAX.
  */
 static void
 bark_verify_chain(BarkVerify *v, OffsetNumber off, IndexTuple itup)
@@ -623,17 +625,26 @@ bark_verify_chain(BarkVerify *v, OffsetNumber off, IndexTuple itup)
 	BlockNumber chainblk = BarkOverflowGetFirstBlock(itup);
 	BlockNumber npages = RelationGetNumberOfBlocks(v->rel);
 	uint32		got = 0;
+	BlockNumber *dirblocks = NULL;
+	uint32		ndir = 0;
 	IndexTuple	full;
 
-	while (chainblk != BARK_P_NONE && got < fulllen)
+	for (uint32 npage = 0; chainblk != BARK_P_NONE && got < fulllen; npage++)
 	{
 		Buffer		cbuf;
 		Page		cpage;
 		BarkPageOpaque copaque;
+		BarkOverflowDir *dir;
+		Size		len;
+		bool		corrupt;
 
 		if (chainblk >= npages)
 			bark_verify_fail(v, "BARK index \"%s\" oversized entry on page %u at offset %u points at out-of-range overflow block %u",
 							 v->relname, v->blkno, off, chainblk);
+		if (npage > 0 && npage <= ndir && chainblk != dirblocks[npage - 1])
+			bark_verify_fail(v, "BARK index \"%s\" oversized entry on page %u at offset %u has a chunk directory that lists block %u where its chain links to block %u",
+							 v->relname, v->blkno, off, dirblocks[npage - 1],
+							 chainblk);
 
 		cbuf = ReadBuffer(v->rel, chainblk);
 		LockBuffer(cbuf, BUFFER_LOCK_SHARE);
@@ -647,8 +658,26 @@ bark_verify_chain(BarkVerify *v, OffsetNumber off, IndexTuple itup)
 			bark_verify_fail(v, "BARK index \"%s\" oversized entry on page %u at offset %u references non-overflow block %u",
 							 v->relname, v->blkno, off, chainblk);
 		}
-
-		got += Min((uint32) BarkOverflowChunkSize, fulllen - got);
+		if (npage > 0 && (copaque->bark_flags & BARK_OVERFLOW_DIR))
+		{
+			UnlockReleaseBuffer(cbuf);
+			bark_verify_fail(v, "BARK index \"%s\" oversized entry on page %u at offset %u has a chunk directory on overflow block %u, which is not its chain's first",
+							 v->relname, v->blkno, off, chainblk);
+		}
+		(void) bark_overflow_page_chunk(cpage, &len, &dir, &corrupt);
+		if (corrupt)
+		{
+			UnlockReleaseBuffer(cbuf);
+			bark_verify_fail(v, "BARK index \"%s\" oversized entry on page %u at offset %u has an overflow block %u with a malformed chunk directory",
+							 v->relname, v->blkno, off, chainblk);
+		}
+		if (dir != NULL)
+		{
+			ndir = dir->ndir;
+			dirblocks = palloc(ndir * sizeof(BlockNumber));
+			memcpy(dirblocks, dir->blocks, ndir * sizeof(BlockNumber));
+		}
+		got += Min((uint32) len, fulllen - got);
 		chainblk = copaque->bark_next;
 		UnlockReleaseBuffer(cbuf);
 	}
@@ -656,6 +685,14 @@ bark_verify_chain(BarkVerify *v, OffsetNumber off, IndexTuple itup)
 	if (got != fulllen)
 		bark_verify_fail(v, "BARK index \"%s\" oversized entry on page %u at offset %u has a truncated overflow chain (%u of %u bytes)",
 						 v->relname, v->blkno, off, got, fulllen);
+	if (dirblocks != NULL &&
+		ndir != Min(bark_overflow_nchunks(fulllen, true) - 1,
+					BARK_OVERFLOW_DIR_MAX))
+		bark_verify_fail(v, "BARK index \"%s\" oversized entry on page %u at offset %u has a chunk directory of %u blocks for a chain of %u pages",
+						 v->relname, v->blkno, off, ndir,
+						 bark_overflow_nchunks(fulllen, true));
+	if (dirblocks != NULL)
+		pfree(dirblocks);
 
 	/* The reconstructed tuple must deform without error. */
 	full = bark_fetch_oversized(v->rel, itup);
@@ -701,7 +738,10 @@ bark_verify_chain(BarkVerify *v, OffsetNumber off, IndexTuple itup)
 /*
  * Check a page bark_page_verify skips: the meta page's magic number and
  * version, and an overflow page's layout (one chunk of 1 to
- * BarkOverflowChunkSize bytes, BARK_OVERFLOW its only flag, no left link).
+ * BarkOverflowChunkSize bytes, BARK_OVERFLOW its only flag but
+ * BARK_OVERFLOW_DIR, no left link) and its chunk directory's (1 to
+ * BARK_OVERFLOW_DIR_MAX blocks, each a block of the index but the meta page,
+ * and room for a chunk after them).
  */
 static void
 bark_verify_other_page(Page page, const char *relname, BlockNumber blkno,
@@ -729,13 +769,28 @@ bark_verify_other_page(Page page, const char *relname, BlockNumber blkno,
 	{
 		Size		len = ((PageHeader) page)->pd_lower -
 			MAXALIGN(SizeOfPageHeaderData);
+		BarkOverflowDir *dir = (BarkOverflowDir *) (page + MAXALIGN(SizeOfPageHeaderData));
 
-		if (opaque->bark_flags != BARK_OVERFLOW ||
+		if ((opaque->bark_flags & ~BARK_OVERFLOW_DIR) != BARK_OVERFLOW ||
 			opaque->bark_prev != BARK_P_NONE ||
 			((PageHeader) page)->pd_lower <= MAXALIGN(SizeOfPageHeaderData) ||
 			len > BarkOverflowChunkSize)
 			bark_verify_fail(&v, "BARK index \"%s\" has an overflow page %u that does not have the overflow-page layout",
 							 relname, blkno);
+		if ((opaque->bark_flags & BARK_OVERFLOW_DIR) &&
+			(len <= BarkOverflowDirSize(0) || dir->ndir < 1 ||
+			 dir->ndir > BARK_OVERFLOW_DIR_MAX ||
+			 len <= BarkOverflowDirSize(dir->ndir) ||
+			 opaque->bark_next == BARK_P_NONE ||
+			 dir->blocks[0] != opaque->bark_next))
+			bark_verify_fail(&v, "BARK index \"%s\" has an overflow page %u with a malformed chunk directory",
+							 relname, blkno);
+		for (uint32 i = 0;
+			 (opaque->bark_flags & BARK_OVERFLOW_DIR) && i < dir->ndir; i++)
+			if (dir->blocks[i] == BARK_METAPAGE ||
+				dir->blocks[i] == InvalidBlockNumber)
+				bark_verify_fail(&v, "BARK index \"%s\" has an overflow page %u with a malformed chunk directory",
+								 relname, blkno);
 	}
 }
 
@@ -918,7 +973,8 @@ bark_verify_plant_fault(Page page, OffsetNumber off)
  * Plant a fault in a meta or overflow page the caller has just changed,
  * for the validator's tests: with bark-verify-fault-meta, a meta page's
  * version is set to 0; with bark-verify-fault-overflow, an overflow page
- * gets a left link.
+ * gets a left link; with bark-verify-fault-overflow-dir, a chunk
+ * directory's first block is set to the meta page.
  */
 static void
 bark_verify_plant_page_fault(Page page)
@@ -931,6 +987,10 @@ bark_verify_plant_page_fault(Page page)
 	if (BarkPageIsOverflow(opaque) &&
 		IS_INJECTION_POINT_ATTACHED("bark-verify-fault-overflow"))
 		opaque->bark_prev = 1;
+	if ((opaque->bark_flags & BARK_OVERFLOW_DIR) &&
+		IS_INJECTION_POINT_ATTACHED("bark-verify-fault-overflow-dir"))
+		((BarkOverflowDir *) (page + MAXALIGN(SizeOfPageHeaderData)))->blocks[0] =
+			BARK_METAPAGE;
 }
 #endif
 

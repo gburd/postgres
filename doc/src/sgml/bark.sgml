@@ -681,7 +681,10 @@ CREATE INDEX docs_body_idx ON docs USING bark (body);
    reads its overflow chain (and decompresses the value, if it is
    compressed), so lookups and builds over such keys are several times
    slower than over small keys, and every row with an oversized key has a
-   chain of its own, even when it repeats another row's key.  For a
+   chain of its own, even when it repeats another row's key.  The first
+   page of a chain lists the chain's other pages, so a chain that is not in
+   shared buffers is read with its pages requested together, not one after
+   another.  For a
    <type>text</type> first column under the <literal>C</literal> or
    <literal>POSIX</literal> collation, the leaf entry also keeps the value's
    first 32 bytes, so two oversized entries that differ there are ordered

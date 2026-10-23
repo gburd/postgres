@@ -279,7 +279,9 @@ BarkMetaPageData
 BarkMkBoundary
 BarkMkScanState
 BarkOptions
+BarkOverflowDir
 BarkOverflowRef
+BarkOverflowStream
 BarkPageState
 BarkParallelScanDesc
 BarkParallelScanDescData
@@ -4536,6 +4538,7 @@ xl_bark_mark_deleted
 xl_bark_merge
 xl_bark_metadata
 xl_bark_newroot
+xl_bark_overflow
 xl_bark_overflow_page
 xl_bark_overwrite
 xl_bark_reuse_page

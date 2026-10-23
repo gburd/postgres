@@ -145,8 +145,12 @@ typedef struct xl_bark_newroot
 /*
  * Overflow pages of an OVERSIZED entry's chain (bark_write_overflow_chain),
  * up to BARK_OVERFLOW_PER_RECORD per record.  Each page is rebuilt from its
- * block data: an xl_bark_overflow_page, then the page's slice of the tuple.
- * No main data.
+ * block data: an xl_bark_overflow_page, then the page's data area, its slice
+ * of the tuple.  The main data, an xl_bark_overflow, is there only when
+ * block 0 is the first page of a chain with a chunk directory
+ * (XLH_BARK_OVERFLOW_DIR): its data area starts with the directory, and the
+ * page gets BARK_OVERFLOW_DIR.  A record without it, as every record written
+ * before the directory existed, has no directory.
  *
  * Backup Blk 0..n-1: the overflow pages, in chain order
  */
@@ -156,6 +160,15 @@ typedef struct xl_bark_overflow_page
 {
 	BlockNumber next;			/* next page of the chain, or BARK_P_NONE */
 } xl_bark_overflow_page;
+
+typedef struct xl_bark_overflow
+{
+	uint8		flags;			/* XLH_BARK_OVERFLOW_* */
+} xl_bark_overflow;
+
+#define SizeOfBarkOverflow	(offsetof(xl_bark_overflow, flags) + sizeof(uint8))
+
+#define XLH_BARK_OVERFLOW_DIR	0x01	/* block 0 has a chunk directory */
 
 /*
  * The first root of an empty index (bark_create_root_leaf): an empty leaf

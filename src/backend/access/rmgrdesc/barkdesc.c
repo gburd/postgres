@@ -236,6 +236,9 @@ bark_desc(StringInfo buf, XLogReaderState *record)
 			}
 		case XLOG_BARK_OVERFLOW:
 			appendStringInfo(buf, "npages: %d", XLogRecMaxBlockId(record) + 1);
+			if (XLogRecGetDataLen(record) >= SizeOfBarkOverflow &&
+				(((xl_bark_overflow *) rec)->flags & XLH_BARK_OVERFLOW_DIR))
+				appendStringInfoString(buf, ", directory");
 			break;
 	}
 }

@@ -51,7 +51,7 @@ my %idx = (
 	i_post_len => 't_post', i_post_size => 't_post',
 	map({ $_ => 't_big' }
 		qw(i_big_out i_big_nonovf i_big_trunc i_big_prefix i_big_complete
-		  i_big_chain)));
+		  i_big_chain i_big_dirblk i_big_dirn i_big_dirlate)));
 for my $i (sort keys %idx)
 {
 	my $col = $idx{$i} eq 't_big' ? 'k' : 'a';
@@ -249,6 +249,23 @@ patch('i_big_trunc', $broot,
 patch('i_big_prefix', $broot, sub { substr(${ $_[0] }, item($_[0], 1) + 8 + 21, 1) = '@' });
 patch('i_big_complete', $broot, sub { substr(${ $_[0] }, item($_[0], 1) + 8 + 20, 1) = "\x01" });
 patch('i_big_chain', $info{i_big_chain}{ovf}, sub { s32($_[0], opq($_[0], 4), 999999) });
+# The chunk directory at 24 of the first overflow page: ndir, then the
+# blocks.  A 40 kB key takes 5 pages, so the directory lists 4.
+# Its third block made the fourth's; its count one short; and the flag
+# (BARK_OVERFLOW_DIR, 0x200) on the second page too.
+{
+	my $p = rd($info{i_big_dirn}{path}, $info{i_big_dirn}{ovf});
+	is(g32(\$p, 24), 4, 'the 40 kB key has a directory of 4 blocks');
+	is(g16(\$p, opq(\$p, 12)) & 0x200, 0x200, 'its first page has BARK_OVERFLOW_DIR');
+}
+patch('i_big_dirblk', $info{i_big_dirblk}{ovf}, sub { s32($_[0], 24 + 4 * 3, g32($_[0], 24 + 4 * 4)) });
+patch('i_big_dirn', $info{i_big_dirn}{ovf}, sub { s32($_[0], 24, 3) });
+{
+	my $p = rd($info{i_big_dirlate}{path}, $info{i_big_dirlate}{ovf});
+	my $second = g32(\$p, 28);
+	patch('i_big_dirlate', $second, sub { s16($_[0], opq($_[0], 12), g16($_[0], opq($_[0], 12)) | 0x200) });
+	$info{i_big_dirlate}{second} = $second;
+}
 
 $node->start;
 
@@ -308,6 +325,9 @@ both('i_big_trunc', "oversized entry on page $broot at offset 1 has a truncated 
 both('i_big_prefix', "oversized entry on page $broot at offset 1 has a prefix that does not match its first key column");
 both('i_big_complete', "oversized entry on page $broot at offset 1 claims a complete 32-byte prefix");
 both('i_big_chain', "oversized entry on page $broot at offset 1 points at out-of-range overflow block 999999");
+both('i_big_dirblk', "oversized entry on page $broot at offset 1 has a chunk directory that lists block \\d+ where its chain links to block \\d+");
+both('i_big_dirn', "oversized entry on page $broot at offset 1 has a chunk directory of 3 blocks for a chain of 5 pages");
+both('i_big_dirlate', "oversized entry on page $broot at offset 1 has a chunk directory on overflow block $info{i_big_dirlate}{second}, which is not its chain's first");
 
 # No check crashed the server.
 is($node->safe_psql('postgres', 'SELECT 1'), '1', 'server is up');

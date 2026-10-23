@@ -116,6 +116,8 @@ typedef BarkPageOpaqueData *BarkPageOpaque;
 #define BARK_HAS_GARBAGE	(1 << 6)	/* page has known-dead entries */
 #define BARK_OVERFLOW		(1 << 7)	/* holds a chunk of an oversized value */
 #define BARK_LOWBOUND_TAGGED (1 << 8)	/* leaf's lower bound may have a tag */
+#define BARK_OVERFLOW_DIR	(1 << 9)	/* first overflow page with a chunk
+										 * directory (BarkOverflowDir) */
 #define BARK_PREFIX			(1 << 10)	/* leaf keys coded against a prefix */
 
 /*
@@ -529,6 +531,10 @@ typedef struct BarkOptions
  * its pages are laid out as version 2 lays them out, so a version 2 index is
  * read and written as it is; only CREATE INDEX (or REINDEX, or any rebuild)
  * writes version 3.  An index without the flag never holds a tag.
+ *
+ * The chunk directory (BARK_OVERFLOW_DIR) did not change the version: an
+ * overflow chain written without one is read by its links, as before, so
+ * an index of either version may hold chains of both kinds.
  */
 #define BARK_MIN_VERSION	2
 
@@ -1171,6 +1177,16 @@ BarkPostingDataFits(IndexTupleData *itup)
  * bark_next links to the next chunk (BARK_P_NONE at the tail), and the page's
  * data area (PageHeader .. special) holds up to BarkOverflowChunkSize raw bytes
  * of the full tuple.  The chunks concatenate in chain order to the full tuple.
+ *
+ * The first page of a chain of two or more pages also carries BARK_OVERFLOW_DIR
+ * and starts its data area with a BarkOverflowDir: the blocks of the chain's
+ * next pages, up to BARK_OVERFLOW_DIR_MAX of them, so that a reader can ask for
+ * them all at once (bark_fetch_oversized reads them through a read_stream) and
+ * not one link at a time.  Its chunk follows the directory, and is that much
+ * smaller.  The links stay: a chain longer than the directory is read on by
+ * them, VACUUM frees a chain page by page by them, and amcheck checks the
+ * directory against them.  A first page without the flag, as every chain
+ * written before the directory has, holds a whole chunk.
  * ----------------------------------------------------------------------------
  */
 
@@ -1385,6 +1401,22 @@ BarkSingleKeySize(IndexTupleData *itup)
  */
 #define BarkOverflowChunkSize \
 	(BLCKSZ - MAXALIGN(SizeOfPageHeaderData) - MAXALIGN(sizeof(BarkPageOpaqueData)))
+
+/*
+ * The chunk directory at the start of a BARK_OVERFLOW_DIR page's data area:
+ * the blocks of the chain's pages after this one, in chain order, as many as
+ * the chain has up to BARK_OVERFLOW_DIR_MAX.  256 blocks, 1 kB of the page,
+ * cover a 2 MB tuple; the pages after them are read by their links.
+ */
+typedef struct BarkOverflowDir
+{
+	uint32		ndir;			/* blocks listed, 1..BARK_OVERFLOW_DIR_MAX */
+	BlockNumber blocks[FLEXIBLE_ARRAY_MEMBER];
+} BarkOverflowDir;
+
+#define BARK_OVERFLOW_DIR_MAX	256
+#define BarkOverflowDirSize(ndir) \
+	(offsetof(BarkOverflowDir, blocks) + (ndir) * sizeof(BlockNumber))
 
 /* ----------------------------------------------------------------------------
  * Shared prototypes (bark.c, barkutils.c, barksort.c, barkvalidate.c)
@@ -1752,9 +1784,19 @@ extern void bark_verify_plant_fault(Page page, OffsetNumber off);
 #endif
 
 /*
- * Number of overflow pages the chain for a tuple of `fulllen` bytes needs.
+ * Number of overflow pages the chain for a tuple of `fulllen` bytes needs,
+ * with a chunk directory (`dir`, as bark_write_overflow_chain writes) or
+ * without (as chains written before the directory are).
  */
-extern BlockNumber bark_overflow_nchunks(Size fulllen);
+extern BlockNumber bark_overflow_nchunks(Size fulllen, bool dir);
+
+/*
+ * The chunk of the overflow page `page`, and its length; with
+ * BARK_OVERFLOW_DIR, after the directory, which *dir is set to (else NULL).
+ * *corrupt says the page's data area or directory does not fit the page.
+ */
+extern char *bark_overflow_page_chunk(Page page, Size *len,
+									  BarkOverflowDir **dir, bool *corrupt);
 
 /*
  * Form the small fixed-size OVERSIZED entry that references an already-written
@@ -1778,11 +1820,13 @@ extern BlockNumber bark_write_overflow_chain(Relation index, Relation heaprel,
 											 IndexTuple full, Size fulllen);
 
 /*
- * Lay out an overflow page holding `len` bytes of a tuple, `chunk`, linked to
- * `nextblk`.  Used by bark_write_overflow_chain and its redo.
+ * Lay out an overflow page holding `len` bytes, `data`, linked to `nextblk`,
+ * with `flags` (0 or BARK_OVERFLOW_DIR, when `data` starts with the chunk
+ * directory) besides BARK_OVERFLOW.  Used by bark_write_overflow_chain and
+ * its redo.
  */
-extern void bark_init_overflow_page(Page page, const char *chunk, Size len,
-									BlockNumber nextblk);
+extern void bark_init_overflow_page(Page page, const char *data, Size len,
+									BlockNumber nextblk, uint16 flags);
 
 /*
  * Reconstruct the full index tuple an OVERSIZED entry references by walking its

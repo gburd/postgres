@@ -120,8 +120,8 @@ typedef struct BarkCheckState
 
 /*
  * The overflow chains, as bark_index_parent_check sees them, indexed by
- * block: each overflow page's next link, the length in pages of the chain
- * an OVERSIZED entry starts at the block, and BARK_CHAIN_* flags.
+ * block: each overflow page's next link, the full tuple length of the
+ * entries whose chain starts at the block, and BARK_CHAIN_* flags.
  */
 typedef struct BarkChains
 {
@@ -129,13 +129,14 @@ typedef struct BarkChains
 	bool		skippivots;		/* a test's broken mark pass */
 	BlockNumber *next;			/* an overflow page's bark_next, or
 								 * InvalidBlockNumber for any other page */
-	BlockNumber *nchunks;		/* 0 where no entry's chain starts */
+	uint32	   *fulllen;		/* 0 where no entry's chain starts */
 	uint8	   *flags;
 } BarkChains;
 
 #define BARK_CHAIN_REACHED	0x01	/* an entry's chain reaches the page */
 #define BARK_CHAIN_LINKED	0x02	/* an orphaned page links to the page */
 #define BARK_CHAIN_COUNTED	0x04	/* counted in an orphaned chain */
+#define BARK_CHAIN_DIR		0x08	/* the page has a chunk directory */
 
 static void bark_check_common(FunctionCallInfo fcinfo, bool parentcheck);
 static void bark_check_structure(Relation rel, Relation heaprel,
@@ -306,7 +307,7 @@ bark_check_structure(Relation rel, Relation heaprel, void *callback_state,
 		chains.next = palloc_extended(npages * sizeof(BlockNumber),
 									  MCXT_ALLOC_HUGE);
 		memset(chains.next, 0xFF, npages * sizeof(BlockNumber));
-		chains.nchunks = palloc_extended(npages * sizeof(BlockNumber),
+		chains.fulllen = palloc_extended(npages * sizeof(uint32),
 										 MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
 		chains.flags = palloc_extended(npages, MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
 		/* Tests skip the pivots' chains, to show the check finds them. */
@@ -327,7 +328,7 @@ bark_check_structure(Relation rel, Relation heaprel, void *callback_state,
 		bark_check_levels(rel, keyinfo, npages, nlive);
 		bark_check_chains(rel, &chains);
 		pfree(chains.next);
-		pfree(chains.nchunks);
+		pfree(chains.fulllen);
 		pfree(chains.flags);
 	}
 
@@ -375,7 +376,11 @@ bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo,
 	if (BarkPageIsOverflow(opaque))
 	{
 		if (chains != NULL)
+		{
 			chains->next[blkno] = opaque->bark_next;
+			if (opaque->bark_flags & BARK_OVERFLOW_DIR)
+				chains->flags[blkno] |= BARK_CHAIN_DIR;
+		}
 		UnlockReleaseBuffer(buf);
 		return false;
 	}
@@ -411,9 +416,8 @@ bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo,
 					(errcode(ERRCODE_INDEX_CORRUPTED),
 					 errmsg("BARK index \"%s\" oversized entry on page %u at offset %u points at out-of-range overflow block %u",
 							RelationGetRelationName(rel), blkno, off, first)));
-		chains->nchunks[first] =
-			Max(chains->nchunks[first],
-				bark_overflow_nchunks(BarkOverflowGetRef(itup)->fulllen));
+		chains->fulllen[first] = Max(chains->fulllen[first],
+									 BarkOverflowGetRef(itup)->fulllen);
 	}
 
 	/*
@@ -938,9 +942,12 @@ bark_check_chains(Relation rel, BarkChains *chains)
 	for (BlockNumber first = BARK_METAPAGE + 1; first < npages; first++)
 	{
 		BlockNumber n = 0;
+		BlockNumber nchunks;
 
-		if (chains->nchunks[first] == 0)
+		if (chains->fulllen[first] == 0)
 			continue;
+		nchunks = bark_overflow_nchunks(chains->fulllen[first],
+										(chains->flags[first] & BARK_CHAIN_DIR) != 0);
 		for (BlockNumber blkno = first; blkno != BARK_P_NONE;
 			 blkno = chains->next[blkno])
 		{
@@ -957,12 +964,11 @@ bark_check_chains(Relation rel, BarkChains *chains)
 			chains->flags[blkno] |= BARK_CHAIN_REACHED;
 			n++;
 		}
-		if (n != chains->nchunks[first])
+		if (n != nchunks)
 			ereport(ERROR,
 					(errcode(ERRCODE_INDEX_CORRUPTED),
 					 errmsg("BARK index \"%s\" has an overflow chain of %u pages from block %u, where its entry's length takes %u",
-							RelationGetRelationName(rel), n, first,
-							chains->nchunks[first])));
+							RelationGetRelationName(rel), n, first, nchunks)));
 	}
 
 	/* An orphaned page another one links to does not start a chain. */

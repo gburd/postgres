@@ -409,6 +409,52 @@ the right sibling's, which shares its chain only with the deleted leaf's high
 key, since it is never its internal page's first data item.  So the sharing
 needs no reference count.
 
+Overflow chains and the chunk directory
+---------------------------------------
+
+An OVERSIZED entry's chain is written before the entry
+(bark_write_overflow_chain): all its pages are allocated first, so each
+page's link is known, and logged in XLOG_BARK_OVERFLOW records of up to
+four pages.  The first page of a chain of two or more pages also has
+BARK_OVERFLOW_DIR, and its data area starts with a chunk directory
+(BarkOverflowDir): the blocks of the chain's next pages, up to
+BARK_OVERFLOW_DIR_MAX (256, a 2 MB tuple), and then the first slice of
+the tuple, smaller by the directory.  bark_overflow_nchunks gives a
+chain's length for a tuple's length, with or without a directory.
+
+bark_fetch_oversized reads the first page, then the pages its directory
+lists through a read_stream, which asks for them all before the first is
+needed: a cold chain of eight pages costs two read waits instead of
+eight.  A chain longer than the directory is read on from its last listed
+page by the links.  A directory of one block is read by its link.  Each
+page's link must name the block the directory lists after it, and each
+chunk must have the length its place gives it, or the fetch fails rather
+than return wrong bytes.
+
+The links stay, though the directory repeats them up to its limit: the
+pages past it are reached by them, bark_free_oversized frees a chain page
+by page by them, and a deleted page keeps its link so that a reader that
+read the entry before VACUUM removed it can still finish (BarkPageSetDeleted).
+Dropping them would only save four bytes a page, and every chain reader
+would have to know the directory's limit.
+
+Chains written before the directory, whose first page has no
+BARK_OVERFLOW_DIR, are read by their links as before, so the format
+version did not change: an index of either kind, or of both, reads
+correctly.  The injection point bark-overflow-no-dir makes the writer
+write that older form, for tests.
+
+amcheck's bark_index_check and the page validator check the directory:
+it is only on a chain's first page, of 1 to BARK_OVERFLOW_DIR_MAX blocks,
+none the meta page, its first block the page's link, its blocks the
+pages the links reach, and as many as the entry's length makes the chain
+have, less one, up to the limit.  bark_index_parent_check's chain pass
+takes the directory into account when it computes a chain's length.
+wal_consistency_checking compares every overflow page redo rebuilds,
+directory and all: XLOG_BARK_OVERFLOW registers its pages with
+REGBUF_WILL_INIT, and the consistency image covers the whole page,
+pd_lower included.
+
 Heap TID order
 --------------
 
@@ -1711,9 +1757,10 @@ The developer option bark_verify_pages (a boolean, PGC_SUSET, cassert
 builds only, on by default there) turns both off; elsewhere the calls
 compile away.  t/015_page_validator.pl in src/test/modules/bark plants
 faults through the injection points bark-verify-fault-count,
-bark-verify-fault-order, bark-verify-fault-far, bark-verify-fault-meta
-and bark-verify-fault-overflow, and bark-verify-force-full makes the
-next check of a few entries a whole-page one.
+bark-verify-fault-order, bark-verify-fault-far, bark-verify-fault-meta,
+bark-verify-fault-overflow and bark-verify-fault-overflow-dir, and
+bark-verify-force-full makes the next check of a few entries a
+whole-page one.
 
 Its cost, in a cassert build on c7i.4xlarge: a write-only workload of
 long equal-key LISTs (60,000 inserts into a table with three BARK
@@ -1980,9 +2027,13 @@ records:
   XLOG_BARK_OVERFLOW (bark_write_overflow_chain)
       Up to XLR_NORMAL_MAX_BLOCK_ID new overflow pages, each with its next
       link and its slice of the oversized tuple; redo rebuilds each page
-      from those.  A chain longer than that takes several records, written
-      before the entry that refers to the chain, so a crash in between
-      leaves only unreferenced pages.
+      from those.  The record of a chain's first page, when the chain has a
+      chunk directory, carries main data with XLH_BARK_OVERFLOW_DIR: the
+      page's data starts with the directory, and redo sets
+      BARK_OVERFLOW_DIR on it.  A record without main data, as every one
+      written before the directory, replays as before.  A chain longer than
+      that takes several records, written before the entry that refers to
+      the chain, so a crash in between leaves only unreferenced pages.
 
   XLOG_BARK_MARK_DELETED (bark_free_oversized)
       One overflow page, reinitialized as a deleted page that keeps its link
@@ -2418,6 +2469,10 @@ Invariants
     via bark_next (BARK_P_NONE at the tail); the chunks concatenate to the full
     tuple.  Overflow pages carry no items and are skipped by the leaf scans
     (vacuum, cleanup) and by amcheck's per-page checks.
+  * Only a chain's first page may have BARK_OVERFLOW_DIR.  Its chunk
+    directory lists, in order, the next min(n - 1, BARK_OVERFLOW_DIR_MAX)
+    pages of its chain of n pages, the very pages the links reach, and its
+    chunk, after the directory, is that much smaller.
   * bark_page_id is BARK_PAGE_ID on every BARK page.
   * No leaf entry is larger than BarkMaxItemSize.
   * A high key is a pivot with between one and all of the index's key

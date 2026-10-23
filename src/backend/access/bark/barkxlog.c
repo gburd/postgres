@@ -361,12 +361,20 @@ bark_xlog_newroot(XLogReaderState *record)
 
 /*
  * Replay the writing of overflow pages (bark_write_overflow_chain): each page
- * is rebuilt from its link and its slice of the tuple.
+ * is rebuilt from its link and its data area, its slice of the tuple, after
+ * the chunk directory on a chain's first page when the record says block 0
+ * has one.  A record without main data, as every one written before the
+ * directory, has none.
  */
 static void
 bark_xlog_overflow(XLogReaderState *record)
 {
 	XLogRecPtr	lsn = record->EndRecPtr;
+	bool		dir = false;
+
+	if (XLogRecGetDataLen(record) >= SizeOfBarkOverflow)
+		dir = (((xl_bark_overflow *) XLogRecGetData(record))->flags &
+			   XLH_BARK_OVERFLOW_DIR) != 0;
 
 	for (uint8 block_id = 0; block_id <= XLogRecMaxBlockId(record); block_id++)
 	{
@@ -380,7 +388,8 @@ bark_xlog_overflow(XLogReaderState *record)
 		bark_init_overflow_page(BufferGetPage(buf),
 								data + sizeof(xl_bark_overflow_page),
 								datalen - sizeof(xl_bark_overflow_page),
-								link.next);
+								link.next,
+								(dir && block_id == 0) ? BARK_OVERFLOW_DIR : 0);
 		PageSetLSN(BufferGetPage(buf), lsn);
 		MarkBufferDirty(buf);
 		bark_verify_redo(record, block_id, buf, InvalidOffsetNumber,

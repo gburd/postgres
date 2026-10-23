@@ -183,7 +183,7 @@ WITH f(rtype, pat) AS (VALUES
   ('OVERWRITE', '^off: \d+$'),
   ('ADD_TID', '^off: \d+, tid: \(\d+,\d+\)$'),
   ('SPLIT', '^level: \d+, leaf: [TF], left: \d+, right: \d+, cycleid: \d+, prefix: [L-][R-](, lower bound tagged: L?R?)?(, left logged whole|, firstrightoff: \d+(, newitemoff: \d+)?(, replaceoff: \d+)?)$'),
-  ('OVERFLOW', '^npages: [1-9]\d*$'),
+  ('OVERFLOW', '^npages: [1-9]\d*(, directory)?$'),
   ('NEWROOT', '^root: \d+, level: [1-9]\d*$'),
   ('CREATE_ROOT', '^root: \d+$'),
   ('INSERT_SWAP', '^off: \d+, tid: \(\d+,\d+\)$'))
@@ -202,6 +202,7 @@ SELECT
   bool_or(record_type = 'DELETE' AND description ~ 'updated: \[\d') AS delete_updated,
   bool_or(record_type = 'MERGE' AND description ~ 'deleted: \[\d') AS merge_offsets,
   bool_or(record_type = 'OVERFLOW' AND description ~ 'npages: ([2-9]|\d\d)') AS overflow_multi,
+  bool_or(record_type = 'OVERFLOW' AND description ~ ', directory$') AS overflow_dir,
   bool_or(record_type = 'NEWROOT' AND description ~ 'level: 2$') AS newroot_level2,
   bool_or(record_type = 'UNLINK_PAGE' AND description ~ '^left:') AS unlink_deletes,
   bool_or(record_type = 'UNLINK_PAGE' AND description ~ '^lower separator, .*, parent:') AS unlink_lowers,

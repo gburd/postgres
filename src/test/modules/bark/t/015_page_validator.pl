@@ -185,6 +185,17 @@ like($err, qr/CONTEXT:  BARK page validator, block \d+ after bark_write_overflow
 	'overflow fault: the context names the chain write');
 $node->safe_psql('postgres',
 	"SELECT injection_points_detach('bark-verify-fault-overflow')");
+# A chunk directory naming the meta page.  The 12.8 kB key takes two pages,
+# so its first has a directory.
+($rc, $out, $err) = $node->psql(
+	'postgres', q[
+	SELECT injection_points_attach('bark-verify-fault-overflow-dir', 'notice');
+	INSERT INTO t_ovf SELECT string_agg(md5((g + 1000)::text), '') FROM generate_series(1, 400) g;]);
+like($err,
+	qr/ERROR:  BARK index "t_ovf_idx" has an overflow page \d+ with a malformed chunk directory/,
+	'directory fault: reported by the chain write');
+$node->safe_psql('postgres',
+	"SELECT injection_points_detach('bark-verify-fault-overflow-dir')");
 
 # Unfaulted, the same inserts pass the validator and amcheck.
 setup($node, 't_clean');

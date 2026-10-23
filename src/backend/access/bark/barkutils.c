@@ -47,9 +47,11 @@
 #include "nodes/execnodes.h"
 #include "storage/bufmgr.h"
 #include "storage/indexfsm.h"
+#include "storage/read_stream.h"
 #include "utils/builtins.h"
 #include "utils/datum.h"
 #include "utils/fmgroids.h"
+#include "utils/injection_point.h"
 #include "utils/lsyscache.h"
 #include "utils/pg_locale.h"
 #include "utils/rel.h"
@@ -3401,37 +3403,111 @@ bark_len_is_oversized(BarkKeyInfo *keyinfo, Size fulllen)
 		BarkPivotSuffixReserve(keyinfo);
 }
 
-/* Overflow pages a full tuple of `fulllen` bytes occupies (at least one). */
+/*
+ * Overflow pages a full tuple of `fulllen` bytes occupies (at least one).
+ * With a chunk directory (`dir`), the first page's chunk is smaller by the
+ * directory, which lists the other pages, up to BARK_OVERFLOW_DIR_MAX; a
+ * tuple that fits one page has no directory.
+ */
 BlockNumber
-bark_overflow_nchunks(Size fulllen)
+bark_overflow_nchunks(Size fulllen, bool dir)
 {
-	return (BlockNumber) ((fulllen + BarkOverflowChunkSize - 1) /
-						  BarkOverflowChunkSize);
+	BlockNumber n = (BlockNumber) ((fulllen + BarkOverflowChunkSize - 1) /
+								   BarkOverflowChunkSize);
+
+	/*
+	 * A directory listing the other n - 1 pages takes room from the first
+	 * page, which can push the tuple onto one more page, and that page onto
+	 * the directory.  The pages needed only grow with n, and by at most one
+	 * page (the directory is at most 1 kB), so this stops at once or after
+	 * one more step, with n pages that need exactly n.
+	 */
+	while (dir && n > 1)
+	{
+		Size		first = BarkOverflowChunkSize -
+			BarkOverflowDirSize(Min(n - 1, BARK_OVERFLOW_DIR_MAX));
+		BlockNumber need = 1 + (BlockNumber)
+			((fulllen - first + BarkOverflowChunkSize - 1) /
+			 BarkOverflowChunkSize);
+
+		if (need <= n)
+			break;
+		n = need;
+	}
+	return n;
 }
 
 /*
- * Lay out an overflow page holding `len` bytes of a tuple, `chunk`, linked to
- * `nextblk`.
+ * Lay out an overflow page holding `len` bytes, `data`, linked to `nextblk`,
+ * with BARK_OVERFLOW and `flags` (BARK_OVERFLOW_DIR when `data` starts with
+ * the chunk directory).
  */
 void
-bark_init_overflow_page(Page page, const char *chunk, Size len,
-						BlockNumber nextblk)
+bark_init_overflow_page(Page page, const char *data, Size len,
+						BlockNumber nextblk, uint16 flags)
 {
 	BarkPageOpaque opaque;
 
 	Assert(len <= BarkOverflowChunkSize);
+	Assert((flags & ~BARK_OVERFLOW_DIR) == 0);
 	PageInit(page, BLCKSZ, sizeof(BarkPageOpaqueData));
 	opaque = BarkPageGetOpaque(page);
 	opaque->bark_prev = BARK_P_NONE;
 	opaque->bark_next = nextblk;	/* chain to the next chunk */
 	opaque->bark_level = 0;
 	opaque->bark_cycleid = 0;
-	opaque->bark_flags = BARK_OVERFLOW;		/* not BARK_LEAF: vacuum skips it */
+	opaque->bark_flags = BARK_OVERFLOW | flags; /* not BARK_LEAF: vacuum
+												 * skips it */
 	opaque->bark_page_id = BARK_PAGE_ID;
 
-	memcpy(BarkOverflowPageData(page), chunk, len);
+	memcpy(BarkOverflowPageData(page), data, len);
 	/* Advance pd_lower to cover the chunk so the page is not seen as empty. */
 	((PageHeader) page)->pd_lower = MAXALIGN(SizeOfPageHeaderData) + len;
+}
+
+/*
+ * The chunk of overflow page `page`, after its directory on a
+ * BARK_OVERFLOW_DIR page, and its length (the rest of pd_lower's cover).
+ * *dir is the directory, or NULL.  The caller has checked that the page is
+ * an overflow page.  A directory of no blocks, of more than
+ * BARK_OVERFLOW_DIR_MAX, or one that leaves no room for a chunk under
+ * pd_lower, is corrupt; it is returned as NULL with *len 0 and *corrupt
+ * set, so no caller reads past the page.
+ */
+char *
+bark_overflow_page_chunk(Page page, Size *len, BarkOverflowDir **dir,
+						 bool *corrupt)
+{
+	char	   *data = BarkOverflowPageData(page);
+	Size		datalen = ((PageHeader) page)->pd_lower - MAXALIGN(SizeOfPageHeaderData);
+	Size		dirsize = 0;
+
+	*dir = NULL;
+	*corrupt = false;
+	if (((PageHeader) page)->pd_lower < MAXALIGN(SizeOfPageHeaderData) ||
+		datalen > BarkOverflowChunkSize)
+	{
+		*corrupt = true;
+		*len = 0;
+		return data;
+	}
+	if (BarkPageGetOpaque(page)->bark_flags & BARK_OVERFLOW_DIR)
+	{
+		BarkOverflowDir *d = (BarkOverflowDir *) data;
+
+		if (datalen < BarkOverflowDirSize(1) || d->ndir < 1 ||
+			d->ndir > BARK_OVERFLOW_DIR_MAX ||
+			datalen <= BarkOverflowDirSize(d->ndir))
+		{
+			*corrupt = true;
+			*len = 0;
+			return data;
+		}
+		*dir = d;
+		dirsize = BarkOverflowDirSize(d->ndir);
+	}
+	*len = datalen - dirsize;
+	return data + dirsize;
 }
 
 /*
@@ -3545,20 +3621,30 @@ bark_set_oversized_prefix(IndexTuple entry, Relation index, IndexTuple full)
 /*
  * Write `full` (fulllen bytes) across a fresh BARK_OVERFLOW chain via the
  * buffer pool, and return the first block.  heaprel is the index's heap, for
- * bark_get_free_page.  The pages are logged in XLOG_BARK_OVERFLOW records,
+ * bark_get_free_page.  A chain of two or more pages starts with a chunk
+ * directory (BarkOverflowDir) on its first page, which lists the pages after
+ * it.  The pages are logged in XLOG_BARK_OVERFLOW records,
  * BARK_OVERFLOW_PER_RECORD to a record, each page with its next link and its
- * slice of the tuple, so redo rebuilds it without reading it.  A long chain
- * takes several records; each page is self-contained, so a crash between
- * them leaves only orphaned, BARK_P_NONE-terminated pages that no entry
- * references (the entry is written after the whole chain).
+ * data area (the directory and the first slice of the tuple, or a slice), so
+ * redo rebuilds it without reading it.  A long chain takes several records;
+ * each page is self-contained, so a crash between them leaves only orphaned,
+ * BARK_P_NONE-terminated pages that no entry references (the entry is
+ * written after the whole chain).
  */
 BlockNumber
 bark_write_overflow_chain(Relation index, Relation heaprel, IndexTuple full,
 						  Size fulllen)
 {
-	BlockNumber nchunks = bark_overflow_nchunks(fulllen);
+	/* Tests write a chain without a directory, as BARK wrote them before. */
+	bool		usedir = !IS_INJECTION_POINT_ATTACHED("bark-overflow-no-dir");
+	BlockNumber nchunks = bark_overflow_nchunks(fulllen, usedir);
 	Buffer	   *bufs = palloc(nchunks * sizeof(Buffer));
 	BlockNumber *blks = palloc(nchunks * sizeof(BlockNumber));
+	char	  **data = palloc(nchunks * sizeof(char *));
+	Size	   *lens = palloc(nchunks * sizeof(Size));
+	char	   *first = NULL;
+	Size		dirsize = 0;
+	Size		start = 0;
 	BlockNumber firstblk;
 
 	/* Reserve all chunk blocks first so each page's next-link is known. */
@@ -3569,49 +3655,82 @@ bark_write_overflow_chain(Relation index, Relation heaprel, IndexTuple full,
 	}
 	firstblk = blks[0];
 
+	/*
+	 * Each page's data area: the first page's is the directory, when there
+	 * is one, and the tuple's first bytes, laid out in `first`; every other
+	 * page's is its slice of the tuple.
+	 */
+	if (usedir && nchunks > 1)
+	{
+		uint32		ndir = Min(nchunks - 1, BARK_OVERFLOW_DIR_MAX);
+		BarkOverflowDir *dir;
+
+		dirsize = BarkOverflowDirSize(ndir);
+		first = palloc(BarkOverflowChunkSize);
+		dir = (BarkOverflowDir *) first;
+		dir->ndir = ndir;
+		for (uint32 j = 0; j < ndir; j++)
+			dir->blocks[j] = blks[j + 1];
+	}
+	for (BlockNumber i = 0; i < nchunks; i++)
+	{
+		Size		cap = BarkOverflowChunkSize - (i == 0 ? dirsize : 0);
+		Size		len = Min(cap, fulllen - start);
+
+		if (i == 0 && first != NULL)
+		{
+			memcpy(first + dirsize, (const char *) full, len);
+			data[i] = first;
+			lens[i] = dirsize + len;
+		}
+		else
+		{
+			data[i] = (char *) full + start;
+			lens[i] = len;
+		}
+		start += len;
+	}
+	Assert(start == fulllen);
+
 	for (BlockNumber i = 0; i < nchunks;)
 	{
-		BlockNumber first = i;
+		BlockNumber firstrec = i;
 		BlockNumber last = Min(nchunks, i + BARK_OVERFLOW_PER_RECORD);
 		xl_bark_overflow_page links[BARK_OVERFLOW_PER_RECORD];
+		xl_bark_overflow xlrec = {.flags = XLH_BARK_OVERFLOW_DIR};
 		XLogRecPtr	recptr;
 
 		START_CRIT_SECTION();
 		for (; i < last; i++)
 		{
-			Size		start = (Size) i * BarkOverflowChunkSize;
-
-			links[i - first].next = (i + 1 < nchunks) ? blks[i + 1] : BARK_P_NONE;
-			bark_init_overflow_page(BufferGetPage(bufs[i]),
-									(const char *) full + start,
-									Min((Size) BarkOverflowChunkSize,
-										fulllen - start),
-									links[i - first].next);
+			links[i - firstrec].next = (i + 1 < nchunks) ? blks[i + 1] : BARK_P_NONE;
+			bark_init_overflow_page(BufferGetPage(bufs[i]), data[i], lens[i],
+									links[i - firstrec].next,
+									(i == 0 && dirsize > 0) ?
+									BARK_OVERFLOW_DIR : 0);
 			MarkBufferDirty(bufs[i]);
 		}
 		if (RelationNeedsWAL(index))
 		{
 			XLogBeginInsert();
-			for (i = first; i < last; i++)
+			if (firstrec == 0 && dirsize > 0)
+				XLogRegisterData(&xlrec, SizeOfBarkOverflow);
+			for (i = firstrec; i < last; i++)
 			{
-				Size		start = (Size) i * BarkOverflowChunkSize;
-
-				XLogRegisterBuffer(i - first, bufs[i], REGBUF_WILL_INIT);
-				XLogRegisterBufData(i - first, &links[i - first],
+				XLogRegisterBuffer(i - firstrec, bufs[i], REGBUF_WILL_INIT);
+				XLogRegisterBufData(i - firstrec, &links[i - firstrec],
 									sizeof(xl_bark_overflow_page));
-				XLogRegisterBufData(i - first, (const char *) full + start,
-									Min((Size) BarkOverflowChunkSize,
-										fulllen - start));
+				XLogRegisterBufData(i - firstrec, data[i], lens[i]);
 			}
 			recptr = XLogInsert(RM_BARK_ID, XLOG_BARK_OVERFLOW);
 		}
 		else
 			recptr = XLogGetFakeLSN(index);
-		for (i = first; i < last; i++)
+		for (i = firstrec; i < last; i++)
 			PageSetLSN(BufferGetPage(bufs[i]), recptr);
 		END_CRIT_SECTION();
 
-		for (i = first; i < last; i++)
+		for (i = firstrec; i < last; i++)
 			bark_verify_page_change(index, bufs[i]);
 	}
 
@@ -3619,13 +3738,44 @@ bark_write_overflow_chain(Relation index, Relation heaprel, IndexTuple full,
 		UnlockReleaseBuffer(bufs[i]);
 	pfree(bufs);
 	pfree(blks);
+	pfree(data);
+	pfree(lens);
+	if (first != NULL)
+		pfree(first);
 	return firstblk;
 }
 
+/* The pages of a chunk directory, for bark_fetch_oversized's read_stream. */
+typedef struct BarkOverflowStream
+{
+	BlockNumber *blocks;
+	uint32		n;
+	uint32		next;
+} BarkOverflowStream;
+
+static BlockNumber
+bark_overflow_stream_cb(ReadStream *stream, void *callback_private_data,
+						void *per_buffer_data)
+{
+	BarkOverflowStream *p = (BarkOverflowStream *) callback_private_data;
+
+	return p->next < p->n ? p->blocks[p->next++] : InvalidBlockNumber;
+}
+
 /*
- * Reconstruct the full index tuple an OVERSIZED entry references by walking its
- * overflow chain and concatenating the chunks.  Returns a palloc'd tuple whose
- * byte length is the entry's recorded fulllen.
+ * Reconstruct the full index tuple an OVERSIZED entry references by reading
+ * its overflow chain and concatenating the chunks.  Returns a palloc'd tuple
+ * whose byte length is the entry's recorded fulllen.
+ *
+ * The first page is read on its own.  When its chunk directory lists two or
+ * more pages, they are read through a read_stream, which asks for them all
+ * before the first is needed, so a cold chain costs about one round trip
+ * after the first page instead of one per page; a chain longer than the
+ * directory is read on from the last page it lists, by the links.  A
+ * directory of one page, and a chain without a directory, are read by the
+ * links, one page after another.  Each page's link must name the page the
+ * directory lists after it, and each chunk must have the length its place in
+ * the chain gives it, or this fails, rather than return the wrong bytes.
  */
 IndexTuple
 bark_fetch_oversized(Relation index, IndexTuple entry)
@@ -3635,14 +3785,28 @@ bark_fetch_oversized(Relation index, IndexTuple entry)
 	BlockNumber blkno = BarkOverflowGetFirstBlock(entry);
 	char	   *out = palloc(fulllen);
 	Size		got = 0;
+	BarkOverflowStream ds = {0};
+	ReadStream *stream = NULL;
+	Buffer		buf = InvalidBuffer;
 
-	while (blkno != BARK_P_NONE && got < fulllen)
+	for (uint32 npage = 0; blkno != BARK_P_NONE && got < fulllen; npage++)
 	{
-		Buffer		buf = ReadBuffer(index, blkno);
 		Page		page;
 		BarkPageOpaque opaque;
+		BarkOverflowDir *dir;
+		char	   *chunk;
 		Size		len;
+		Size		cap = BarkOverflowChunkSize;
+		bool		corrupt;
 
+		/* The pages the directory lists come from the stream, in order. */
+		if (stream != NULL && npage <= ds.n)
+		{
+			buf = read_stream_next_buffer(stream, NULL);
+			Assert(BufferGetBlockNumber(buf) == blkno);
+		}
+		else
+			buf = ReadBuffer(index, blkno);
 		LockBuffer(buf, BUFFER_LOCK_SHARE);
 		page = BufferGetPage(buf);
 
@@ -3659,13 +3823,39 @@ bark_fetch_oversized(Relation index, IndexTuple entry)
 			!BarkPageIsOverflow((opaque = BarkPageGetOpaque(page))))
 			elog(ERROR, "BARK overflow chain for an oversized entry reaches block %u, which is not an overflow page",
 				 blkno);
-		len = Min((Size) BarkOverflowChunkSize, fulllen - got);
-		memcpy(out + got, BarkOverflowPageData(page), len);
+		chunk = bark_overflow_page_chunk(page, &len, &dir, &corrupt);
+		if (corrupt || (dir != NULL && npage != 0))
+			elog(ERROR, "BARK overflow chain for an oversized entry has a malformed chunk directory on block %u",
+				 blkno);
+		if (dir != NULL)
+		{
+			cap -= BarkOverflowDirSize(dir->ndir);
+			ds.n = dir->ndir;
+			ds.blocks = palloc(ds.n * sizeof(BlockNumber));
+			memcpy(ds.blocks, dir->blocks, ds.n * sizeof(BlockNumber));
+			if (ds.n >= 2)
+				stream = read_stream_begin_relation(READ_STREAM_FULL |
+													READ_STREAM_USE_BATCHING,
+													NULL, index, MAIN_FORKNUM,
+													bark_overflow_stream_cb,
+													&ds, 0);
+		}
+		if (len != Min(cap, fulllen - got))
+			elog(ERROR, "BARK overflow chain for an oversized entry has a %zu-byte chunk on block %u, where its place in the chain takes %zu",
+				 len, blkno, Min(cap, fulllen - got));
+		memcpy(out + got, chunk, len);
 		got += len;
 		blkno = opaque->bark_next;
+		if (npage < ds.n && blkno != ds.blocks[npage])
+			elog(ERROR, "BARK overflow chain for an oversized entry links block %u to %u, where its chunk directory lists %u",
+				 BufferGetBlockNumber(buf), blkno, ds.blocks[npage]);
 		UnlockReleaseBuffer(buf);
 	}
 
+	if (stream != NULL)
+		read_stream_end(stream);
+	if (ds.blocks != NULL)
+		pfree(ds.blocks);
 	if (got != fulllen)
 		elog(ERROR, "BARK overflow chain for an oversized entry is truncated: got %zu of %zu bytes",
 			 got, fulllen);
