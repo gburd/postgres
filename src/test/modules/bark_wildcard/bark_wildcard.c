@@ -1486,7 +1486,13 @@ bark_wildcard_sel(PG_FUNCTION_ARGS)
 		PG_RETURN_FLOAT8(DEFAULT_MATCHING_SEL);
 	}
 
-	/* A BARK index of the operator's family on the column, not a partial one. */
+	/*
+	 * A BARK index of the operator's family on the column, not a partial
+	 * one.  The estimate compares stored keys with the column's procedure 1
+	 * and counts the rows of each value, which a user who may not read
+	 * every row must not learn: as for pg_statistic, it is used only when
+	 * statistic_proc_security_check allows that procedure.
+	 */
 	if (varonleft && vardata.rel != NULL && IsA(vardata.var, Var))
 	{
 		Expr	   *clause = NULL;
@@ -1495,7 +1501,12 @@ bark_wildcard_sel(PG_FUNCTION_ARGS)
 		{
 			if (index->relam != BARK_AM_OID || index->indpred != NIL ||
 				index->indexkeys[0] != ((Var *) vardata.var)->varattno ||
-				!op_in_opfamily(operator, index->opfamily[0]))
+				!op_in_opfamily(operator, index->opfamily[0]) ||
+				!statistic_proc_security_check(&vardata,
+											   get_opfamily_proc(index->opfamily[0],
+																 index->opcintype[0],
+																 index->opcintype[0],
+																 BARK_ORDER_PROC)))
 				continue;
 			if (clause == NULL)
 				clause = make_opclause(operator, BOOLOID, false,
