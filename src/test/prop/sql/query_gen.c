@@ -1512,7 +1512,7 @@ build_join_chain(pg_prop_tc *tc, const qg_db *db, int start, int max_joins,
 			 * appendrel shapes when the patch touches those surfaces.
 			 */
 			static const char *const shape_tags[] = {
-				NULL, "index", "distinct", "setops", "subquery", "subquery", "subquery"
+				"joins", "joins", "distinct", "setops", "subquery", "subquery", "subquery"
 			};
 			int			shape = qg_biased(tc, 7, shape_tags);
 			/* derived shapes expose id, plus fk when the table has one */
