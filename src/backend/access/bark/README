@@ -2240,10 +2240,16 @@ XLOG_BARK_VACUUM record of their own.  bark_lower_bound:
   * then tries P1's and P2's locks without waiting, as
     bark_delete_empty_leaf does while it holds the parent, since an insert
     that splits a leaf locks the parent after it;
-  * under all three locks checks again that P1 is P2's left sibling, P1's
-    high key is still (K, L, t0), P2 still has the flag, and P1 holds no
-    entry at or above (K, L), i.e. none of (K, L): the run's entries on P1
-    must be gone;
+  * under all three locks checks that P1's right link is still P2 and P1
+    is not the left half of an incomplete split (whose right half, P2,
+    would have no downlink to lower), and that P1 holds no entry at or
+    above (K, L), i.e. none of (K, L): the run's entries on P1 must be
+    gone.  The rest of what was read is implied, and asserted: only one
+    VACUUM runs on an index at a time, and this is it, so no leaf is
+    deleted meanwhile; a split of P1 changes P1's right link; nothing else
+    rewrites a leaf's high key (a split replaces the page's own, page
+    deletion moves only downlinks).  So P1's right link still being P2
+    means P1's high key, P2's left link and P2's flag are as read;
   * then rewrites P1's high key and P2's downlink to (K, L) and clears P2's
     BARK_LOWBOUND_TAGGED, in one record (UNLINK_PAGE's second form, see
     "WAL").
@@ -2273,10 +2279,11 @@ insert into it on P2.  The parent's downlinks stay in order: P1's is below
 (K, L), checked, and the next one above (K, L, t0).
 
 bark_lower_bound declines, leaving the entry tagged and counted, when a
-lock is busy, P1 still holds an entry at or above (K, L) (a live entry of
-the run, or the row's own), the bound is an OVERSIZED pivot, P1's downlink
-is not below (K, L) (an empty P1 that was not deleted, whose own lower
-bound is in the run), or P2 is its parent's first child.  In that last
+lock is busy, P1 split since VACUUM's scan (halfway or completely), P1
+still holds an entry at or above (K, L) (a live entry of the run, or the
+row's own), the bound is an OVERSIZED pivot, P1's downlink is not below
+(K, L) (an empty P1 that was not deleted, whose own lower bound is in the
+run), or P2 is its parent's first child.  In that last
 case the bound is also the high key of the parent's left sibling and a
 downlink a level up, and lowering it would have to continue up the levels;
 BARK does not.  A tagged bound is left only by a leaf split inside a run

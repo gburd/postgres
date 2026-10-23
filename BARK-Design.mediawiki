@@ -381,11 +381,11 @@ test plants a zero tag.
   the parent first and both leaves tried without waiting. Logged as the
   second form of <code>XLOG_BARK_UNLINK_PAGE</code>
   (<code>XLH_BARK_UNLINK_LOWER_SEP</code>, no block 0), since the rmgr has no
-  free opcode. It declines, and a later VACUUM retries, when a lock is busy
-  or the run still has a live entry on the left page; and stays declined
-  when the page is its parent's first child (the bound is then also a
-  separator a level up), an OVERSIZED bound, or an empty left page whose
-  own lower bound is in the run.
+  free opcode. It declines, and a later VACUUM retries, when a lock is busy,
+  the left page split since the scan, or the run still has a live entry on
+  the left page; and stays declined when the page is its parent's first
+  child (the bound is then also a separator a level up), an OVERSIZED bound,
+  or an empty left page whose own lower bound is in the run.
 
 ''Follow-ups.'' T2 leaves a tag whose bound is a parent's first child's,
 about once per parent fan-out of tagged bounds; lowering it at the upper
