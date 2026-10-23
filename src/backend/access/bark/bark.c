@@ -400,6 +400,31 @@ bark_same_pivot(BarkKeyInfo *keyinfo, Relation index, IndexTuple a,
 }
 
 /*
+ * Compare two pivots in the tree's order: key attributes (a truncated one
+ * sorts first), then heap TID (none is minus infinity), then tag (none is
+ * minus infinity).
+ */
+static int
+bark_compare_pivots(BarkKeyInfo *keyinfo, Relation index, IndexTuple a,
+					IndexTuple b)
+{
+	int			cmp = bark_compare_itups(keyinfo, index, a, b);
+	ItemPointer atid;
+	ItemPointer btid;
+
+	if (cmp != 0)
+		return cmp;
+	atid = bark_pivot_heap_tid(a);
+	btid = bark_pivot_heap_tid(b);
+	if (atid == NULL || btid == NULL)
+		return (atid != NULL) - (btid != NULL);
+	cmp = ItemPointerCompare(atid, btid);
+	if (cmp != 0)
+		return cmp;
+	return bark_compare_tag(bark_pivot_tag(a), bark_pivot_tag(b));
+}
+
+/*
  * The plain pivot `pivot` (a heap TID and a tag) without its tag, palloc'd:
  * the same key and heap TID in the 8-byte suffix a pivot without a tag has
  * (bark_make_pivot), minus infinity on the tag.
@@ -441,11 +466,11 @@ bark_pivot_drop_tag(IndexTuple pivot)
  * and let a later VACUUM retry.  A flag-only clear locks P1 and P2 left to
  * right, as a split does, holding no parent.
  *
- * Returns true when P2's flag is clear on return.  Declines (false) when P2
- * or P1 is not a live leaf of the expected shape, P1 is not P2's left
- * sibling, P1 holds an entry at or above (K, L), the bound is an OVERSIZED
- * pivot, the parent's downlink is not a copy of P1's high key, a lock is
- * busy, or P2 is its parent's first child.
+ * Returns true when it cleared P2's flag.  Declines (false) when P2 or P1 is
+ * not a live leaf of the expected shape, P1 is not P2's left sibling, P1
+ * holds an entry at or above (K, L) or has a lower bound that is not below
+ * it, the bound is an OVERSIZED pivot, the parent's downlink is not a copy
+ * of P1's high key, a lock is busy, or P2 is its parent's first child.
  *
  * shortcut: when P2 is its parent's first child, the bound is also the
  * parent's lower bound (the high key of the parent's left sibling, and a
@@ -474,6 +499,7 @@ bark_lower_bound(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno)
 	bool		flagonly;
 	bool		ok = false;
 	bool		skiphikey = false;
+	const char *why = NULL;		/* why a lowering was declined, for tests */
 	XLogRecPtr	recptr;
 
 	/* P2: still a live leaf with the flag?  Who is its left sibling? */
@@ -485,11 +511,8 @@ bark_lower_bound(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno)
 		BarkPageLeftmost(opaque) ||
 		(opaque->bark_flags & BARK_LOWBOUND_TAGGED) == 0)
 	{
-		bool		clear = opaque != NULL && BarkPageIsLeaf(opaque) &&
-			(opaque->bark_flags & BARK_LOWBOUND_TAGGED) == 0;
-
 		UnlockReleaseBuffer(buf);
-		return clear;
+		return false;
 	}
 	leftblk = opaque->bark_prev;
 	UnlockReleaseBuffer(buf);
@@ -521,21 +544,40 @@ bark_lower_bound(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno)
 		Page		ppage;
 		BarkItemBuf ibuf;
 
+		/*
+		 * Tests stop here, holding no lock, so that another backend can
+		 * lock P1 or P2 before this one holds the parent.
+		 */
+		INJECTION_POINT("bark-lower-bound-start", NULL);
+
 		newhikey = bark_pivot_drop_tag(hikey);
 		pbuf = bark_find_parent_downlink(index, keyinfo, hikey, blkno,
 										 &downoff);
+		why = "its parent's downlink was not found";
 		if (pbuf == InvalidBuffer)
 			goto done;
 		ppage = BufferGetPage(pbuf);
+		why = "it is its parent's first child";
+		if (downoff <= BarkPageFirstDataKey(BarkPageGetOpaque(ppage)))
+			goto done;
+		why = "its parent's downlinks do not match its left sibling";
 
 		/*
 		 * P1's downlink must be just before P2's, on the same page, and P2's
-		 * a copy of P1's high key.  The parent stays locked from here on.
+		 * a copy of P1's high key.  P1's downlink, its lower bound, must sort
+		 * below the new bound, or the parent's downlinks would be out of
+		 * order: an empty P1 whose deletion was declined may have a lower
+		 * bound of (K, L, t) itself.  (A P1 that holds an entry has a lower
+		 * bound no higher than it, which the check below puts below (K, L).)
+		 * The parent stays locked from here on.
 		 */
-		if (downoff <= BarkPageFirstDataKey(BarkPageGetOpaque(ppage)) ||
-			BarkEntryGetDownLink(BarkPageGetItem(ppage,
+		if (BarkEntryGetDownLink(BarkPageGetItem(ppage,
 												 OffsetNumberPrev(downoff),
 												 &ibuf)) != leftblk ||
+			bark_compare_pivots(keyinfo, index,
+								BarkPageGetItem(ppage, OffsetNumberPrev(downoff),
+												&ibuf),
+								newhikey) >= 0 ||
 			!bark_same_pivot(keyinfo, index,
 							 (IndexTuple) PageGetItem(ppage,
 													  PageGetItemId(ppage, downoff)),
@@ -544,18 +586,12 @@ bark_lower_bound(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno)
 	}
 
 	/*
-	 * Tests stop here, holding the parent, so that another backend can lock
-	 * P1 or P2 first (a split of P2 waiting for this parent).
-	 */
-	if (!flagonly)
-		INJECTION_POINT("bark-lower-bound-parent", NULL);
-
-	/*
 	 * Lock P1 and P2, without waiting while the parent is held, then look
 	 * again at everything decided above.
 	 */
 	lbuf = ReadBuffer(index, leftblk);
 	buf = ReadBuffer(index, blkno);
+	why = "a lock was busy";
 	if (flagonly)
 	{
 		LockBuffer(lbuf, BUFFER_LOCK_SHARE);
@@ -577,6 +613,7 @@ bark_lower_bound(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno)
 	lpage = BufferGetPage(lbuf);
 	opaque = BarkPageGetOpaque(page);
 	lopaque = BarkPageGetOpaque(lpage);
+	why = "it or its left sibling changed";
 	if (!BarkPageIsLeaf(opaque) || BarkPageIgnore(opaque) ||
 		opaque->bark_prev != leftblk ||
 		(opaque->bark_flags & BARK_LOWBOUND_TAGGED) == 0 ||
@@ -600,6 +637,7 @@ bark_lower_bound(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno)
 		ItemPointerData hi;
 
 		bark_entry_tid_range(last, &lo, &hi, keyinfo->tidstride);
+		why = "its left sibling holds an entry at or above the new bound";
 		if (bark_compare_itups_tid(keyinfo, index, last, &hi,
 								   BarkEntryGetTag(last), newhikey) >= 0)
 			goto unlock;
@@ -698,6 +736,9 @@ unlock:
 done:
 	if (BufferIsValid(pbuf))
 		UnlockReleaseBuffer(pbuf);
+	if (!ok)
+		elog(DEBUG2, "index \"%s\": kept the tagged lower bound of block %u: %s",
+			 RelationGetRelationName(index), blkno, why);
 	pfree(hikey);
 	if (newhikey != NULL)
 		pfree(newhikey);
