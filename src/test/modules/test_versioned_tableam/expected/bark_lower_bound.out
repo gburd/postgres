@@ -161,7 +161,7 @@ bark_index_parent_check
 (1 row)
 
 
-starting permutation: s2_descend_attach s2_insert s1_vacuum s4_wakeup_descend s1_check s1_inserted
+starting permutation: s2_descend_attach s2_insert s1_vacuum s4_wakeup_descend s2_done s1_check s1_inserted
 injection_points_set_local
 --------------------------
                           
@@ -199,6 +199,13 @@ injection_points_wakeup
                        
 (1 row)
 
+step s2_insert: <... completed>
+inserted
+--------
+t       
+(1 row)
+
+step s2_done: 
 step s1_check: 
 	SELECT l1.hitag IS NULL AS p1_hikey_untagged,
 	       'lowbound_tagged' <> ALL (l2.flags) AS p2_flag_clear,
@@ -226,12 +233,6 @@ bark_index_parent_check
                        
 (1 row)
 
-step s2_insert: <... completed>
-inserted
---------
-t       
-(1 row)
-
 step s1_inserted: 
 	SELECT l.blk = p2 AS on_p2
 	  FROM exp, leaves('tl_k') l, bark_page_items('tl_k', l.blk) i
@@ -243,7 +244,7 @@ t
 (1 row)
 
 
-starting permutation: s1_attach s1_vacuum s2_insert s4_wakeup_s2 s1_check s1_inserted
+starting permutation: s1_attach s1_vacuum s2_insert s4_wakeup_s2 s2_done s1_check s1_inserted
 injection_points_set_local
 --------------------------
                           
@@ -286,6 +287,7 @@ inserted
 t       
 (1 row)
 
+step s2_done: 
 step s1_check: 
 	SELECT l1.hitag IS NULL AS p1_hikey_untagged,
 	       'lowbound_tagged' <> ALL (l2.flags) AS p2_flag_clear,
