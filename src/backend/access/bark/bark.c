@@ -392,36 +392,12 @@ bark_same_pivot(BarkKeyInfo *keyinfo, Relation index, IndexTuple a,
 	ItemPointer atid = bark_pivot_heap_tid(a);
 	ItemPointer btid = bark_pivot_heap_tid(b);
 
-	return BarkEntryGetPivotNAtts(a) == BarkEntryGetPivotNAtts(b) &&
-		(atid == NULL) == (btid == NULL) &&
-		(atid == NULL || ItemPointerEquals(atid, btid)) &&
-		bark_pivot_tag(a) == bark_pivot_tag(b) &&
+	if (BarkEntryGetPivotNAtts(a) != BarkEntryGetPivotNAtts(b) ||
+		bark_pivot_tag(a) != bark_pivot_tag(b) ||
+		(atid == NULL) != (btid == NULL))
+		return false;
+	return (atid == NULL || ItemPointerEquals(atid, btid)) &&
 		bark_compare_itups(keyinfo, index, a, b) == 0;
-}
-
-/*
- * Compare two pivots in the tree's order: key attributes (a truncated one
- * sorts first), then heap TID (none is minus infinity), then tag (none is
- * minus infinity).
- */
-static int
-bark_compare_pivots(BarkKeyInfo *keyinfo, Relation index, IndexTuple a,
-					IndexTuple b)
-{
-	int			cmp = bark_compare_itups(keyinfo, index, a, b);
-	ItemPointer atid;
-	ItemPointer btid;
-
-	if (cmp != 0)
-		return cmp;
-	atid = bark_pivot_heap_tid(a);
-	btid = bark_pivot_heap_tid(b);
-	if (atid == NULL || btid == NULL)
-		return (atid != NULL) - (btid != NULL);
-	cmp = ItemPointerCompare(atid, btid);
-	if (cmp != 0)
-		return cmp;
-	return bark_compare_tag(bark_pivot_tag(a), bark_pivot_tag(b));
 }
 
 /*
@@ -466,11 +442,25 @@ bark_pivot_drop_tag(IndexTuple pivot)
  * and let a later VACUUM retry.  A flag-only clear locks P1 and P2 left to
  * right, as a split does, holding no parent.
  *
- * Returns true when it cleared P2's flag.  Declines (false) when P2 or P1 is
- * not a live leaf of the expected shape, P1 is not P2's left sibling, P1
- * holds an entry at or above (K, L) or has a lower bound that is not below
- * it, the bound is an OVERSIZED pivot, the parent's downlink is not a copy
- * of P1's high key, a lock is busy, or P2 is its parent's first child.
+ * What was read before the locks is checked again under them only where it
+ * can have changed.  Only one VACUUM runs on an index at a time and this is
+ * it, so no leaf is deleted or half-dead meanwhile, and a leaf's left link
+ * changes only when its left sibling splits or is deleted.  A split of P1
+ * changes P1's right link, and a split of P2 neither P2's left link nor
+ * P1's high key.  Nothing else rewrites a leaf's high key: a split replaces
+ * the page's own, page deletion none (it rewrites the deleted page whole
+ * and moves only downlinks).  So P1's right link still being P2 means P1's
+ * high key and P2's left link are as read, and P2's flag is still set (only
+ * this function clears it); these are asserted.  P1's
+ * BARK_INCOMPLETE_SPLIT and the parent's downlinks are checked: P1 can be
+ * the left half of a split whose right half, P2, has no downlink yet, and
+ * the parent's page may have split since the descent.
+ *
+ * Returns true when it cleared P2's flag.  Declines (false) when P1 is not
+ * P2's left sibling or is mid-split, P1 holds an entry at or above (K, L)
+ * or has a lower bound that is not below it, the bound is an OVERSIZED
+ * pivot, the parent's downlinks are not P1's then P2's with P2's a copy of
+ * P1's high key, a lock is busy, or P2 is its parent's first child.
  *
  * shortcut: when P2 is its parent's first child, the bound is also the
  * parent's lower bound (the high key of the parent's left sibling, and a
@@ -499,45 +489,35 @@ bark_lower_bound(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno)
 	bool		flagonly;
 	bool		ok = false;
 	bool		skiphikey = false;
-	const char *why = NULL;		/* why a lowering was declined, for tests */
+	const char *why;			/* why a lowering was declined, for tests */
 	XLogRecPtr	recptr;
 
-	/* P2: still a live leaf with the flag?  Who is its left sibling? */
+	/*
+	 * P2 and P1 as they are now.  bark_vacuum_untag saw P2 as a live leaf
+	 * with the flag and a left sibling, during this VACUUM.
+	 */
 	buf = ReadBuffer(index, blkno);
 	LockBuffer(buf, BUFFER_LOCK_SHARE);
 	page = BufferGetPage(buf);
-	opaque = PageIsNew(page) ? NULL : BarkPageGetOpaque(page);
-	if (opaque == NULL || !BarkPageIsLeaf(opaque) || BarkPageIgnore(opaque) ||
-		BarkPageLeftmost(opaque) ||
-		(opaque->bark_flags & BARK_LOWBOUND_TAGGED) == 0)
-	{
-		UnlockReleaseBuffer(buf);
-		return false;
-	}
+	opaque = BarkPageGetOpaque(page);
+	Assert(BarkPageIsLeaf(opaque) && !BarkPageIgnore(opaque));
+	Assert(!BarkPageLeftmost(opaque));
+	Assert((opaque->bark_flags & BARK_LOWBOUND_TAGGED) != 0);
 	leftblk = opaque->bark_prev;
 	UnlockReleaseBuffer(buf);
 
-	/* P1's high key, P2's lower bound. */
 	lbuf = ReadBuffer(index, leftblk);
 	LockBuffer(lbuf, BUFFER_LOCK_SHARE);
 	lpage = BufferGetPage(lbuf);
-	lopaque = PageIsNew(lpage) ? NULL : BarkPageGetOpaque(lpage);
-	if (lopaque == NULL || !BarkPageIsLeaf(lopaque) ||
-		BarkPageIgnore(lopaque) || lopaque->bark_next != blkno ||
-		(lopaque->bark_flags & BARK_INCOMPLETE_SPLIT) != 0)
-	{
-		UnlockReleaseBuffer(lbuf);
-		return false;
-	}
+	lopaque = BarkPageGetOpaque(lpage);
+	Assert(BarkPageIsLeaf(lopaque) && !BarkPageIgnore(lopaque));
 	hikey = CopyIndexTuple((IndexTuple)
 						   PageGetItem(lpage, PageGetItemId(lpage, BARK_P_HIKEY)));
 	UnlockReleaseBuffer(lbuf);
 	flagonly = bark_pivot_tag(hikey) == InvalidIndexVersionTag;
+	why = "its lower bound is OVERSIZED";
 	if (!flagonly && BarkEntryGetShape(hikey) != BARK_SHAPE_PIVOT)
-	{
-		pfree(hikey);
-		return false;			/* an OVERSIZED bound: keep it */
-	}
+		goto done;
 
 	if (!flagonly)
 	{
@@ -546,7 +526,7 @@ bark_lower_bound(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno)
 
 		/*
 		 * Tests stop here, holding no lock, so that another backend can
-		 * lock P1 or P2 before this one holds the parent.
+		 * lock or split P1 or P2 before this one holds the parent.
 		 */
 		INJECTION_POINT("bark-lower-bound-start", NULL);
 
@@ -560,34 +540,42 @@ bark_lower_bound(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno)
 		why = "it is its parent's first child";
 		if (downoff <= BarkPageFirstDataKey(BarkPageGetOpaque(ppage)))
 			goto done;
-		why = "its parent's downlinks do not match its left sibling";
 
 		/*
-		 * P1's downlink must be just before P2's, on the same page, and P2's
-		 * a copy of P1's high key.  P1's downlink, its lower bound, must sort
-		 * below the new bound, or the parent's downlinks would be out of
-		 * order: an empty P1 whose deletion was declined may have a lower
-		 * bound of (K, L, t) itself.  (A P1 that holds an entry has a lower
-		 * bound no higher than it, which the check below puts below (K, L).)
-		 * The parent stays locked from here on.
+		 * P1's downlink must be just before P2's, and P2's a copy of P1's
+		 * high key.  The parent stays locked from here on.
 		 */
+		why = "its parent's downlinks do not match its left sibling";
 		if (BarkEntryGetDownLink(BarkPageGetItem(ppage,
 												 OffsetNumberPrev(downoff),
 												 &ibuf)) != leftblk ||
-			bark_compare_pivots(keyinfo, index,
-								BarkPageGetItem(ppage, OffsetNumberPrev(downoff),
-												&ibuf),
-								newhikey) >= 0 ||
 			!bark_same_pivot(keyinfo, index,
 							 (IndexTuple) PageGetItem(ppage,
 													  PageGetItemId(ppage, downoff)),
 							 hikey))
 			goto done;
+
+		/*
+		 * P1's downlink, its lower bound, must sort below the new bound, or
+		 * the parent's downlinks would be out of order.  A P1 that keeps an
+		 * entry has a lower bound at or below it, which the check below puts
+		 * below (K, L); but an empty P1 whose deletion was declined may have
+		 * a lower bound in the run, (K, L, t) itself.  Compared as a descent
+		 * compares a key with a downlink (bark_binsrch).
+		 */
+		why = "its left sibling's own lower bound is not below the new bound";
+		if (bark_compare_itups_tid(keyinfo, index, newhikey,
+								   BarkPivotGetHeapTID(newhikey),
+								   InvalidIndexVersionTag,
+								   BarkPageGetItem(ppage,
+												   OffsetNumberPrev(downoff),
+												   &ibuf)) <= 0)
+			goto done;
 	}
 
 	/*
 	 * Lock P1 and P2, without waiting while the parent is held, then look
-	 * again at everything decided above.
+	 * again at what can have changed.
 	 */
 	lbuf = ReadBuffer(index, leftblk);
 	buf = ReadBuffer(index, blkno);
@@ -613,20 +601,20 @@ bark_lower_bound(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno)
 	lpage = BufferGetPage(lbuf);
 	opaque = BarkPageGetOpaque(page);
 	lopaque = BarkPageGetOpaque(lpage);
-	why = "it or its left sibling changed";
-	if (!BarkPageIsLeaf(opaque) || BarkPageIgnore(opaque) ||
-		opaque->bark_prev != leftblk ||
-		(opaque->bark_flags & BARK_LOWBOUND_TAGGED) == 0 ||
-		!BarkPageIsLeaf(lopaque) || BarkPageIgnore(lopaque) ||
-		lopaque->bark_next != blkno ||
-		(lopaque->bark_flags & BARK_INCOMPLETE_SPLIT) != 0 ||
-		!bark_same_pivot(keyinfo, index,
-						 (IndexTuple) PageGetItem(lpage,
-												  PageGetItemId(lpage, BARK_P_HIKEY)),
-						 hikey))
+	why = "its left sibling split";
+	if (lopaque->bark_next != blkno ||
+		(lopaque->bark_flags & BARK_INCOMPLETE_SPLIT) != 0)
 		goto unlock;
+	/* Implied by P1's right link, given the argument above. */
+	Assert(opaque->bark_prev == leftblk);
+	Assert((opaque->bark_flags & BARK_LOWBOUND_TAGGED) != 0);
+	Assert(bark_same_pivot(keyinfo, index,
+						   (IndexTuple) PageGetItem(lpage,
+													PageGetItemId(lpage, BARK_P_HIKEY)),
+						   hikey));
 
 	/* P1 must hold nothing at or above the new bound. */
+	why = "its left sibling holds an entry at or above the new bound";
 	if (!flagonly &&
 		PageGetMaxOffsetNumber(lpage) >= BarkPageFirstDataKey(lopaque))
 	{
@@ -637,7 +625,6 @@ bark_lower_bound(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno)
 		ItemPointerData hi;
 
 		bark_entry_tid_range(last, &lo, &hi, keyinfo->tidstride);
-		why = "its left sibling holds an entry at or above the new bound";
 		if (bark_compare_itups_tid(keyinfo, index, last, &hi,
 								   BarkEntryGetTag(last), newhikey) >= 0)
 			goto unlock;
@@ -664,28 +651,36 @@ bark_lower_bound(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno)
 		PredicateLockPageSplit(index, leftblk, blkno);
 	}
 
-	/* No ereport(ERROR) until changes are logged */
+	/*
+	 * No ereport(ERROR) until changes are logged.  Each new pivot is smaller
+	 * than the one it replaces, so the overwrites cannot fail.
+	 */
 	START_CRIT_SECTION();
 
-	if (!flagonly && !skiphikey &&
-		!PageIndexTupleOverwrite(lpage, BARK_P_HIKEY, newhikey,
-								 IndexTupleSize(newhikey)))
-		elog(PANIC, "failed to lower the high key of block %u of index \"%s\"",
-			 leftblk, RelationGetRelationName(index));
-	if (!flagonly &&
-		!PageIndexTupleOverwrite(BufferGetPage(pbuf), downoff, newdownlink,
-								 IndexTupleSize(newdownlink)))
-		elog(PANIC, "failed to lower a downlink in block %u of index \"%s\"",
-			 BufferGetBlockNumber(pbuf), RelationGetRelationName(index));
-	if (!skiphikey)
-		opaque->bark_flags &= ~BARK_LOWBOUND_TAGGED;
-
 	if (!flagonly && !skiphikey)
+	{
+		bool		fits PG_USED_FOR_ASSERTS_ONLY;
+
+		fits = PageIndexTupleOverwrite(lpage, BARK_P_HIKEY, newhikey,
+									   IndexTupleSize(newhikey));
+		Assert(fits);
 		MarkBufferDirty(lbuf);
-	if (!skiphikey)
-		MarkBufferDirty(buf);
+	}
 	if (!flagonly)
+	{
+		bool		fits PG_USED_FOR_ASSERTS_ONLY;
+
+		fits = PageIndexTupleOverwrite(BufferGetPage(pbuf), downoff,
+									   newdownlink,
+									   IndexTupleSize(newdownlink));
+		Assert(fits);
 		MarkBufferDirty(pbuf);
+	}
+	if (!skiphikey)
+	{
+		opaque->bark_flags &= ~BARK_LOWBOUND_TAGGED;
+		MarkBufferDirty(buf);
+	}
 
 	if (RelationNeedsWAL(index))
 	{
@@ -699,6 +694,7 @@ bark_lower_bound(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno)
 
 		/* The second form of UNLINK_PAGE: no block 0 (barkxlog.h). */
 		XLogBeginInsert();
+		XLogRegisterData(&xlrec, SizeOfBarkUnlinkPage);
 		if (!flagonly && !skiphikey)
 		{
 			XLogRegisterBuffer(1, lbuf, REGBUF_STANDARD);
@@ -711,7 +707,6 @@ bark_lower_bound(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno)
 			XLogRegisterBuffer(3, pbuf, REGBUF_STANDARD);
 			XLogRegisterBufData(3, newdownlink, IndexTupleSize(newdownlink));
 		}
-		XLogRegisterData(&xlrec, SizeOfBarkUnlinkPage);
 
 		recptr = XLogInsert(RM_BARK_ID, XLOG_BARK_UNLINK_PAGE);
 	}
@@ -733,7 +728,8 @@ bark_lower_bound(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno)
 		bark_verify_page_change(index, buf);
 	if (!flagonly)
 		bark_verify_page_change(index, pbuf);
-	ok = true;
+	ok = !skiphikey;
+	why = "a test lowered its parent's downlink alone";
 
 unlock:
 	UnlockReleaseBuffer(buf);
@@ -935,7 +931,8 @@ bark_vacuum_target(Page page, bool backtracking, BarkCycleId cycleid)
 /*
  * A LIVE_UNTAG entry that bark_vacuum_untag kept tagged because its page's
  * lower bound may carry a tag: its leaf, and a copy of the entry (decoded),
- * to untag once bark_lower_bound has lowered the bound.
+ * to untag once bark_lower_bound has lowered the bound.  In
+ * BarkVacState.kept.
  */
 typedef struct BarkKeptBound
 {
@@ -961,9 +958,7 @@ typedef struct BarkVacState
 	int64		nkeptbound;		/* LIVE_UNTAG, kept: lower bound may be tagged */
 	int64		nkeptdup;		/* LIVE_UNTAG, kept: (K, L, 0) is in an entry */
 	int64		nlowered;		/* lower bounds lowered (bark_lower_bound) */
-	BarkKeptBound *kept;		/* entries counted in nkeptbound */
-	int			nkept;
-	int			keptalloc;
+	List	   *kept;			/* BarkKeptBound of entries in nkeptbound */
 	BarkCycleId	cycleid;
 	BlockNumber *emptyleaves;	/* empty interior leaves to delete */
 	int			nempty;
@@ -1005,9 +1000,9 @@ bark_vacuum_verdict(BarkVacState *vstate, ItemPointer tid, IndexVersionTag tag)
  * be divided.  The table AM's LIVE_UNTAG allows untagging, it does not
  * require it (IndexEntryVerdict).
  *
- * An entry kept for its page's lower bound is recorded with the page's
- * block `blkno` (unless that is InvalidBlockNumber), and once the scan is
- * over bark_vacuum_lower_bounds lowers the bound and untags it then.
+ * An entry kept for its page's lower bound is recorded in vstate->kept with
+ * the page's block `blkno`, and once the scan is over
+ * bark_vacuum_lower_bounds lowers the bound and untags it then.
  *
  * Each planned move is applied to `page` before the next is planned, and
  * recorded as from[i], to[i] and the untagged entry, coded for the page, in
@@ -1077,19 +1072,12 @@ bark_vacuum_untag(BarkVacState *vstate, Page page, BlockNumber blkno,
 				vstate->nkeptdup++;
 			else
 			{
+				BarkKeptBound *kb = palloc_object(BarkKeptBound);
+
 				vstate->nkeptbound++;
-				if (BlockNumberIsValid(blkno))
-				{
-					if (vstate->nkept >= vstate->keptalloc)
-					{
-						vstate->keptalloc *= 2;
-						vstate->kept = repalloc_array(vstate->kept,
-													  BarkKeptBound,
-													  vstate->keptalloc);
-					}
-					vstate->kept[vstate->nkept].blkno = blkno;
-					vstate->kept[vstate->nkept++].entry = CopyIndexTuple(itup);
-				}
+				kb->blkno = blkno;
+				kb->entry = CopyIndexTuple(itup);
+				vstate->kept = lappend(vstate->kept, kb);
 			}
 			pfree(plain);
 			continue;
@@ -1480,10 +1468,10 @@ bark_vacuum_page(BarkVacState *vstate, Buffer buf)
 }
 
 static int
-bark_kept_cmp(const void *a, const void *b)
+bark_kept_cmp(const ListCell *a, const ListCell *b)
 {
-	return pg_cmp_u32(((const BarkKeptBound *) a)->blkno,
-					  ((const BarkKeptBound *) b)->blkno);
+	return pg_cmp_u32(((const BarkKeptBound *) lfirst(a))->blkno,
+					  ((const BarkKeptBound *) lfirst(b))->blkno);
 }
 
 /*
@@ -1492,18 +1480,22 @@ bark_kept_cmp(const void *a, const void *b)
  * for each such page, lower its bound (bark_lower_bound), and if that
  * succeeds, untag the entries in place, as the scan would have, under the
  * page's cleanup lock and in an XLOG_BARK_VACUUM record of their own.  An
- * entry no longer on its page (a split moved it, or it was deleted) is left
- * alone; it stays counted as kept.
+ * entry no longer on its page (a split moved it, or simple deletion removed
+ * it) is left alone; it stays counted as kept.
  */
 static void
 bark_vacuum_lower_bounds(BarkVacState *vstate)
 {
 	Relation	index = vstate->info->index;
+	List	   *kept = vstate->kept;
+	int			nkept = list_length(kept);
 
-	qsort(vstate->kept, vstate->nkept, sizeof(BarkKeptBound), bark_kept_cmp);
-	for (int i = 0, next; i < vstate->nkept; i = next)
+	/* Untagging a page whose flag is clear keeps nothing for its bound. */
+	vstate->kept = NIL;
+	list_sort(kept, bark_kept_cmp);
+	for (int i = 0, next; i < nkept; i = next)
 	{
-		BlockNumber blkno = vstate->kept[i].blkno;
+		BlockNumber blkno = ((BarkKeptBound *) list_nth(kept, i))->blkno;
 		Buffer		buf;
 		Page		page;
 		BarkPageOpaque opaque;
@@ -1512,10 +1504,11 @@ bark_vacuum_lower_bounds(BarkVacState *vstate)
 		OffsetNumber from[MaxOffsetNumber];
 		OffsetNumber to[MaxOffsetNumber];
 		IndexTuple	items[MaxOffsetNumber];
-		int			nmoved = 0;
+		int			nmoved;
+		Page		scratch;
 
-		for (next = i; next < vstate->nkept &&
-			 vstate->kept[next].blkno == blkno; next++)
+		for (next = i; next < nkept &&
+			 ((BarkKeptBound *) list_nth(kept, next))->blkno == blkno; next++)
 			;
 
 		vacuum_delay_point(false);
@@ -1523,17 +1516,18 @@ bark_vacuum_lower_bounds(BarkVacState *vstate)
 			continue;
 		vstate->nlowered++;
 
+		/*
+		 * Still a live leaf without the flag: only this VACUUM deletes a
+		 * leaf, and only a page deletion sets the flag on a leaf that
+		 * exists.
+		 */
 		buf = ReadBufferExtended(index, MAIN_FORKNUM, blkno, RBM_NORMAL,
 								 vstate->info->strategy);
 		LockBufferForCleanup(buf);
 		page = BufferGetPage(buf);
 		opaque = BarkPageGetOpaque(page);
-		if (!BarkPageIsLeaf(opaque) || BarkPageIgnore(opaque) ||
-			(opaque->bark_flags & BARK_LOWBOUND_TAGGED) != 0)
-		{
-			UnlockReleaseBuffer(buf);
-			continue;
-		}
+		Assert(BarkPageIsLeaf(opaque) && !BarkPageIgnore(opaque));
+		Assert((opaque->bark_flags & BARK_LOWBOUND_TAGGED) == 0);
 
 		/* Find each entry again, by (key, TID, tag). */
 		for (OffsetNumber off = BarkPageFirstDataKey(opaque);
@@ -1542,16 +1536,14 @@ bark_vacuum_lower_bounds(BarkVacState *vstate)
 			BarkItemBuf ibuf;
 			IndexTuple	itup = BarkPageGetItem(page, off, &ibuf);
 
-			if (!BarkEntryHasTag(itup))
-				continue;
 			for (int j = i; j < next; j++)
 			{
-				IndexTuple	kept = vstate->kept[j].entry;
+				IndexTuple	entry = ((BarkKeptBound *) list_nth(kept, j))->entry;
 
-				if (BarkEntryGetTag(kept) == BarkEntryGetTag(itup) &&
-					bark_compare_itups_tid(vstate->keyinfo, index, kept,
-										   BarkEntryGetHeapTid(kept),
-										   BarkEntryGetTag(kept), itup) == 0)
+				if (BarkEntryGetTag(entry) == BarkEntryGetTag(itup) &&
+					bark_compare_itups_tid(vstate->keyinfo, index, entry,
+										   BarkEntryGetHeapTid(entry),
+										   BarkEntryGetTag(entry), itup) == 0)
 				{
 					untag[nuntag++] = off;
 					break;
@@ -1559,16 +1551,12 @@ bark_vacuum_lower_bounds(BarkVacState *vstate)
 			}
 		}
 
-		if (nuntag > 0)
-		{
-			Page		scratch = PageGetTempPageCopy(page);
-
-			/* Planned again, so counted again (bark_vacuum_untag). */
-			vstate->nkeptbound -= nuntag;
-			nmoved = bark_vacuum_untag(vstate, scratch, InvalidBlockNumber,
-									   untag, nuntag, from, to, items);
-			pfree(scratch);
-		}
+		/* Planned again, so counted again (bark_vacuum_untag). */
+		vstate->nkeptbound -= nuntag;
+		scratch = PageGetTempPageCopy(page);
+		nmoved = bark_vacuum_untag(vstate, scratch, blkno, untag, nuntag,
+								   from, to, items);
+		pfree(scratch);
 		if (nmoved > 0)
 			bark_delitems_vacuum(index, buf, NULL, 0, NULL, NULL, 0,
 								 from, to, items, nmoved);
@@ -1576,9 +1564,11 @@ bark_vacuum_lower_bounds(BarkVacState *vstate)
 			pfree(items[j]);
 		UnlockReleaseBuffer(buf);
 	}
-	for (int i = 0; i < vstate->nkept; i++)
-		pfree(vstate->kept[i].entry);
-	vstate->nkept = 0;
+	/* bark_vacuum_untag keeps nothing for the bound of a page without the flag */
+	Assert(vstate->kept == NIL);
+	foreach_ptr(BarkKeptBound, kb, kept)
+		pfree(kb->entry);
+	list_free_deep(kept);
 }
 
 /*
@@ -1680,9 +1670,7 @@ bark_vacuum_scan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	vstate.nkeptbound = 0;
 	vstate.nkeptdup = 0;
 	vstate.nlowered = 0;
-	vstate.keptalloc = 16;
-	vstate.nkept = 0;
-	vstate.kept = palloc_array(BarkKeptBound, vstate.keptalloc);
+	vstate.kept = NIL;
 	vstate.cycleid = 0;
 	vstate.emptyalloc = 64;
 	vstate.nempty = 0;
@@ -1809,9 +1797,7 @@ bark_vacuum_scan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	 * the dead entries the lowering needs gone, and page deletion may have
 	 * given a page a new lower bound, whose flag alone may need clearing.
 	 */
-	if (vstate.nkept > 0)
-		bark_vacuum_lower_bounds(&vstate);
-	pfree(vstate.kept);
+	bark_vacuum_lower_bounds(&vstate);
 	if (vstate.nuntagged > 0 || vstate.nkeptbound > 0 || vstate.nkeptdup > 0)
 		ereport(info->message_level,
 				(errmsg("index \"%s\": untagged %lld entries in place, kept %lld tagged whose page's lower bound may carry a tag and %lld whose untagged position is in another entry, after lowering %lld lower bounds",
