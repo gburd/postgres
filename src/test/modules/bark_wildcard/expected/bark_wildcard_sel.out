@@ -42,14 +42,17 @@ SELECT n, q, act, est BETWEEN act / 3.0 AND act * 3.0 AS within_3x
 ---+-------------------------+-------+-----------
  1 | doc #= '["p1", true]'   | 90000 | t
  2 | doc #= '["p2", true]'   |   100 | t
- 3 | doc #? 'p1'             | 90000 | f
+ 3 | doc #? 'p1'             | 90000 | t
  4 | doc #? 'p2'             |   100 | t
- 5 | doc #< '["p3", 10]'     | 99000 | f
+ 5 | doc #< '["p3", 10]'     | 99000 | t
  6 | doc #> '["p3", 1000]'   |   990 | t
  7 | doc #>= '["id", 50001]' | 50000 | t
 (7 rows)
 
 -- p1 is in most documents, p2 in few: a seqscan for p1, the index for p2.
+-- (Before the index read its leaf densities, the wide ranges, #? 'p1' and
+-- the 99% head of p3, whose keys share POSTING entries, were estimated
+-- from the separators alone and missed by about 10x.)
 SELECT a.est = b.est AS same_estimate
   FROM wc_est('wc_sel', 'doc #= ''["p1", true]''') a,
        wc_est('wc_sel', 'doc #= ''["p2", true]''') b;
@@ -75,13 +78,11 @@ EXPLAIN (COSTS OFF) SELECT * FROM wc_sel WHERE doc #= '["p2", true]';
 (4 rows)
 
 EXPLAIN (COSTS OFF) SELECT * FROM wc_sel WHERE doc #? 'p1';
-               QUERY PLAN                
------------------------------------------
- Bitmap Heap Scan on wc_sel
-   Recheck Cond: (doc #? 'p1'::text)
-   ->  Bitmap Index Scan on wc_sel_doc
-         Index Cond: (doc #? 'p1'::text)
-(4 rows)
+          QUERY PLAN           
+-------------------------------
+ Seq Scan on wc_sel
+   Filter: (doc #? 'p1'::text)
+(2 rows)
 
 EXPLAIN (COSTS OFF) SELECT * FROM wc_sel WHERE doc #? 'p2';
                QUERY PLAN                
