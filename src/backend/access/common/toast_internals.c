@@ -133,8 +133,9 @@ toast_compress_datum_rel(Datum value, char cmethod, Relation rel,
 					dictid = toast_dictionary_current(rel, attnum);
 				if (OidIsValid(dictid))
 				{
-					tmp = zstd_dict_compress_datum((const varlena *) DatumGetPointer(value),
-												   dictid);
+					tmp = toast_dict_compress_datum((const varlena *) DatumGetPointer(value),
+													TOAST_ZSTD_DICT_COMPRESSION,
+												dictid);
 					cmid = TOAST_ZSTD_DICT_COMPRESSION_ID;
 				}
 				else

@@ -60,7 +60,7 @@ detoast_external_attr(varlena *attr)
 		{
 			varlena    *tmp = result;
 
-			result = zstd_dict_decompress_datum(tmp);
+			result = toast_dict_decompress_datum(tmp);
 			pfree(tmp);
 		}
 	}
@@ -109,7 +109,7 @@ detoast_external_attr(varlena *attr)
 		 * independent of its source it counts as external; see
 		 * toast_dictionary.c.
 		 */
-		result = zstd_dict_decompress_datum(attr);
+		result = toast_dict_decompress_datum(attr);
 	}
 	else
 	{
@@ -522,7 +522,7 @@ toast_decompress_datum(varlena *attr)
 		case TOAST_ZSTD_COMPRESSION_ID:
 			return zstd_decompress_datum(attr);
 		case TOAST_ZSTD_DICT_COMPRESSION_ID:
-			return zstd_dict_decompress_datum(attr);
+			return toast_dict_decompress_datum(attr);
 		default:
 			elog(ERROR, "invalid compression method id %d", cmid);
 			return NULL;		/* keep compiler quiet */
@@ -569,7 +569,7 @@ toast_decompress_datum_slice(varlena *attr, int32 slicelength)
 		case TOAST_ZSTD_COMPRESSION_ID:
 			return zstd_decompress_datum_slice(attr, slicelength);
 		case TOAST_ZSTD_DICT_COMPRESSION_ID:
-			return zstd_dict_decompress_datum_slice(attr, slicelength);
+			return toast_dict_decompress_datum_slice(attr, slicelength);
 		default:
 			elog(ERROR, "invalid compression method id %d", cmid);
 			return NULL;		/* keep compiler quiet */

@@ -78,13 +78,14 @@ toast_compression_id_needs_cmid_byte(ToastCompressionId cmid)
  * Is this a compressed-in-line datum that needs a compression dictionary to
  * be read?  Such a datum depends on catalog state of the column it belongs
  * to, so code that makes values self-contained treats it like a TOAST
- * pointer (see toast_dictionary.c).
+ * pointer (see toast_dictionary.c).  True for every dictionary-aware codec.
  */
 static inline bool
 VARATT_IS_COMPRESSED_DICT(const void *PTR)
 {
-	return VARATT_IS_COMPRESSED(PTR) &&
-		VARDATA_COMPRESSED_GET_COMPRESS_METHOD(PTR) ==
+	if (!VARATT_IS_COMPRESSED(PTR))
+		return false;
+	return VARDATA_COMPRESSED_GET_COMPRESS_METHOD(PTR) ==
 		TOAST_ZSTD_DICT_COMPRESSION_ID;
 }
 

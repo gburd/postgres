@@ -318,7 +318,7 @@ dict_get_ddict(Oid dictid)
  * VARHDRSZ_COMPRESSED_DICT bytes of header; toast_compress_datum() fills in
  * va_tcinfo and the method byte.
  */
-varlena *
+static varlena *
 zstd_dict_compress_datum(const varlena *value, Oid dictid)
 {
 #ifndef USE_ZSTD
@@ -348,7 +348,7 @@ zstd_dict_compress_datum(const varlena *value, Oid dictid)
 #endif
 }
 
-varlena *
+static varlena *
 zstd_dict_decompress_datum(const varlena *value)
 {
 #ifndef USE_ZSTD
@@ -388,7 +388,7 @@ zstd_dict_decompress_datum(const varlena *value)
  * continues the previous frame.  The one-shot call used now starts a new
  * frame each time and needs no reset.
  */
-varlena *
+static varlena *
 zstd_dict_decompress_datum_slice(const varlena *value, int32 slicelength)
 {
 	varlena    *result = zstd_dict_decompress_datum(value);
@@ -396,6 +396,74 @@ zstd_dict_decompress_datum_slice(const varlena *value, int32 slicelength)
 	if (VARSIZE(result) - VARHDRSZ > slicelength)
 		SET_VARSIZE(result, slicelength + VARHDRSZ);
 	return result;
+}
+
+/*
+ * The zstd dictionary codec.  See DictCompressRoutine in
+ * toast_dictionary.h.
+ */
+static const DictCompressRoutine zstd_dict_routine = {
+	.compress = zstd_dict_compress_datum,
+	.decompress = zstd_dict_decompress_datum,
+	.decompress_slice = zstd_dict_decompress_datum_slice,
+};
+
+/*
+ * Pick the dictionary codec for a compression method char (for compress) or
+ * for the method byte already in a datum (for decompress).  Adding a codec is
+ * one case here plus its DictCompressRoutine.
+ */
+static const DictCompressRoutine *
+dict_routine_for_method(char cmethod)
+{
+	switch (cmethod)
+	{
+		case TOAST_ZSTD_DICT_COMPRESSION:
+			return &zstd_dict_routine;
+		default:
+			elog(ERROR, "invalid dictionary compression method %d", cmethod);
+			return NULL;		/* keep compiler quiet */
+	}
+}
+
+static const DictCompressRoutine *
+dict_routine_for_id(ToastCompressionId cmid)
+{
+	switch (cmid)
+	{
+		case TOAST_ZSTD_DICT_COMPRESSION_ID:
+			return &zstd_dict_routine;
+		default:
+			elog(ERROR, "invalid dictionary compression method id %d", cmid);
+			return NULL;		/* keep compiler quiet */
+	}
+}
+
+/*
+ * Compress value with dictid using the codec named by cmethod, laying out the
+ * dictionary header.  Returns NULL if the value did not get smaller.
+ */
+varlena *
+toast_dict_compress_datum(const varlena *value, char cmethod, Oid dictid)
+{
+	return dict_routine_for_method(cmethod)->compress(value, dictid);
+}
+
+/* Decompress a dictionary-compressed datum, dispatching on its method byte. */
+varlena *
+toast_dict_decompress_datum(const varlena *value)
+{
+	ToastCompressionId cmid = VARDATA_COMPRESSED_GET_COMPRESS_METHOD(value);
+
+	return dict_routine_for_id(cmid)->decompress(value);
+}
+
+varlena *
+toast_dict_decompress_datum_slice(const varlena *value, int32 slicelength)
+{
+	ToastCompressionId cmid = VARDATA_COMPRESSED_GET_COMPRESS_METHOD(value);
+
+	return dict_routine_for_id(cmid)->decompress_slice(value, slicelength);
 }
 
 /*

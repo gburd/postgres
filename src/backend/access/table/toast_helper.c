@@ -162,7 +162,7 @@ toast_tuple_init(ToastTupleContext *ttc)
 			if (VARATT_IS_COMPRESSED_DICT(new_value) &&
 				!toast_dictionary_keep(ttc->ttc_rel, att->attnum, new_value))
 			{
-				varlena    *plain = zstd_dict_decompress_datum(new_value);
+				varlena    *plain = toast_dict_decompress_datum(new_value);
 
 				if ((ttc->ttc_attr[i].tai_colflags & TOASTCOL_NEEDS_FREE) != 0)
 					pfree(new_value);
