@@ -42,6 +42,7 @@ tests += {
       'bark_lpdead_snapshot',
       'bark_unique_rebuild',
       'bark_excl_hot',
+      'bark_sample_split',
     ],
     'regress_args': ['--temp-config', files('../injection_points/extra.conf')],
     # Injection points are cluster-wide.
