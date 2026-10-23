@@ -1623,9 +1623,23 @@ whose rows have several entries.  bark_index_parent_check takes ShareLock
 and also walks the tree level by level from the root: each level's
 downlinks must name, in order, exactly the pages of the level below, each
 equal to the high key of the child before it, and each parent's high key
-equal to its last child's.  pg_amcheck checks BARK indexes, and btree
-indexes BARK implements, when the database's amcheck is version 1.7 or
-later (prepare_btree_command).
+equal to its last child's.  It then follows every OVERSIZED entry's chain,
+leaf entries', high keys' and downlinks', to its end by the bark_next links
+(bark_check_chains): a chain may not reach a page that is not an overflow
+page, reach a page a chain already reached (a loop, or two chains that
+cross), or be longer than its entry needs.  A chain is followed once
+however many pivots share it.  An overflow page that no chain reaches is
+reported with a WARNING, by orphaned chain (its first page and its number
+of pages), and not as corruption: a chain is written before the entry
+that references it, so a crash, or an error such as running out of disk
+space, between the two leaves the chain's pages unreferenced (see
+XLOG_BARK_OVERFLOW).  A deleted overflow page, which VACUUM freed and
+which awaits recycling, is not an overflow page and is not reported.
+Nothing reclaims orphaned pages but REINDEX (follow-up R4c: VACUUM would
+free a chain no entry references once the transaction that wrote it is
+over).  pg_amcheck checks BARK
+indexes, and btree indexes BARK implements, when the database's amcheck
+is version 1.7 or later (prepare_btree_command).
 
 With checkunique (amcheck 1.8), both functions also walk the leaves of a
 unique index by right links and report a run of equal key columns, which
