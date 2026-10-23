@@ -2790,11 +2790,14 @@ bark_insert_key(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 			/*
 			 * bark_fastpath_leaf found room for a row's first key; a later
 			 * key of the row may not fit, and with no stack the leaf cannot
-			 * split.  Descend for it.
+			 * split.  Descend for it.  An oversized key's chain, which no
+			 * entry references, is freed; the descent writes another.
 			 */
+			UnlockReleaseBuffer(buf);
+			if (oversized)
+				(void) bark_free_oversized(index, entry);
 			if (entry != itup)
 				pfree(entry);
-			UnlockReleaseBuffer(buf);
 			return BARK_PLACE_RETRY;
 		}
 		else

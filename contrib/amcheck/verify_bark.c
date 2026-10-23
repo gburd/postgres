@@ -998,7 +998,7 @@ bark_check_chains(Relation rel, BarkChains *chains)
 					(errmsg_plural("BARK index \"%s\" has an orphaned overflow chain of %u page at block %u",
 								   "BARK index \"%s\" has an orphaned overflow chain of %u pages at block %u",
 								   n, RelationGetRelationName(rel), n, first),
-					 errdetail("No entry references these pages.  A crash between writing an oversized entry's overflow chain and inserting the entry leaves such pages."),
+					 errdetail("No entry references these pages.  A crash or error between writing an oversized entry's overflow chain and inserting the entry, or a crash while VACUUM frees a chain, leaves such pages."),
 					 errhint("REINDEX reclaims them.")));
 		}
 	}
