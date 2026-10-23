@@ -2383,8 +2383,8 @@ bark_sample_find(Relation index, BarkKeyInfo *keyinfo, BarkKeySample *sample,
  * the leaves from the one a scan for start begins at, share-locked one at a
  * time, at most BARK_SAMPLE_LEAVES of them.  Returns true when the count is
  * complete (an entry past end, or the last leaf, was reached), false when
- * the leaf limit stopped it; *ntids is the count so far, *nleaves the leaves
- * read.  There is no snapshot: an entry not yet marked dead counts, though
+ * the leaf limit, or a right link to a page that is no longer a leaf,
+ * stopped it; *ntids is the count so far, *nleaves the leaves read.  There is no snapshot: an entry not yet marked dead counts, though
  * its row may be.
  */
 static bool
@@ -2433,7 +2433,18 @@ bark_sample_count(Relation index, BarkKeyInfo *keyinfo,
 			return false;
 		buf = ReadBuffer(index, next);
 		LockBuffer(buf, BUFFER_LOCK_SHARE);
-		off = BarkPageFirstDataKey(BarkPageGetOpaque(BufferGetPage(buf)));
+		page = BufferGetPage(buf);
+
+		/*
+		 * No snapshot holds a deleted leaf back from reuse, so the right link
+		 * may lead to a page recycled as something else: stop there.
+		 */
+		if (PageIsNew(page) || !BarkPageIsLeaf(BarkPageGetOpaque(page)))
+		{
+			UnlockReleaseBuffer(buf);
+			return false;
+		}
+		off = BarkPageFirstDataKey(BarkPageGetOpaque(page));
 	}
 }
 
@@ -2561,7 +2572,7 @@ bark_estimate_qual_selectivity(IndexOptInfo *index, int indexcol, Expr *clause)
 			if (bark_sample_count(indexRel, keyinfo, &start, &end, &ntids,
 								  &nleaves))
 				bsel = ntids / reltuples;
-			else
+			else if (nleaves > 0)
 				bsel = Max(bsel, Max(ntids, ntids / nleaves * (inside + 1) *
 									 leavesper) / reltuples);
 		}
