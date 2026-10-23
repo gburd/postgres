@@ -393,3 +393,182 @@ PG_PROP(exclusion_rejects_overlap)
 		pg_free(err);
 	pg_prop_disconnect(conn);
 }
+
+/*
+ * CF 6270: "skip check constraints verification for unaffected columns during
+ * UPDATE" (Jian He).  The patch lets an UPDATE skip re-verifying a validated
+ * CHECK whose columns are none of the ones being updated, reasoning that the
+ * unchanged columns already satisfied it in the old tuple.  If the server's
+ * notion of "columns being updated" is ever wrong, or a CHECK's column set is
+ * under-counted, an UPDATE could leave a row that violates its CHECK.
+ *
+ * Invariant (holds with or without the optimisation): the server accepts an
+ * UPDATE IFF every resulting row satisfies every CHECK.  We build the UPDATE's
+ * SET list and, in lockstep, a projection that computes each column's new
+ * value (the SET expression where assigned, the old column otherwise); the
+ * expected answer is whether every projected row satisfies all three CHECKs.
+ * After issuing the UPDATE we compare accept/reject, and -- defence in depth --
+ * assert no surviving row violates any CHECK, which catches a silent mis-skip
+ * even if the expectation were computed wrong.
+ *
+ * The CHECKs mix single-column (a) and multi-column (a+b, c<d) so a subset
+ * UPDATE exercises both the skipped path (CHECK references no updated column)
+ * and the verified path (CHECK overlaps one).  SET expressions may reference
+ * another column, so an assigned column's new value can depend on an
+ * unchanged one.  No trigger, no whole-row ref, all CHECKs validated: exactly
+ * the conditions under which the patch takes the skip.
+ */
+PG_PROP(update_preserves_check)
+{
+	pg_prop_conn *conn = connect_c(tc);
+	char	   *err = NULL;
+	int			nseed = (int) pg_prop_draw_int(tc, 1, 20);
+	int			nupd = (int) pg_prop_draw_int(tc, 1, 25);
+	int			i;
+
+	if (!pg_prop_sql_exec(conn,
+						  "DROP TABLE IF EXISTS up_c; "
+						  "CREATE TABLE up_c (id serial PRIMARY KEY, "
+						  "a int, b int, c int, d int, "
+						  "CONSTRAINT ck_a CHECK (a >= -6), "
+						  "CONSTRAINT ck_ab CHECK (a + b >= 0), "
+						  "CONSTRAINT ck_cd CHECK (c < d))",
+						  &err))
+		pg_prop_fail(tc, "setup failed: %s", err ? err : "");
+
+	/* seed rows that all satisfy the CHECKs, so UPDATE is the only risk */
+	for (i = 0; i < nseed; i++)
+	{
+		StringInfoData q;
+		int			a = (int) pg_prop_draw_int(tc, 0, C_K_MAX);
+		int			b = (int) pg_prop_draw_int(tc, 0, C_K_MAX);
+		int			c = (int) pg_prop_draw_int(tc, C_K_MIN, 0);
+		int			d = c + (int) pg_prop_draw_int(tc, 1, 6);
+
+		initStringInfo(&q);
+		appendStringInfo(&q,
+						 "INSERT INTO up_c (a,b,c,d) VALUES (%d,%d,%d,%d)",
+						 a, b, c, d);
+		if (!pg_prop_sql_exec(conn, q.data, &err))
+			pg_prop_fail(tc, "seed insert rejected (%s): %s",
+						 q.data, err ? err : "");
+		pfree(q.data);
+	}
+
+	for (i = 0; i < nupd; i++)
+	{
+		static const char *const cols[] = {"a", "b", "c", "d"};
+		StringInfoData set;		/* UPDATE ... SET <set> */
+		StringInfoData proj;	/* projected new values: <expr> AS a, ... */
+		StringInfoData where;
+		StringInfoData chk;
+		StringInfoData upd;
+		bool		any = false;
+		bool		accepted;
+		bool		expect_accept;
+		bool		failed = false;
+		char	   *v;
+		int			j;
+
+		initStringInfo(&set);
+		initStringInfo(&proj);
+		initStringInfo(&where);
+
+		/* some UPDATEs restrict to a subset of rows */
+		if (pg_prop_draw_int(tc, 0, 2) == 0)
+			appendStringInfo(&where, " WHERE id %% 2 = %d",
+							 (int) pg_prop_draw_int(tc, 0, 1));
+
+		for (j = 0; j < 4; j++)
+		{
+			char		expr[64];
+			bool		assign = (pg_prop_draw_int(tc, 0, 1) == 1);
+
+			/* force at least the last column if nothing assigned yet */
+			if (j == 3 && !any)
+				assign = true;
+
+			if (assign)
+			{
+				if (pg_prop_draw_int(tc, 0, 1) == 0)
+					snprintf(expr, sizeof(expr), "%d",
+							 (int) pg_prop_draw_int(tc, C_K_MIN - 3, C_K_MAX + 3));
+				else
+					snprintf(expr, sizeof(expr), "%s %c %d",
+							 cols[(j + 1) % 4],
+							 pg_prop_draw_int(tc, 0, 1) ? '+' : '-',
+							 (int) pg_prop_draw_int(tc, 0, 4));
+
+				if (any)
+					appendStringInfoString(&set, ", ");
+				appendStringInfo(&set, "%s = %s", cols[j], expr);
+				any = true;
+			}
+
+			/* projection: the new value where assigned, else the old column */
+			if (j > 0)
+				appendStringInfoString(&proj, ", ");
+			appendStringInfo(&proj, "(%s) AS %s", assign ? expr : cols[j], cols[j]);
+		}
+
+		/*
+		 * Expected acceptance: do all affected rows, after the SET, still
+		 * satisfy every CHECK?  bool_and over zero affected rows is NULL,
+		 * which we treat as accept (a vacuous UPDATE changes nothing).
+		 */
+		initStringInfo(&chk);
+		appendStringInfo(&chk,
+						 "SELECT bool_and(a >= -6 AND a + b >= 0 AND c < d) "
+						 "FROM (SELECT %s FROM up_c%s) s",
+						 proj.data, where.data);
+		v = pg_prop_sql_scalar(conn, chk.data, &failed, &err);
+		expect_accept = (v == NULL) || (v[0] == '\0') || (strcmp(v, "t") == 0);
+		if (v)
+			pg_free(v);
+		if (failed)
+			pg_prop_fail(tc, "expectation query failed (%s): %s",
+						 chk.data, err ? err : "");
+
+		initStringInfo(&upd);
+		appendStringInfo(&upd, "UPDATE up_c SET %s%s", set.data, where.data);
+		accepted = try_insert(tc, conn, upd.data);
+
+		if (accepted != expect_accept)
+			pg_prop_fail(tc,
+						 "UPDATE accept/reject wrong: expect_accept=%d "
+						 "accepted=%d; sql=[%s]",
+						 (int) expect_accept, (int) accepted, upd.data);
+
+		/* no surviving row may violate any CHECK, regardless of accept */
+		{
+			bool		f2 = false;
+			char	   *bad = pg_prop_sql_scalar(conn,
+												 "SELECT count(*) FROM up_c "
+												 "WHERE NOT (a >= -6 AND a + b >= 0 AND c < d)",
+												 &f2, &err);
+			long		nbad = bad ? atol(bad) : 0;
+
+			if (bad)
+				pg_free(bad);
+			if (f2)
+				pg_prop_fail(tc, "violation scan failed: %s", err ? err : "");
+			if (nbad > 0)
+				pg_prop_fail(tc,
+							 "CHECK violated after UPDATE: %ld bad row(s); "
+							 "sql=[%s]",
+							 nbad, upd.data);
+		}
+
+		pfree(set.data);
+		pfree(proj.data);
+		pfree(where.data);
+		pfree(chk.data);
+		pfree(upd.data);
+	}
+
+	pg_prop_sql_exec(conn, "DROP TABLE IF EXISTS up_c", &err);
+	if (err)
+		pg_free(err);
+	pg_prop_disconnect(conn);
+}
+
