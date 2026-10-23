@@ -402,9 +402,12 @@ in nbtree, it sizes the new high key as if nothing were truncated.
 An OVERSIZED pivot stays OVERSIZED when one of the attributes it keeps is too
 large to fit inline; its BarkOverflowRef.natts records the attributes kept.
 A high key and the downlink copied from it share one overflow chain, as do an
-internal page's high key and the item it is copied from.  Pivot chains are
-never freed (VACUUM frees only the chains of leaf entries it removes), so the
-sharing needs no reference count.
+internal page's high key and the item it is copied from, and nothing else
+shares a pivot's chain.  The only pivot chain ever freed is that of the
+downlink VACUUM removes when it deletes an empty leaf (bark_delete_empty_leaf):
+the right sibling's, which shares its chain only with the deleted leaf's high
+key, since it is never its internal page's first data item.  So the sharing
+needs no reference count.
 
 Heap TID order
 --------------
@@ -1759,7 +1762,8 @@ locked conditionally and a busy leaf is left for a later VACUUM; nbtree
 avoids the inversion by marking the leaf half-dead first
 (_bt_mark_page_halfdead), which BARK does not do.
 VACUUM also deletes the overflow pages of the OVERSIZED entries it removes
-(bark_free_oversized).
+(bark_free_oversized), and of the right sibling's downlink, which the deletion
+of an empty leaf removes, when it is OVERSIZED.
 
 A deleted page has no items (pd_lower = SizeOfPageHeaderData) and holds a
 BarkDeletedPageData at the end of the tuple area (pd_upper = pd_special -

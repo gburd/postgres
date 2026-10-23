@@ -154,6 +154,12 @@ bark_find_parent_downlink(Relation index, BarkKeyInfo *keyinfo,
  * internal page are all left linked in place -- correct, and still reusable
  * once their siblings are rewritten, just not directly unlinked here.
  *
+ * When the right sibling's downlink, which the deletion removes, is an
+ * OVERSIZED pivot, its overflow chain is freed too, once every lock is
+ * released (bark_free_oversized), and *nfreed counts its pages; otherwise
+ * *nfreed is 0.  See the comment at the deletion for why no other entry
+ * references that chain.
+ *
  * It locks the parent first and then the left sibling, target and right
  * sibling, which is the reverse of the insert path's order (an inserter that
  * splits a leaf keeps the leaf locked until it has locked the parent).  To
@@ -164,7 +170,7 @@ bark_find_parent_downlink(Relation index, BarkKeyInfo *keyinfo,
  */
 static bool
 bark_delete_empty_leaf(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno,
-					   FullTransactionId *safexid)
+					   FullTransactionId *safexid, BlockNumber *nfreed)
 {
 	Buffer		buf;
 	Buffer		lbuf;
@@ -181,11 +187,13 @@ bark_delete_empty_leaf(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno,
 	Page		rpage;
 	Page		ppage;
 	IndexTuple	downlink;
+	IndexTuple	removed = NULL;
 	BarkItemBuf ibuf;
 	XLogRecPtr	recptr;
 	bool		lockedl;
 	bool		lockedt;
 
+	*nfreed = 0;
 	buf = ReadBuffer(index, blkno);
 	LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
 	page = BufferGetPage(buf);
@@ -318,6 +326,34 @@ bark_delete_empty_leaf(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno,
 	 */
 	lowtag = opaque->bark_flags & BARK_LOWBOUND_TAGGED;
 
+	/*
+	 * The removed downlink's overflow chain, if it is OVERSIZED, is freed
+	 * below, after the deletion is logged: no entry references the chain
+	 * once the downlink and the target's high key are gone.  A split puts
+	 * one chain in a leaf's high key and in the downlink copied from it,
+	 * and in nothing else, and an internal page's high key, copied from its
+	 * right sibling's first data item, shares that item's chain.  The
+	 * removed downlink is at downoff + 1, after the target's downlink, so it
+	 * is never its page's first data item, and it never was one: inserts
+	 * into an internal page go after the downlink to the left half of a
+	 * split, and nothing but this deletion, at downoff + 1, removes an item
+	 * from one.  So no internal page's high key holds a copy of it.  The
+	 * level-1 entry cache (barksearch.c) copies only level-2 downlinks, so
+	 * it holds no leaf's downlink.  BARK deletes only leaves and overflow
+	 * pages (BarkPageSetDeleted), never internal pages, so no item moves
+	 * between internal pages but by a split, which copies the chain only as
+	 * above.  A descent or scan that read the downlink before now may still
+	 * read the chain: the freed pages keep their links and stay deleted
+	 * until no snapshot as old as their safexid remains (BarkPageIsRecyclable).
+	 * Each page is freed under its own record, so a crash before the last
+	 * one leaves the rest of the chain unreferenced, as a crash while VACUUM
+	 * frees a leaf entry's chain does.
+	 */
+	downlink = (IndexTuple) PageGetItem(ppage,
+										PageGetItemId(ppage, OffsetNumberNext(downoff)));
+	if (BarkEntryGetShape(downlink) == BARK_SHAPE_OVERSIZED)
+		removed = CopyIndexTuple(downlink);
+
 	/* No ereport(ERROR) until changes are logged */
 	START_CRIT_SECTION();
 
@@ -377,6 +413,12 @@ bark_delete_empty_leaf(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno,
 	UnlockReleaseBuffer(buf);
 	UnlockReleaseBuffer(lbuf);
 	UnlockReleaseBuffer(pbuf);
+
+	if (removed != NULL)
+	{
+		*nfreed = bark_free_oversized(index, removed);
+		pfree(removed);
+	}
 	return true;
 }
 
@@ -1772,14 +1814,16 @@ bark_vacuum_scan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	for (int i = 0; i < vstate.nempty; i++)
 	{
 		FullTransactionId safexid;
+		BlockNumber nfreed;
 
 		if (bark_delete_empty_leaf(index, keyinfo, vstate.emptyleaves[i],
-								   &safexid))
+								   &safexid, &nfreed))
 		{
 			pending[npending].target = vstate.emptyleaves[i];
 			pending[npending].safexid = safexid;
 			npending++;
-			stats->pages_newly_deleted++;
+			/* as the chains the scan frees, in pages_newly_deleted only */
+			stats->pages_newly_deleted += 1 + nfreed;
 			stats->pages_deleted++;
 		}
 	}

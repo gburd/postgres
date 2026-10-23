@@ -13,6 +13,11 @@
 #    copied from it.  The check reports nothing; with its pivot marks
 #    skipped (the bark-check-chains-skip-pivots injection point) it reports
 #    the pivots' chains as orphans, which shows that it marks them.
+# 3. VACUUM deletes an empty leaf of an index whose pivots are OVERSIZED.
+#    The right sibling's downlink, which goes, shared its chain only with
+#    the deleted leaf's high key: VACUUM frees the chain, and the check
+#    reports no orphaned pages, on the primary and on a standby that
+#    replays the deletion under wal_consistency_checking.
 
 use strict;
 use warnings FATAL => 'all';
@@ -27,8 +32,12 @@ if ($ENV{enable_injection_points} ne 'yes')
 }
 
 my $node = PostgreSQL::Test::Cluster->new('main');
-$node->init;
-$node->append_conf('postgresql.conf', 'autovacuum = off');
+$node->init(allows_streaming => 1);
+$node->append_conf(
+	'postgresql.conf', q[
+autovacuum = off
+wal_consistency_checking = 'Bark'
+]);
 $node->start;
 
 # Keys of $n bytes that do not compress: a chain of md5s.
@@ -156,6 +165,65 @@ SELECT bark_index_parent_check('piv_idx');]);
 @w = $err =~ /WARNING:  (.*orphaned overflow chain.*)$/mg;
 is(scalar @w, $pivchains,
 	'with the pivot marks skipped, the check reports each pivot chain');
+
+## 3: VACUUM deletes a leaf whose high key is OVERSIZED
+$node->backup('backup');
+my $standby = PostgreSQL::Test::Cluster->new('standby');
+$standby->init_from_backup($node, 'backup', has_streaming => 1);
+$standby->start;
+
+# 600 keys of 20 kB: six leaves under one root, every downlink but the
+# first OVERSIZED.
+$node->safe_psql(
+	'postgres', q[
+CREATE TABLE vac_t (id int, k text);
+CREATE INDEX vac_idx ON vac_t USING bark (k);
+INSERT INTO vac_t SELECT g, lpad(g::text, 4, '0') || big(g, 20000)
+  FROM generate_series(1, 600) g;
+]);
+my $root = $node->safe_psql('postgres', "SELECT root FROM bark_metap('vac_idx')");
+my ($leaf, $rightdl) = split /\|/, $node->safe_psql(
+	'postgres', qq[
+SELECT downlink, (SELECT overflow_blkno FROM bark_page_items('vac_idx', $root)
+                  WHERE itemoffset = 4)
+FROM bark_page_items('vac_idx', $root) WHERE itemoffset = 3]);
+is( $node->safe_psql(
+		'postgres', qq[
+SELECT count(*) FROM bark_page_items('vac_idx', $root)
+WHERE shape = 'OVERSIZED' AND itemoffset IN (3, 4)]),
+	'2', 'the root has OVERSIZED downlinks to the second leaf and the next');
+
+# Empty the second leaf (an interior one) and VACUUM, which deletes it.
+$node->safe_psql(
+	'postgres', qq[
+DELETE FROM vac_t WHERE ctid IN
+  (SELECT htid FROM bark_page_items('vac_idx', $leaf) WHERE ntids = 1);
+VACUUM vac_t;
+]);
+is( $node->safe_psql(
+		'postgres', "SELECT type FROM bark_page_stats('vac_idx', $leaf)"),
+	'deleted', 'VACUUM deleted the emptied leaf');
+is( $node->safe_psql(
+		'postgres', "SELECT type FROM bark_page_stats('vac_idx', $rightdl)"),
+	'deleted',
+	"VACUUM freed the chain of the right sibling's downlink");
+($rc, @w) = parent_check('vac_idx');
+is($rc, 0, 'the parent check passes vac_idx');
+is(scalar @w, 0, 'and reports no orphaned pages') or diag(join("\n", @w));
+
+$node->wait_for_replay_catchup($standby);
+is( $standby->safe_psql(
+		'postgres', "SELECT type FROM bark_page_stats('vac_idx', $rightdl)"),
+	'deleted', 'the standby replayed the freeing of the chain');
+is( $standby->safe_psql(
+		'postgres', q[
+SET enable_seqscan = off; SET enable_bitmapscan = off;
+SELECT count(*) FROM vac_t WHERE k > '0']),
+	$node->safe_psql('postgres', 'SELECT count(*) FROM vac_t'),
+	'an index scan on the standby finds every row');
+$standby->stop;
+ok(!$standby->log_contains('inconsistent page found'),
+	'wal_consistency_checking found every replayed page consistent');
 
 $node->stop;
 done_testing();
