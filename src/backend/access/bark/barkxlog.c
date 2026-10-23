@@ -691,71 +691,53 @@ bark_xlog_unlink_page(XLogReaderState *record)
 /*
  * Replay the lowering of a leaf's lower bound (bark_lower_bound), the second
  * form of an UNLINK_PAGE record (XLH_BARK_UNLINK_LOWER_SEP, no block 0): the
- * left page's new high key, the right page's BARK_LOWBOUND_TAGGED cleared,
- * the parent's new downlink at poffset, each when its block is in the
- * record.  The blocks are locked left page, right page, parent, the order
- * bark_xlog_unlink_page uses, and held until the record is applied.
+ * left page's new high key (block 1), the right page's BARK_LOWBOUND_TAGGED
+ * cleared (block 2), the parent's new downlink at poffset (block 3), each
+ * when its block is in the record.  The blocks are locked in that order,
+ * left page, right page, parent, as bark_xlog_unlink_page does, and held
+ * until the record is applied.
  */
 static void
 bark_xlog_lower_bound(XLogReaderState *record)
 {
 	XLogRecPtr	lsn = record->EndRecPtr;
 	xl_bark_unlink_page *xlrec = (xl_bark_unlink_page *) XLogRecGetData(record);
-	Buffer		leftbuf = InvalidBuffer;
-	Buffer		rightbuf = InvalidBuffer;
-	Buffer		parentbuf = InvalidBuffer;
-	Page		page;
-	char	   *item;
-	Size		len;
+	Buffer		bufs[4] = {InvalidBuffer, InvalidBuffer, InvalidBuffer,
+	InvalidBuffer};
 
 	Assert(!XLogRecHasBlockRef(record, 0));
 
-	if (XLogRecHasBlockRef(record, 1) &&
-		XLogReadBufferForRedo(record, 1, &leftbuf) == BLK_NEEDS_REDO)
+	for (uint8 block_id = 1; block_id <= 3; block_id++)
 	{
-		page = BufferGetPage(leftbuf);
-		item = XLogRecGetBlockData(record, 1, &len);
-		if (!PageIndexTupleOverwrite(page, BARK_P_HIKEY, item, len))
-			elog(PANIC, "failed to lower the high key of BARK block %u during replay",
-				 xlrec->leftsib);
+		Page		page;
+		char	   *item;
+		Size		len;
+		bool		fits PG_USED_FOR_ASSERTS_ONLY = true;
+
+		if (!XLogRecHasBlockRef(record, block_id) ||
+			XLogReadBufferForRedo(record, block_id, &bufs[block_id]) != BLK_NEEDS_REDO)
+			continue;
+		page = BufferGetPage(bufs[block_id]);
+		item = XLogRecGetBlockData(record, block_id, &len);
+		/* Each new pivot is smaller than the one it replaces. */
+		if (block_id == 1)
+			fits = PageIndexTupleOverwrite(page, BARK_P_HIKEY, item, len);
+		else if (block_id == 2)
+			BarkPageGetOpaque(page)->bark_flags &= ~BARK_LOWBOUND_TAGGED;
+		else
+			fits = PageIndexTupleOverwrite(page, xlrec->poffset, item, len);
+		Assert(fits);
 		PageSetLSN(page, lsn);
-		MarkBufferDirty(leftbuf);
+		MarkBufferDirty(bufs[block_id]);
 	}
 
-	if (XLogRecHasBlockRef(record, 2) &&
-		XLogReadBufferForRedo(record, 2, &rightbuf) == BLK_NEEDS_REDO)
+	for (uint8 block_id = 1; block_id <= 3; block_id++)
 	{
-		page = BufferGetPage(rightbuf);
-		BarkPageGetOpaque(page)->bark_flags &= ~BARK_LOWBOUND_TAGGED;
-		PageSetLSN(page, lsn);
-		MarkBufferDirty(rightbuf);
+		bark_verify_redo(record, block_id, bufs[block_id],
+						 InvalidOffsetNumber, InvalidOffsetNumber);
+		if (BufferIsValid(bufs[block_id]))
+			UnlockReleaseBuffer(bufs[block_id]);
 	}
-
-	if (XLogRecHasBlockRef(record, 3) &&
-		XLogReadBufferForRedo(record, 3, &parentbuf) == BLK_NEEDS_REDO)
-	{
-		page = BufferGetPage(parentbuf);
-		item = XLogRecGetBlockData(record, 3, &len);
-		if (!PageIndexTupleOverwrite(page, xlrec->poffset, item, len))
-			elog(PANIC, "failed to lower a downlink of BARK block %u during replay",
-				 xlrec->rightsib);
-		PageSetLSN(page, lsn);
-		MarkBufferDirty(parentbuf);
-	}
-
-	bark_verify_redo(record, 1, leftbuf, InvalidOffsetNumber,
-					 InvalidOffsetNumber);
-	bark_verify_redo(record, 2, rightbuf, InvalidOffsetNumber,
-					 InvalidOffsetNumber);
-	bark_verify_redo(record, 3, parentbuf, InvalidOffsetNumber,
-					 InvalidOffsetNumber);
-
-	if (BufferIsValid(leftbuf))
-		UnlockReleaseBuffer(leftbuf);
-	if (BufferIsValid(rightbuf))
-		UnlockReleaseBuffer(rightbuf);
-	if (BufferIsValid(parentbuf))
-		UnlockReleaseBuffer(parentbuf);
 }
 
 /*

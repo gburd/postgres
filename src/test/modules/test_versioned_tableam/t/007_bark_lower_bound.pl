@@ -310,6 +310,76 @@ is_deeply(
 	'busy: the next VACUUM lowers the bound');
 check_index('tb_k', 'busy, then lowered');
 
+# Run VACUUM `tab` in the background, stopped at bark-lower-bound-start,
+# after its scan, holding no lock; `between` runs while it waits, then it
+# carries on.  Returns its untagging line and reasons.  (Once VACUUM holds
+# the parent, which every descent reads, no other backend can reach P1 or
+# P2 that has not already.)
+sub vacuum_around
+{
+	my ($tab, $idx, $sets, $between) = @_;
+	$node->safe_psql('postgres',
+		q{SELECT injection_points_attach('bark-lower-bound-start', 'wait')});
+	my $bg = $node->background_psql('postgres', on_error_stop => 0);
+	$bg->query_until(qr/start/, qq{
+		SET test_versioned_tableam.stale_tags = live; $sets
+		SET client_min_messages = debug2;
+		\\echo start
+		VACUUM $tab;
+	});
+	$node->wait_for_event('client backend', 'bark-lower-bound-start');
+	$between->();
+	$node->safe_psql('postgres', q{
+		SELECT injection_points_detach('bark-lower-bound-start');
+		SELECT injection_points_wakeup('bark-lower-bound-start')});
+	$bg->query('SELECT 1');
+	my @line = vacuum_line($idx, $bg->{stderr});
+	$bg->quit;
+	return @line;
+}
+
+# Entries of row 1 tagged 1 .. t0 - 1 go on P1, emptied by VACUUM's scan,
+# and split it (it holds about 217).
+sub split_p1
+{
+	my ($tab, $t0) = @_;
+	return qq{
+		SET test_versioned_tableam.stale_tags = live;
+		SELECT count(test_versioned_insert_entry('${tab}_k', ctid, g))
+		  FROM $tab, generate_series(1, $t0 - 1) g WHERE id = 1;
+	};
+}
+
+# (4b) Decline: P1 splits before VACUUM locks the parent, and the split
+# fails halfway (an error at bark-leave-leaf-split-incomplete), leaving P1
+# BARK_INCOMPLETE_SPLIT with a right link to the new page, which has no
+# downlink yet.  So the parent's downlinks still match (P1's, then P2's),
+# and VACUUM finds the split only under P1's lock.
+make_run('ts', 1, 5);
+($p2, $p1, $lo, $hi, $first, $t0) = pages('ts_k', 'p1.prev = 0');
+is_deeply(
+	[ vacuum_around('ts', 'ts_k',
+		"SET test_versioned_tableam.stale_dead_min = $lo; SET test_versioned_tableam.stale_dead_max = $hi; SET test_versioned_tableam.untag_tag = $first;",
+		sub {
+			$node->safe_psql('postgres',
+				q{SELECT injection_points_attach('bark-leave-leaf-split-incomplete', 'error')});
+			my ($ret, $out, $err) = $node->psql('postgres', split_p1('ts', $t0));
+			like($err, qr/bark-leave-leaf-split-incomplete/, 'P1 splits: the split stops halfway');
+			$node->safe_psql('postgres',
+				q{SELECT injection_points_detach('bark-leave-leaf-split-incomplete')});
+		}) ],
+	[ 'untagged 0, kept 1, dup 0, lowered 0', 'its left sibling split' ],
+	'P1 splits: VACUUM keeps the bound');
+like($node->safe_psql('postgres', qq{SELECT flags FROM leaves('ts_k') WHERE blk = $p1}),
+	qr/incomplete_split/, 'P1 splits: P1 is the left half of an incomplete split');
+# an insert into P1's range, untagged, finishes the split
+$node->safe_psql('postgres', q{
+	SET test_versioned_tableam.stale_tags = live;
+	SELECT test_versioned_insert_entry('ts_k', '(0,1)', 0)});
+unlike($node->safe_psql('postgres', qq{SELECT flags FROM leaves('ts_k') WHERE blk = $p1}),
+	qr/incomplete_split/, 'P1 splits: an insert finished the split');
+check_index('ts_k', 'P1 splits');
+
 # (5) Decline: P2 is its parent's first child, so the bound is also the
 # parent's lower bound, the high key of the parent's left sibling.  Long
 # keys give a tree with several level-1 pages over one run.
@@ -355,7 +425,7 @@ $node->safe_psql('postgres',
 is_deeply(
 	[ vacuum('tn', 'tn_k',
 		"SET test_versioned_tableam.stale_dead_min = $lo; SET test_versioned_tableam.stale_dead_max = $hi; SET test_versioned_tableam.untag_tag = $first;") ],
-	[ 'untagged 0, kept 1, dup 0, lowered 1', '' ],
+	[ 'untagged 0, kept 1, dup 0, lowered 0', "a test lowered its parent's downlink alone" ],
 	'parent only: VACUUM lowers the downlink alone');
 $node->safe_psql('postgres',
 	q{SELECT injection_points_detach('bark-lower-bound-skip-hikey')});

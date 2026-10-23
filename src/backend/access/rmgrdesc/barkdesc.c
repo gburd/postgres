@@ -90,13 +90,12 @@ bark_desc(StringInfo buf, XLogReaderState *record)
 				/* The record's second form (see xl_bark_unlink_page). */
 				if (xlrec->flags & XLH_BARK_UNLINK_LOWER_SEP)
 				{
-					BlockNumber parent = InvalidBlockNumber;
+					BlockNumber parent;
 
-					if (XLogRecHasBlockRef(record, 3))
-						XLogRecGetBlockTag(record, 3, NULL, NULL, &parent);
 					appendStringInfo(buf, "lower separator, left: %u, right: %u, ",
 									 xlrec->leftsib, xlrec->rightsib);
-					if (XLogRecHasBlockRef(record, 3))
+					if (XLogRecGetBlockTagExtended(record, 3, NULL, NULL,
+												   &parent, NULL))
 						appendStringInfo(buf, "parent: %u, poffset: %u",
 										 parent, xlrec->poffset);
 					else
