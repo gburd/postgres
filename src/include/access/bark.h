@@ -1947,6 +1947,11 @@ extern int	bark_compare_bound(Relation index, BarkKeyInfo *keyinfo,
  * cache" in the README).  An internal page is never deleted and its low key
  * never changes, so a slot is never wrong about which keys may start there;
  * the page it names is still checked under its lock.
+ *
+ * sample is the planner's sample of the index's separator keys
+ * (bark_estimate_qual_selectivity), NULL until first built.  It lives in a
+ * child context of rd_indexcxt of its own, not in this chunk, and is
+ * rebuilt when the root moves.
  */
 typedef struct BarkL1Slot
 {
@@ -1968,6 +1973,7 @@ typedef struct BarkAmCache
 	int			maxl1;			/* level-1 slots allocated */
 	Size		l1keylen;		/* bytes of level-1 low keys in use */
 	Size		maxl1keylen;	/* bytes of level-1 low keys allocated */
+	struct BarkKeySample *sample;	/* the planner's, or NULL (bark.c) */
 	char		markerdata[FLEXIBLE_ARRAY_MEMBER];
 } BarkAmCache;
 
@@ -1978,6 +1984,16 @@ extern void bark_end_vacuum(void);
 extern void bark_end_vacuum_callback(int code, Datum arg);
 
 extern BarkAmCache *bark_get_amcache(Relation index);
+
+/*
+ * Fraction of the heap's rows a qual `clause` on extracted column `indexcol`
+ * of BARK index `index` matches, from the index's separators; -1 when the
+ * index cannot say (hypothetical, empty, a single leaf, the extracted column
+ * not the first key column, a non-Const argument).  bark.c.
+ */
+struct Expr;
+extern double bark_estimate_qual_selectivity(IndexOptInfo *index, int indexcol,
+											 struct Expr *clause);
 extern void bark_l1_reset(BarkAmCache *cache);
 extern Size bark_l1_region_size(BarkAmCache *cache);
 extern BlockNumber bark_get_root(Relation index, uint32 *level_out);

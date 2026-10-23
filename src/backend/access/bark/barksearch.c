@@ -340,6 +340,7 @@ bark_get_amcache(Relation index)
 		cache->markerlen = 0;
 		cache->nl1 = cache->maxl1 = 0;
 		cache->l1keylen = cache->maxl1keylen = 0;
+		cache->sample = NULL;
 		index->rd_amcache = cache;
 	}
 	return cache;
