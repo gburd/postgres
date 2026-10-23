@@ -44,6 +44,7 @@
 #include "utils/fmgrprotos.h"
 #include "utils/injection_point.h"
 #include "utils/lsyscache.h"
+#include "utils/memutils.h"
 #include "utils/selfuncs.h"
 #include "utils/spccache.h"
 
@@ -1992,6 +1993,41 @@ bark_cost_keys_per_row(IndexOptInfo *index, bool *multikey)
 }
 
 /*
+ * Run procedure procoid, indexcol's procedure 8, on value, the constant of
+ * op, a qual on the extracted column indexcol, as the scan does at rescan:
+ * its boundaries in *result (*nresult of them), its recheck answer and the
+ * BarkQueryFlags it set.  indexRel, the open index or NULL for a
+ * hypothetical one, is handed to procedure 8 in the flags.
+ */
+static void
+bark_cost_extract(IndexOptInfo *index, int indexcol, Oid procoid, OpExpr *op,
+				  Datum value, Relation indexRel, BarkBoundary **result,
+				  int32 *nresult, bool *recheck, BarkQueryFlags *flags)
+{
+	FmgrInfo	flinfo;
+	Pointer		extra = NULL;
+	Datum		strategy;
+
+	strategy = Int16GetDatum(get_op_opfamily_strategy(op->opno,
+													  index->opfamily[indexcol]));
+	fmgr_info(procoid, &flinfo);
+	set_fn_opclass_options(&flinfo, index->opclassoptions[indexcol]);
+	memset(flags, 0, sizeof(*flags));
+	flags->index = indexRel;
+	if (get_func_nargs(procoid) >= 7)
+		FunctionCall7Coll(&flinfo, index->indexcollations[indexcol],
+						  value, strategy,
+						  PointerGetDatum(result), PointerGetDatum(nresult),
+						  PointerGetDatum(&extra), PointerGetDatum(recheck),
+						  PointerGetDatum(flags));
+	else
+		FunctionCall6Coll(&flinfo, index->indexcollations[indexcol],
+						  value, strategy,
+						  PointerGetDatum(result), PointerGetDatum(nresult),
+						  PointerGetDatum(&extra), PointerGetDatum(recheck));
+}
+
+/*
  * The number of boundaries procedure 8 makes of clause, a qual on the
  * extracted column indexcol, run on its constant as gincost_pattern runs
  * GIN's extractQuery: the scan descends once per boundary.  *noseen says
@@ -2010,9 +2046,7 @@ bark_cost_boundaries(IndexOptInfo *index, int indexcol, Expr *clause,
 	FmgrInfo    flinfo;
 	BarkBoundary *result = NULL;
 	int32       nresult = 0;
-	Pointer     extra = NULL;
 	BarkQueryFlags flags;
-	Datum       strategy;
 	Relation	indexRel = NULL;
 
 	*noseen = false;
@@ -2065,28 +2099,13 @@ bark_cost_boundaries(IndexOptInfo *index, int indexcol, Expr *clause,
 					searchMode == GIN_SEARCH_MODE_INCLUDE_EMPTY ? 1 : 2), 1);
 	}
 
-	strategy = Int16GetDatum(get_op_opfamily_strategy(op->opno,
-													  index->opfamily[indexcol]));
-	fmgr_info(procoid, &flinfo);
-	set_fn_opclass_options(&flinfo, index->opclassoptions[indexcol]);
-	memset(&flags, 0, sizeof(flags));
 	if (!index->hypothetical)
 	{
 		/* plancat.c has locked the index. */
 		indexRel = index_open(index->indexoid, NoLock);
-		flags.index = indexRel;
 	}
-	if (get_func_nargs(procoid) >= 7)
-		FunctionCall7Coll(&flinfo, index->indexcollations[indexcol],
-						  ((Const *) arg)->constvalue, strategy,
-						  PointerGetDatum(&result), PointerGetDatum(&nresult),
-						  PointerGetDatum(&extra), PointerGetDatum(recheck),
-						  PointerGetDatum(&flags));
-	else
-		FunctionCall6Coll(&flinfo, index->indexcollations[indexcol],
-						  ((Const *) arg)->constvalue, strategy,
-						  PointerGetDatum(&result), PointerGetDatum(&nresult),
-						  PointerGetDatum(&extra), PointerGetDatum(recheck));
+	bark_cost_extract(index, indexcol, procoid, op, ((Const *) arg)->constvalue,
+					  indexRel, &result, &nresult, recheck, &flags);
 	if (indexRel != NULL)
 		index_close(indexRel, NoLock);
 
@@ -2109,6 +2128,451 @@ bark_cost_boundaries(IndexOptInfo *index, int indexcol, Expr *clause,
 		(result[0].lower == result[0].upper ||
 		 result[0].lower->argument == result[0].upper->argument);
 	return Max(nresult + (flags.searchnulls ? 1 : 0), 1);
+}
+
+/*
+ * The planner's sample of an index's separator keys, for
+ * bark_estimate_qual_selectivity: up to BARK_SAMPLE_KEYS pivots in key
+ * order, copied from one level of the tree, and the root it was read
+ * under.  It hangs off BarkAmCache.sample but lives in a context of its
+ * own, a child of rd_indexcxt named BARK_SAMPLE_CXT, because a relcache
+ * reload of an index (RelationReloadIndexInfo) frees rd_amcache and keeps
+ * rd_indexcxt: a sample allocated in rd_indexcxt itself would leak on every
+ * invalidation.  bark_sample_get deletes the old context, orphaned or not,
+ * before it builds a new one, so a backend keeps at most one per index.
+ */
+typedef struct BarkKeySample
+{
+	BlockNumber root;			/* the root the sample was read under */
+	int			nkeys;
+	IndexTuple	keys[FLEXIBLE_ARRAY_MEMBER];
+} BarkKeySample;
+
+#define BARK_SAMPLE_KEYS	1024	/* separator keys kept */
+#define BARK_SAMPLE_PAGES	64		/* pages read per level */
+#define BARK_SAMPLE_LEAVES	4		/* leaves an exact count reads */
+#define BARK_SAMPLE_CXT		"BARK key sample"
+
+/*
+ * Read up to BARK_SAMPLE_PAGES internal pages of one level, left to right
+ * from blkno, share-locking one at a time, and append to *keys (*nkeys of
+ * *maxkeys used, in CurrentMemoryContext) a copy of every downlink's key.
+ * The minus-infinity downlink has none, and an oversized one is left out:
+ * its key is on an overflow chain, which the sample could outlive.  Returns
+ * the downlinks read; *complete says the walk reached the level's right end,
+ * and *child is the first downlink, the leftmost page of the level below.
+ */
+static int
+bark_sample_level(Relation index, BlockNumber blkno, IndexTuple **keys,
+				  int *nkeys, int *maxkeys, bool *complete,
+				  BlockNumber *child)
+{
+	int			ndown = 0;
+
+	*complete = false;
+	*child = BARK_P_NONE;
+	for (int npages = 0; npages < BARK_SAMPLE_PAGES; npages++)
+	{
+		Buffer		buf = ReadBuffer(index, blkno);
+		Page		page;
+		BarkPageOpaque opaque;
+
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buf);
+		opaque = BarkPageGetOpaque(page);
+		if (!BarkPageIgnore(opaque) && !BarkPageIsLeaf(opaque))
+		{
+			OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
+
+			for (OffsetNumber off = BarkPageFirstDataKey(opaque); off <= maxoff;
+				 off = OffsetNumberNext(off))
+			{
+				IndexTuple	itup = (IndexTuple) PageGetItem(page,
+															PageGetItemId(page, off));
+
+				if (*child == BARK_P_NONE)
+					*child = BarkEntryGetDownLink(itup);
+				ndown++;
+				if (BarkEntryGetShape(itup) != BARK_SHAPE_PIVOT ||
+					BarkPivotGetNAtts(itup) == 0)
+					continue;
+				if (*nkeys >= *maxkeys)
+				{
+					*maxkeys *= 2;
+					*keys = repalloc_array(*keys, IndexTuple, *maxkeys);
+				}
+				(*keys)[(*nkeys)++] = CopyIndexTuple(itup);
+			}
+		}
+		blkno = opaque->bark_next;
+		UnlockReleaseBuffer(buf);
+		if (blkno == BARK_P_NONE)
+		{
+			*complete = true;
+			break;
+		}
+	}
+	return ndown;
+}
+
+/*
+ * The index's separator sample, built on first use and again whenever the
+ * root has moved since (bark_get_root refreshes cache->root); NULL when the
+ * root is a leaf or the index is empty.
+ *
+ * The sample is one level's downlink keys: level 1's, one per leaf, when
+ * that level has at most BARK_SAMPLE_PAGES pages.  It is found top down:
+ * from the root, a level is read whole and the walk moves down while the
+ * level below has at most BARK_SAMPLE_PAGES pages (the downlinks just read);
+ * otherwise it keeps this level's keys, one per subtree, which cover the
+ * whole key range at a coarser grain.  Reading level 1 from its left end
+ * until the budget ran out would sample only the left end of a big index.
+ * The keys are then thinned evenly to BARK_SAMPLE_KEYS.  A level that
+ * splits during the walk can take it past the budget, which then leaves a
+ * few pages at the right end out; the sample is an estimate's input, and
+ * the next root split rebuilds it.
+ */
+static BarkKeySample *
+bark_sample_get(Relation index)
+{
+	BarkAmCache *cache;
+	BlockNumber root;
+	uint32		level;
+	BlockNumber blkno;
+	IndexTuple *keys;
+	int			nkeys = 0;
+	int			maxkeys = 256;
+	int			nsample;
+	MemoryContext cxt;
+	MemoryContext child;
+	BarkKeySample *sample;
+
+	root = bark_get_root(index, &level);
+	cache = bark_get_amcache(index);
+	if (root == BARK_P_NONE || level == 0)
+		return NULL;
+	if (cache->sample != NULL && cache->sample->root == root)
+		return cache->sample;
+
+	INJECTION_POINT("bark-sample-build", NULL);
+
+	keys = palloc_array(IndexTuple, maxkeys);
+	blkno = root;
+	for (;;)
+	{
+		bool		complete;
+		BlockNumber down;
+		int			ndown;
+
+		ndown = bark_sample_level(index, blkno, &keys, &nkeys, &maxkeys,
+								  &complete, &down);
+		if (level <= 1 || !complete || ndown > BARK_SAMPLE_PAGES ||
+			down == BARK_P_NONE)
+			break;
+		for (int i = 0; i < nkeys; i++)
+			pfree(keys[i]);
+		nkeys = 0;
+		blkno = down;
+		level--;
+	}
+
+	/* Drop the sample built before, whether cache->sample still names it. */
+	child = index->rd_indexcxt->firstchild;
+	while (child != NULL)
+	{
+		MemoryContext next = child->nextchild;
+
+		if (strcmp(child->name, BARK_SAMPLE_CXT) == 0)
+			MemoryContextDelete(child);
+		child = next;
+	}
+	cache = bark_get_amcache(index);
+	cache->sample = NULL;
+	if (nkeys == 0)
+	{
+		pfree(keys);
+		return NULL;
+	}
+
+	cxt = AllocSetContextCreate(index->rd_indexcxt, BARK_SAMPLE_CXT,
+								ALLOCSET_SMALL_SIZES);
+	nsample = Min(nkeys, BARK_SAMPLE_KEYS);
+	sample = MemoryContextAlloc(cxt, offsetof(BarkKeySample, keys) +
+								nsample * sizeof(IndexTuple));
+	sample->root = root;
+	sample->nkeys = nsample;
+	for (int i = 0; i < nsample; i++)
+	{
+		/* The middle key of each of nsample equal runs of the keys read. */
+		IndexTuple	key = keys[(int) (((int64) 2 * i + 1) * nkeys / (2 * nsample))];
+
+		sample->keys[i] = MemoryContextAlloc(cxt, IndexTupleSize(key));
+		memcpy(sample->keys[i], key, IndexTupleSize(key));
+	}
+	for (int i = 0; i < nkeys; i++)
+		pfree(keys[i]);
+	pfree(keys);
+	cache->sample = sample;
+	return sample;
+}
+
+/*
+ * Set the end of start/end that procedure 8's search element e gives, the
+ * lower one in value order when lower, as bark_mk_set_side and bark_mk_bound
+ * place it: a bound on column 1 that sorts before the entries equal to it
+ * when it is the start and not strict, or the end and strict, and after
+ * them otherwise.  An entry is then inside the boundary when
+ * bark_compare_bound puts the start before it and the end after it.
+ * Returns false for a strategy that cannot end that side.
+ */
+static bool
+bark_sample_side(BarkKeyInfo *keyinfo, const BarkSearchElement *e, bool lower,
+				 BarkScanBound *start, BarkScanBound *end, bool *hasstart,
+				 bool *hasend)
+{
+	BarkKeyColumn *col = &keyinfo->cols[0];
+	bool		strict;
+	bool		isstart;
+	BarkScanBound *bound;
+
+	if (e->strategy == BTEqualStrategyNumber ||
+		e->strategy == (lower ? BTGreaterEqualStrategyNumber :
+						BTLessEqualStrategyNumber))
+		strict = false;
+	else if (e->strategy == (lower ? BTGreaterStrategyNumber :
+							 BTLessStrategyNumber))
+		strict = true;
+	else
+		return false;
+
+	/* In index order a DESC column's upper element comes first. */
+	isstart = lower != col->reverse;
+	bound = isstart ? start : end;
+	*(isstart ? hasstart : hasend) = true;
+	bound->nkeys = 1;
+	bound->upper = isstart ? strict : !strict;
+	bound->backward = false;
+	bound->args[0] = e->argument;
+	bound->procs[0] = &col->cmp;
+	bound->collations[0] = col->collation;
+	return true;
+}
+
+/* The number of sample keys bound sorts after (bark_compare_bound). */
+static int
+bark_sample_find(Relation index, BarkKeyInfo *keyinfo, BarkKeySample *sample,
+				 const BarkScanBound *bound)
+{
+	int			low = 0;
+	int			high = sample->nkeys;
+
+	while (low < high)
+	{
+		int			mid = low + (high - low) / 2;
+
+		if (bark_compare_bound(index, keyinfo, bound, sample->keys[mid]) > 0)
+			low = mid + 1;
+		else
+			high = mid;
+	}
+	return low;
+}
+
+/*
+ * Count the heap TIDs of the live entries between start and end, reading
+ * the leaves from the one a scan for start begins at, share-locked one at a
+ * time, at most BARK_SAMPLE_LEAVES of them.  Returns true when the count is
+ * complete (an entry past end, or the last leaf, was reached), false when
+ * the leaf limit stopped it; *ntids is the count so far, *nleaves the leaves
+ * read.  There is no snapshot: an entry not yet marked dead counts, though
+ * its row may be.
+ */
+static bool
+bark_sample_count(Relation index, BarkKeyInfo *keyinfo,
+				  const BarkScanBound *start, const BarkScanBound *end,
+				  double *ntids, int *nleaves)
+{
+	Buffer		buf = bark_search_bound(index, keyinfo, start, start->upper);
+	OffsetNumber off;
+	BarkItemBuf ibuf;
+
+	*ntids = 0;
+	*nleaves = 0;
+	if (!BufferIsValid(buf))
+		return true;
+	off = bark_binsrch_bound(index, keyinfo, start, BufferGetPage(buf));
+	for (;;)
+	{
+		Page		page = BufferGetPage(buf);
+		BarkPageOpaque opaque = BarkPageGetOpaque(page);
+		BlockNumber next;
+
+		if (!BarkPageIgnore(opaque))
+		{
+			OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
+
+			(*nleaves)++;
+			for (; off <= maxoff; off = OffsetNumberNext(off))
+			{
+				IndexTuple	itup = BarkPageGetItem(page, off, &ibuf);
+
+				if (bark_compare_bound(index, keyinfo, end, itup) < 0)
+				{
+					UnlockReleaseBuffer(buf);
+					return true;
+				}
+				if (!ItemIdIsDead(PageGetItemId(page, off)))
+					*ntids += bark_entry_count_tids(itup);
+			}
+		}
+		next = opaque->bark_next;
+		UnlockReleaseBuffer(buf);
+		if (next == BARK_P_NONE)
+			return true;
+		if (*nleaves >= BARK_SAMPLE_LEAVES)
+			return false;
+		buf = ReadBuffer(index, next);
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		off = BarkPageFirstDataKey(BarkPageGetOpaque(BufferGetPage(buf)));
+	}
+}
+
+/*
+ * bark_estimate_qual_selectivity -- the fraction of the heap's rows that
+ * clause, an operator with a constant on extracted column indexcol of
+ * index, matches, read from the index; -1 when the index cannot say.
+ *
+ * Procedure 8 makes the constant into boundaries, as the scan does.  Each
+ * boundary is located among the separator sample (bark_sample_get): with m
+ * sample keys inside, it covers m - 1 of the sample's nkeys + 1 intervals
+ * whole and two in part, each counted half, so m intervals (half of one
+ * when m is 0).  That fraction of the key space holds that fraction of the
+ * index's members, fraction * K * rows of them, where K is the members per
+ * row (bark_cost_keys_per_row); a qual on one path matches a row through
+ * about one member, so the selectivity is fraction * K.  (The RethinkDB
+ * review's sketch divided by K; that counts members per row the wrong way
+ * round.)
+ *
+ * A separator is a leaf, not a member: a value whose rows coalesce into
+ * LIST and POSTING entries packs many members per leaf, and the fraction
+ * misses them.  So a boundary that covers at most two intervals, or is a
+ * point, is counted instead, from the leaves (bark_sample_count): a row has
+ * one member per key, so the TIDs are rows, and the selectivity their share
+ * of the heap's.  This is get_actual_variable_range's reading of the index
+ * at plan time.  A boundary that runs past the leaf limit is estimated from
+ * the TIDs per leaf read, over the leaves its intervals cover, or from the
+ * fraction when that is higher.
+ *
+ * -1 for a hypothetical index, an empty one or one whose root is a leaf,
+ * an extracted column that is not the first key column, a non-Const or
+ * NULL argument, a procedure 8 that asks for a recheck or the NULL entries
+ * (its boundaries then hold more than the matches), and an empty heap.
+ */
+double
+bark_estimate_qual_selectivity(IndexOptInfo *index, int indexcol, Expr *clause)
+{
+	OpExpr	   *op = (OpExpr *) clause;
+	Node	   *arg;
+	Oid			procoid;
+	Relation	indexRel;
+	BarkKeySample *sample;
+	BarkKeyInfo *keyinfo;
+	BarkBoundary *result = NULL;
+	int32		nresult = 0;
+	bool		recheck = false;
+	BarkQueryFlags flags;
+	double		reltuples = index->rel->tuples;
+	double		keysperrow;
+	double		leavesper;
+	double		selec = 0.0;
+	bool		multikey;
+
+	if (index->hypothetical || indexcol != 0 || reltuples <= 0 ||
+		!IsA(clause, OpExpr) || list_length(op->args) != 2)
+		return -1;
+	arg = (Node *) lsecond(op->args);
+	if (IsA(arg, RelabelType))
+		arg = (Node *) ((RelabelType *) arg)->arg;
+	if (!IsA(arg, Const) || ((Const *) arg)->constisnull)
+		return -1;
+	procoid = get_opfamily_proc(index->opfamily[indexcol],
+								index->opcintype[indexcol],
+								index->opcintype[indexcol],
+								BARK_EXTRACTQUERY_PROC);
+	if (!OidIsValid(procoid))
+		return -1;
+
+	/* plancat.c has locked the index. */
+	indexRel = index_open(index->indexoid, NoLock);
+	if (bark_index_extracted_column(indexRel) != indexcol + 1 ||
+		(sample = bark_sample_get(indexRel)) == NULL)
+	{
+		index_close(indexRel, NoLock);
+		return -1;
+	}
+	bark_cost_extract(index, indexcol, procoid, op, ((Const *) arg)->constvalue,
+					  indexRel, &result, &nresult, &recheck, &flags);
+	if (recheck || flags.searchnulls)
+	{
+		index_close(indexRel, NoLock);
+		return -1;
+	}
+
+	keysperrow = bark_cost_keys_per_row(index, &multikey);
+	keyinfo = bark_build_keyinfo(indexRel);
+	leavesper = Max((double) index->pages / (sample->nkeys + 1), 1.0);
+	for (int i = 0; i < nresult; i++)
+	{
+		BarkScanBound start;
+		BarkScanBound end;
+		bool		hasstart = false;
+		bool		hasend = false;
+		bool		point;
+		int			lo;
+		int			hi;
+		int			inside;
+		double		bsel;
+
+		if ((result[i].lower != NULL &&
+			 !bark_sample_side(keyinfo, result[i].lower, true, &start, &end,
+							   &hasstart, &hasend)) ||
+			(result[i].upper != NULL &&
+			 !bark_sample_side(keyinfo, result[i].upper, false, &start, &end,
+							   &hasstart, &hasend)))
+		{
+			selec = -1;
+			break;
+		}
+		point = result[i].lower != NULL && result[i].upper != NULL &&
+			result[i].lower->strategy == BTEqualStrategyNumber &&
+			result[i].upper->strategy == BTEqualStrategyNumber;
+
+		lo = hasstart ? bark_sample_find(indexRel, keyinfo, sample, &start) : 0;
+		hi = hasend ? bark_sample_find(indexRel, keyinfo, sample, &end) :
+			sample->nkeys;
+		inside = Max(hi - lo, 0);
+		bsel = (inside > 0 ? inside : 0.5) / (sample->nkeys + 1) * keysperrow;
+
+		if (hasstart && hasend && (inside <= 1 || point))
+		{
+			double		ntids;
+			int			nleaves;
+
+			if (bark_sample_count(indexRel, keyinfo, &start, &end, &ntids,
+								  &nleaves))
+				bsel = ntids / reltuples;
+			else
+				bsel = Max(bsel, Max(ntids, ntids / nleaves * (inside + 1) *
+									 leavesper) / reltuples);
+		}
+		selec += Min(bsel, 1.0);
+	}
+	index_close(indexRel, NoLock);
+
+	if (selec < 0)
+		return -1;
+	CLAMP_PROBABILITY(selec);
+	return selec;
 }
 
 /*
