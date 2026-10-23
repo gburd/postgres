@@ -2414,20 +2414,20 @@ bark_sample_count(Relation index, BarkKeyInfo *keyinfo,
 
 		if (!BarkPageIgnore(opaque))
 		{
-			OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
+			/* The first entry past end, found by binary search, as a scan's. */
+			OffsetNumber endoff = bark_binsrch_bound(index, keyinfo, end, page);
 
 			(*nleaves)++;
-			for (; off <= maxoff; off = OffsetNumberNext(off))
+			for (; off < endoff; off = OffsetNumberNext(off))
 			{
-				IndexTuple	itup = BarkPageGetItem(page, off, &ibuf);
-
-				if (bark_compare_bound(index, keyinfo, end, itup) < 0)
-				{
-					UnlockReleaseBuffer(buf);
-					return true;
-				}
 				if (!ItemIdIsDead(PageGetItemId(page, off)))
-					*ntids += bark_entry_count_tids(itup);
+					*ntids += bark_entry_count_tids(BarkPageGetItem(page, off,
+																	&ibuf));
+			}
+			if (endoff <= PageGetMaxOffsetNumber(page))
+			{
+				UnlockReleaseBuffer(buf);
+				return true;
 			}
 		}
 		next = opaque->bark_next;
