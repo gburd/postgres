@@ -53,6 +53,47 @@ EXPLAIN (COSTS OFF) SELECT * FROM wc_sel WHERE doc #= '["p2", true]';
 EXPLAIN (COSTS OFF) SELECT * FROM wc_sel WHERE doc #? 'p1';
 EXPLAIN (COSTS OFF) SELECT * FROM wc_sel WHERE doc #? 'p2';
 
+-- More quals, each against its count: a value past every sample key, a
+-- path with no keys (an empty point, estimated at one row), a narrow
+-- range that runs past the four leaves an exact count reads
+-- (extrapolated), and an OR, which the planner estimates per arm.
+INSERT INTO wc_sel_q VALUES
+  (8, 'doc #> ''["p3", 99999]'''),
+  (9, 'doc #= ''["zz", 1]'''),
+  (10, 'doc #>= ''["p3", 2]'' AND doc #<= ''["p3", 3]'''),
+  (11, 'doc #= ''["p2", true]'' OR doc #= ''["p3", 7]''');
+SELECT n, q, act, est BETWEEN act / 3.0 AND act * 3.0 AS within_3x
+  FROM wc_sel_q, LATERAL wc_est('wc_sel', q) WHERE n > 7 ORDER BY n;
+
+-- Quals the index does not answer keep the default: a constant that is
+-- NULL, a non-constant argument, the operator with the column on the
+-- right, and a path the include projection drops (procedure 8 then asks
+-- for the NULL entries, which hold more than the matches).
+SELECT (wc_est('wc_sel', 'doc #= NULL')).est;
+SELECT (wc_est('wc_sel', 'doc #= jsonb_build_array(''p2'', id > 0)')).est;
+SELECT (wc_est('wc_sel', '''{"p2": true}''::jsonb #= jsonb_build_array(''p2'', id > 0)')).est;
+CREATE TABLE wc_inc (id int, doc jsonb) WITH (autovacuum_enabled = off);
+INSERT INTO wc_inc SELECT * FROM wc_sel;
+CREATE INDEX wc_inc_doc ON wc_inc USING bark (doc bark_jsonb_wildcard_ops (include = 'id'));
+ANALYZE wc_inc;
+SELECT (wc_est('wc_inc', 'doc #= ''["p2", true]''')).est;
+SELECT n, q, act, est BETWEEN act / 3.0 AND act * 3.0 AS within_3x
+  FROM wc_sel_q, LATERAL wc_est('wc_inc', q) WHERE n = 7;
+DROP TABLE wc_inc;
+
+-- Keys too long for a leaf live on overflow chains, and so do the
+-- separators between them, which the sample leaves out; a narrow range
+-- among them still lands within 3x.
+CREATE TABLE wc_big (id int, doc jsonb) WITH (autovacuum_enabled = off);
+INSERT INTO wc_big
+  SELECT g, jsonb_build_object('k', lpad(g::text, 6, '0') || repeat('x', 3000))
+    FROM generate_series(1, 2000) g;
+CREATE INDEX wc_big_doc ON wc_big USING bark (doc bark_jsonb_wildcard_ops);
+ANALYZE wc_big;
+SELECT est BETWEEN act / 3.0 AND act * 3.0 AS within_3x, act
+  FROM wc_est('wc_big', format('doc #< %L', jsonb_build_array('k', '000400')));
+DROP TABLE wc_big;
+
 -- A one-leaf index cannot say, so the estimate stays the default: 0.5% of
 -- 1000 rows for =, though every row matches.
 CREATE TABLE wc_small (id int, doc jsonb) WITH (autovacuum_enabled = off);
