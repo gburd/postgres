@@ -307,9 +307,9 @@ tags and never interprets them.
   on the page, a leftmost page, or a page without
   <code>BARK_LOWBOUND_TAGGED</code>. That flag marks a leaf whose lower
   bound may have a tag. A split sets it on its right half when the high key
-  keeps a tag, and page deletion hands it to the right sibling. It is never
-  cleared. An entry that cannot move stays tagged (LIVE), and VACUUM counts
-  it at DEBUG2. The design's other branch, delete and reinsert by a
+  keeps a tag, and page deletion hands it to the right sibling. An entry
+  that cannot move is kept tagged (LIVE) through the scan, and VACUUM then
+  lowers the bound (T2, below) and untags it, or counts it at DEBUG2. The design's other branch, delete and reinsert by a
   descent, is not built: a scan reads one page at a time, so moving an
   entry to another page could make it miss the row or return it twice.
 * '''Split points.''' A leaf split cuts a run of one row's entries only
@@ -371,11 +371,26 @@ sequence of updates and VACUUMs. All of them run under
 <code>wal_consistency_checking</code> with a standby. The validator's own
 test plants a zero tag.
 
-''Follow-ups.'' T2: an entry whose page's lower bound may carry a
-tag stays tagged. Lowering the separator would clear it: once the run's
-dead entries are gone, set the left page's high key and the parent pivot
-to (K, L) untagged. A table AM that must clear every tag (xid-wraparound)
-needs T2. V2: versioned multikey indexes.
+* '''Lowering a lower bound (T2, 2026-10-23).''' After its scan, VACUUM
+  lowers a tagged lower bound (K, L, t0) of a page whose first entry it kept
+  tagged to (K, L) with no tag (<code>bark_lower_bound</code>): the left
+  sibling's high key and the parent's downlink, once the left page holds no
+  entry of (K, L), and clears the page's flag, then untags the entry in
+  place. No entry moves; a reader that read the old bound moves right from
+  the left page's new high key, as after a split. Locks as page deletion's,
+  the parent first and both leaves tried without waiting. Logged as the
+  second form of <code>XLOG_BARK_UNLINK_PAGE</code>
+  (<code>XLH_BARK_UNLINK_LOWER_SEP</code>, no block 0), since the rmgr has no
+  free opcode. It declines, and a later VACUUM retries, when a lock is busy
+  or the run still has a live entry on the left page; and stays declined
+  when the page is its parent's first child (the bound is then also a
+  separator a level up), an OVERSIZED bound, or an empty left page whose
+  own lower bound is in the run.
+
+''Follow-ups.'' T2 leaves a tag whose bound is a parent's first child's,
+about once per parent fan-out of tagged bounds; lowering it at the upper
+levels too would clear every tag, if a table AM needs that
+(xid-wraparound). V2: versioned multikey indexes.
 
 === C-MVCC: visibility, SSI, and the index-only / recheck path ===
 
