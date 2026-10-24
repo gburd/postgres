@@ -3214,15 +3214,13 @@ bark_parallel_release(IndexScanDesc scan, BlockNumber next_page,
 
 /*
  * Make room for at least `need` items in pos->items.  The array is kept for
- * the life of the scan, across rescans, and its first allocation holds
- * BARK_POS_INIT_ITEMS, enough for any leaf without POSTING entries: a coded
- * LIST spends at least a byte per TID, so a leaf of LISTs holds fewer than
- * BLCKSZ TIDs.  A POSTING entry's set can be denser, so the array still
- * grows when a leaf holds more.  Growing it a doubling at a time from a
- * small size cost every scan of a dense leaf several repallocs, and glibc a
- * brk and a trim per query.
+ * the life of the scan, across rescans.  It starts at BARK_POS_INIT_ITEMS,
+ * which keeps it under AllocSet's chunk limit (ALLOC_CHUNK_LIMIT), so a
+ * scan that fits takes no malloc of its own; it is not sized for the
+ * densest leaf, since an allocation of that size (192 kB) costs an mmap and
+ * munmap per query wherever malloc keeps a fixed mmap threshold.
  */
-#define BARK_POS_INIT_ITEMS BLCKSZ
+#define BARK_POS_INIT_ITEMS 256
 
 static void
 bark_pos_reserve(BarkScanOpaque so, BarkScanPosData *pos, int need)
