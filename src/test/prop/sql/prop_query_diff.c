@@ -176,6 +176,13 @@ run_diff(pg_prop_tc *tc, pg_prop_conn *conn, const char *query)
 	int			i;
 
 	/*
+	 * This oracle is subject to the vacuous-pass guard: arm it now (so a run
+	 * that never reaches a real comparison is failed, not passed) and mark the
+	 * case non-vacuous once the reference query has actually run (below).
+	 */
+	pg_prop_opt_into_vacuous_guard(tc);
+
+	/*
 	 * Debug knob: when PG_PROP_DIFF_DEBUG names a file, append every query
 	 * this oracle runs to it.  Used to verify generator reproducibility --
 	 * repeated same-seed runs should log an identical query (see
@@ -213,6 +220,15 @@ run_diff(pg_prop_tc *tc, pg_prop_conn *conn, const char *query)
 					 err ? err : "", query);
 	}
 	pg_free(err);
+
+	/*
+	 * The reference query actually ran: this case does real work (it will
+	 * compare the reference against every other config).  Mark it non-vacuous
+	 * so a run in which every case bailed out earlier (empty database,
+	 * unparsable query, server down) is reported as a failure rather than a
+	 * silent pass.
+	 */
+	pg_prop_nonvacuous(tc);
 
 	for (i = 1; i < N_CONFIGS; i++)
 	{
