@@ -10,7 +10,7 @@ EXTENSION = bark_wildcard
 DATA = bark_wildcard--1.0.sql
 
 REGRESS = bark_wildcard bark_wildcard_scan bark_wildcard_sel
-EXTRA_INSTALL = contrib/amcheck contrib/pageinspect
+EXTRA_INSTALL = contrib/amcheck contrib/pageinspect src/test/modules/bark_multikey
 # Paths and strings sort by the database's collation; keep the output stable.
 NO_LOCALE = 1
 

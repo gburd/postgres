@@ -77,6 +77,13 @@ INSERT INTO wc_inc SELECT * FROM wc_sel;
 CREATE INDEX wc_inc_doc ON wc_inc USING bark (doc bark_jsonb_wildcard_ops (include = 'id'));
 ANALYZE wc_inc;
 SELECT (wc_est('wc_inc', 'doc #= ''["p2", true]''')).est;
+-- A parameter, in a generic plan: the cost estimate counts one boundary,
+-- here through the RelabelType that makes the varchar a text.
+PREPARE wc_sel_p(varchar) AS SELECT * FROM wc_sel WHERE doc #? $1;
+SET plan_cache_mode = force_generic_plan;
+EXPLAIN (COSTS OFF) EXECUTE wc_sel_p('p2');
+RESET plan_cache_mode;
+DEALLOCATE wc_sel_p;
 SELECT n, q, act, est BETWEEN act / 3.0 AND act * 3.0 AS within_3x
   FROM wc_sel_q, LATERAL wc_est('wc_inc', q) WHERE n = 7;
 DROP TABLE wc_inc;
@@ -142,6 +149,93 @@ ALTER TABLE wc_sel DISABLE ROW LEVEL SECURITY;
 DROP POLICY wc_sel_few ON wc_sel;
 REVOKE SELECT ON wc_sel FROM regress_wc_sel;
 DROP ROLE regress_wc_sel;
+
+-- A range past the leaf limit that the sample has no key inside (the
+-- index grew after ANALYZE, and the sample is rebuilt only when the root
+-- moves) takes the larger of its leaves' density over the interval, the
+-- TIDs read and the half-interval fraction: here the density, still low
+-- as the sample is stale.  Then a range whose four leaves hold only dead
+-- entries, where the fraction is the largest.
+CREATE TEMP TABLE wc_grow (id int, doc jsonb);
+INSERT INTO wc_grow SELECT g, jsonb_build_object('id', g) FROM generate_series(1, 2000) g;
+CREATE INDEX wc_grow_doc ON wc_grow USING bark (doc bark_jsonb_wildcard_ops);
+ANALYZE wc_grow;
+SELECT est, act FROM wc_est('wc_grow', 'doc #>= ''["g", 0]''');
+INSERT INTO wc_grow SELECT g, jsonb_build_object('g', g) FROM generate_series(1, 3000) g;
+INSERT INTO wc_grow SELECT g, jsonb_build_object('f', g) FROM generate_series(1, 3000) g;
+DELETE FROM wc_grow WHERE doc ? 'f';
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*) FROM wc_grow WHERE doc #>= '["f", 0]';
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SELECT est < act AS low, act FROM wc_est('wc_grow', 'doc #>= ''["g", 0]''');
+SELECT est > 1 AS from_fraction, act FROM wc_est('wc_grow', 'doc #>= ''["f", 0]''');
+DROP TABLE wc_grow;
+
+-- An empty build is one leaf, which cannot say: here a table never
+-- analyzed, which the planner takes for ten pages of rows.  Nor can an
+-- empty heap, once ANALYZE has counted it: the estimate is then one row.
+CREATE TABLE wc_empty (id int, doc jsonb) WITH (autovacuum_enabled = off);
+CREATE INDEX wc_empty_doc ON wc_empty USING bark (doc bark_jsonb_wildcard_ops);
+SELECT est > 1 AS assumed_rows, act
+  FROM wc_est('wc_empty', 'doc #= ''["p1", true]''');
+ANALYZE wc_empty;
+SELECT est, act FROM wc_est('wc_empty', 'doc #= ''["p1", true]''');
+DROP TABLE wc_empty;
+
+-- Entries an index scan marked dead (LP_DEAD: their rows are dead to every
+-- snapshot, which a temp table keeps other sessions out of) are not
+-- counted, in a leaf an exact count reads or one a wide range's density is
+-- read from: v = 1 is deleted whole, and every other id after it.
+CREATE TEMP TABLE wc_dead (id int, doc jsonb);
+INSERT INTO wc_dead
+  SELECT g, jsonb_build_object('id', g, 'v', CASE WHEN g <= 30000 THEN 1 ELSE 2 END)
+    FROM generate_series(1, 40000) g;
+CREATE INDEX wc_dead_doc ON wc_dead USING bark (doc bark_jsonb_wildcard_ops);
+DELETE FROM wc_dead WHERE id <= 30000 OR id % 2 = 0;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*) FROM wc_dead WHERE doc #= '["v", 1]';
+SELECT count(*) FROM wc_dead WHERE doc #> '["id", 0]';
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+ANALYZE wc_dead;
+SELECT est, act FROM wc_est('wc_dead', 'doc #= ''["v", 1]''');
+SELECT q, act, est BETWEEN act / 3.0 AND act * 3.0 AS within_3x
+  FROM (VALUES ('doc #= ''["v", 2]'''), ('doc #> ''["id", 100]''')) v(q),
+       LATERAL wc_est('wc_dead', q);
+DROP TABLE wc_dead;
+
+-- bark_wildcard_sel serves any BARK operator.  bark_multikey's range class
+-- makes boundaries open at one end (|>|, |<=|), and two for |<>|, whose
+-- sum is more than every row; one past every key has no sample key inside,
+-- so it is half an interval.  A procedure 8 that asks for a recheck,
+-- |%|'s, cannot say (its boundaries hold more than the matches), nor can a
+-- class with GIN's query interface (no procedure 8): each keeps the
+-- default, 1% for |%|, and a third for %^%.
+CREATE EXTENSION bark_multikey;
+ALTER OPERATOR |>| (int4[], int4) SET (RESTRICT = bark_wildcard_sel);
+ALTER OPERATOR |<=| (int4[], int4) SET (RESTRICT = bark_wildcard_sel);
+ALTER OPERATOR |<>| (int4[], int4) SET (RESTRICT = bark_wildcard_sel);
+ALTER OPERATOR |%| (int4[], int4[]) SET (RESTRICT = bark_wildcard_sel);
+ALTER OPERATOR %^% (text[], text) SET (RESTRICT = bark_wildcard_sel);
+CREATE TABLE wc_mk (id int, a int4[]) WITH (autovacuum_enabled = off);
+INSERT INTO wc_mk SELECT g, ARRAY[g, 100000 + g % 100] FROM generate_series(1, 20000) g;
+CREATE INDEX wc_mk_a ON wc_mk USING bark (a bark_int4_array_range_ops);
+ANALYZE wc_mk;
+SELECT q, act, est BETWEEN act / 3.0 AND act * 3.0 AS within_3x
+  FROM (VALUES ('a |>| 100050'), ('a |<=| 15000'), ('a |<>| 100050')) v(q),
+       LATERAL wc_est('wc_mk', q);
+SELECT est < 1000 AS few, act FROM wc_est('wc_mk', 'a |>| 200000');
+SELECT est, act FROM wc_est('wc_mk', 'a |%| ''{100002, 100004}''');
+CREATE TABLE wc_pfx (id int, t text[]) WITH (autovacuum_enabled = off);
+INSERT INTO wc_pfx SELECT g, ARRAY['w' || g] FROM generate_series(1, 5000) g;
+CREATE INDEX wc_pfx_t ON wc_pfx USING bark (t bark_text_prefix_ops);
+ANALYZE wc_pfx;
+SELECT est, act FROM wc_est('wc_pfx', 't %^% ''w12''');
+DROP TABLE wc_mk, wc_pfx;
+DROP EXTENSION bark_multikey;
 
 -- The sample is rebuilt after each invalidation, in a memory context that
 -- replaces the old one: a hundred ANALYZEs, each followed by a plan, must
