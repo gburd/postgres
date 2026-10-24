@@ -1687,6 +1687,18 @@ extern int	bark_posting_count(IndexTuple itup);
 extern int	bark_posting_get_tids(IndexTuple itup, ItemPointer out, int maxout,
 								  uint16 stride);
 
+/*
+ * The members of a LIST or POSTING body copied out of its entry (a scan's
+ * copy, BarkScanMembers): a coded LIST's n locators from its
+ * BarkCodedListHdr on, and a POSTING entry's from its sbm serialization,
+ * into an array grown in cxt as needed.
+ */
+extern void bark_coded_body_get_tids(const char *body, int n,
+									 ItemPointer out, uint16 stride);
+extern int	bark_posting_body_get_tids(const uint8 *data, Size len,
+									   ItemPointer *out, int *outalloc,
+									   MemoryContext cxt, uint16 stride);
+
 /* ----------------------------------------------------------------------------
  * OVERSIZED entry construction and overflow-chain I/O (barkutils.c)
  * ----------------------------------------------------------------------------
@@ -2203,36 +2215,92 @@ typedef struct BarkArrayKeyState
 	struct BarkMkScanState *mk;
 } BarkArrayKeyState;
 
+/* One item per data entry a leaf can hold. */
+#define BARK_POS_MAX_ITEMS		MaxIndexTuplesPerPage
+
+/*
+ * A run of the members of item `item` of currPos that the executor found
+ * dead, lo to hi inclusive (bark_killitems).
+ */
+typedef struct BarkKillRun
+{
+	int			item;
+	int			lo;
+	int			hi;
+} BarkKillRun;
+
+
 /*
  * Scan position (modeled on nbtree's BTScanPosData).  A scan reads one leaf at
- * a time: under a single share lock bark_readpage copies every matching heap
- * TID on the page into items[], then releases the lock, and bark_gettuple
- * returns items from that local copy without touching the page again.  A
+ * a time: under a single share lock bark_readpage copies every matching
+ * entry on the page into items[], then releases the lock, and bark_gettuple
+ * returns rows from that local copy without touching the page again.  A
  * concurrent insert or split on the leaf therefore cannot shift the scan's
  * place on it; the scan moves on by the sibling links it saved when it read
  * the page.
  *
+ * items[] holds one item per matching entry, not per heap TID, so it is
+ * bounded by the page (MaxIndexTuplesPerPage, BARK_POS_MAX_ITEMS) and is
+ * allocated once, at 6.5 kB, under AllocSet's chunk limit.  A SINGLE or
+ * OVERSIZED entry's item holds its heap TID.  A LIST or POSTING entry's
+ * item holds its body, copied into the tuple workspace (currTuples), and
+ * the rows of its members are returned one per bark_gettuple call, decoded
+ * from that copy: a LIMIT 1 decodes the entry it returns from, not the
+ * page.  memberIndex is the member returned last of item itemIndex; nmembers
+ * is its member count.  A multikey scan filters an entry's members when the
+ * page is read (bark_mk_accept, bark_mk_seen) and keeps the survivors as a
+ * plain TID array instead.  See "Scans" in the README.
+ *
  * items[] is always in index order (ascending offset, and ascending TID within
  * one LIST or POSTING entry), whichever direction the page was read in;
- * itemIndex is the item most recently returned.  It is kept across rescans
- * and grown as needed rather than sized like nbtree's MaxTIDsPerBTreePage,
- * because one POSTING entry can expand to far more TIDs than that bound.
+ * itemIndex is the item most recently returned.
  *
  * For an index-only scan each matching entry's key tuple is copied once into
- * the scan's tuple workspace (currTuples), and every member item refers to it
- * by tupleOffset.  The workspace can exceed 64kB when a page holds OVERSIZED
+ * the scan's tuple workspace, and every member returned refers to it by
+ * tupleOffset.  The workspace can exceed 64kB when a page holds OVERSIZED
  * entries (each resolves to its full tuple), so tupleOffset is wider than
  * nbtree's LocationIndex.
  */
 typedef struct BarkScanPosItem
 {
-	ItemPointerData heapTid;	/* one member TID */
 	IndexVersionTag tag;		/* the entry's version tag, 0 if untagged */
-	OffsetNumber indexOffset;	/* entry's offset on the page when read */
-	uint32		tupleOffset;	/* entry's copy in currTuples (IOS only) */
-	bool		recheck;		/* return it with xs_recheck (multikey) */
-	bool		killed;			/* the executor found its row dead to all */
+	ItemPointerData heapTid;	/* its heap TID, unless BARK_ITEM_MEMBERS */
+	uint16		indexOffset;	/* entry's offset on the page when read, and
+								 * the BARK_ITEM_* flags in its high bits */
+	uint32		tupleOffset;	/* in currTuples: the entry's key copy (when
+								 * keys are saved), or its BarkScanMembers
+								 * with BARK_ITEM_MEMBERS */
 } BarkScanPosItem;
+
+#define BARK_ITEM_OFFSET_MASK	0x0FFF	/* indexOffset's offset bits */
+#define BARK_ITEM_MEMBERS		0x4000	/* several members, in currTuples */
+#define BARK_ITEM_RECHECK		0x8000	/* return it with xs_recheck */
+
+StaticAssertDecl(MaxIndexTuplesPerPage <= BARK_ITEM_OFFSET_MASK,
+				 "BARK_ITEM_OFFSET_MASK cannot hold a leaf offset");
+
+/*
+ * The members of an item with BARK_ITEM_MEMBERS, at a MAXALIGNed offset in
+ * the tuple workspace: this header, then, at BarkScanMembersBody, the body
+ * of the entry as on the page (a plain LIST's TID array, a coded LIST's
+ * BarkCodedListHdr and deltas, a POSTING entry's sbm serialization), or,
+ * for a multikey scan, the TIDs left after its filters, as an array.
+ */
+typedef struct BarkScanMembers
+{
+	uint16		shape;			/* BARK_MEMBERS_* */
+	uint16		count;			/* members, except for a POSTING body */
+	uint32		nbytes;			/* bytes of the body */
+	uint32		keyOffset;		/* the entry's key copy, when keys are saved */
+} BarkScanMembers;
+
+#define BARK_MEMBERS_ARRAY		0	/* ItemPointerData[count] */
+#define BARK_MEMBERS_CODED		1	/* a coded LIST's body */
+#define BARK_MEMBERS_POSTING	2	/* a POSTING entry's sbm */
+
+#define BarkScanMembersBody(m) \
+	((char *) (m) + MAXALIGN(sizeof(BarkScanMembers)))
+
 
 typedef struct BarkScanPosData
 {
@@ -2262,10 +2330,11 @@ typedef struct BarkScanPosData
 	int			firstItem;		/* first valid index in items[] */
 	int			lastItem;		/* last valid index in items[] */
 	int			itemIndex;		/* item most recently returned */
+	int			memberIndex;	/* its member returned last */
+	int			nmembers;		/* its number of members */
 	uint32		nextTupleOffset;	/* first free byte in currTuples */
 
-	BarkScanPosItem *items;		/* palloc'd, maxItems entries */
-	int			maxItems;
+	BarkScanPosItem *items;		/* palloc'd, BARK_POS_MAX_ITEMS entries */
 } BarkScanPosData;
 
 typedef BarkScanPosData *BarkScanPos;
@@ -2314,31 +2383,52 @@ typedef struct BarkScanOpaqueData
 	BarkScanPosData currPos;	/* current position */
 
 	/*
-	 * How many of currPos's items the executor found dead to every snapshot
-	 * (kill_prior_tuple; BarkScanPosItem.killed), for bark_killitems to mark
-	 * when the scan leaves the page, as nbtree's numKilled.
+	 * The rows of currPos the executor found dead to every snapshot
+	 * (kill_prior_tuple), for bark_killitems to mark when the scan leaves the
+	 * page, as nbtree's killedItems: per item, the run of its members killed
+	 * (BarkKillRun), allocated at the first kill.  numKilled counts the kills
+	 * since the page was read.
 	 */
+	BarkKillRun *killRuns;
 	int			numKilled;
 
 	/*
 	 * Mark/restore (nbtree's markItemIndex/markPos).  A mark on the page in
-	 * currPos only records markItemIndex; bark_steppage copies currPos into
-	 * markPos when the scan is about to leave that page.  So a mark is in
-	 * markItemIndex when it is >= 0, else in markPos.  markPos has its own
-	 * items array and, for an index-only scan, its own tuple workspace.
+	 * currPos only records markItemIndex and markMemberIndex; bark_steppage
+	 * copies currPos into markPos when the scan is about to leave that page.
+	 * So a mark is in markItemIndex when it is >= 0, else in markPos, which
+	 * has its own items array and its own tuple workspace.
 	 */
 	int			markItemIndex;	/* itemIndex, or -1 if not valid */
+	int			markMemberIndex;	/* memberIndex, with markItemIndex */
 	BarkScanPosData markPos;	/* marked position, if any */
 
-	/* index-only scans: key tuples of the entries in currPos/markPos.items */
+	/* the key tuples and members of the entries in currPos/markPos.items */
 	char	   *currTuples;		/* palloc'd workspace, or NULL */
 	uint32		currTuplesSize; /* its allocated size */
 	char	   *markTuples;		/* palloc'd workspace, or NULL */
 	uint32		markTuplesSize; /* its allocated size */
 
-	/* scratch buffer for one entry's member TIDs while reading a page */
+	/*
+	 * The member TIDs of currPos's item memberItem (-1: none loaded): the
+	 * item's heapTid, its copied TID array, or entryTids, into which a coded
+	 * LIST or POSTING body is decoded.  A multikey scan also decodes each
+	 * entry into entryTids while it reads a page.
+	 */
+	int			memberItem;
+	ItemPointer memberTids;
 	ItemPointer entryTids;
 	int			entryTidsAlloc;
+
+	/* the marked item's member count, with markItemIndex */
+	int			markNmembers;
+
+	/*
+	 * First size of currTuples and markTuples: BLCKSZ when they hold only the
+	 * copied LIST and POSTING bodies of a page, which are no larger than the
+	 * page; BLCKSZ * 2, nbtree's size, when they hold keys too.
+	 */
+	uint32		tuplesInit;
 
 	/*
 	 * ScalarArrayOp (SAOP) state: one BarkArrayKeyState per SK_SEARCHARRAY

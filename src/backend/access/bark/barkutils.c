@@ -1871,22 +1871,22 @@ bark_form_coded_list(IndexTuple key, ItemPointer tids, int ntids, bool force,
 }
 
 /*
- * Decode a coded LIST entry's locators, ascending, into `out` (capacity
- * maxout).  Returns the number written.
+ * Decode the n locators of a coded LIST body (`body` is where its
+ * BarkCodedListHdr starts, in the entry or in a copy of it), ascending, into
+ * `out`, which has room for n.
  */
-static int
-bark_coded_list_get_tids(IndexTuple itup, ItemPointer out, int maxout,
+void
+bark_coded_body_get_tids(const char *body, int n, ItemPointer out,
 						 uint16 stride)
 {
 	int			offbits = bark_vb_offset_bits(stride);
-	int			n = BarkListGetCount(itup);
-	BarkCodedListHdr *hdr = BarkCodedListGetHdr(itup);
-	unsigned char *ptr = BarkCodedListGetDeltas(itup);
-	unsigned char *endptr = ptr + hdr->nbytes;
+	BarkCodedListHdr *hdr = (BarkCodedListHdr *) body;
+	unsigned char *ptr = (unsigned char *) body + sizeof(BarkCodedListHdr) +
+		sizeof(ItemPointerData);
+	unsigned char *endptr PG_USED_FOR_ASSERTS_ONLY = ptr + hdr->nbytes;
 	uint64		val;
 
-	Assert(maxout >= n);
-	out[0] = *BarkCodedListGetFirst(itup);
+	memcpy(&out[0], body + sizeof(BarkCodedListHdr), sizeof(ItemPointerData));
 	val = bark_tid_to_vb(&out[0], offbits);
 	for (int i = 1; i < n; i++)
 	{
@@ -1895,6 +1895,21 @@ bark_coded_list_get_tids(IndexTuple itup, ItemPointer out, int maxout,
 		bark_vb_to_tid(val, &out[i], offbits);
 	}
 	Assert(ptr == endptr);
+}
+
+/*
+ * Decode a coded LIST entry's locators, ascending, into `out` (capacity
+ * maxout).  Returns the number written.
+ */
+static int
+bark_coded_list_get_tids(IndexTuple itup, ItemPointer out, int maxout,
+						 uint16 stride)
+{
+	int			n = BarkListGetCount(itup);
+
+	Assert(maxout >= n);
+	bark_coded_body_get_tids((char *) BarkCodedListGetHdr(itup), n, out,
+							 stride);
 	return n;
 }
 
@@ -2197,6 +2212,39 @@ bark_posting_collect(uint64 vec[], size_t n, void *aux)
 	Assert(sink->n + n <= (size_t) sink->maxout);
 	for (size_t i = 0; i < n; i++)
 		bark_key_to_tid(vec[i], &sink->out[sink->n++], sink->stride);
+}
+
+/*
+ * Read the locators of a POSTING entry's sbm serialization (`data`, `len`
+ * bytes, in the entry or in a copy of it), ascending, into *out, which holds
+ * *outalloc and is grown in `cxt` when the set is larger.  Returns the
+ * number read.
+ */
+int
+bark_posting_body_get_tids(const uint8 *data, Size len, ItemPointer *out,
+						   int *outalloc, MemoryContext cxt, uint16 stride)
+{
+	Sbm		   *map = sbm_deserialize(data, len);
+	BarkTidSink sink;
+	size_t		n;
+
+	if (map == NULL)
+		elog(ERROR, "BARK posting entry has a corrupt sbm serialization");
+	n = sbm_cardinality(map);
+	if (n > (size_t) *outalloc)
+	{
+		if (*out != NULL)
+			pfree(*out);
+		*outalloc = Max((int) n, 64);
+		*out = MemoryContextAlloc(cxt, *outalloc * sizeof(ItemPointerData));
+	}
+	sink.out = *out;
+	sink.n = 0;
+	sink.maxout = *outalloc;
+	sink.stride = stride;
+	sbm_scan(map, bark_posting_collect, 0, &sink);
+	sbm_free(map);
+	return sink.n;
 }
 
 /*
