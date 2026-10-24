@@ -67,17 +67,31 @@ qg_splitmix64(void)
 
 /*
  * Begin a deterministic generation region: draw one engine integer as the
- * seed and switch qg_draw_* to the PRNG.  Honours PG_PROP_GEN_PRNG; when the
- * variable is unset or 0 the region is a no-op and the generator draws from
- * the engine as it always did (so the change is A/B-testable and default-off
- * until verified on a build host).
+ * seed and switch qg_draw_* to the PRNG.
+ *
+ * Default policy (learned from CF vetting, where replaying a hit matters more
+ * than the engine's structural shrinking -- which it cannot do for a deep
+ * multi-table query anyway):
+ *   - a DEEP profile (PG_PROP_DEEP set) defaults the PRNG ON, so a deep
+ *     counterexample is reproducible by construction regardless of libhegel's
+ *     draw-replay behaviour;
+ *   - the default single-table profile leaves it OFF, so the engine's
+ *     shrinking of the short, fixed-shape draw sequence still works well.
+ * PG_PROP_GEN_PRNG overrides either way: =1 forces on, =0 forces off.
  */
 static void
 qg_rng_begin(pg_prop_tc *tc)
 {
 	const char *v = getenv("PG_PROP_GEN_PRNG");
+	const char *deep = getenv("PG_PROP_DEEP");
+	bool		want;
 
-	if (v == NULL || v[0] == '\0' || strcmp(v, "0") == 0)
+	if (v != NULL && v[0] != '\0')
+		want = (strcmp(v, "0") != 0);		/* explicit override */
+	else
+		want = (deep != NULL && deep[0] != '\0' && strcmp(deep, "0") != 0);
+
+	if (!want)
 	{
 		qg_rng_active = false;
 		return;
