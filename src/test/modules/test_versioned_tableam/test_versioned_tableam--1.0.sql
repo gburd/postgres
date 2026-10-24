@@ -48,3 +48,21 @@ CREATE FUNCTION test_versioned_fetch(regclass, tid)
 RETURNS bool
 AS 'MODULE_PATHNAME'
 LANGUAGE C STRICT;
+
+-- the same with the entry's tag given
+CREATE FUNCTION test_versioned_fetch(regclass, tid, bigint)
+RETURNS bool
+AS 'MODULE_PATHNAME'
+LANGUAGE C STRICT;
+
+-- an entry for an older value of a row with history
+CREATE FUNCTION test_versioned_insert_entry(regclass, tid, bigint, text)
+RETURNS void
+AS 'MODULE_PATHNAME'
+LANGUAGE C STRICT;
+
+-- mark a row as updated in place in a column (NULL: unmark)
+CREATE FUNCTION test_versioned_mark_history(regclass, tid, name)
+RETURNS void
+AS 'MODULE_PATHNAME'
+LANGUAGE C;
