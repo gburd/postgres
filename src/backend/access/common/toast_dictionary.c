@@ -71,6 +71,7 @@
 #include "lib/stringinfo.h"
 #include "miscadmin.h"
 #include "utils/acl.h"
+#include "utils/attoptcache.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/inval.h"
@@ -79,6 +80,7 @@
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
+#include "utils/timestamp.h"
 
 #define NO_ZSTD_SUPPORT() \
 	ereport(ERROR, \
@@ -94,10 +96,47 @@
 
 #define DICT_MIN_SIZE		256
 #define DICT_MAX_SIZE		(1024 * 1024)
+#define DICT_DEFAULT_SIZE	(64 * 1024)	/* pg_train_toast_dictionary default */
 #define DICT_MAX_SAMPLES	10000
 #define DICT_SAMPLE_LIMIT	(128 * 1024)
 /* zstd recommends samples totalling about 100 times the dictionary size */
 #define DICT_SAMPLE_FACTOR	100
+
+/*
+ * GUCs for automatic dictionary evolution.  Codec-agnostic policy knobs; see
+ * toast_dictionary_maybe_evolve().  Declared in toast_dictionary.h.
+ */
+double		dictionary_evolution_min_gain = 0.05;
+int			dictionary_evolution_min_interval = 86400;
+int			dictionary_evolution_max_retained = 8;
+
+/*
+ * Train a dictionary with zstd's ZDICT trainer.  Shared by both codecs:
+ * lz4_dict dictionaries are also trained by ZDICT (lz4 ships no trainer of
+ * its own), so lz4_dict_routine.train points here too.  Returns the trained
+ * dictionary's length, written into dictbuf (which must hold max_dict_bytes),
+ * or 0 on failure -- a decline to retrain, not an error.  When the server is
+ * built without zstd, training is unavailable for both codecs and this
+ * returns 0.
+ */
+static size_t
+dict_train_zdict(const char *samples, const size_t *sizes, int nsamples,
+				 size_t max_dict_bytes, void *dictbuf)
+{
+#ifndef USE_ZSTD
+	return 0;
+#else
+	size_t		dictlen;
+
+	if (nsamples == 0)
+		return 0;
+	dictlen = ZDICT_trainFromBuffer(dictbuf, max_dict_bytes, samples, sizes,
+									nsamples);
+	if (ZDICT_isError(dictlen))
+		return 0;
+	return dictlen;
+#endif
+}
 
 /*
  * The relation owning the dictionaries of rel's columns.  During a table
@@ -167,8 +206,13 @@ dict_lookup(Oid relid, AttrNumber attnum, bool current_only, Relation drel,
 /*
  * Current dictionary of a column, or InvalidOid.
  *
- * XXX: this is a catalog index probe per compressed value.  Caching the OID
- * in the relcache entry would avoid it if it ever shows in a profile.
+ * Called once per compressed value on the write path, so the result is cached
+ * in the relcache entry: a single-entry cache keyed by attnum, filled lazily
+ * from the catalog here.  dict_install() changes the current dictionary only
+ * at maintenance time and then issues CacheInvalidateRelcacheByRelid(), which
+ * rebuilds this relcache entry and so empties the cache; the next call
+ * repopulates it with the new OID.  A single entry suffices for a scan of one
+ * column (the common case); a second dictionary column just re-probes.
  */
 Oid
 toast_dictionary_current(Relation rel, AttrNumber attnum)
@@ -178,12 +222,18 @@ toast_dictionary_current(Relation rel, AttrNumber attnum)
 	HeapTuple	tup;
 	Oid			result = InvalidOid;
 
+	if (rel->rd_toastdictattnum == attnum)
+		return rel->rd_toastdictoid;
+
 	drel = table_open(ToastDictionaryRelationId, AccessShareLock);
 	tup = dict_lookup(dict_owner_relid(rel), attnum, true, drel, &scan);
 	if (tup)
 		result = ((Form_pg_toast_dictionary) GETSTRUCT(tup))->oid;
 	systable_endscan(scan);
 	table_close(drel, AccessShareLock);
+
+	rel->rd_toastdictoid = result;
+	rel->rd_toastdictattnum = attnum;
 	return result;
 }
 
@@ -415,6 +465,42 @@ zstd_dict_decompress_datum_slice(const varlena *value, int32 slicelength)
 	return result;
 }
 
+/*
+ * Compressed size of one value against raw dictionary bytes, for the held-out
+ * test of dictionary evolution.  Builds a one-shot CDict from the given bytes
+ * (not the per-backend digested cache, which keys on OID and a candidate has
+ * no OID yet) and returns the compressed byte count without storing anything.
+ * Returns 0 on any zstd failure so the caller can treat it as "no estimate."
+ */
+static size_t
+zstd_dict_compressed_size(const char *dict, size_t dictlen,
+						  const char *val, size_t len)
+{
+#ifndef USE_ZSTD
+	return 0;
+#else
+	ZSTD_CDict *cd;
+	size_t		bound = ZSTD_compressBound(len);
+	char	   *out = palloc(bound);
+	size_t		clen;
+
+	if (dict_cctx == NULL && (dict_cctx = ZSTD_createCCtx()) == NULL)
+		elog(ERROR, "could not create zstd compression context");
+	cd = ZSTD_createCDict(dict, dictlen, ZSTD_CLEVEL_DEFAULT);
+	if (cd == NULL)
+	{
+		pfree(out);
+		return 0;
+	}
+	clen = ZSTD_compress_usingCDict(dict_cctx, out, bound, val, len, cd);
+	ZSTD_freeCDict(cd);
+	pfree(out);
+	if (ZSTD_isError(clen))
+		return 0;
+	return clen;
+#endif
+}
+
 #ifdef USE_LZ4
 /*
  * Per-backend cache of the raw dictionary bytes most recently used, keyed by
@@ -559,12 +645,48 @@ lz4_dict_decompress_datum_slice(const varlena *value, int32 slicelength)
 }
 
 /*
+ * Compressed size of one value against raw dictionary bytes, for the held-out
+ * test of dictionary evolution.  Loads the bytes into a fresh lz4 stream and
+ * returns the compressed byte count without storing anything.  Returns 0 on
+ * any lz4 failure.
+ */
+static size_t
+lz4_dict_compressed_size(const char *dict, size_t dictlen,
+						 const char *val, size_t len)
+{
+#ifndef USE_LZ4
+	return 0;
+#else
+	LZ4_stream_t *stream;
+	int32		bound = LZ4_compressBound(len);
+	char	   *out;
+	int32		clen;
+
+	if (bound <= 0)
+		return 0;
+	stream = LZ4_createStream();
+	if (stream == NULL)
+		return 0;
+	LZ4_loadDict(stream, dict, dictlen);
+	out = palloc(bound);
+	clen = LZ4_compress_fast_continue(stream, val, out, len, bound, 1);
+	LZ4_freeStream(stream);
+	pfree(out);
+	if (clen <= 0)
+		return 0;
+	return clen;
+#endif
+}
+
+/*
  * The lz4 dictionary codec.  See DictCompressRoutine in toast_dictionary.h.
  */
 static const DictCompressRoutine lz4_dict_routine = {
 	.compress = lz4_dict_compress_datum,
 	.decompress = lz4_dict_decompress_datum,
 	.decompress_slice = lz4_dict_decompress_datum_slice,
+	.train = dict_train_zdict,
+	.compressed_size = lz4_dict_compressed_size,
 };
 
 /*
@@ -575,6 +697,8 @@ static const DictCompressRoutine zstd_dict_routine = {
 	.compress = zstd_dict_compress_datum,
 	.decompress = zstd_dict_decompress_datum,
 	.decompress_slice = zstd_dict_decompress_datum_slice,
+	.train = dict_train_zdict,
+	.compressed_size = zstd_dict_compressed_size,
 };
 
 /*
@@ -688,10 +812,12 @@ toast_dictionary_retire(Oid relid)
 /*
  * Insert a dictionary for rel.attnum and make it current, retiring the
  * previous current one.  dictid may be given (binary upgrade) or chosen here.
+ * trainrows is the reltuples estimate at training time, recorded for the
+ * auto-evolution growth trigger; pass 0 when not training from a live count.
  */
 static Oid
 dict_install(Relation rel, AttrNumber attnum, Oid dictid, bool current,
-			 const void *dict, size_t dictlen)
+			 int64 trainrows, const void *dict, size_t dictlen)
 {
 	Relation	drel;
 	SysScanDesc scan;
@@ -728,11 +854,21 @@ dict_install(Relation rel, AttrNumber attnum, Oid dictid, bool current,
 		ObjectIdGetDatum(RelationGetRelid(rel));
 	values[Anum_pg_toast_dictionary_tdattnum - 1] = Int16GetDatum(attnum);
 	values[Anum_pg_toast_dictionary_tdcurrent - 1] = BoolGetDatum(current);
+	values[Anum_pg_toast_dictionary_tdtrainrows - 1] = Int64GetDatum(trainrows);
+	values[Anum_pg_toast_dictionary_tdtraintime - 1] =
+		TimestampTzGetDatum(GetCurrentTimestamp());
 	values[Anum_pg_toast_dictionary_tddict - 1] = PointerGetDatum(dictval);
 	tup = heap_form_tuple(RelationGetDescr(drel), values, nulls);
 	CatalogTupleInsert(drel, tup);
 	heap_freetuple(tup);
 	table_close(drel, RowExclusiveLock);
+
+	/*
+	 * The current dictionary of this column changed.  Invalidate the owning
+	 * relation's relcache entry so backends drop the cached current-dictionary
+	 * OID (toast_dictionary_current()) and pick up the new one.
+	 */
+	CacheInvalidateRelcacheByRelid(RelationGetRelid(rel));
 
 	/* let a later call in the same command see this one's changes */
 	CommandCounterIncrement();
@@ -791,9 +927,9 @@ dict_check_column(Relation rel, const char *colname)
  * Takes ShareUpdateExclusiveLock, like ANALYZE: DML continues, concurrent
  * training and DDL wait.
  *
- * XXX: this samples the first DICT_MAX_SAMPLES rows of a seqscan.  Training
- * from ANALYZE's block sample is the natural follow-up once the lifecycle is
- * agreed on.
+ * Automatic evolution (toast_dictionary_maybe_evolve) trains from ANALYZE's
+ * block sample instead; this function keeps its own bounded seqscan for the
+ * explicit, user-requested case.
  */
 Datum
 pg_train_toast_dictionary(PG_FUNCTION_ARGS)
@@ -859,10 +995,10 @@ pg_train_toast_dictionary(PG_FUNCTION_ARGS)
 	ExecDropSingleTupleTableSlot(slot);
 
 	dictbuf = palloc(dict_size);
-	dictlen = nsamples == 0 ? 0 :
-		ZDICT_trainFromBuffer(dictbuf, dict_size, samples.data, sizes,
-							  nsamples);
-	if (nsamples == 0 || ZDICT_isError(dictlen))
+	dictlen = dict_routine_for_method(TupleDescAttr(RelationGetDescr(rel),
+													attnum - 1)->attcompression)
+		->train(samples.data, sizes, nsamples, dict_size, dictbuf);
+	if (dictlen == 0)
 	{
 		ereport(NOTICE,
 				(errmsg("could not train a compression dictionary for column \"%s\" from %d values",
@@ -871,11 +1007,300 @@ pg_train_toast_dictionary(PG_FUNCTION_ARGS)
 		PG_RETURN_NULL();
 	}
 
-	dictid = dict_install(rel, attnum, InvalidOid, true, dictbuf, dictlen);
+	dictid = dict_install(rel, attnum, InvalidOid, true,
+						  (int64) rel->rd_rel->reltuples, dictbuf, dictlen);
 	table_close(rel, NoLock);
 
 	PG_RETURN_OID(dictid);
 #endif
+}
+
+/*
+ * Collect the current dictionary row of rel.attnum, if any, returning its OID
+ * and, when wantbytes, a palloc'd copy of its dictionary bytes (caller frees).
+ * Also returns tdtrainrows and tdtraintime for the evolution gates.  Returns
+ * InvalidOid when the column has no current dictionary.
+ */
+static Oid
+dict_current_info(Relation drel, Oid relid, AttrNumber attnum,
+				  int64 *trainrows, int64 *traintime,
+				  bytea **dictbytes, bool wantbytes)
+{
+	SysScanDesc scan;
+	HeapTuple	tup;
+	Oid			result = InvalidOid;
+
+	*trainrows = 0;
+	*traintime = 0;
+	if (dictbytes)
+		*dictbytes = NULL;
+	tup = dict_lookup(relid, attnum, true, drel, &scan);
+	if (tup)
+	{
+		Form_pg_toast_dictionary d = (Form_pg_toast_dictionary) GETSTRUCT(tup);
+
+		result = d->oid;
+		*trainrows = d->tdtrainrows;
+		*traintime = d->tdtraintime;
+		if (wantbytes)
+			*dictbytes = DatumGetByteaPCopy(SysCacheGetAttrNotNull(TOASTDICTOID, tup,
+																  Anum_pg_toast_dictionary_tddict));
+	}
+	systable_endscan(scan);
+	return result;
+}
+
+/* Count dictionaries (current + non-current) for rel.attnum */
+static int
+dict_count(Relation drel, Oid relid, AttrNumber attnum)
+{
+	SysScanDesc scan;
+	HeapTuple	tup;
+	int			n = 0;
+
+	tup = dict_lookup(relid, attnum, false, drel, &scan);
+	for (; HeapTupleIsValid(tup); tup = systable_getnext(scan))
+		n++;
+	systable_endscan(scan);
+	return n;
+}
+
+/*
+ * toast_dictionary_maybe_evolve
+ *
+ * Automatic, best-effort dictionary retraining during ANALYZE.  Runs only in
+ * the maintenance process (ANALYZE holds ShareUpdateExclusiveLock, like the
+ * manual trainer), reuses ANALYZE's already-fetched sample rows, and installs
+ * a new current dictionary only when a held-out size test says a candidate
+ * beats the current one by the configured margin.  The write path is never
+ * involved.  Any error is logged and swallowed so it cannot abort ANALYZE.
+ */
+void
+toast_dictionary_maybe_evolve(Relation onerel, AttrNumber attnum,
+							  HeapTuple *rows, int numrows, double totalrows)
+{
+	AttributeOpts *aopt;
+	Form_pg_attribute att;
+	const DictCompressRoutine *routine;
+	MemoryContext evolvecxt,
+				oldcxt;
+	TupleDesc	tupdesc = RelationGetDescr(onerel);
+
+	/* (a) opted in, and still a dictionary column? */
+	if (attnum <= 0 || attnum > tupdesc->natts)
+		return;
+	att = TupleDescAttr(tupdesc, attnum - 1);
+	if (att->attisdropped || !dict_method(att->attcompression))
+		return;
+	aopt = get_attribute_options(RelationGetRelid(onerel), attnum);
+	if (aopt == NULL || !aopt->dictionary_evolution)
+		return;
+
+	routine = dict_routine_for_method(att->attcompression);
+
+	/*
+	 * Everything below runs in a short-lived context so that samples, the
+	 * candidate dictionary, and fetched current-dictionary bytes are all
+	 * freed on return, and in a PG_TRY so a codec or catalog error degrades
+	 * to "no evolution this round" rather than aborting ANALYZE.
+	 */
+	evolvecxt = AllocSetContextCreate(CurrentMemoryContext,
+									  "Dictionary evolution",
+									  ALLOCSET_DEFAULT_SIZES);
+	oldcxt = MemoryContextSwitchTo(evolvecxt);
+
+	PG_TRY();
+	{
+		Relation	drel;
+		Oid			curid;
+		int64		currows;
+		int64		curtime;
+		bytea	   *curbytes = NULL;
+		int			ndicts;
+		StringInfoData train;
+		StringInfoData held;
+		size_t	   *trainsizes;
+		size_t	   *heldsizes;
+		int			ntrain = 0;
+		int			nheld = 0;
+		int			i;
+		size_t		samplebytes = 0;
+		int32		dictsize;
+		void	   *candbuf;
+		size_t		candlen;
+		bool		adopt;
+
+		drel = table_open(ToastDictionaryRelationId, AccessShareLock);
+		curid = dict_current_info(drel, RelationGetRelid(onerel), attnum,
+								  &currows, &curtime, &curbytes, true);
+		ndicts = dict_count(drel, RelationGetRelid(onerel), attnum);
+		table_close(drel, AccessShareLock);
+
+		/* (b) growth, floor, and cooldown gates */
+		if (totalrows < (double) aopt->dictionary_evolution_min_rows)
+			goto done;
+		if (OidIsValid(curid))
+		{
+			if (totalrows < (double) currows * aopt->dictionary_evolution_growth)
+				goto done;
+			if (curtime != 0)
+			{
+				/* cooldown in ms, saturated to avoid int overflow */
+				int			cooldown_ms = dictionary_evolution_min_interval > INT_MAX / 1000 ?
+					INT_MAX : dictionary_evolution_min_interval * 1000;
+
+				if (!TimestampDifferenceExceeds((TimestampTz) curtime,
+												GetCurrentTimestamp(),
+												cooldown_ms))
+					goto done;
+			}
+		}
+
+		/* (c) cap gate */
+		if (ndicts >= dictionary_evolution_max_retained)
+		{
+			ereport(LOG,
+					(errmsg("column \"%s\" of \"%s\" reached the retained-dictionary cap of %d; run VACUUM FULL / REPACK to retire old dictionaries",
+							NameStr(att->attname),
+							RelationGetRelationName(onerel),
+							dictionary_evolution_max_retained)));
+			goto done;
+		}
+
+		/*
+		 * (d) build samples from the ANALYZE rows[].  Split deterministically
+		 * into an 80% training set and a 20% held-out set (every 5th sample is
+		 * held out), using the same predicates as the manual trainer: skip
+		 * nulls and values under 8 bytes, detoast a 128kB prefix.
+		 */
+		initStringInfo(&train);
+		initStringInfo(&held);
+		trainsizes = palloc_array(size_t, numrows);
+		heldsizes = palloc_array(size_t, numrows);
+		for (i = 0; i < numrows; i++)
+		{
+			bool		isnull;
+			Datum		d;
+			varlena    *v;
+			size_t		len;
+
+			CHECK_FOR_INTERRUPTS();
+			d = heap_getattr(rows[i], attnum, tupdesc, &isnull);
+			if (isnull)
+				continue;
+			v = detoast_attr_slice((varlena *) DatumGetPointer(d), 0,
+								   DICT_SAMPLE_LIMIT);
+			len = VARSIZE_ANY_EXHDR(v);
+			if (len >= 8)
+			{
+				if ((ntrain + nheld) % 5 == 4)
+				{
+					appendBinaryStringInfo(&held, VARDATA_ANY(v), len);
+					heldsizes[nheld++] = len;
+				}
+				else
+				{
+					appendBinaryStringInfo(&train, VARDATA_ANY(v), len);
+					trainsizes[ntrain++] = len;
+					samplebytes += len;
+				}
+			}
+			pfree(v);
+		}
+
+		if (ntrain == 0)
+			goto done;
+
+		/*
+		 * (e) size the candidate.  zstd wants about DICT_SAMPLE_FACTOR times
+		 * the dictionary in samples, so shrink to fit a small sample; but cap
+		 * at the usual default size, because a much larger dictionary trained
+		 * on a block-clustered ANALYZE sample tends to overfit and generalize
+		 * worse on held-out data, not better.  Train it on the 80%.
+		 */
+		dictsize = (int32) (samplebytes / DICT_SAMPLE_FACTOR);
+		if (dictsize > DICT_DEFAULT_SIZE)
+			dictsize = DICT_DEFAULT_SIZE;
+		if (dictsize < DICT_MIN_SIZE)
+			dictsize = DICT_MIN_SIZE;
+		candbuf = palloc(dictsize);
+		candlen = routine->train(train.data, trainsizes, ntrain, dictsize,
+								 candbuf);
+		if (candlen == 0)
+			goto done;
+
+		/*
+		 * (f) held-out test.  With no current dictionary, adopt the first one
+		 * unconditionally (its baseline is plain zstd, already accepted by the
+		 * manual path).  Otherwise compare total compressed held-out bytes and
+		 * adopt only on a margin win.
+		 */
+		if (!OidIsValid(curid))
+			adopt = true;
+		else if (nheld == 0)
+			adopt = false;		/* nothing to judge by; keep current */
+		else
+		{
+			size_t		curtotal = 0;
+			size_t		candtotal = 0;
+			const char *p = held.data;
+			bool		ok = true;
+
+			for (i = 0; i < nheld; i++)
+			{
+				size_t		c = routine->compressed_size(VARDATA_ANY(curbytes),
+														 VARSIZE_ANY_EXHDR(curbytes),
+														 p, heldsizes[i]);
+				size_t		n = routine->compressed_size(candbuf, candlen,
+														 p, heldsizes[i]);
+
+				if (c == 0 || n == 0)
+				{
+					ok = false;
+					break;
+				}
+				curtotal += c;
+				candtotal += n;
+				p += heldsizes[i];
+			}
+			adopt = ok &&
+				(double) candtotal <= (double) curtotal *
+				(1.0 - dictionary_evolution_min_gain);
+
+			elog(DEBUG1, "dictionary evolution for \"%s\": heldout=%d dictsize=%d cur=%zu cand=%zu gain=%.1f%% adopt=%d",
+				 NameStr(att->attname), nheld, dictsize, curtotal, candtotal,
+				 curtotal ? 100.0 * (1.0 - (double) candtotal / curtotal) : 0.0,
+				 adopt);
+		}
+
+		/* (g) adopt on a win; otherwise change nothing */
+		if (adopt)
+			dict_install(onerel, attnum, InvalidOid, true,
+						 (int64) totalrows, candbuf, candlen);
+
+done:
+		;
+	}
+	PG_CATCH();
+	{
+		ErrorData  *edata;
+
+		MemoryContextSwitchTo(oldcxt);
+		edata = CopyErrorData();
+		FlushErrorState();
+		ereport(LOG,
+				(errmsg("automatic dictionary evolution for column \"%s\" of \"%s\" was skipped: %s",
+						NameStr(att->attname),
+						RelationGetRelationName(onerel),
+						edata->message)));
+		FreeErrorData(edata);
+		MemoryContextDelete(evolvecxt);
+		return;
+	}
+	PG_END_TRY();
+
+	MemoryContextSwitchTo(oldcxt);
+	MemoryContextDelete(evolvecxt);
 }
 
 /*
@@ -910,7 +1335,7 @@ binary_upgrade_add_toast_dictionary(PG_FUNCTION_ARGS)
 	if (attnum <= 0 || attnum > RelationGetNumberOfAttributes(rel))
 		elog(ERROR, "invalid attribute number %d for relation %u",
 			 attnum, relid);
-	dict_install(rel, attnum, dictid, current, VARDATA_ANY(dict),
+	dict_install(rel, attnum, dictid, current, 0, VARDATA_ANY(dict),
 				 VARSIZE_ANY_EXHDR(dict));
 	table_close(rel, NoLock);
 
