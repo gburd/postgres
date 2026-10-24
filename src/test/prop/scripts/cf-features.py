@@ -94,6 +94,39 @@ SQL_RULES = [
 
 PATH_W, SYM_W, SQL_W = 4, 2, 1
 
+# ---------------------------------------------------------------------------
+# Vettability classification.  The differential/property method only has an
+# oracle for patches with a SQL-observable wrong answer.  Map a patch to the
+# oracle class that applies so "validate them all" becomes a defensible scoped
+# list -- and so a cost-only or display-only or tooling patch is not mistaken
+# for something a result differential can judge (it cannot, by construction).
+#
+# Classes, most-specific first:
+#   deparse      a pg_get_*def / pg_get_*_ddl / ruleutils change -> round-trip
+#                oracle (deparse, recreate, require same definition + rows).
+#   isolation    a concurrency/SSI change -> needs an isolation spec, not the
+#                single-session generator.
+#   estimate     a selectivity/stats change -> estimate-vs-actual, not a
+#                row-set differential (the rows do not change, the estimate
+#                does).
+#   differential a planner/executor/AM/type change that can change the result
+#                set -> the row-multiset differential (plan A == plan B).
+#   not-vettable docs, tooling (bin/, psql, pg_dump, pg_rewind, pgbench),
+#                refactors, pure cost tweaks, EXPLAIN-text-only, replication/WAL
+#                operational -> human review, no differential oracle.
+CLASS_RULES = [
+    # (regex over a touched file path, class, why)
+    ('deparse', r'ruleutils\.c|utils/adt/ddlutils\.c|pg_get_\w+def|pg_get_\w+_ddl', 'deparse round-trip'),
+    ('isolation', r'storage/lmgr/predicate\.c|lmgr/.*ssi|/isolation/specs/|README-SSI', 'isolation spec'),
+    ('estimate', r'utils/adt/selfuncs\.c|optimizer/path/clausesel\.c|statistics/(extended_stats|mcv|dependencies)|optimizer/util/plancat\.c', 'estimate vs actual'),
+    ('differential', r'executor/node|optimizer/(path|plan|prep)/|access/(nbtree|gist|gin|spgist|hash|brin|heap|common|table)/|utils/adt/\w+\.c|parser/parse_|commands/\w+\.c|rewrite/|catalog/pg_proc\.dat|contrib/\w+/\w+\.c', 'row-set differential'),
+]
+# paths that force not-vettable regardless of the above (tooling, docs, tests).
+NOT_VETTABLE = re.compile(
+    r'(^|/)(doc/|src/bin/|contrib/\w+/t/|/t/\d|psql/|pg_dump/|pg_rewind/|pg_basebackup/|'
+    r'pg_combinebackup/|pg_resetwal/|pg_surgery/|pg_walinspect/|pgbench/|'
+    r'\.sgml|\.po$|/po/|regress/(sql|expected)/)')
+
 # A patch larger than this many changed lines is a new subsystem, not a bug
 # fix a focused bias helps -> emit nothing.  (Tag count alone is a poor
 # gate: a focused fix can touch several surfaces loosely; ranking handles
@@ -149,14 +182,54 @@ def extract(difftext):
     return tags, changed
 
 
+def touched_paths(difftext):
+    """The set of non-/dev/null file paths the diff touches (from +++ lines)."""
+    paths = set()
+    for line in difftext.splitlines():
+        if line.startswith('+++ '):
+            p = line[4:].strip()
+            if p and p != '/dev/null':
+                paths.add(re.sub(r'^[ab]/', '', p))
+    return paths
+
+
+def classify(difftext):
+    """Return (class, why): the oracle class that can vet this patch.
+
+    A patch that touches ONLY not-vettable paths (docs, tooling, tests) is
+    not-vettable.  Otherwise the most-specific matching CLASS_RULES entry
+    over any backend/contrib source path wins."""
+    paths = touched_paths(difftext)
+    src = [p for p in paths if not NOT_VETTABLE.search(p)]
+    if not src:
+        return 'not-vettable', 'only docs/tooling/tests touched'
+    for cls, pat, why in CLASS_RULES:
+        rx = re.compile(pat, re.I)
+        if any(rx.search(p) for p in src):
+            return cls, why
+    return 'not-vettable', 'no backend change with a differential oracle'
+
+
 def main(argv):
     if len(argv) < 2:
-        sys.stderr.write("usage: cf-features.py PATCH [PATCH ...]\n")
+        sys.stderr.write("usage: cf-features.py [--classify] PATCH [PATCH ...]\n")
+        return 2
+    do_classify = False
+    args = argv[1:]
+    if args and args[0] == '--classify':
+        do_classify = True
+        args = args[1:]
+    if not args:
+        sys.stderr.write("usage: cf-features.py [--classify] PATCH [PATCH ...]\n")
         return 2
     text = ''
-    for fn in argv[1:]:
+    for fn in args:
         with open(fn, encoding='utf-8', errors='replace') as f:
             text += f.read()
+    if do_classify:
+        cls, why = classify(text)
+        print('%s\t%s' % (cls, why))
+        return 0
     tags, changed = extract(text)
     # a tag needs at least a path hit, a symbol hit, or two SQL-context hits
     strong = {t: n for t, n in tags.items() if n >= SYM_W}
