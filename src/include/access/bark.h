@@ -1212,7 +1212,10 @@ typedef struct BarkOverflowRef
 	 * bpchar, arrays, name, etc.) prefixlen is 0 and comparison always
 	 * fetches the full tuple.  prefixcomplete is true when the whole first
 	 * column fit in the prefix, so an exhausted prefix with equal bytes is a
-	 * genuine tie on that column rather than a truncation.
+	 * genuine tie on that column rather than a truncation.  The bytes are the
+	 * value's, decompressed if the full tuple stores it compressed
+	 * (bark_value_prefix).  prefixlen 0 is always valid: comparison then
+	 * fetches the chain.
 	 */
 	uint16		prefixlen;		/* bytes of prefix stored (0 = no prefix) */
 	bool		prefixcomplete; /* the whole first column fit in the prefix */
@@ -1778,6 +1781,8 @@ extern IndexTuple bark_form_oversized_entry(ItemPointer locator, Size fulllen,
 											BlockNumber firstblk,
 											bool is_leaf, uint16 natts,
 											IndexVersionTag tag);
+extern void bark_value_prefix(Datum d, uint8 *buf, uint16 *len,
+							  bool *complete);
 extern void bark_set_oversized_prefix(IndexTuple entry, Relation index,
 									  IndexTuple full);
 

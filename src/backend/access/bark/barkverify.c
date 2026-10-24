@@ -42,6 +42,7 @@
 #include "postgres.h"
 
 #include "access/bark.h"
+#include "access/detoast.h"
 #include "access/genam.h"
 #include "access/xlogreader.h"
 #include "lib/sbm.h"
@@ -661,30 +662,34 @@ bark_verify_chain(BarkVerify *v, OffsetNumber off, IndexTuple itup)
 	full = bark_fetch_oversized(v->rel, itup);
 
 	/*
-	 * If the entry carries an inline comparison prefix, it must match the
-	 * leading bytes of the reconstructed first key column (that is the
-	 * invariant the compare fast path relies on).
+	 * If the entry carries an inline comparison prefix, it must be exactly
+	 * the leading bytes of the reconstructed first key column's value,
+	 * decompressed (bark_value_prefix): that is the invariant the compare
+	 * fast path relies on.
 	 */
 	if (ref->prefixlen > 0)
 	{
 		TupleDesc	tupdesc = RelationGetDescr(v->rel);
 		Datum		d;
 		bool		isnull;
-		char	   *data;
+		uint8		want[BARK_OVERSIZED_PREFIX_LEN];
+		uint16		wantlen;
+		bool		wantcomplete;
 		Size		fulllen1;
 
 		d = index_getattr(full, 1, tupdesc, &isnull);
 		if (isnull)
 			bark_verify_fail(v, "BARK index \"%s\" oversized entry on page %u at offset %u has a prefix but a NULL first key column",
 							 v->relname, v->blkno, off);
-		data = VARDATA_ANY(DatumGetPointer(d));
-		fulllen1 = VARSIZE_ANY_EXHDR(DatumGetPointer(d));
+		fulllen1 = toast_raw_datum_size(d) - VARHDRSZ;
 		if (ref->prefixcomplete && fulllen1 != ref->prefixlen)
 			bark_verify_fail(v, "BARK index \"%s\" oversized entry on page %u at offset %u claims a complete %u-byte prefix but the first key column is %zu bytes",
 							 v->relname, v->blkno, off,
 							 ref->prefixlen, fulllen1);
-		if (fulllen1 < ref->prefixlen ||
-			memcmp(data, ref->prefix, ref->prefixlen) != 0)
+		bark_value_prefix(d, want, &wantlen, &wantcomplete);
+		if (ref->prefixlen != wantlen ||
+			ref->prefixcomplete != wantcomplete ||
+			memcmp(want, ref->prefix, wantlen) != 0)
 			bark_verify_fail(v, "BARK index \"%s\" oversized entry on page %u at offset %u has a prefix that does not match its first key column",
 							 v->relname, v->blkno, off);
 	}

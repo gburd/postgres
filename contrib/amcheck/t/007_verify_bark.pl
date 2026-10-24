@@ -37,6 +37,8 @@ $node->safe_psql(
 	-- Uncompressed in the index too (it copies the column's storage), so the
 	-- oversized entry keeps an inline prefix of the key's own bytes.
 	ALTER TABLE t_big ALTER COLUMN k SET STORAGE EXTERNAL;
+	-- Compressed in the index: the prefix is still the value's own bytes.
+	CREATE TABLE t_bigz (k text COLLATE "C");
 ));
 
 # name => table, column
@@ -51,10 +53,11 @@ my %idx = (
 	i_post_len => 't_post', i_post_size => 't_post',
 	map({ $_ => 't_big' }
 		qw(i_big_out i_big_nonovf i_big_trunc i_big_prefix i_big_complete
-		  i_big_chain)));
+		  i_big_chain)),
+	i_bigz_prefix => 't_bigz');
 for my $i (sort keys %idx)
 {
-	my $col = $idx{$i} eq 't_big' ? 'k' : 'a';
+	my $col = $idx{$i} =~ /^t_big/ ? 'k' : 'a';
 	$node->safe_psql('postgres',
 		"CREATE INDEX $i ON $idx{$i} USING bark ($col)");
 }
@@ -68,6 +71,7 @@ $node->safe_psql(
 	INSERT INTO t_list SELECT g % 20 FROM generate_series(1, 200) g;
 	INSERT INTO t_post SELECT g / 1000 FROM generate_series(0, 4999) g;
 	INSERT INTO t_big VALUES ('A' || bigstr(1, 40000)), ('b1'), ('b2'), ('b3');
+	INSERT INTO t_bigz VALUES ('A' || bigstr(2, 40000)), ('b1');
 ));
 
 # Every index passes before it is corrupted.
@@ -236,9 +240,11 @@ patch('i_post_size', $info{i_post_size}{root},
 # locator 4, natts 10, pivottid 12, prefixlen 18, prefixcomplete 20, prefix 21.
 my $broot = $info{i_big_out}{root};
 # The prefix tests need one: prefixlen at 18 of the reference is nonzero.
-for my $i (qw(i_big_prefix i_big_complete))
+# i_bigz_prefix's key is compressed in its full tuple, and its prefix is the
+# value's first 32 bytes all the same.
+for my $i (qw(i_big_prefix i_big_complete i_bigz_prefix))
 {
-	my $p = rd($info{$i}{path}, $broot);
+	my $p = rd($info{$i}{path}, $info{$i}{root});
 	cmp_ok(g16(\$p, item(\$p, 1) + 8 + 18), '>', 0, "$i has an inline prefix");
 }
 patch('i_big_out', $broot, sub { set_tid_blk($_[0], item($_[0], 1), 999999) });
@@ -249,6 +255,8 @@ patch('i_big_trunc', $broot,
 patch('i_big_prefix', $broot, sub { substr(${ $_[0] }, item($_[0], 1) + 8 + 21, 1) = '@' });
 patch('i_big_complete', $broot, sub { substr(${ $_[0] }, item($_[0], 1) + 8 + 20, 1) = "\x01" });
 patch('i_big_chain', $info{i_big_chain}{ovf}, sub { s32($_[0], opq($_[0], 4), 999999) });
+patch('i_bigz_prefix', $info{i_bigz_prefix}{root},
+	sub { substr(${ $_[0] }, item($_[0], 1) + 8 + 21, 1) = '@' });
 
 $node->start;
 
@@ -308,6 +316,8 @@ both('i_big_trunc', "oversized entry on page $broot at offset 1 has a truncated 
 both('i_big_prefix', "oversized entry on page $broot at offset 1 has a prefix that does not match its first key column");
 both('i_big_complete', "oversized entry on page $broot at offset 1 claims a complete 32-byte prefix");
 both('i_big_chain', "oversized entry on page $broot at offset 1 points at out-of-range overflow block 999999");
+both('i_bigz_prefix',
+	"oversized entry on page $info{i_bigz_prefix}{root} at offset 1 has a prefix that does not match its first key column");
 
 # No check crashed the server.
 is($node->safe_psql('postgres', 'SELECT 1'), '1', 'server is up');
