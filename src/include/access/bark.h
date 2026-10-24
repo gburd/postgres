@@ -2214,9 +2214,10 @@ typedef struct BarkArrayKeyState
  *
  * items[] is always in index order (ascending offset, and ascending TID within
  * one LIST or POSTING entry), whichever direction the page was read in;
- * itemIndex is the item most recently returned.  It is grown as needed rather
- * than sized like nbtree's MaxTIDsPerBTreePage, because one POSTING entry can
- * expand to far more TIDs than that bound.
+ * itemIndex is the item most recently returned.  It is allocated once per
+ * scan, for BLCKSZ items (see bark_pos_reserve), and grown beyond that as
+ * needed rather than sized like nbtree's MaxTIDsPerBTreePage, because one
+ * POSTING entry can expand to far more TIDs than either bound.
  *
  * For an index-only scan each matching entry's key tuple is copied once into
  * the scan's tuple workspace (currTuples), and every member item refers to it

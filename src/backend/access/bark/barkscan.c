@@ -3212,13 +3212,24 @@ bark_parallel_release(IndexScanDesc scan, BlockNumber next_page,
 	ConditionVariableSignal(&bps->bps_cv);
 }
 
-/* Make room for at least `need` items in pos->items. */
+/*
+ * Make room for at least `need` items in pos->items.  The array is kept for
+ * the life of the scan, across rescans, and its first allocation holds
+ * BARK_POS_INIT_ITEMS, enough for any leaf without POSTING entries: a coded
+ * LIST spends at least a byte per TID, so a leaf of LISTs holds fewer than
+ * BLCKSZ TIDs.  A POSTING entry's set can be denser, so the array still
+ * grows when a leaf holds more.  Growing it a doubling at a time from a
+ * small size cost every scan of a dense leaf several repallocs, and glibc a
+ * brk and a trim per query.
+ */
+#define BARK_POS_INIT_ITEMS BLCKSZ
+
 static void
 bark_pos_reserve(BarkScanOpaque so, BarkScanPosData *pos, int need)
 {
 	if (need <= pos->maxItems)
 		return;
-	pos->maxItems = Max(need, Max(pos->maxItems * 2, 256));
+	pos->maxItems = Max(need, Max(pos->maxItems * 2, BARK_POS_INIT_ITEMS));
 	if (pos->items == NULL)
 		pos->items = MemoryContextAlloc(so->scanCxt,
 										pos->maxItems * sizeof(BarkScanPosItem));
@@ -3229,7 +3240,10 @@ bark_pos_reserve(BarkScanOpaque so, BarkScanPosData *pos, int need)
 
 /*
  * Make an index-only scan's tuple workspace (currTuples or markTuples) hold
- * at least `need` bytes, keeping its contents.
+ * at least `need` bytes, keeping its contents.  Like items[], it is kept
+ * across rescans; it starts at nbtree's BLCKSZ * 2, which holds a leaf's keys
+ * even when prefix compression expands them, and grows past that only for
+ * OVERSIZED entries (each copied whole).
  */
 static void
 bark_tuples_reserve(BarkScanOpaque so, char **tuples, uint32 *size, Size need)
@@ -3238,7 +3252,7 @@ bark_tuples_reserve(BarkScanOpaque so, char **tuples, uint32 *size, Size need)
 
 	if (*tuples != NULL && need <= *size)
 		return;
-	newsize = Max((Size) BLCKSZ, Max((Size) *size * 2, need));
+	newsize = Max((Size) BLCKSZ * 2, Max((Size) *size * 2, need));
 	if (*tuples == NULL)
 		*tuples = MemoryContextAlloc(so->scanCxt, newsize);
 	else
