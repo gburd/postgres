@@ -1515,6 +1515,8 @@ mapping_result(ReturnSetInfo *rsinfo, const char *name, bool ok, int64 n)
  * - posting_entry: likewise for a POSTING entry (bark_form_posting);
  * - add_tid: a LIST and a POSTING each take a TID at the boundaries by
  *   bark_entry_add_tid, as WAL replay of ADD_TID does;
+ * - coded_add: bark_entry_add_tid on a coded LIST, before, inside and after
+ *   its TIDs, equals bark_form_list_best of the grown set byte for byte;
  * - seen_set: the scan seen set's window (key >> 6, bit key & 63) of every
  *   TID is distinct.
  * - heap_coding: at stride MaxHeapTuplesPerPage, a coded LIST's bytes are
@@ -1712,6 +1714,124 @@ bark_test_tid_mappings(PG_FUNCTION_ARGS)
 			n += 2;
 		}
 		mapping_result(rsinfo, "add_tid", ok, n);
+	}
+
+	/*
+	 * coded_add: bark_entry_add_tid splices a coded LIST's delta stream; the
+	 * result must be byte for byte what bark_form_list_best makes of the set
+	 * with the TID added (redo repeats it), for TIDs before the first, inside
+	 * in descending and scattered order, and after the last, near and far.
+	 * A duplicate, a full LIST and a too-small maxsz take nothing, and a
+	 * coded LIST of three that would not stay smaller than plain turns plain.
+	 */
+	{
+		ItemPointer set = palloc_array(ItemPointerData, BARK_LIST_MAX_COUNT + 1);
+		ItemPointerData probes[80];
+		int			nprobes = 0;
+		int			nset = 0;
+		uint32		rnd = 12345;
+		IndexTuple	cur;
+		IndexTuple	ext;
+		IndexTuple	want;
+
+		ok = true;
+		n = 0;
+		for (int off = 2; off <= 40; off += 2)
+			ItemPointerSet(&set[nset++], 100, off);
+		cur = bark_form_list_best(desc, key, set, nset, stride);
+		ok = BarkListIsCoded(cur);
+		for (int off = 39; off >= 3; off -= 4)	/* inside, descending */
+			ItemPointerSet(&probes[nprobes++], 100, off);
+		ItemPointerSet(&probes[nprobes++], 100, 1); /* before the first */
+		ItemPointerSet(&probes[nprobes++], 99, stride);
+		ItemPointerSet(&probes[nprobes++], 50, 1);
+		for (int off = 41; off <= 45; off++)	/* after the last */
+			ItemPointerSet(&probes[nprobes++], 100, off);
+		for (int i = 0; i < 20; i++)	/* scattered, any order */
+		{
+			rnd = rnd * 1103515245 + 12345;
+			ItemPointerSet(&probes[nprobes++], 99 + (rnd >> 16) % 4,
+						   1 + (rnd >> 8) % Min(stride, 60));
+		}
+		ItemPointerSet(&probes[nprobes++], 100, 2); /* duplicates */
+		ItemPointerSet(&probes[nprobes++], 50, 1);
+		ItemPointerSet(&probes[nprobes++], 100, 41);
+		ItemPointerSet(&probes[nprobes++], 2100, 1);	/* far after the last */
+		ItemPointerSet(&probes[nprobes++], 1 << 20, 1);
+		ItemPointerSet(&probes[nprobes++], MaxBlockNumber, stride);
+		ItemPointerSet(&probes[nprobes++], 1 << 19, 7); /* far inside */
+		for (int i = 0; ok && i < nprobes; i++)
+		{
+			int			ins = nset;
+
+			while (ins > 0 && ItemPointerCompare(&set[ins - 1], &probes[i]) > 0)
+				ins--;
+			ext = bark_entry_add_tid(cur, &probes[i], BLCKSZ, stride);
+			n++;
+			if (ins > 0 && ItemPointerEquals(&set[ins - 1], &probes[i]))
+			{
+				ok = ext == NULL;
+				continue;
+			}
+			memmove(&set[ins + 1], &set[ins], (nset - ins) * sizeof(ItemPointerData));
+			set[ins] = probes[i];
+			nset++;
+			want = bark_form_list_best(desc, key, set, nset, stride);
+			ok = ext != NULL && BarkListIsCoded(ext) &&
+				IndexTupleSize(ext) == IndexTupleSize(want) &&
+				memcmp(ext, want, IndexTupleSize(want)) == 0 &&
+				mapping_entry_holds(ext, set, nset, stride);
+			pfree(want);
+			if (ext != NULL)
+			{
+				pfree(cur);
+				cur = ext;
+			}
+		}
+		ItemPointerSet(&probes[0], 103, 1);
+		ok = ok && bark_entry_add_tid(cur, &probes[0], 8, stride) == NULL;
+		pfree(cur);
+
+		/*
+		 * Scattered: ten TIDs 2^20 blocks apart (5-byte deltas) and one next
+		 * to the last, 80 bytes coded against 88 plain.  A 1-byte delta more
+		 * stays coded; a 7-byte one makes 88 against the plain 88 of twelve,
+		 * and the result is plain.
+		 */
+		for (int i = 0; i < 10; i++)
+			ItemPointerSet(&set[i], (BlockNumber) i << 20, 1);
+		ItemPointerSet(&set[10], 9 << 20, 2);
+		cur = bark_form_list_best(desc, key, set, 11, stride);
+		ok = ok && BarkListIsCoded(cur);
+		for (int wide = 0; wide <= 1; wide++)
+		{
+			if (wide)
+				ItemPointerSet(&set[11], MaxBlockNumber, 1);
+			else
+				ItemPointerSet(&set[11], 9 << 20, 3);
+			ext = bark_entry_add_tid(cur, &set[11], BLCKSZ, stride);
+			want = bark_form_list_best(desc, key, set, 12, stride);
+			ok = ok && ext != NULL && BarkListIsCoded(ext) == !wide &&
+				IndexTupleSize(ext) == IndexTupleSize(want) &&
+				memcmp(ext, want, IndexTupleSize(want)) == 0;
+			n++;
+		}
+
+		/* One short of BARK_LIST_MAX_COUNT takes one more; a full one none. */
+		nset = 0;
+		for (BlockNumber b = 200; nset < BARK_LIST_MAX_COUNT; b++)
+			for (int off = 1; off <= stride && nset < BARK_LIST_MAX_COUNT; off++)
+				ItemPointerSet(&set[nset++], b, off);
+		cur = bark_form_list_best(desc, key, set, nset - 1, stride);
+		ext = bark_entry_add_tid(cur, &set[nset - 1], BLCKSZ, stride);
+		want = bark_form_list_best(desc, key, set, nset, stride);
+		ok = ok && BarkListIsCoded(cur) && ext != NULL && BarkListIsCoded(ext) &&
+			IndexTupleSize(ext) == IndexTupleSize(want) &&
+			memcmp(ext, want, IndexTupleSize(want)) == 0;
+		ItemPointerSet(&probes[0], 10000, 1);
+		ok = ok && bark_entry_add_tid(ext, &probes[0], BLCKSZ, stride) == NULL;
+		n += 2;
+		mapping_result(rsinfo, "coded_add", ok, n);
 	}
 
 	/*
