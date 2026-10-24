@@ -2544,9 +2544,8 @@ bark_estimate_qual_selectivity(IndexOptInfo *index, int indexcol, Expr *clause)
 	if (index->hypothetical || indexcol != 0 || reltuples <= 0 ||
 		!IsA(clause, OpExpr) || list_length(op->args) != 2)
 		return -1;
+	/* A planner clause has a RelabelType of a Const folded into the Const. */
 	arg = (Node *) lsecond(op->args);
-	if (IsA(arg, RelabelType))
-		arg = (Node *) ((RelabelType *) arg)->arg;
 	if (!IsA(arg, Const) || ((Const *) arg)->constisnull)
 		return -1;
 	procoid = get_opfamily_proc(index->opfamily[indexcol],
@@ -2642,8 +2641,8 @@ bark_estimate_qual_selectivity(IndexOptInfo *index, int indexcol, Expr *clause)
 	}
 	index_close(indexRel, NoLock);
 
-	CLAMP_PROBABILITY(selec);
-	return selec;
+	/* A sum of fractions, so never negative, but over 1 for overlaps. */
+	return Min(selec, 1.0);
 }
 
 /*
