@@ -159,13 +159,18 @@ iteration count of a meson test run without editing anything:
 
 Two further knobs tune the deep multi-table generator:
 
-* PG_PROP_GEN_PRNG=1 -- make the deep generator reproducible from a seed.
+* PG_PROP_GEN_PRNG -- control deep-generator reproducibility from a seed.
   The multi-table builder makes hundreds of data-dependent draws per case,
   a sequence the engine did not replay reliably (so a deep counterexample
-  could not be reproduced).  With this set, the builder takes one engine
-  draw per case and drives all structural choices from a deterministic PRNG
-  seeded by it, so the case replays exactly; the cost is coarser shrinking
-  of deep structure.  Unset (the default) keeps the historical behaviour.
+  could not be reproduced).  When active, the builder takes one engine draw
+  per case and drives all structural choices from a deterministic PRNG seeded
+  by it, so the case replays exactly; the cost is coarser shrinking of deep
+  structure.  DEFAULT: on whenever a deep profile is selected (PG_PROP_DEEP
+  set), because for a hunt/vet run replaying a hit matters more than the
+  engine's structural shrinking (which it cannot do for a deep query anyway);
+  off for the default single-table profile, where engine shrinking of the
+  short draw sequence works well.  PG_PROP_GEN_PRNG=1 forces it on,
+  PG_PROP_GEN_PRNG=0 forces it off, overriding the profile default.
 
 * PG_PROP_GEN_BIAS=tag,tag,... -- bias the deep generator toward the SQL
   surface a patch under review touches, when vetting a commitfest entry.
