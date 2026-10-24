@@ -1,0 +1,69 @@
+name: AI Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches:
+      - master
+      - 'feature/**'
+      - 'dev/**'
+
+  # Manual trigger for testing
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to review'
+        required: true
+        type: number
+
+jobs:
+  ai-review:
+    runs-on: ubuntu-latest
+    # Skip draft PRs to save costs
+    if: github.event.pull_request.draft == false || github.event_name == 'workflow_dispatch'
+
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: .github/scripts/ai-review/package.json
+
+      - name: Install dependencies
+        working-directory: .github/scripts/ai-review
+        run: npm ci
+
+      - name: Run AI code review
+        working-directory: .github/scripts/ai-review
+        env:
+          # For Anthropic direct API (if provider=anthropic in config.json)
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # For AWS Bedrock (if provider=bedrock in config.json)
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          # GitHub token (always required)
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # PR number for manual dispatch
+          INPUT_PR_NUMBER: ${{ github.event.inputs.pr_number }}
+        run: node review-pr.js
+
+      - name: Upload cost log
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: ai-review-cost-log-${{ github.event.pull_request.number || inputs.pr_number }}
+          path: .github/scripts/ai-review/cost-log-*.json
+          retention-days: 30
+          if-no-files-found: ignore
