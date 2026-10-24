@@ -309,7 +309,12 @@ tags and never interprets them.
   bound may have a tag. A split sets it on its right half when the high key
   keeps a tag, and page deletion hands it to the right sibling. An entry
   that cannot move is kept tagged (LIVE) through the scan, and VACUUM then
-  lowers the bound (T2, below) and untags it, or counts it at DEBUG2. The design's other branch, delete and reinsert by a
+  lowers the bound (T2, below) and untags it, or counts it at DEBUG2. An
+  entry whose (K, L, 0) is the row's own untagged entry also stays tagged
+  and is counted (T3, 2026-10-24): under the per-index validity rule a
+  correct table AM has found that entry DEAD in the same pass, so the count
+  is 0 unless the AM answered LIVE for an invalid entry, and deleting the
+  tagged one could then lose the row. The design's other branch, delete and reinsert by a
   descent, is not built: a scan reads one page at a time, so moving an
   entry to another page could make it miss the row or return it twice.
 * '''Split points.''' A leaf split cuts a run of one row's entries only

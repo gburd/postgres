@@ -2325,12 +2325,25 @@ safe when the slot has an entry before it on the page, or the page is
 leftmost, or it lacks BARK_LOWBOUND_TAGGED: an untagged lower bound <=
 (K, L, t) is <= (K, L, 0).  Otherwise (the slot would be the page's first,
 under a lower bound that may be (K, L, t0 > 0)) the entry stays tagged and
-the verdict is taken as LIVE, counted in VACUUM's DEBUG2 line, as is an
-entry whose (K, L, 0) lies in another entry (the row's untagged one, or a
-LIST or POSTING whose range holds L).  An entry is never moved to another
-page: a scan reads one page at a time, and would miss the row or return
-it twice.  Instead, after its scan VACUUM lowers the bound, and untags the
-entries it kept for it then.
+the verdict is taken as LIVE, counted in VACUUM's DEBUG2 line.  An entry
+is never moved to another page: a scan reads one page at a time, and would
+miss the row or return it twice.  Instead, after its scan VACUUM lowers the
+bound, and untags the entries it kept for it then.
+
+An entry whose (K, L, 0) is already on the page, in the row's own
+untagged entry (its twin: a SINGLE, or the last member of the LIST or
+POSTING just before it; no entry holds L strictly inside its range, since
+a tagged insert divides it at L), stays tagged too, counted as "kept (dup,
+AM gave LIVE to an older entry)".  A correct table AM never makes one:
+(K, L, t) exists because t's update changed attrs(i), so the twin is
+invalid from t on, and with t no newer than the new base it is DEAD in the
+same pass.  One verdict is wrong, then.  If it is the twin's LIVE, the
+tagged entry is the row's only valid one and deleting it would lose the
+row (heapallindexed would not notice: the twin still indexes (K, L)); if
+it is the LIVE_UNTAG, keeping costs nothing.  So BARK keeps it, and a count
+above 0 means the table AM answered LIVE for an entry the per-index
+validity rule makes invalid.  t/004_bark_vacuum.pl builds each twin shape
+and shows the row lost under the bark-untag-delete injection point.
 
 Lowering a lower bound.  A leaf P2 whose lower bound is a tagged (K, L, t0),
 its left sibling P1's high key and the parent's downlink to P2, can have
