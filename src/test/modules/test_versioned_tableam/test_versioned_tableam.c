@@ -136,6 +136,9 @@ typedef enum TvCounter
 	TVC_UPDATE_KEPT,
 	TVC_JUDGE_VALID,
 	TVC_JUDGE_INVALID,
+	TVC_VERDICT_UNKNOWN,
+	TVC_VERDICT_VALID,
+	TVC_VERDICT_INVALID,
 	NUM_TVC
 } TvCounter;
 
@@ -145,6 +148,7 @@ static const char *const tvc_names[NUM_TVC] = {
 	"vacuum_dead",
 	"vacuum_untag", "vacuum_live", "validate_tagged", "validate_untagged", "bitmap_rows",
 	"update_kept", "judge_valid", "judge_invalid",
+	"verdict_unknown", "verdict_valid", "verdict_invalid",
 };
 
 typedef struct TvShared
@@ -452,9 +456,20 @@ tvb_build_record(Relation index, ItemPointer tid, IndexInfo *indexInfo)
 static IndexScanDesc tvb_last_scan = NULL;
 static ItemPointerData tvb_last_tid;
 
+/*
+ * Read the table AM's verdict on the entry this scan returned last, as an
+ * index AM with several entries per row would, and count it.  A rescan or
+ * restore leaves no entry to judge.
+ */
 static bool
 tvb_gettuple(IndexScanDesc scan, ScanDirection dir)
 {
+	if (tvb_last_scan == scan)
+		tv_count(scan->xs_entry_verdict == INDEX_SCAN_ENTRY_VALID ?
+				 TVC_VERDICT_VALID :
+				 scan->xs_entry_verdict == INDEX_SCAN_ENTRY_INVALID ?
+				 TVC_VERDICT_INVALID : TVC_VERDICT_UNKNOWN);
+	tvb_last_scan = NULL;
 	if (!btgettuple(scan, dir))
 		return false;
 	scan->xs_heaptag = tv_lookup(RelationGetRelid(scan->indexRelation),
@@ -462,6 +477,32 @@ tvb_gettuple(IndexScanDesc scan, ScanDirection dir)
 	tvb_last_scan = scan;
 	tvb_last_tid = scan->xs_heaptid;
 	return true;
+}
+
+static void
+tvb_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
+		   ScanKey orderbys, int norderbys)
+{
+	if (tvb_last_scan == scan)
+		tvb_last_scan = NULL;
+	btrescan(scan, scankey, nscankeys, orderbys, norderbys);
+}
+
+static void
+tvb_restrpos(IndexScanDesc scan)
+{
+	if (tvb_last_scan == scan)
+		tvb_last_scan = NULL;
+	btrestrpos(scan);
+}
+
+/* a later scan may get the same address */
+static void
+tvb_endscan(IndexScanDesc scan)
+{
+	if (tvb_last_scan == scan)
+		tvb_last_scan = NULL;
+	btendscan(scan);
 }
 
 typedef struct TvbVacuumState
@@ -539,6 +580,9 @@ test_versioned_btree_handler(PG_FUNCTION_ARGS)
 		routine.amcanbuildparallel = false; /* see tvb_build_record */
 		routine.aminsert = tvb_insert;
 		routine.amgettuple = tvb_gettuple;
+		routine.amrescan = tvb_rescan;
+		routine.amrestrpos = tvb_restrpos;
+		routine.amendscan = tvb_endscan;
 		routine.ambulkdelete = tvb_bulkdelete;
 		tvb_routine = routine;
 	}
@@ -702,6 +746,7 @@ tvh_index_getnext_slot(IndexScanDesc scan, ScanDirection direction,
 		if (tv_entry_valid(scan->heapRelation, scan->indexRelation, &tid,
 						   scan->xs_heaptag))
 			break;
+		scan->xs_entry_verdict = INDEX_SCAN_ENTRY_INVALID;
 	}
 
 	if (result && index_can_version(scan->indexRelation))

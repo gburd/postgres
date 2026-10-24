@@ -427,6 +427,7 @@ index_rescan(IndexScanDesc scan,
 
 	scan->kill_prior_tuple = false; /* for safety */
 	scan->xs_heap_continue = false;
+	scan->xs_entry_verdict = INDEX_SCAN_ENTRY_UNKNOWN;
 
 	scan->indexRelation->rd_indam->amrescan(scan, keys, nkeys,
 											orderbys, norderbys);
@@ -501,6 +502,7 @@ index_restrpos(IndexScanDesc scan)
 
 	scan->kill_prior_tuple = false; /* for safety */
 	scan->xs_heap_continue = false;
+	scan->xs_entry_verdict = INDEX_SCAN_ENTRY_UNKNOWN;
 
 	scan->indexRelation->rd_indam->amrestrpos(scan);
 }

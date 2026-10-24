@@ -263,4 +263,60 @@ RESET enable_bitmapscan;
 SELECT test_versioned_mark_history('th', ctid, NULL) FROM th WHERE id = 1;
 DROP TABLE th;
 
+-- The table AM's verdict on each entry an index scan returned
+-- (xs_entry_verdict), as test_versioned_btree reads it at its next
+-- amgettuple call: valid when a row was returned through the entry,
+-- invalid when it reached no visible version, or (for a row with history)
+-- when the entry is valid for no version; never unknown.
+CREATE VIEW tv_verdicts AS
+  SELECT counter, n FROM test_versioned_counts()
+   WHERE counter LIKE 'verdict%' ORDER BY counter;
+CREATE TABLE tj (id int, k int) USING heap_versioned;
+CREATE INDEX tj_k ON tj (k);
+INSERT INTO tj SELECT g, g FROM generate_series(1, 10) g;
+VACUUM tj;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+-- index scan: 3 rows returned through 3 entries
+SELECT test_versioned_reset();
+SELECT id FROM tj WHERE k <= 3;
+SELECT * FROM tv_verdicts;
+-- index-only scan on all-visible pages
+SELECT test_versioned_reset();
+EXPLAIN (COSTS OFF) SELECT k FROM tj WHERE k <= 3;
+SELECT k FROM tj WHERE k <= 3;
+SELECT * FROM tv_verdicts;
+-- a row deleted by our own open transaction: its entry reaches no visible
+-- version, in either scan (and is not killed, so both meet it)
+BEGIN;
+DELETE FROM tj WHERE id = 2;
+SELECT test_versioned_reset();
+SELECT k FROM tj WHERE k <= 3;
+SELECT * FROM tv_verdicts;
+SET LOCAL enable_indexonlyscan = off;
+SELECT test_versioned_reset();
+SELECT id FROM tj WHERE k <= 3;
+SELECT * FROM tv_verdicts;
+ROLLBACK;
+SET enable_indexonlyscan = off;
+-- an untagged entry of a row with history in k is valid for no version
+SELECT test_versioned_mark_history('tj', ctid, 'k') FROM tj WHERE id = 3;
+SELECT test_versioned_reset();
+SELECT id FROM tj WHERE k <= 3;
+SELECT * FROM tv_verdicts;
+SELECT test_versioned_mark_history('tj', ctid, NULL) FROM tj WHERE id = 3;
+RESET enable_indexonlyscan;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+-- The exclusion check's dirty-snapshot scan returns the new row itself and
+-- then walks on along its HOT chain (xs_heap_continue), which ends with
+-- nothing more: the entry stays valid.
+CREATE TABLE tk (id int, k int, EXCLUDE USING btree (k WITH =))
+  USING heap_versioned;
+SELECT test_versioned_reset();
+INSERT INTO tk VALUES (1, 1);
+SELECT * FROM tv_verdicts;
+DROP TABLE tj, tk;
+DROP VIEW tv_verdicts;
+
 DROP EXTENSION test_versioned_tableam;

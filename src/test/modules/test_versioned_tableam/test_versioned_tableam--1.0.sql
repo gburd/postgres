@@ -37,7 +37,8 @@ LANGUAGE C STRICT;
 
 -- counters that moved since the last reset
 CREATE VIEW test_versioned_seen AS
-  SELECT counter, n FROM test_versioned_counts() WHERE n > 0 ORDER BY counter;
+  SELECT counter, n FROM test_versioned_counts()
+   WHERE n > 0 AND counter NOT LIKE 'verdict%' ORDER BY counter;
 
 CREATE FUNCTION test_versioned_insert_entry(regclass, tid, bigint)
 RETURNS void
