@@ -2174,8 +2174,12 @@ TID mapped to block << 11 | offset as ginpostinglist.c does (more offset
 bits for a TID stride past 2047; see "TID stride").  The first and
 last TIDs stay readable in O(1) for bark_entry_tid_range.  Every reader goes
 through bark_entry_get_tids / bark_entry_count_tids / bark_entry_has_tid, and
-bark_entry_add_tid re-forms a coded LIST (decode, insert, re-encode), which
-is a function of the sorted TID set alone, so redo is deterministic.  Plain
+bark_entry_add_tid splices a TID into a coded LIST's delta stream without
+decoding the set (one delta appended past the last TID, the common case, or
+the spanning delta replaced by two), giving the same bytes as decoding,
+inserting and re-encoding: the coded form is a function of the sorted TID set
+alone, so redo is deterministic, and assert builds check the splice against
+the full re-form.  Plain
 LISTs are unchanged, so no REINDEX is needed.  A subset of a coded LIST never
 codes longer than the whole (a removed member's two deltas become their sum),
 but a plain subset can be longer than the coded original, so VACUUM re-forms
