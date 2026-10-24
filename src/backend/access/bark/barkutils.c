@@ -3671,14 +3671,43 @@ bark_form_oversized_entry(ItemPointer locator, Size fulllen,
 }
 
 /*
+ * The leading bytes of the value of varlena datum `d`, as an OVERSIZED
+ * entry's inline prefix holds them: up to BARK_OVERSIZED_PREFIX_LEN bytes
+ * into `buf`, their count into *len, and into *complete whether they are the
+ * whole value.  A compressed datum (index_form_tuple compresses large keys)
+ * or an external one is detoasted only as far as one byte past the prefix,
+ * which tells a complete value from a truncated one: compressed bytes do not
+ * sort like the value.
+ */
+void
+bark_value_prefix(Datum d, uint8 *buf, uint16 *len, bool *complete)
+{
+	varlena    *attr = (varlena *) DatumGetPointer(d);
+	varlena    *slice = NULL;
+	Size		rawlen;
+
+	if (VARATT_IS_EXTERNAL(attr) || VARATT_IS_COMPRESSED(attr))
+		attr = slice = detoast_attr_slice(attr, 0,
+										  BARK_OVERSIZED_PREFIX_LEN + 1);
+	rawlen = VARSIZE_ANY_EXHDR(attr);
+	*complete = rawlen <= BARK_OVERSIZED_PREFIX_LEN;
+	*len = (uint16) Min(rawlen, BARK_OVERSIZED_PREFIX_LEN);
+	memcpy(buf, VARDATA_ANY(attr), *len);
+	if (slice)
+		pfree(slice);
+}
+
+/*
  * Populate an OVERSIZED entry's inline comparison prefix from the full tuple it
  * references, when the first key column sorts bytewise (keyinfo->cols[0].
- * bytewise).  The prefix is the leading bytes of the first key column's datum;
- * up to BARK_OVERSIZED_PREFIX_LEN bytes are copied, and prefixcomplete records
- * whether the whole column fit.  A NULL or non-bytewise first column leaves
- * prefixlen 0, so bark_compare_itups always fetches the full tuple for that
- * entry -- the safe default.  `full` is the complete (uncapped) index tuple
- * that was written to the overflow chain.
+ * bytewise).  The prefix is the leading bytes of the first key column's value
+ * (bark_value_prefix); up to BARK_OVERSIZED_PREFIX_LEN bytes are copied, and
+ * prefixcomplete records whether the whole column fit.  A NULL or
+ * non-bytewise first column leaves prefixlen 0, so comparison always fetches
+ * the full tuple for that entry -- the safe default, which is also what an
+ * entry written before prefixes were taken from compressed values has.
+ * `full` is the complete (uncapped) index tuple that was written to the
+ * overflow chain.
  */
 void
 bark_set_oversized_prefix(IndexTuple entry, Relation index, IndexTuple full)
@@ -3687,8 +3716,6 @@ bark_set_oversized_prefix(IndexTuple entry, Relation index, IndexTuple full)
 	TupleDesc	tupdesc = RelationGetDescr(index);
 	Datum		d;
 	bool		isnull;
-	char	   *data;
-	Size		len;
 
 	ref->prefixlen = 0;
 	ref->prefixcomplete = false;
@@ -3704,28 +3731,7 @@ bark_set_oversized_prefix(IndexTuple entry, Relation index, IndexTuple full)
 	d = index_getattr(full, 1, tupdesc, &isnull);
 	if (isnull)
 		return;
-
-	/*
-	 * The prefix must be the value's own leading bytes.  bark_form_full_tuple
-	 * may have compressed the datum (index_form_tuple compresses large
-	 * varlenas), and compressed bytes do not sort like the value, so leave
-	 * such an entry without a prefix.  An external datum cannot occur: index
-	 * tuples hold their values inline.
-	 */
-	if (VARATT_IS_COMPRESSED(DatumGetPointer(d)))
-		return;
-	Assert(!VARATT_IS_EXTERNAL(DatumGetPointer(d)));
-
-	/* A C-collation text datum is a varlena: use its data area. */
-	data = VARDATA_ANY(DatumGetPointer(d));
-	len = VARSIZE_ANY_EXHDR(DatumGetPointer(d));
-
-	if (len <= BARK_OVERSIZED_PREFIX_LEN)
-		ref->prefixcomplete = true;
-	else
-		len = BARK_OVERSIZED_PREFIX_LEN;
-	memcpy(ref->prefix, data, len);
-	ref->prefixlen = (uint16) len;
+	bark_value_prefix(d, ref->prefix, &ref->prefixlen, &ref->prefixcomplete);
 }
 
 /*
