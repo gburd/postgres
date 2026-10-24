@@ -1467,6 +1467,43 @@ seize/release protocol.  Mark and restore copy the position, as nbtree's do;
 the executor does not restore a scan with ORDER BY operators, since its
 reorder queue would not be rewound.
 
+The copy holds one item per matching entry, not one per heap TID.  A LIST
+or POSTING entry's item points at a copy of the entry's body (its TID
+array, coded deltas or sbm) in the tuple workspace, and bark_gettuple
+returns its members one call at a time, decoding the body into
+so->entryTids when it enters the item (a plain array is read in place).
+So a LIMIT 1 decodes the one entry it returns from, not the page: since
+coded LISTs a duplicate-heavy leaf holds about 3200 TIDs in two dozen
+entries, and expanding them all into items made LIMIT 1 cost twice
+nbtree's instructions.  Nothing is read from the page after the lock is
+released, so resuming within an entry needs no new concurrency rule: a
+split, an insert or a VACUUM between two calls changes the page, not the
+copy, exactly as between two pages.  The position records the member
+returned last (memberIndex), and a mark records it too.  A kill names an
+(item, member) run; bark_killitems marks an entry LP_DEAD only when one
+run covers every member of the copy and the entry on the page still holds
+exactly those TIDs.  A multikey scan filters an entry's members when it
+reads the page (bark_mk_accept, bark_mk_seen) and copies the survivors as a
+TID array instead.  Bitmap scans and the GIN interface's streams take each
+item's members as a batch.
+
+bark_gettuple settles the row returned last at the top of each call (the
+kill_prior_tuple test, bark_kill_prior) before bark_step_member moves the
+position.  A per-row rule that needs the table AM's answer about the
+previous row, such as V2's entry verdict (xs_entry_verdict), goes at the
+same place: the position still names that row's (item, member) there, and
+the table AM sets the verdict before it asks for the next row (relscan.h).
+
+The scan's memory stays under AllocSet's chunk limit (ALLOC_CHUNK_LIMIT,
+8 kB), so it comes from the context's blocks with no malloc of its own:
+items[] is at most MaxIndexTuplesPerPage items of 16 bytes, 6.5 kB, and a
+plain scan's copied bodies are no larger than the page.  An index-only
+scan's workspace also holds the keys, starts at 16 kB as nbtree's does, and
+grows past that for a page whose keys decode larger (prefix compression,
+OVERSIZED entries); a multikey scan's survivor arrays can grow it too.  The
+one allocation that scales with an entry is entryTids: a LIST decodes to at
+most 4095 TIDs (24 kB), but a dense POSTING entry can decode to many more.
+
 The first descent uses the longest bound the keys give on the leading
 columns (bark_make_bound): equality on columns 1..k-1 and a bound on column
 k, compared through the opfamily's cross-type ORDER procs.  A lower bound

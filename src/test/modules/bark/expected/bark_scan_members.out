@@ -1,0 +1,619 @@
+--
+-- Scans that return a LIST or POSTING entry's rows one at a time.  A leaf
+-- read copies one item per matching entry, and bark_gettuple decodes an
+-- entry's members only when it reaches the entry (README, "Scans"), so a
+-- LIMIT stops inside the first entry, an OFFSET resumes in the middle of
+-- one, a backward scan or a scroll cursor turns around inside one, and a
+-- mark can sit on any member.  Each result is compared with a sequential
+-- scan.  Shapes, all on one table: POSTING entries (keys whose rows are
+-- together on the heap), coded LISTs (rows a few apart), plain LISTs (two
+-- rows far apart, which code no shorter), and SINGLEs.
+--
+SET client_min_messages = warning;
+CREATE EXTENSION IF NOT EXISTS pageinspect;
+CREATE EXTENSION IF NOT EXISTS amcheck;
+RESET client_min_messages;
+-- Index result and seqscan result of query q, as md5s of their rows in the
+-- query's own order.
+CREATE FUNCTION sm_cmp(q text, OUT idx text, OUT seq text, OUT same bool)
+LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM set_config('enable_seqscan', 'off', true);
+  PERFORM set_config('enable_bitmapscan', 'off', true);
+  EXECUTE 'SELECT md5(coalesce(string_agg(x::text, '','' ORDER BY n), '''')) '
+    'FROM (SELECT x, row_number() OVER () n FROM (' || q || ') x) y' INTO idx;
+  PERFORM set_config('enable_seqscan', 'on', true);
+  PERFORM set_config('enable_indexscan', 'off', true);
+  PERFORM set_config('enable_indexonlyscan', 'off', true);
+  EXECUTE 'SELECT md5(coalesce(string_agg(x::text, '','' ORDER BY n), '''')) '
+    'FROM (SELECT x, row_number() OVER () n FROM (' || q || ') x) y' INTO seq;
+  PERFORM set_config('enable_indexscan', 'on', true);
+  PERFORM set_config('enable_indexonlyscan', 'on', true);
+  same := idx = seq;
+END $$;
+-- The plan's scan node for q, with seqscans and bitmap scans off.
+CREATE FUNCTION sm_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := '';
+BEGIN
+  PERFORM set_config('enable_seqscan', 'off', true);
+  PERFORM set_config('enable_bitmapscan', 'off', true);
+  FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+    IF l ~ 'Scan' THEN r := r || trim(regexp_replace(l, ' on .*| using .*', '')) || ';'; END IF;
+  END LOOP;
+  PERFORM set_config('enable_seqscan', 'on', true);
+  PERFORM set_config('enable_bitmapscan', 'on', true);
+  RETURN r;
+END $$;
+-- Keys 1-3: 300 rows each, inserted together.  Key 4: 3000 rows together.
+-- Keys 5-6: 100 rows each, one every 40 heap rows.  Keys 7-1206: one row
+-- each.  Keys 2000-2009: two rows each, one inserted first and one last.
+-- v orders the rows of a key by insertion, which is heap TID order, the
+-- index's order within a key.
+CREATE TEMP TABLE sm (k int, v int) WITH (autovacuum_enabled = off);
+INSERT INTO sm SELECT 2000 + g, 30000 + g FROM generate_series(0, 9) g;
+INSERT INTO sm SELECT 1 + (g - 1) / 300, g FROM generate_series(1, 900) g;
+INSERT INTO sm SELECT 4, 1000 + g FROM generate_series(1, 3000) g;
+INSERT INTO sm SELECT CASE WHEN g % 40 = 0 THEN 5 + (g / 40) % 2 ELSE 1000000 + g END,
+    10000 + g FROM generate_series(1, 8000) g;
+DELETE FROM sm WHERE k >= 1000000;
+INSERT INTO sm SELECT 7 + g, 20000 + g FROM generate_series(0, 1199) g;
+INSERT INTO sm SELECT 2000 + g, 31000 + g FROM generate_series(0, 9) g;
+CREATE INDEX sm_k ON sm USING bark (k);
+VACUUM ANALYZE sm;
+-- The leaf entries: key, shape (a coded LIST is shorter than the plain
+-- form), TIDs, and whether the entry is LP_DEAD.
+CREATE FUNCTION sm_entries(OUT k int, OUT shape text, OUT ntids int, OUT dead bool)
+RETURNS SETOF record LANGUAGE sql AS $$
+  SELECT CASE WHEN i.shape <> 'PIVOT' THEN
+           (SELECT s.k FROM sm s WHERE s.ctid = coalesce(i.htid, i.tids[1])) END,
+         CASE WHEN i.shape = 'LIST' AND i.itemlen < 16 + 6 * i.ntids
+              THEN 'LIST coded' ELSE i.shape END, i.ntids, h.lp_flags = 3
+    FROM generate_series(1, pg_relation_size('sm_k') / 8192 - 1) b,
+         LATERAL bark_page_stats('sm_k', b) p,
+         LATERAL bark_page_items('sm_k', b) i
+         JOIN heap_page_items(get_raw_page('sm_k', b::int)) h ON h.lp = i.itemoffset
+   WHERE p.type = 'leaf' AND i.shape <> 'PIVOT'
+$$;
+SELECT CASE WHEN k BETWEEN 7 AND 1206 THEN '7-1206'
+            WHEN k >= 2000 THEN '2000-2009' ELSE k::text END AS k, shape,
+       count(*) AS entries, sum(ntids) AS tids
+  FROM sm_entries() GROUP BY 1, 2 ORDER BY 1, 2;
+     k     |   shape    | entries | tids 
+-----------+------------+---------+------
+ 1         | POSTING    |       1 |  300
+ 2         | POSTING    |       1 |  300
+ 2000-2009 | LIST       |      10 |   20
+ 3         | LIST coded |       3 |  300
+ 4         | POSTING    |       1 | 3000
+ 5         | LIST coded |       1 |  100
+ 6         | LIST coded |       1 |  100
+ 7-1206    | SINGLE     |    1200 | 1200
+(8 rows)
+
+SELECT count(*) > 1 AS several_leaves
+  FROM generate_series(1, pg_relation_size('sm_k') / 8192 - 1) b,
+       LATERAL bark_page_stats('sm_k', b) p WHERE p.type = 'leaf';
+ several_leaves 
+----------------
+ t
+(1 row)
+
+SELECT bark_index_check('sm_k', true);
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+-- LIMIT 1, and OFFSETs that land on the first, a middle and the last member
+-- of an entry and past it, forward and backward, plain and index-only.
+SELECT sm_plan('SELECT v FROM sm WHERE k = 4 ORDER BY k LIMIT 1');
+     sm_plan     
+-----------------
+ ->  Index Scan;
+(1 row)
+
+SELECT sm_plan('SELECT k FROM sm WHERE k = 4 ORDER BY k LIMIT 1');
+       sm_plan        
+----------------------
+ ->  Index Only Scan;
+(1 row)
+
+SELECT q, (sm_cmp(q)).same FROM (VALUES
+  ('SELECT k, v FROM sm WHERE k = 1 LIMIT 1'),
+  ('SELECT k, v FROM sm WHERE k = 4 LIMIT 1'),
+  ('SELECT k, v FROM sm WHERE k = 5 LIMIT 1'),
+  ('SELECT k FROM sm WHERE k = 4 LIMIT 1'),
+  ('SELECT k, v FROM sm WHERE k = 2 ORDER BY k, v LIMIT 1 OFFSET 0'),
+  ('SELECT k, v FROM sm WHERE k = 2 ORDER BY k, v LIMIT 1 OFFSET 150'),
+  ('SELECT k, v FROM sm WHERE k = 2 ORDER BY k, v LIMIT 1 OFFSET 299'),
+  ('SELECT k, v FROM sm WHERE k BETWEEN 2 AND 3 ORDER BY k, v LIMIT 3 OFFSET 298'),
+  ('SELECT k, v FROM sm WHERE k = 4 ORDER BY k, v LIMIT 2 OFFSET 2999'),
+  ('SELECT k, v FROM sm WHERE k BETWEEN 4 AND 6 ORDER BY k, v LIMIT 5 OFFSET 3198'),
+  ('SELECT k, v FROM sm WHERE k >= 3 ORDER BY k DESC, v DESC LIMIT 1'),
+  ('SELECT k, v FROM sm WHERE k <= 4 ORDER BY k DESC, v DESC LIMIT 4 OFFSET 2998'),
+  ('SELECT k, v FROM sm WHERE k <= 6 ORDER BY k DESC, v DESC LIMIT 3 OFFSET 399'),
+  ('SELECT k FROM sm WHERE k <= 4 ORDER BY k DESC LIMIT 3 OFFSET 3299'),
+  ('SELECT k, v FROM sm WHERE k > 0 ORDER BY k, v'),
+  ('SELECT k, v FROM sm WHERE k > 0 ORDER BY k DESC, v DESC'),
+  ('SELECT k FROM sm WHERE k > 0 ORDER BY k DESC'),
+  ('SELECT k, v FROM sm WHERE k = 2003 LIMIT 1'),
+  ('SELECT k, v FROM sm WHERE k = 2003 ORDER BY k DESC, v DESC LIMIT 1'),
+  ('SELECT k, v FROM sm WHERE k >= 2000 ORDER BY k, v LIMIT 3 OFFSET 7'),
+  ('SELECT k, v FROM sm WHERE k IN (2, 4, 6, 9, 2005) ORDER BY k, v'),
+  ('SELECT k, v FROM sm WHERE k IN (2, 4, 6, 9, 2005) ORDER BY k DESC, v DESC')
+) t(q);
+                                       q                                       | same 
+-------------------------------------------------------------------------------+------
+ SELECT k, v FROM sm WHERE k = 1 LIMIT 1                                       | t
+ SELECT k, v FROM sm WHERE k = 4 LIMIT 1                                       | t
+ SELECT k, v FROM sm WHERE k = 5 LIMIT 1                                       | t
+ SELECT k FROM sm WHERE k = 4 LIMIT 1                                          | t
+ SELECT k, v FROM sm WHERE k = 2 ORDER BY k, v LIMIT 1 OFFSET 0                | t
+ SELECT k, v FROM sm WHERE k = 2 ORDER BY k, v LIMIT 1 OFFSET 150              | t
+ SELECT k, v FROM sm WHERE k = 2 ORDER BY k, v LIMIT 1 OFFSET 299              | t
+ SELECT k, v FROM sm WHERE k BETWEEN 2 AND 3 ORDER BY k, v LIMIT 3 OFFSET 298  | t
+ SELECT k, v FROM sm WHERE k = 4 ORDER BY k, v LIMIT 2 OFFSET 2999             | t
+ SELECT k, v FROM sm WHERE k BETWEEN 4 AND 6 ORDER BY k, v LIMIT 5 OFFSET 3198 | t
+ SELECT k, v FROM sm WHERE k >= 3 ORDER BY k DESC, v DESC LIMIT 1              | t
+ SELECT k, v FROM sm WHERE k <= 4 ORDER BY k DESC, v DESC LIMIT 4 OFFSET 2998  | t
+ SELECT k, v FROM sm WHERE k <= 6 ORDER BY k DESC, v DESC LIMIT 3 OFFSET 399   | t
+ SELECT k FROM sm WHERE k <= 4 ORDER BY k DESC LIMIT 3 OFFSET 3299             | t
+ SELECT k, v FROM sm WHERE k > 0 ORDER BY k, v                                 | t
+ SELECT k, v FROM sm WHERE k > 0 ORDER BY k DESC, v DESC                       | t
+ SELECT k FROM sm WHERE k > 0 ORDER BY k DESC                                  | t
+ SELECT k, v FROM sm WHERE k = 2003 LIMIT 1                                    | t
+ SELECT k, v FROM sm WHERE k = 2003 ORDER BY k DESC, v DESC LIMIT 1            | t
+ SELECT k, v FROM sm WHERE k >= 2000 ORDER BY k, v LIMIT 3 OFFSET 7            | t
+ SELECT k, v FROM sm WHERE k IN (2, 4, 6, 9, 2005) ORDER BY k, v               | t
+ SELECT k, v FROM sm WHERE k IN (2, 4, 6, 9, 2005) ORDER BY k DESC, v DESC     | t
+(22 rows)
+
+-- Bitmap scans take each entry's members as a batch.
+SET enable_seqscan = off;
+SET enable_indexscan = off;
+SET enable_indexonlyscan = off;
+EXPLAIN (COSTS OFF) SELECT count(*), sum(v) FROM sm WHERE k BETWEEN 2 AND 6 OR k >= 2000;
+                           QUERY PLAN                           
+----------------------------------------------------------------
+ Aggregate
+   ->  Bitmap Heap Scan on sm
+         Recheck Cond: (((k >= 2) AND (k <= 6)) OR (k >= 2000))
+         ->  BitmapOr
+               ->  Bitmap Index Scan on sm_k
+                     Index Cond: ((k >= 2) AND (k <= 6))
+               ->  Bitmap Index Scan on sm_k
+                     Index Cond: (k >= 2000)
+(8 rows)
+
+SELECT count(*), sum(v) FROM sm WHERE k BETWEEN 2 AND 6 OR k >= 2000;
+ count |   sum    
+-------+----------
+  3820 | 11275890
+(1 row)
+
+RESET enable_indexonlyscan;
+RESET enable_indexscan;
+RESET enable_seqscan;
+SELECT count(*), sum(v) FROM sm WHERE k BETWEEN 2 AND 6 OR k >= 2000;
+ count |   sum    
+-------+----------
+  3820 | 11275890
+(1 row)
+
+-- A scroll cursor turns around inside an entry, and jumps into one.  Each
+-- FETCH is compared with the same position of the seqscan's ordered rows.
+CREATE TEMP TABLE sm_want AS
+  SELECT row_number() OVER (ORDER BY k, v) AS n, k, v FROM sm WHERE k BETWEEN 3 AND 5;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SET enable_sort = off;
+BEGIN;
+DECLARE c SCROLL CURSOR FOR SELECT k, v FROM sm WHERE k BETWEEN 3 AND 5 ORDER BY k;
+CREATE TEMP TABLE sm_got (step int, k int, v int);
+CREATE FUNCTION sm_fetch(step int, how text) RETURNS void LANGUAGE plpgsql AS $$
+DECLARE r record;
+BEGIN
+  EXECUTE 'FETCH ' || how || ' FROM c' INTO r;
+  INSERT INTO sm_got VALUES (step, r.k, r.v);
+END $$;
+SELECT sm_fetch(1, 'ABSOLUTE 150');
+ sm_fetch 
+----------
+ 
+(1 row)
+
+SELECT sm_fetch(2, 'NEXT');
+ sm_fetch 
+----------
+ 
+(1 row)
+
+SELECT sm_fetch(3, 'PRIOR');
+ sm_fetch 
+----------
+ 
+(1 row)
+
+SELECT sm_fetch(4, 'PRIOR');
+ sm_fetch 
+----------
+ 
+(1 row)
+
+SELECT sm_fetch(5, 'ABSOLUTE 300');
+ sm_fetch 
+----------
+ 
+(1 row)
+
+SELECT sm_fetch(6, 'NEXT');
+ sm_fetch 
+----------
+ 
+(1 row)
+
+SELECT sm_fetch(7, 'PRIOR');
+ sm_fetch 
+----------
+ 
+(1 row)
+
+SELECT sm_fetch(8, 'ABSOLUTE 3299');
+ sm_fetch 
+----------
+ 
+(1 row)
+
+SELECT sm_fetch(9, 'NEXT');
+ sm_fetch 
+----------
+ 
+(1 row)
+
+SELECT sm_fetch(10, 'NEXT');
+ sm_fetch 
+----------
+ 
+(1 row)
+
+SELECT sm_fetch(11, 'PRIOR');
+ sm_fetch 
+----------
+ 
+(1 row)
+
+SELECT sm_fetch(12, 'PRIOR');
+ sm_fetch 
+----------
+ 
+(1 row)
+
+SELECT sm_fetch(13, 'ABSOLUTE 2000');
+ sm_fetch 
+----------
+ 
+(1 row)
+
+SELECT sm_fetch(14, 'RELATIVE -1000');
+ sm_fetch 
+----------
+ 
+(1 row)
+
+SELECT sm_fetch(15, 'LAST');
+ sm_fetch 
+----------
+ 
+(1 row)
+
+SELECT sm_fetch(16, 'PRIOR');
+ sm_fetch 
+----------
+ 
+(1 row)
+
+SELECT sm_fetch(17, 'FIRST');
+ sm_fetch 
+----------
+ 
+(1 row)
+
+COMMIT;
+SELECT g.step, g.k, g.v, w.n
+  FROM sm_got g LEFT JOIN sm_want w USING (k, v) ORDER BY g.step;
+ step | k |   v   |  n   
+------+---+-------+------
+    1 | 3 |   750 |  150
+    2 | 3 |   751 |  151
+    3 | 3 |   750 |  150
+    4 | 3 |   749 |  149
+    5 | 3 |   900 |  300
+    6 | 4 |  1001 |  301
+    7 | 3 |   900 |  300
+    8 | 4 |  3999 | 3299
+    9 | 4 |  4000 | 3300
+   10 | 5 | 10080 | 3301
+   11 | 4 |  4000 | 3300
+   12 | 4 |  3999 | 3299
+   13 | 4 |  2700 | 2000
+   14 | 4 |  1700 | 1000
+   15 | 5 | 18000 | 3400
+   16 | 5 | 17920 | 3399
+   17 | 3 |   601 |    1
+(17 rows)
+
+RESET enable_sort;
+-- Mark and restore inside entries: a merge join whose inner side is an
+-- index scan of sm, rescanned over each run of equal keys of the outer
+-- side, with the runs' marks on members of LIST and POSTING entries.
+CREATE TEMP TABLE sm_outer (k int, w int);
+INSERT INTO sm_outer SELECT k, w FROM generate_series(1, 7) k, generate_series(1, 3) w;
+ANALYZE sm_outer;
+SET enable_hashjoin = off;
+SET enable_nestloop = off;
+SET enable_material = off;
+SELECT sm_plan('SELECT * FROM sm_outer o JOIN sm s ON s.k = o.k');
+           sm_plan            
+------------------------------
+ ->  Index Scan;->  Seq Scan;
+(1 row)
+
+SELECT count(*), sum(s.v * o.w) FROM sm_outer o JOIN sm s ON s.k = o.k;
+ count |   sum    
+-------+----------
+ 12303 | 64385700
+(1 row)
+
+SET enable_mergejoin = off;
+SET enable_hashjoin = on;
+SELECT count(*), sum(s.v * o.w) FROM sm_outer o JOIN sm s ON s.k = o.k;
+ count |   sum    
+-------+----------
+ 12303 | 64385700
+(1 row)
+
+RESET enable_mergejoin;
+RESET enable_hashjoin;
+RESET enable_nestloop;
+RESET enable_material;
+-- Parallel index scans over the same entries.  Temporary tables are not
+-- parallel safe, so a copy.
+CREATE TABLE sm_par (k int, v int) WITH (autovacuum_enabled = off, parallel_workers = 2);
+INSERT INTO sm_par SELECT k, v FROM sm ORDER BY ctid;
+CREATE INDEX sm_par_k ON sm_par USING bark (k);
+VACUUM ANALYZE sm_par;
+SET min_parallel_table_scan_size = 0;
+SET min_parallel_index_scan_size = 0;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET max_parallel_workers_per_gather = 2;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+EXPLAIN (COSTS OFF) SELECT count(*), sum(v) FROM sm_par WHERE k <= 6;
+                           QUERY PLAN                           
+----------------------------------------------------------------
+ Finalize Aggregate
+   ->  Gather
+         Workers Planned: 2
+         ->  Partial Aggregate
+               ->  Parallel Index Scan using sm_par_k on sm_par
+                     Index Cond: (k <= 6)
+(6 rows)
+
+SELECT count(*), sum(v) FROM sm_par WHERE k <= 6;
+ count |   sum    
+-------+----------
+  4100 | 10710950
+(1 row)
+
+EXPLAIN (COSTS OFF) SELECT count(*), sum(k) FROM sm_par WHERE k <= 6;
+                             QUERY PLAN                              
+---------------------------------------------------------------------
+ Finalize Aggregate
+   ->  Gather
+         Workers Planned: 2
+         ->  Partial Aggregate
+               ->  Parallel Index Only Scan using sm_par_k on sm_par
+                     Index Cond: (k <= 6)
+(6 rows)
+
+SELECT count(*), sum(k) FROM sm_par WHERE k <= 6;
+ count |  sum  
+-------+-------
+  4100 | 14900
+(1 row)
+
+RESET max_parallel_workers_per_gather;
+RESET parallel_tuple_cost;
+RESET parallel_setup_cost;
+RESET min_parallel_index_scan_size;
+RESET min_parallel_table_scan_size;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SELECT count(*), sum(v) FROM sm WHERE k <= 6;
+ count |   sum    
+-------+----------
+  4100 | 10710950
+(1 row)
+
+SELECT count(*), sum(k) FROM sm WHERE k <= 6;
+ count |  sum  
+-------+-------
+  4100 | 14900
+(1 row)
+
+DROP TABLE sm_par;
+-- Kills: rows that a scan finds dead mark their entry LP_DEAD when the
+-- scan leaves the page, but only when it killed every member of the entry.
+-- Only equality scans read here, so that no planner probe of the index's
+-- ends (get_actual_variable_range) kills anything.  Key 1 (POSTING) and key
+-- 5 (coded LIST) die whole; key 2 keeps one row in the middle, so its two
+-- runs of kills do not cover it.  Key 4 (POSTING) keeps its middle row: a
+-- LIMIT 1 stops on it after killing the members before it, and marks
+-- nothing; once that row dies too, a LIMIT 1 reads the whole entry, killing
+-- all of it.  Key 2003 (plain LIST) dies, read backward.
+DELETE FROM sm WHERE k IN (1, 5, 2003);
+DELETE FROM sm WHERE k = 2 AND v <> 450;
+DELETE FROM sm WHERE k = 4 AND v <> 2500;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SET enable_indexonlyscan = off;
+SELECT count(*), sum(v) FROM sm WHERE k = 1;
+ count | sum 
+-------+-----
+     0 |    
+(1 row)
+
+SELECT count(*), sum(v) FROM sm WHERE k = 2;
+ count | sum 
+-------+-----
+     1 | 450
+(1 row)
+
+SELECT count(*), sum(v) FROM sm WHERE k = 5;
+ count | sum 
+-------+-----
+     0 |    
+(1 row)
+
+SELECT v FROM sm WHERE k = 2003 ORDER BY k DESC LIMIT 1;
+ v 
+---
+(0 rows)
+
+SELECT v FROM sm WHERE k = 4 LIMIT 1;
+  v   
+------
+ 2500
+(1 row)
+
+SELECT shape, ntids FROM sm_entries() WHERE dead ORDER BY 1, 2;
+   shape    | ntids 
+------------+-------
+ LIST       |     2
+ LIST coded |   100
+ POSTING    |   300
+(3 rows)
+
+DELETE FROM sm WHERE k = 4;
+SELECT v FROM sm WHERE k = 4 LIMIT 1;
+ v 
+---
+(0 rows)
+
+SELECT shape, ntids FROM sm_entries() WHERE dead ORDER BY 1, 2;
+   shape    | ntids 
+------------+-------
+ LIST       |     2
+ LIST coded |   100
+ POSTING    |   300
+ POSTING    |  3000
+(4 rows)
+
+-- Every other row of one POSTING entry dead: each kill starts a run of its
+-- own, more than the scan keeps (the rest are dropped, which only loses
+-- hints), and the entry is not marked, since its live rows were not killed.
+CREATE TEMP TABLE sm_alt (k int, v int) WITH (autovacuum_enabled = off);
+INSERT INTO sm_alt SELECT 1, g FROM generate_series(1, 3000) g;
+CREATE INDEX sm_alt_k ON sm_alt USING bark (k);
+DELETE FROM sm_alt WHERE v % 2 = 0;
+SELECT count(*), sum(v) FROM sm_alt WHERE k = 1;
+ count |   sum   
+-------+---------
+  1500 | 2250000
+(1 row)
+
+SELECT count(*), sum(v) FROM sm_alt WHERE k = 1;
+ count |   sum   
+-------+---------
+  1500 | 2250000
+(1 row)
+
+SELECT i.shape, i.ntids, h.lp_flags
+  FROM bark_page_items('sm_alt_k', 1) i
+  JOIN heap_page_items(get_raw_page('sm_alt_k', 1)) h ON h.lp = i.itemoffset;
+  shape  | ntids | lp_flags 
+---------+-------+----------
+ POSTING |  3000 |        1
+(1 row)
+
+DROP TABLE sm_alt;
+-- Later scans skip the marked entries and return the same rows.
+SELECT count(*), sum(v) FROM sm WHERE k BETWEEN 1 AND 6 OR k >= 2000;
+ count |   sum   
+-------+---------
+   419 | 2174684
+(1 row)
+
+SELECT count(*), sum(v) FROM (SELECT v FROM sm WHERE k BETWEEN 1 AND 6 OR k >= 2000
+  ORDER BY k DESC) x;
+ count |   sum   
+-------+---------
+   419 | 2174684
+(1 row)
+
+RESET enable_indexonlyscan;
+RESET enable_bitmapscan;
+RESET enable_seqscan;
+SELECT count(*), sum(v) FROM sm WHERE k BETWEEN 1 AND 6 OR k >= 2000;
+ count |   sum   
+-------+---------
+   419 | 2174684
+(1 row)
+
+-- The leaf a scan stopped on splits before the scan goes on.  The scan
+-- resumes from its copy of the page, in the middle of an entry, and then
+-- steps to the right sibling it saved, past the pages the splits made,
+-- whose entries were all in the copy.  The cursor's snapshot does not see
+-- the new rows, scattered duplicates of the SINGLE keys on the leaf.
+CREATE TEMP TABLE sm_want3 AS
+  SELECT count(*) AS n, sum(v) AS s FROM sm WHERE k BETWEEN 3 AND 1206;
+CREATE FUNCTION sm_drain(OUT n bigint, OUT s bigint) LANGUAGE plpgsql AS $$
+DECLARE cur refcursor := 'c'; r record;
+BEGIN
+  n := 0; s := 0;
+  LOOP
+    FETCH cur INTO r;
+    EXIT WHEN NOT FOUND;
+    n := n + 1; s := s + r.v;
+  END LOOP;
+END $$;
+CREATE TEMP TABLE sm_leaves AS
+  SELECT count(*) AS n FROM generate_series(1, pg_relation_size('sm_k') / 8192 - 1) b,
+         LATERAL bark_page_stats('sm_k', b) p WHERE p.type = 'leaf';
+BEGIN;
+SET LOCAL enable_seqscan = off;
+SET LOCAL enable_bitmapscan = off;
+DECLARE c NO SCROLL CURSOR FOR SELECT k, v FROM sm WHERE k BETWEEN 3 AND 1206 ORDER BY k;
+MOVE 150 IN c;
+INSERT INTO sm SELECT 7 + g % 200, 50000 + g FROM generate_series(1, 20000) g;
+SELECT count(*) > (SELECT n FROM sm_leaves) AS split
+  FROM generate_series(1, pg_relation_size('sm_k') / 8192 - 1) b,
+       LATERAL bark_page_stats('sm_k', b) p WHERE p.type = 'leaf';
+ split 
+-------
+ t
+(1 row)
+
+SELECT d.n + 150 = w.n AS same_count, d.s FROM sm_drain() d, sm_want3 w;
+ same_count |    s     
+------------+----------
+ t          | 26243225
+(1 row)
+
+COMMIT;
+SELECT (SELECT s FROM sm_want3) - sum(v) AS first_150_sum
+  FROM (SELECT v FROM sm WHERE k BETWEEN 3 AND 1206 AND v < 50000
+         ORDER BY k, v OFFSET 150) x;
+ first_150_sum 
+---------------
+        101325
+(1 row)
+
+SELECT bark_index_check('sm_k', true);
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+DROP TABLE sm, sm_outer, sm_want, sm_want3, sm_leaves;

@@ -21,6 +21,7 @@ tests += {
       'bark_l1_cache',
       'bark_btree_impl',
       'bark_lpdead',
+      'bark_scan_members',
     ],
     'regress_args': ['--temp-config', files('../injection_points/extra.conf')],
     # The injection points are run in the same backend, so disable
