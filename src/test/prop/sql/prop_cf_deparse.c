@@ -284,3 +284,52 @@ done:
 	pfree(s.data);
 	pg_prop_disconnect(conn);
 }
+
+/*
+ * CF 7492: a COLLATE clause (or any non-Const expression) in the URI of an
+ * XMLNAMESPACES item did not read back.  The URI is parsed as a b_expr, which
+ * has no COLLATE / other a_expr-only syntax, so ruleutils must parenthesize a
+ * non-Const URI when deparsing; before the fix it emitted the bare expression
+ * and the deparsed view failed to re-parse ("syntax error at or near COLLATE").
+ *
+ * dp_roundtrip creates the view, deparses it, recreates from the deparse, and
+ * requires the recreate to parse, return the same rows, and reach a deparse
+ * fixed point.  On master the recreate step fails; with the patch it passes.
+ * We randomize the URI expression (plain string, COLLATE, concatenation, a
+ * CASE) so the property covers the general non-Const URI, not just one
+ * literal.
+ */
+PG_PROP(xmlnamespace_uri_survives_deparse)
+{
+	static const char *const uris[] = {
+		"'http://x.example'",							/* Const: the easy case */
+		"('http://x.example' COLLATE \"C\")",			/* the reported bug */
+		"('http://' || 'x.example')",					/* concatenation */
+		"(CASE WHEN true THEN 'http://x.example' ELSE '' END)",
+		"(('http://x.example')::text COLLATE \"POSIX\")",
+	};
+	pg_prop_conn *conn = dp_connect(tc);
+	const char *uri = uris[pg_prop_draw_int(tc, 0, lengthof(uris) - 1)];
+	StringInfoData body;
+
+	initStringInfo(&body);
+	/*
+	 * A minimal XMLTABLE whose XMLNAMESPACES carries the drawn URI expression.
+	 * PostgreSQL's XMLTABLE supports only named namespaces (no DEFAULT), so we
+	 * always name it; the document and row path are fixed and the column is
+	 * text so the row read-back never casts.  Only the namespace URI varies,
+	 * which is the deparse surface under test.
+	 */
+	appendStringInfo(&body,
+					 "SELECT x.a FROM XMLTABLE("
+					 "XMLNAMESPACES(%s AS ns), "
+					 "'/ns:root' PASSING XML '<root xmlns=\"http://x.example\">v</root>' "
+					 "COLUMNS a text PATH '.') x",
+					 uri);
+
+	dp_roundtrip(tc, conn, body.data, pg_prop_draw_bool(tc));
+
+	pfree(body.data);
+	pg_prop_sql_exec(conn, "DROP VIEW IF EXISTS cfd_v2, cfd_v1", NULL);
+	pg_prop_disconnect(conn);
+}
