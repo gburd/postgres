@@ -94,6 +94,26 @@ SELECT est BETWEEN act / 3.0 AND act * 3.0 AS within_3x, act
   FROM wc_est('wc_big', format('doc #< %L', jsonb_build_array('k', '000400')));
 DROP TABLE wc_big;
 
+-- Keys that do not compress are OVERSIZED, separators too, so the sample
+-- has no keys at all.  That says nothing of the distribution: a range or
+-- point counted exactly within four leaves keeps its count, and a wider
+-- one, #? 'k' here, keeps the default, 1% of 600 rows.
+CREATE TABLE wc_wide (id int, doc jsonb) WITH (autovacuum_enabled = off);
+INSERT INTO wc_wide
+  SELECT g, jsonb_build_object('k', lpad(g::text, 6, '0') ||
+           (SELECT string_agg(md5(g::text || i), '') FROM generate_series(1, 100) i))
+    FROM generate_series(1, 600) g;
+CREATE INDEX wc_wide_doc ON wc_wide USING bark (doc bark_jsonb_wildcard_ops);
+ANALYZE wc_wide;
+SELECT est, act
+  FROM wc_est('wc_wide', format('doc #< %L', jsonb_build_array('k', '000300')));
+SELECT est, act
+  FROM wc_est('wc_wide', format('doc #= %L',
+                                (SELECT jsonb_build_array('k', doc ->> 'k')
+                                   FROM wc_wide WHERE id = 300)));
+SELECT est, act FROM wc_est('wc_wide', 'doc #? ''k''');
+DROP TABLE wc_wide;
+
 -- A one-leaf index cannot say, so the estimate stays the default: 0.5% of
 -- 1000 rows for =, though every row matches.
 CREATE TABLE wc_small (id int, doc jsonb) WITH (autovacuum_enabled = off);

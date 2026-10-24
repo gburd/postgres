@@ -2221,7 +2221,9 @@ bark_sample_level(Relation index, BlockNumber blkno, IndexTuple **keys,
 /*
  * The index's separator sample, built on first use and again whenever the
  * root has moved since (bark_get_root refreshes cache->root); NULL when the
- * root is a leaf or the index is empty.
+ * root is a leaf or the index is empty.  It has no keys when every
+ * separator of the level read is OVERSIZED (bark_sample_level skips them),
+ * and is cached so all the same, so that it is not read again every plan.
  *
  * The sample is one level's downlink keys: level 1's, one per leaf, when
  * that level has at most BARK_SAMPLE_PAGES pages.  It is found top down:
@@ -2291,8 +2293,6 @@ bark_sample_get(Relation index)
 	}
 	cache = bark_get_amcache(index);
 	cache->sample = NULL;
-	/* A level above the leaves has two downlinks or more, so a separator. */
-	Assert(nkeys > 0);
 
 	cxt = AllocSetContextCreate(index->rd_indexcxt, BARK_SAMPLE_CXT,
 								ALLOCSET_SMALL_SIZES);
@@ -2386,7 +2386,7 @@ bark_sample_count(Relation index, BarkKeyInfo *keyinfo,
 				  const BarkScanBound *start, const BarkScanBound *end,
 				  double *ntids, int *nleaves)
 {
-	/* The sample has keys, so the index is not empty. */
+	/* There is a sample, so the root is not a leaf and the index not empty. */
 	Buffer		buf = bark_search_bound(index, keyinfo, start, start->upper);
 	OffsetNumber off = bark_binsrch_bound(index, keyinfo, start,
 										  BufferGetPage(buf));
@@ -2512,12 +2512,15 @@ bark_sample_probe(Relation index, BarkKeyInfo *keyinfo, BarkKeySample *sample,
  * inside, open at one end or not, reads the leaves at up to three of them
  * (bark_sample_probe, once per key for the sample's life) and takes their
  * TIDs per leaf over the leaves it covers.  The fraction alone is left for
- * a boundary open at one end with no sample key inside.
+ * a boundary open at one end with no sample key inside.  A sample with no
+ * keys (every separator OVERSIZED) says nothing of the distribution, so
+ * then only an exact count is an answer.
  *
  * -1 for a hypothetical index, an empty one or one whose root is a leaf,
  * an extracted column that is not the first key column, a non-Const or
  * NULL argument, a procedure 8 that asks for a recheck or the NULL entries
- * (its boundaries then hold more than the matches), and an empty heap.
+ * (its boundaries then hold more than the matches), an empty heap, and a
+ * sample with no keys unless every boundary is counted exactly.
  */
 double
 bark_estimate_qual_selectivity(IndexOptInfo *index, int indexcol, Expr *clause)
@@ -2579,6 +2582,7 @@ bark_estimate_qual_selectivity(IndexOptInfo *index, int indexcol, Expr *clause)
 		bool		hasstart = false;
 		bool		hasend = false;
 		bool		point;
+		bool		exact = false;
 		int			lo;
 		int			hi;
 		int			inside;
@@ -2605,8 +2609,8 @@ bark_estimate_qual_selectivity(IndexOptInfo *index, int indexcol, Expr *clause)
 			double		ntids;
 			int			nleaves;
 
-			if (bark_sample_count(indexRel, keyinfo, &start, &end, &ntids,
-								  &nleaves))
+			if ((exact = bark_sample_count(indexRel, keyinfo, &start, &end,
+										   &ntids, &nleaves)))
 				bsel = ntids / reltuples;
 			else
 				bsel = Max(bsel, Max(ntids, ntids / nleaves * (inside + 1) *
@@ -2627,6 +2631,12 @@ bark_estimate_qual_selectivity(IndexOptInfo *index, int indexcol, Expr *clause)
 				nprobes++;
 			}
 			bsel = ntids / nprobes * inside * leavesper / reltuples;
+		}
+		/* With no sample keys, there are no intervals to estimate over. */
+		if (sample->nkeys == 0 && !exact)
+		{
+			index_close(indexRel, NoLock);
+			return -1;
 		}
 		selec += Min(bsel, 1.0);
 	}

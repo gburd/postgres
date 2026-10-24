@@ -1989,7 +1989,8 @@ extern BarkAmCache *bark_get_amcache(Relation index);
  * Fraction of the heap's rows a qual `clause` on extracted column `indexcol`
  * of BARK index `index` matches, from the index's separators; -1 when the
  * index cannot say (hypothetical, empty, a single leaf, the extracted column
- * not the first key column, a non-Const argument).  bark.c.
+ * not the first key column, a non-Const argument, separators all too long
+ * to sample).  bark.c.
  *
  * The caller must check that the user may see every row
  * (VariableStatData.acl_ok), as statistic_proc_security_check does, because
