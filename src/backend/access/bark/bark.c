@@ -1281,8 +1281,16 @@ bark_vacuum_page(BarkVacState *vstate, Buffer buf)
 			{
 				verdict = bark_vacuum_verdict(vstate, BarkEntryGetHeapTid(itup),
 											  BarkEntryGetTag(itup));
-				if (verdict == INDEX_ENTRY_DEAD)
+				if (verdict == INDEX_ENTRY_DEAD ||
+					(verdict == INDEX_ENTRY_LIVE_UNTAG &&
+					 BarkEntryHasTag(itup) &&
+					 IS_INJECTION_POINT_ATTACHED("bark-untag-delete")))
 				{
+					/*
+					 * The second case is a test's: it deletes the entry
+					 * instead, to show what keeping one bark_vacuum_untag
+					 * keeps protects (t/004_bark_vacuum.pl).
+					 */
 					todelete[ndelete++] = off;
 					ndelete_single++;
 				}

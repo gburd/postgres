@@ -51,6 +51,12 @@
  * DEAD for TIDs whose tuple is gone and LIVE_UNTAG for live tagged ones;
  * the index then clears the recorded tag.
  *
+ * test_versioned_tableam.invalid_untagged = '(b,o)' makes index scans
+ * treat the untagged entry at that TID as invalid, as an AM that updated
+ * the row in place, changing the index's key, would (its tagged entry is
+ * then the row's only valid one); VACUUM's verdicts ignore it, so a test
+ * can play an AM that wrongly answers LIVE for the untagged entry.
+ *
  * Counters (test_versioned_counts()) record how many tags each check saw,
  * so that the tests can tell that tags reached the table AM.
  *
@@ -182,6 +188,9 @@ static int	stale_tags = STALE_TAGS_DEAD;
 static int	stale_dead_min = -1;
 static int	stale_dead_max = -1;
 static int	untag_tag = -1;
+
+/* index scans reject the untagged entry at this TID; see the file header */
+static char *invalid_untagged = NULL;
 static dshash_table *tv_tags = NULL;
 
 static const dshash_parameters tv_tags_params = {
@@ -744,7 +753,12 @@ tvh_index_getnext_slot(IndexScanDesc scan, ScanDirection direction,
 			tv_root_tid(scan->heapRelation, &scan->xs_heaptid);
 		/* an entry valid for no version returns nothing, here or in an IOS */
 		if (tv_entry_valid(scan->heapRelation, scan->indexRelation, &tid,
-						   scan->xs_heaptag))
+						   scan->xs_heaptag) &&
+			!(scan->xs_heaptag == InvalidIndexVersionTag &&
+			  invalid_untagged != NULL && invalid_untagged[0] != '\0' &&
+			  ItemPointerEquals(&tid,
+								DatumGetItemPointer(DirectFunctionCall1(tidin,
+																		CStringGetDatum(invalid_untagged))))))
 			break;
 		scan->xs_entry_verdict = INDEX_SCAN_ENTRY_INVALID;
 	}
@@ -1505,5 +1519,9 @@ _PG_init(void)
 							"VACUUM answers LIVE_UNTAG only for entries of this tag.",
 							NULL, &untag_tag, -1, -1, INT_MAX,
 							PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomStringVariable("test_versioned_tableam.invalid_untagged",
+							   "Index scans treat the untagged entry at this TID as invalid.",
+							   NULL, &invalid_untagged, "",
+							   PGC_USERSET, 0, NULL, NULL, NULL);
 	MarkGUCPrefixReserved("test_versioned_tableam");
 }
