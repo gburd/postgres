@@ -655,4 +655,179 @@ SELECT test_versioned_mark_history('th', ctid, NULL) FROM th WHERE id = 1;
 (1 row)
 
 DROP TABLE th;
+-- The table AM's verdict on each entry an index scan returned
+-- (xs_entry_verdict), as test_versioned_btree reads it at its next
+-- amgettuple call: valid when a row was returned through the entry,
+-- invalid when it reached no visible version, or (for a row with history)
+-- when the entry is valid for no version; never unknown.
+CREATE VIEW tv_verdicts AS
+  SELECT counter, n FROM test_versioned_counts()
+   WHERE counter LIKE 'verdict%' ORDER BY counter;
+CREATE TABLE tj (id int, k int) USING heap_versioned;
+CREATE INDEX tj_k ON tj (k);
+INSERT INTO tj SELECT g, g FROM generate_series(1, 10) g;
+VACUUM tj;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+-- index scan: 3 rows returned through 3 entries
+SELECT test_versioned_reset();
+ test_versioned_reset 
+----------------------
+ 
+(1 row)
+
+SELECT id FROM tj WHERE k <= 3;
+ id 
+----
+  1
+  2
+  3
+(3 rows)
+
+SELECT * FROM tv_verdicts;
+     counter     | n 
+-----------------+---
+ verdict_invalid | 0
+ verdict_unknown | 0
+ verdict_valid   | 3
+(3 rows)
+
+-- index-only scan on all-visible pages
+SELECT test_versioned_reset();
+ test_versioned_reset 
+----------------------
+ 
+(1 row)
+
+EXPLAIN (COSTS OFF) SELECT k FROM tj WHERE k <= 3;
+            QUERY PLAN            
+----------------------------------
+ Index Only Scan using tj_k on tj
+   Index Cond: (k <= 3)
+(2 rows)
+
+SELECT k FROM tj WHERE k <= 3;
+ k 
+---
+ 1
+ 2
+ 3
+(3 rows)
+
+SELECT * FROM tv_verdicts;
+     counter     | n 
+-----------------+---
+ verdict_invalid | 0
+ verdict_unknown | 0
+ verdict_valid   | 3
+(3 rows)
+
+-- a row deleted by our own open transaction: its entry reaches no visible
+-- version, in either scan (and is not killed, so both meet it)
+BEGIN;
+DELETE FROM tj WHERE id = 2;
+SELECT test_versioned_reset();
+ test_versioned_reset 
+----------------------
+ 
+(1 row)
+
+SELECT k FROM tj WHERE k <= 3;
+ k 
+---
+ 1
+ 3
+(2 rows)
+
+SELECT * FROM tv_verdicts;
+     counter     | n 
+-----------------+---
+ verdict_invalid | 1
+ verdict_unknown | 0
+ verdict_valid   | 2
+(3 rows)
+
+SET LOCAL enable_indexonlyscan = off;
+SELECT test_versioned_reset();
+ test_versioned_reset 
+----------------------
+ 
+(1 row)
+
+SELECT id FROM tj WHERE k <= 3;
+ id 
+----
+  1
+  3
+(2 rows)
+
+SELECT * FROM tv_verdicts;
+     counter     | n 
+-----------------+---
+ verdict_invalid | 1
+ verdict_unknown | 0
+ verdict_valid   | 2
+(3 rows)
+
+ROLLBACK;
+SET enable_indexonlyscan = off;
+-- an untagged entry of a row with history in k is valid for no version
+SELECT test_versioned_mark_history('tj', ctid, 'k') FROM tj WHERE id = 3;
+ test_versioned_mark_history 
+-----------------------------
+ 
+(1 row)
+
+SELECT test_versioned_reset();
+ test_versioned_reset 
+----------------------
+ 
+(1 row)
+
+SELECT id FROM tj WHERE k <= 3;
+ id 
+----
+  1
+  2
+(2 rows)
+
+SELECT * FROM tv_verdicts;
+     counter     | n 
+-----------------+---
+ verdict_invalid | 1
+ verdict_unknown | 0
+ verdict_valid   | 2
+(3 rows)
+
+SELECT test_versioned_mark_history('tj', ctid, NULL) FROM tj WHERE id = 3;
+ test_versioned_mark_history 
+-----------------------------
+ 
+(1 row)
+
+RESET enable_indexonlyscan;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+-- The exclusion check's dirty-snapshot scan returns the new row itself and
+-- then walks on along its HOT chain (xs_heap_continue), which ends with
+-- nothing more: the entry stays valid.
+CREATE TABLE tk (id int, k int, EXCLUDE USING btree (k WITH =))
+  USING heap_versioned;
+SELECT test_versioned_reset();
+ test_versioned_reset 
+----------------------
+ 
+(1 row)
+
+INSERT INTO tk VALUES (1, 1);
+SELECT * FROM tv_verdicts;
+     counter     | n 
+-----------------+---
+ verdict_invalid | 0
+ verdict_unknown | 0
+ verdict_valid   | 1
+(3 rows)
+
+DROP TABLE tj, tk;
+DROP VIEW tv_verdicts;
 DROP EXTENSION test_versioned_tableam;
