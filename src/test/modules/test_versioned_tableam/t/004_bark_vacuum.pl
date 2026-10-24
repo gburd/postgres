@@ -87,7 +87,7 @@ sub vacuum
 		SET client_min_messages = debug2;
 		VACUUM $tab});
 	die "VACUUM $tab failed: $err" if $ret != 0;
-	return $err =~ /index "$idx": (untagged \d+ entries in place, kept \d+ tagged whose page's lower bound may carry a tag and \d+ whose untagged position is in another entry)/
+	return $err =~ /index "$idx": (untagged \d+ entries in place, kept \d+ tagged whose page's lower bound may carry a tag and \d+ kept \(dup, AM gave LIVE to an older entry\))/
 	  ? $1 : '';
 }
 
@@ -200,7 +200,7 @@ check_index('t2_k', 'one run');
 my $firsttag = $node->safe_psql('postgres',
 	qq{SELECT split_part(first, ' ', 2) FROM leaves('t2_k') WHERE blk = $flagged[0]});
 is(vacuum('t2', 't2_k', "SET test_versioned_tableam.untag_tag = $firsttag;"),
-	"untagged 0 entries in place, kept 1 tagged whose page's lower bound may carry a tag and 0 whose untagged position is in another entry",
+	"untagged 0 entries in place, kept 1 tagged whose page's lower bound may carry a tag and 0 kept (dup, AM gave LIVE to an older entry)",
 	'one run: VACUUM keeps the flagged page\'s first entry tagged');
 is($node->safe_psql('postgres', qq{SELECT first FROM leaves('t2_k') WHERE blk = $flagged[0]}),
 	"(0,1) $firsttag", 'one run: the entry is still tagged');
@@ -219,7 +219,7 @@ my $page300 = $node->safe_psql(
 like($node->safe_psql('postgres', qq{SELECT flags FROM leaves('t2_k') WHERE blk = $page300}),
 	qr/lowbound_tagged/, 'one run: row 300\'s new entry is on a flagged page');
 is(vacuum('t2', 't2_k', "SET test_versioned_tableam.untag_tag = $xmin300;"),
-	"untagged 1 entries in place, kept 0 tagged whose page's lower bound may carry a tag and 0 whose untagged position is in another entry",
+	"untagged 1 entries in place, kept 0 tagged whose page's lower bound may carry a tag and 0 kept (dup, AM gave LIVE to an older entry)",
 	'one run: VACUUM untags it in place');
 is( $node->safe_psql(
 		'postgres', qq{
@@ -237,7 +237,7 @@ SKIP:
 	$node->safe_psql('postgres',
 		q{SELECT injection_points_attach('bark-untag-ignore-bound', 'notice')});
 	is(vacuum('t2', 't2_k', "SET test_versioned_tableam.untag_tag = $firsttag;"),
-		"untagged 1 entries in place, kept 0 tagged whose page's lower bound may carry a tag and 0 whose untagged position is in another entry",
+		"untagged 1 entries in place, kept 0 tagged whose page's lower bound may carry a tag and 0 kept (dup, AM gave LIVE to an older entry)",
 		'rule off: VACUUM untags the entry');
 	$node->safe_psql('postgres',
 		q{SELECT injection_points_detach('bark-untag-ignore-bound')});
@@ -263,7 +263,7 @@ is($node->safe_psql('postgres', q{SELECT tagged('t3_k')}), '2000', 'untag: every
 cmp_ok($node->safe_psql('postgres', q{SELECT count(*) FROM leaves('t3_k') WHERE prev <> 0}),
 	'>=', 3, 'untag: right pages, none flagged') ;
 is(vacuum('t3', 't3_k'),
-	"untagged 2000 entries in place, kept 0 tagged whose page's lower bound may carry a tag and 0 whose untagged position is in another entry",
+	"untagged 2000 entries in place, kept 0 tagged whose page's lower bound may carry a tag and 0 kept (dup, AM gave LIVE to an older entry)",
 	'untag: VACUUM untags every entry in place');
 is($node->safe_psql('postgres', q{SELECT tagged('t3_k')}), '0', 'untag: no entry is tagged');
 is( $node->safe_psql(
@@ -424,7 +424,7 @@ for my $tab (sort keys %twins)
 	is($node->safe_psql('postgres', "SELECT twin('${tab}_k', '$l{$tab}')"),
 		"$twinwant{$tab} tag $xmin", "twin $tab: the tagged entry follows its twin");
 	is(vacuum($tab, "${tab}_k"),
-		"untagged 0 entries in place, kept 0 tagged whose page's lower bound may carry a tag and 1 whose untagged position is in another entry",
+		"untagged 0 entries in place, kept 0 tagged whose page's lower bound may carry a tag and 1 kept (dup, AM gave LIVE to an older entry)",
 		"twin $tab: VACUUM keeps the tag");
 	is($node->safe_psql('postgres', "SELECT twin('${tab}_k', '$l{$tab}')"),
 		"$twinwant{$tab} tag $xmin", "twin $tab: the entry is still tagged");
@@ -477,7 +477,7 @@ like($node->safe_psql('postgres', $nentries),
 	qr{^LIST \{"\(0,1\)","\(0,2\)"\} / SINGLE \(1,3\) tagged / LIST \{"\(2,1\)","\(2,2\)"\} / },
 	'not a member: the LIST is divided around the tagged entry');
 is(vacuum('td_n', 'td_n_k'),
-	"untagged 1 entries in place, kept 0 tagged whose page's lower bound may carry a tag and 0 whose untagged position is in another entry",
+	"untagged 1 entries in place, kept 0 tagged whose page's lower bound may carry a tag and 0 kept (dup, AM gave LIVE to an older entry)",
 	'not a member: VACUUM untags it in place');
 like($node->safe_psql('postgres', $nentries),
 	qr{^LIST \{"\(0,1\)","\(0,2\)"\} / SINGLE \(1,3\) / LIST \{"\(2,1\)","\(2,2\)"\} / },

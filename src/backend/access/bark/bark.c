@@ -993,7 +993,7 @@ typedef struct BarkVacState
 	BarkKeyInfo *keyinfo;		/* for untagging; NULL without version_callback */
 	int64		nuntagged;		/* entries untagged in place */
 	int64		nkeptbound;		/* LIVE_UNTAG, kept: lower bound may be tagged */
-	int64		nkeptdup;		/* LIVE_UNTAG, kept: (K, L, 0) is in an entry */
+	int64		nkeptdup;		/* LIVE_UNTAG, kept: (K, L, 0) is its twin's */
 	int64		nlowered;		/* lower bounds lowered (bark_lower_bound) */
 	List	   *kept;			/* BarkKeptBound of entries in nkeptbound */
 	BarkCycleId	cycleid;
@@ -1031,11 +1031,21 @@ bark_vacuum_verdict(BarkVacState *vstate, ItemPointer tid, IndexVersionTag tag)
  * bound has no tag (BARK_LOWBOUND_TAGGED unset), since an untagged lower
  * bound <= (K, L, t) is <= (K, L, 0).  Moving an entry to another page is
  * never done: a scan reading the two pages one at a time could miss the
- * row or return it twice.  An entry that cannot move stays tagged, as does
- * one whose (K, L, 0) falls in an entry already there: the row's untagged
- * entry, or a LIST or POSTING whose TID range holds L, which would have to
- * be divided.  The table AM's LIVE_UNTAG allows untagging, it does not
- * require it (IndexEntryVerdict).
+ * row or return it twice.  An entry that cannot move stays tagged.  The
+ * table AM's LIVE_UNTAG allows untagging, it does not require it
+ * (IndexEntryVerdict).
+ *
+ * So does one whose (K, L, 0) is already on the page, in its twin: the
+ * row's untagged entry, a SINGLE or the last member of the LIST or POSTING
+ * just before it (a tagged insert divides an entry whose range holds L, so
+ * no entry holds L strictly inside).  A correct table AM never gets here:
+ * (K, L, t) exists because t's update changed the index's attributes, so
+ * the twin is invalid for every version from t on, and since LIVE_UNTAG
+ * says t is no newer than the new base, the twin was DEAD in this pass and
+ * is gone.  One of the two verdicts is wrong, then.  If the twin's LIVE is,
+ * the tagged entry is the row's only valid one, and deleting it as
+ * redundant would lose the row; if the LIVE_UNTAG is, keeping the entry
+ * costs nothing.  Keeping is right either way, and nkeptdup counts it.
  *
  * An entry kept for its page's lower bound is recorded in vstate->kept with
  * the page's block `blkno`, and once the scan is over
@@ -1092,7 +1102,7 @@ bark_vacuum_untag(BarkVacState *vstate, Page page, BlockNumber blkno,
 				hi = mid;
 		}
 
-		/* An entry before the slot that holds (K, L, 0) already? */
+		/* Does the entry before the slot, the twin, hold (K, L, 0)? */
 		if (lo > firstdata)
 		{
 			BarkItemBuf pbuf;
@@ -1847,7 +1857,7 @@ bark_vacuum_scan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	bark_vacuum_lower_bounds(&vstate);
 	if (vstate.nuntagged > 0 || vstate.nkeptbound > 0 || vstate.nkeptdup > 0)
 		ereport(info->message_level,
-				(errmsg("index \"%s\": untagged %lld entries in place, kept %lld tagged whose page's lower bound may carry a tag and %lld whose untagged position is in another entry, after lowering %lld lower bounds",
+				(errmsg("index \"%s\": untagged %lld entries in place, kept %lld tagged whose page's lower bound may carry a tag and %lld kept (dup, AM gave LIVE to an older entry), after lowering %lld lower bounds",
 						RelationGetRelationName(index),
 						(long long) vstate.nuntagged,
 						(long long) vstate.nkeptbound,
