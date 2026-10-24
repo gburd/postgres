@@ -218,6 +218,16 @@ static bool overrun;
  */
 static bool skip_requested;
 
+/*
+ * Vacuous-pass guard (see pg_prop_nonvacuous).  opted_in becomes true the
+ * first time a property calls pg_prop_nonvacuous in a run; nonvacuous_cases
+ * counts the cases that reached their invariant check.  A run that opted in
+ * but ran zero non-vacuous cases is reported as a failure, not a silent pass.
+ * Both are reset at the start of each property's run.
+ */
+static bool nonvacuous_opted_in;
+static uint64 nonvacuous_cases;
+
 /* "area/property" now running, for diagnostics (see pg_prop_sql.c). */
 const char *pg_prop_current_area = NULL;
 static char current_area_buf[256];
@@ -399,6 +409,21 @@ pg_prop_note(pg_prop_tc *tc, const char *fmt,...)
 	}
 	hegel_note(tc->ctx, tc->tc, (const unsigned char *) s.data, s.len);
 	pfree(s.data);
+}
+
+void
+pg_prop_nonvacuous(pg_prop_tc *tc)
+{
+	(void) tc;
+	nonvacuous_opted_in = true;
+	nonvacuous_cases++;
+}
+
+void
+pg_prop_opt_into_vacuous_guard(pg_prop_tc *tc)
+{
+	(void) tc;
+	nonvacuous_opted_in = true;
 }
 
 void
@@ -647,6 +672,7 @@ run_property(PropEntry *prop, uint64 iterations, bool have_seed, uint64 seed,
 	hegel_run_status_t rstatus;
 	RunState	rs;
 	bool		ok;
+	bool		vacuous_fail = false;
 
 	char		dbkey[256];
 
@@ -680,6 +706,8 @@ run_property(PropEntry *prop, uint64 iterations, bool have_seed, uint64 seed,
 	check_rc(ctx, hegel_run_start(ctx, s, NULL, NULL, &run), "run_start");
 
 	skip_requested = false;
+	nonvacuous_opted_in = false;
+	nonvacuous_cases = 0;
 
 	for (;;)
 	{
@@ -722,6 +750,19 @@ run_property(PropEntry *prop, uint64 iterations, bool have_seed, uint64 seed,
 		return true;
 	}
 
+	/*
+	 * Vacuous-pass guard: a property that opted in (called pg_prop_nonvacuous
+	 * in its live path) but reached that point in zero cases tested nothing,
+	 * even though the engine reported PASSED.  Fail it loudly rather than
+	 * report a false green.  A genuine failure (ok already false) is left
+	 * alone.
+	 */
+	if (ok && nonvacuous_opted_in && nonvacuous_cases == 0)
+	{
+		ok = false;
+		vacuous_fail = true;
+	}
+
 	if (tap)
 		printf("%s %d - %s/%s\n", ok ? "ok" : "not ok", testno,
 			   prop->area, prop->name);
@@ -733,7 +774,14 @@ run_property(PropEntry *prop, uint64 iterations, bool have_seed, uint64 seed,
 	{
 		const char *pfx = tap ? "# " : "    ";
 
-		if (rstatus == HEGEL_RUN_STATUS_ERROR)
+		if (vacuous_fail)
+		{
+			printf("%svacuous: property ran 0 non-vacuous cases -- every case "
+				   "returned early before its invariant check (database too "
+				   "small, generated SQL invalid, or the server unreachable). "
+				   "The run tested nothing; not reporting it as passed.\n", pfx);
+		}
+		else if (rstatus == HEGEL_RUN_STATUS_ERROR)
 		{
 			const char *err = NULL;
 

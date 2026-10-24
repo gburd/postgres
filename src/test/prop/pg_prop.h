@@ -208,6 +208,38 @@ extern pg_noreturn void pg_prop_skip(pg_prop_tc *tc, const char *fmt,...) pg_att
 extern void pg_prop_note(pg_prop_tc *tc, const char *fmt,...) pg_attribute_printf(2, 3);
 
 /*
+ * Mark that this case did real work: it reached its invariant check (ran the
+ * query, compared the oracle) rather than returning early as vacuous (the
+ * generated database was too small to join, the drawn SQL did not parse, a
+ * guard bailed out).  Call it at the point the case is about to assert its
+ * property, after any early-return guards.  Pair it with
+ * pg_prop_opt_into_vacuous_guard() at the top of the body.
+ *
+ * Why this exists: a property that returns early on every case is counted by
+ * the engine as PASSED, because an early return is indistinguishable from "the
+ * invariant held".  A validation run that tested nothing then reports success
+ * -- the worst failure mode a checker can have (it was a live bug: a startup
+ * slip left the server down, every deep case returned vacuous, and the suite
+ * reported all green while testing nothing).
+ */
+extern void pg_prop_nonvacuous(pg_prop_tc *tc);
+
+/*
+ * Declare that this property is subject to the vacuous-pass guard: call it
+ * once, unconditionally, at the top of the body (before any early-return
+ * guard).  It arms the guard for the whole run; pg_prop_nonvacuous then marks
+ * each case that reached its invariant check.  A run that armed the guard but
+ * marked zero non-vacuous cases is failed.
+ *
+ * Two calls rather than one because "this property wants the guard" and "this
+ * case did real work" are distinct: if a property only called nonvacuous and
+ * no case ever reached it, the harness could not tell an all-vacuous run
+ * (should fail) from a legacy property that never opted in (should pass).
+ * Arming it up front removes that ambiguity.
+ */
+extern void pg_prop_opt_into_vacuous_guard(pg_prop_tc *tc);
+
+/*
  * Fail the current test case.  This is how a property reports that its
  * invariant did not hold.  The message is the human-readable description of
  * the failure; it is printed with the counterexample.  Does not return.
