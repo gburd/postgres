@@ -80,6 +80,7 @@
 #include "access/tableam.h"
 #include "catalog/index.h"
 #include "catalog/pg_am_d.h"
+#include "catalog/pg_constraint.h"
 #include "catalog/pg_operator_d.h"
 #include "catalog/pg_type_d.h"
 #include "commands/defrem.h"
@@ -1458,6 +1459,42 @@ test_versioned_insert_entry(PG_FUNCTION_ARGS)
 	FreeExecutorState(estate);
 	table_close(heap, RowExclusiveLock);
 	index_close(index, RowExclusiveLock);
+	PG_RETURN_VOID();
+}
+
+/*
+ * Make an existing index the index of an exclusion constraint using operator
+ * op on every key column, as DocumentDB's collMod prepareUnique does: the
+ * constraint by index_constraint_create on the existing index, with the
+ * table locked only for reading.  As there, the caller then sets
+ * pg_index.indisexclusion itself, which index_constraint_create does not.
+ */
+PG_FUNCTION_INFO_V1(test_versioned_add_exclusion);
+Datum
+test_versioned_add_exclusion(PG_FUNCTION_ARGS)
+{
+	Oid			indexoid = PG_GETARG_OID(0);
+	Oid			opno = PG_GETARG_OID(1);
+	Relation	index = index_open(indexoid, AccessShareLock);
+	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
+	IndexInfo  *indexInfo = BuildIndexInfo(index);
+	int			nkeys = indexInfo->ii_NumIndexKeyAttrs;
+
+	indexInfo->ii_ExclusionOps = palloc_array(Oid, nkeys);
+	indexInfo->ii_ExclusionProcs = palloc_array(Oid, nkeys);
+	indexInfo->ii_ExclusionStrats = palloc0_array(uint16, nkeys);
+	for (int i = 0; i < nkeys; i++)
+	{
+		indexInfo->ii_ExclusionOps[i] = opno;
+		indexInfo->ii_ExclusionProcs[i] = get_opcode(opno);
+	}
+	(void) index_constraint_create(heap, indexoid, InvalidOid, indexInfo,
+								   RelationGetRelationName(index),
+								   CONSTRAINT_EXCLUSION,
+								   INDEX_CONSTR_CREATE_UPDATE_INDEX,
+								   false, false);
+	table_close(heap, AccessShareLock);
+	index_close(index, AccessShareLock);
 	PG_RETURN_VOID();
 }
 

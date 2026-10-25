@@ -1460,6 +1460,7 @@ extern bool bark_index_versioned(Relation index);
 extern bool bark_index_mktags(Relation index);
 extern bool bark_build_mktags(Relation index, bool versioned);
 extern bool bark_indexcanversion(Relation index);
+extern bool bark_indexmaykeeplocator(Relation index);
 extern bool bark_heap_versioned(Relation heap);
 extern IndexTuple bark_entry_untag(IndexTuple itup);
 extern IndexTuple bark_form_tagged(IndexTuple key, ItemPointer tid,
