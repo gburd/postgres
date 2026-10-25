@@ -148,6 +148,76 @@ SELECT count(*) FROM tml WHERE doc && '{1,5000}';
 RESET enable_indexscan;
 SET enable_bitmapscan = off;
 
+-- T2e: bitmap scans need no rule D.  The bitmap holds row 1 through its
+-- stale (1,L,0); the table AM rechecks a row with history on its visible
+-- version ({2,3}), so the row is not returned for '{1}', and returned once
+-- for '{1,2}'.  A BitmapOr with a scalar index, too.
+SET enable_indexscan = off;
+SET enable_bitmapscan = on;
+EXPLAIN (COSTS OFF) SELECT id FROM tmv WHERE doc && '{1}';
+SELECT id FROM tmv WHERE doc && '{1}';
+SELECT count(*) FROM tmv WHERE doc && '{1,2}';
+CREATE INDEX tmv_id ON tmv USING bark (id);
+EXPLAIN (COSTS OFF) SELECT id FROM tmv WHERE doc && '{1}' OR id = 2;
+SELECT id FROM tmv WHERE doc && '{1}' OR id = 2;
+SELECT id FROM tmv WHERE doc && '{2}' OR id = 1;
+EXPLAIN (COSTS OFF) SELECT id FROM tmv WHERE doc && '{1,2,3}' AND id < 3;
+SELECT id FROM tmv WHERE doc && '{1,2,3}' AND id < 3;
+DROP INDEX tmv_id;
+RESET enable_indexscan;
+SET enable_bitmapscan = off;
+
+-- T4a: index-only scans.  Row 1 was (a 1, doc {5,6}), now (2, {6,7}) in
+-- place: (1,6,L,0) and (1,7,L,0) are stale, (2,6,L,x) and (2,7,L,x)
+-- valid.  VACUUM keeps the stale entries (stale_tags = live) and sets the
+-- page all-visible (no heap fetches), so only the table AM's judgment of
+-- each entry keeps the IOS right: a = 1 has no row.
+CREATE TABLE tmi (id int, a int, doc int4[]) USING heap_versioned
+  WITH (autovacuum_enabled = off);
+INSERT INTO tmi SELECT g, g + 10, ARRAY[g, g + 100] FROM generate_series(2, 20) g;
+INSERT INTO tmi VALUES (1, 1, '{5,6}');
+CREATE INDEX tmi_a_doc ON tmi USING bark (a, doc bark_int4_array_ops);
+UPDATE tmi SET a = 2, doc = '{6,7}' WHERE id = 1;
+SELECT test_versioned_mark_history('tmi', ctid, 'a') FROM tmi WHERE id = 1;
+SELECT test_versioned_insert_entry('tmi_a_doc', ctid, 0, '1') FROM tmi WHERE id = 1;
+SET test_versioned_tableam.stale_tags = live;
+VACUUM tmi;
+RESET test_versioned_tableam.stale_tags;
+SELECT count(*) FILTER (WHERE tag IS NULL) AS untagged, count(*) AS entries
+  FROM bark_page_items('tmi_a_doc', 1) WHERE htid = (SELECT ctid FROM tmi WHERE id = 1);
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF)
+  SELECT count(*) FROM tmi WHERE a = 1;
+SELECT count(*) FROM tmi WHERE a = 1;
+SELECT count(*) FROM tmi WHERE a = 2;
+SELECT count(*) FROM tmi WHERE a <= 2;
+
+-- T4b: a full index-only scan with no keys after an in-place update of
+-- every row counts each row once.  Every row's stale entries sort before
+-- its valid ones; a page-read seen set would lose every row.
+CREATE TABLE tmb (id int, doc int4[]) USING heap_versioned
+  WITH (autovacuum_enabled = off);
+INSERT INTO tmb SELECT g, ARRAY[g, g + 1000] FROM generate_series(1, 20) g;
+CREATE INDEX tmb_doc ON tmb USING bark (doc bark_int4_array_ops);
+UPDATE tmb SET doc = ARRAY[id + 1000, id + 2000];
+SELECT count(test_versioned_mark_history('tmb', ctid, 'doc')) FROM tmb;
+SELECT count(test_versioned_insert_entry('tmb_doc', ctid, 0, format('{%s,%s}', id, id + 1000)))
+  FROM tmb;
+SET test_versioned_tableam.stale_tags = live;
+VACUUM tmb;
+RESET test_versioned_tableam.stale_tags;
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF)
+  SELECT count(*) FROM tmb;
+SELECT count(*) FROM tmb;
+SELECT count(*) FROM tmb WHERE doc && '{1,2,3,1001,1002,2003}';
+
+-- T4c: a table AM that skips its verdict in index-only scans only: the IOS
+-- errors, the plain index scan does not.
+SET test_versioned_tableam.forget_verdict = 'ios';
+SELECT count(*) FROM tmb;
+SELECT count(*) FROM tmi WHERE a = 2;
+SELECT id FROM tmb WHERE doc && '{1001}';
+RESET test_versioned_tableam.forget_verdict;
+
 -- An index without MKTAGS keeps the page-read seen set: the GIN-interface
 -- class, and a multikey index on heap.
 CREATE INDEX tmv_gin ON tmv USING bark (doc bark_gin_int4_array_ops);
@@ -156,7 +226,7 @@ DROP INDEX tmv_gin;
 
 RESET enable_seqscan;
 RESET enable_bitmapscan;
-DROP TABLE tmv, tmw, tmo, tml;
+DROP TABLE tmv, tmw, tmo, tml, tmi, tmb;
 DROP EXTENSION pageinspect;
 DROP EXTENSION bark_multikey;
 DROP EXTENSION test_versioned_tableam;

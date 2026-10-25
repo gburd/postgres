@@ -1160,8 +1160,13 @@ tvh_scan_bitmap_next_tuple(TableScanDesc scan, TupleTableSlot *slot,
 
 	/*
 	 * A bitmap holds TIDs only.  Every entry still names the version at its
-	 * TID (rows move), so there is nothing to recheck; just count the rows.
+	 * TID (rows move), so there is nothing to recheck, except for a row with
+	 * history: a stale entry may have put it in the bitmap, so the qual is
+	 * rechecked on the visible version, as an AM that updates in place must
+	 * (see DESIGN-split-and-hot's bitmap rule).  Count the rows.
 	 */
+	if (tv_history_column(scan->rs_rd, &slot->tts_tid) != InvalidAttrNumber)
+		*recheck = true;
 	tv_count(TVC_BITMAP_ROWS);
 	return true;
 }
