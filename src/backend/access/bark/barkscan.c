@@ -67,6 +67,7 @@
 #include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/datum.h"
+#include "utils/hsearch.h"
 #include "utils/injection_point.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
@@ -510,8 +511,28 @@ typedef struct BarkMkScanState
 	bark_seen_radix_tree *seen;
 	uint64		nseen;			/* TIDs in it */
 	bool		havegroup;
+	MemoryContext groupCxt;		/* groupvals' copies */
 	Datum		groupvals[INDEX_MAX_KEYS];
 	bool		groupnulls[INDEX_MAX_KEYS];
+
+	/*
+	 * Rule D ("Versioned multikey scans" in the README): in an index with
+	 * BARK_META_MKTAGS scanned through a table AM, the seen set is R, the
+	 * rows the table AM returned, filled from its verdict on each entry the
+	 * scan returned (bark_mk_settle), not when a page is read; rejected
+	 * holds J, the (TID, tag) pairs it rejected under an MVCC snapshot.  A
+	 * page read keeps every accepted entry, and bark_mk_admit skips at
+	 * return time the entries of rows in R and the pairs in J.  verdictdue
+	 * says an entry was returned whose verdict is not read yet; pendingtid
+	 * and pendingtag name it.  A group change (bark_mk_group) is found when
+	 * the page is read and recorded on the item (BARK_ITEM_NEWGROUP); R and
+	 * J empty when the scan returns from such an item.
+	 */
+	bool		ruled;
+	bool		verdictdue;
+	ItemPointerData pendingtid;
+	IndexVersionTag pendingtag;
+	HTAB	   *rejected;		/* J, in seenCxt, or NULL while empty */
 
 	/*
 	 * Mark and restore (bark_markpos): while marked, every TID added to the
@@ -994,7 +1015,9 @@ bark_mk_clear_seen(BarkMkScanState *mk)
 	MemoryContextReset(mk->seenCxt);
 	mk->seen = NULL;
 	mk->nseen = 0;
-	mk->havegroup = false;
+	mk->rejected = NULL;
+	if (!mk->ruled)
+		mk->havegroup = false;
 }
 
 /*
@@ -1018,6 +1041,14 @@ bark_mk_rescan(IndexScanDesc scan)
 	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
 	BarkMkScanState *mk = so->mk;
 
+	/*
+	 * Rule D needs a table AM to judge each entry; a caller that drives
+	 * amgettuple itself gets the page-read seen set, dedup by TID.
+	 */
+	mk->ruled = so->keyinfo->mktags && scan->heapRelation != NULL;
+	mk->verdictdue = false;
+	mk->havegroup = false;
+	MemoryContextReset(mk->groupCxt);
 	bark_mk_clear_seen(mk);
 	mk->started = false;
 	mk->marked = false;
@@ -1064,10 +1095,13 @@ bark_mk_rescan(IndexScanDesc scan)
 /*
  * Does entry itup belong to another group of the columns before the
  * extracted one than the rows in the seen set?  If so, make it the set's
- * group.  Rows of different groups share no entry group, so the set then
- * empties: it holds at most one group's rows.
+ * group and return true.  Rows of different groups share no entry group, so
+ * the set then empties: it holds at most one group's rows.  Under rule D
+ * the set fills when rows are returned, after the page is read, so the
+ * caller marks the item and the sets empty when the scan returns from it
+ * (bark_mk_admit).
  */
-static void
+static bool
 bark_mk_group(IndexScanDesc scan, BarkMkScanState *mk, IndexTuple itup)
 {
 	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
@@ -1090,10 +1124,13 @@ bark_mk_group(IndexScanDesc scan, BarkMkScanState *mk, IndexTuple itup)
 			same = false;
 	}
 	if (same)
-		return;
+		return false;
 
-	bark_mk_clear_seen(mk);
-	oldcxt = MemoryContextSwitchTo(mk->seenCxt);
+	/* Under rule D the sets empty when the scan returns from this entry. */
+	if (!mk->ruled)
+		bark_mk_clear_seen(mk);
+	MemoryContextReset(mk->groupCxt);
+	oldcxt = MemoryContextSwitchTo(mk->groupCxt);
 	for (int i = 0; i < mk->attno - 1; i++)
 	{
 		Form_pg_attribute att = TupleDescAttr(tupdesc, i);
@@ -1104,6 +1141,7 @@ bark_mk_group(IndexScanDesc scan, BarkMkScanState *mk, IndexTuple itup)
 	}
 	MemoryContextSwitchTo(oldcxt);
 	mk->havegroup = true;
+	return true;
 }
 
 /*
@@ -1122,18 +1160,29 @@ bark_mk_group(IndexScanDesc scan, BarkMkScanState *mk, IndexTuple itup)
  * mark on the page restores to them (see bark_markpos for later pages).
  * The set grows past get_hash_memory_limit() rather than return a row
  * twice; the planner keeps plans inside it.
+ *
+ * Under rule D (mk->ruled) the set is filled from the table AM's verdicts
+ * instead (bark_mk_settle), so every accepted member is kept here, and only
+ * the group change is reported, in *newgroup.
  */
 int
 bark_mk_seen(IndexScanDesc scan, IndexTuple itup, ItemPointer tids,
-			 int ntids, bool newgroups)
+			 int ntids, bool newgroups, bool *newgroup)
 {
 	BarkMkScanState *mk = ((BarkScanOpaque) scan->opaque)->mk;
 	int			nkept = 0;
 
 	if (!mk->useseen || mk->bitmap)
 		return ntids;
+	if (mk->ruled)
+	{
+		/* rule D: R and J are read at return time (bark_mk_admit) */
+		if (newgroups && mk->attno > 1 && bark_mk_group(scan, mk, itup))
+			*newgroup = true;
+		return ntids;
+	}
 	if (newgroups && mk->attno > 1 && !mk->marked)
-		bark_mk_group(scan, mk, itup);
+		(void) bark_mk_group(scan, mk, itup);
 	if (mk->seen == NULL)
 	{
 		MemoryContext oldcxt = MemoryContextSwitchTo(mk->seenCxt);
@@ -1171,6 +1220,153 @@ bark_mk_seen(IndexScanDesc scan, IndexTuple itup, ItemPointer tids,
 		tids[nkept++] = tids[i];
 	}
 	return nkept;
+}
+
+/* J's key: an entry's (TID, tag). */
+typedef struct BarkMkRejected
+{
+	ItemPointerData tid;
+	IndexVersionTag tag;
+} BarkMkRejected;
+
+/* Add tid to R, the seen set, and to the undo list while marked. */
+static void
+bark_mk_seen_add(IndexScanDesc scan, BarkMkScanState *mk, ItemPointer tid)
+{
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	uint64		key = bark_tid_to_key(tid, so->keyinfo->tidstride);
+	uint64		bit = UINT64CONST(1) << (key & 63);
+	uint64	   *word;
+
+	if (mk->seen == NULL)
+	{
+		MemoryContext oldcxt = MemoryContextSwitchTo(mk->seenCxt);
+
+		mk->seen = bark_seen_create(mk->seenCxt);
+		MemoryContextSwitchTo(oldcxt);
+	}
+	word = bark_seen_find(mk->seen, key >> 6);
+	if (word != NULL && (*word & bit) != 0)
+		return;
+	if (word != NULL)
+		*word |= bit;
+	else
+		bark_seen_set(mk->seen, key >> 6, &bit);
+	mk->nseen++;
+	if (mk->marked)
+	{
+		if (mk->nundo >= mk->maxundo)
+		{
+			mk->maxundo = Max(mk->maxundo * 2, 64);
+			mk->undo = mk->undo == NULL ?
+				MemoryContextAlloc(so->scanCxt,
+								   mk->maxundo * sizeof(ItemPointerData)) :
+				repalloc_array(mk->undo, ItemPointerData, mk->maxundo);
+		}
+		mk->undo[mk->nundo++] = *tid;
+	}
+}
+
+/*
+ * Rule D, step 3: settle the entry returned last by the table AM's verdict
+ * on it (xs_entry_verdict), which it set before it asked for this row.
+ * VALID puts its row in R; INVALID puts (TID, tag) in J under an MVCC
+ * snapshot, whose facts hold for the whole scan (a non-MVCC snapshot may
+ * see another version later); UNKNOWN means the table AM broke its
+ * obligation (amlocator.h), and the scan stops rather than guess.  Nothing
+ * is pending after a rescan or a restore (bark_restrpos), and the row
+ * returned before a LIMIT stopped the scan is never settled.
+ */
+void
+bark_mk_settle(IndexScanDesc scan)
+{
+	BarkMkScanState *mk = ((BarkScanOpaque) scan->opaque)->mk;
+
+	if (mk == NULL || !mk->verdictdue)
+		return;
+	mk->verdictdue = false;
+	switch (scan->xs_entry_verdict)
+	{
+		case INDEX_SCAN_ENTRY_VALID:
+			bark_mk_seen_add(scan, mk, &mk->pendingtid);
+			break;
+		case INDEX_SCAN_ENTRY_INVALID:
+			if (scan->xs_snapshot != NULL &&
+				IsMVCCSnapshot(scan->xs_snapshot))
+			{
+				BarkMkRejected key;
+
+				if (mk->rejected == NULL)
+				{
+					HASHCTL		ctl;
+
+					ctl.keysize = sizeof(BarkMkRejected);
+					ctl.entrysize = sizeof(BarkMkRejected);
+					ctl.hcxt = mk->seenCxt;
+					mk->rejected = hash_create("BARK rejected entries", 64,
+											   &ctl,
+											   HASH_ELEM | HASH_BLOBS |
+											   HASH_CONTEXT);
+				}
+				memset(&key, 0, sizeof(key));
+				key.tid = mk->pendingtid;
+				key.tag = mk->pendingtag;
+				(void) hash_search(mk->rejected, &key, HASH_ENTER, NULL);
+			}
+			break;
+		case INDEX_SCAN_ENTRY_UNKNOWN:
+			elog(ERROR, "table access method gave no verdict on an entry of BARK index \"%s\"",
+				 RelationGetRelationName(scan->indexRelation));
+	}
+}
+
+/*
+ * Rule D, step 4: may the scan return the entry (tid, tag)?  Not when its
+ * row is in R, nor when the pair is in J.  When it may, it becomes the
+ * pending entry, which the next call settles.  An entry of a new group
+ * (newgroup) first empties R and J, unless the scan is marked: a restore
+ * must find the marked group's R whole.
+ */
+bool
+bark_mk_admit(IndexScanDesc scan, ItemPointer tid, IndexVersionTag tag,
+			  bool newgroup)
+{
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	BarkMkScanState *mk = so->mk;
+
+	if (newgroup && !mk->marked)
+		bark_mk_clear_seen(mk);
+	if (mk->seen != NULL)
+	{
+		uint64		key = bark_tid_to_key(tid, so->keyinfo->tidstride);
+		uint64	   *word = bark_seen_find(mk->seen, key >> 6);
+
+		if (word != NULL && (*word & (UINT64CONST(1) << (key & 63))) != 0)
+			return false;
+	}
+	if (mk->rejected != NULL)
+	{
+		BarkMkRejected rkey;
+
+		memset(&rkey, 0, sizeof(rkey));
+		rkey.tid = *tid;
+		rkey.tag = tag;
+		if (hash_search(mk->rejected, &rkey, HASH_FIND, NULL) != NULL)
+			return false;
+	}
+	mk->verdictdue = true;
+	mk->pendingtid = *tid;
+	mk->pendingtag = tag;
+	return true;
+}
+
+/* Does the scan apply rule D? */
+bool
+bark_mk_ruled(IndexScanDesc scan)
+{
+	BarkMkScanState *mk = ((BarkScanOpaque) scan->opaque)->mk;
+
+	return mk != NULL && mk->ruled && mk->useseen && !mk->bitmap;
 }
 
 /*
@@ -1232,6 +1428,8 @@ bark_mk_begin(IndexScanDesc scan, int attno)
 	mk->col = &so->keyinfo->cols[attno - 1];
 	mk->seenCxt = AllocSetContextCreate(so->scanCxt, "BARK seen set",
 										ALLOCSET_DEFAULT_SIZES);
+	mk->groupCxt = AllocSetContextCreate(so->scanCxt, "BARK seen set group",
+										 ALLOCSET_SMALL_SIZES);
 	if (OidIsValid(index_getprocid(index, attno, BARK_EXTRACTQUERY_PROC)))
 	{
 		mk->extractquery = index_getprocinfo(index, attno,
@@ -3568,6 +3766,7 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 		int			ntids;
 		uint32		tupoff = 0;
 		bool		recheck = false;
+		bool		newgroup = false;
 		bool		dead;
 		BarkScanPosItem *item;
 		BarkEntryShape shape;
@@ -3697,7 +3896,7 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 								   &recheck);
 			if (ntids > 0)
 				ntids = bark_mk_seen(scan, resolved, so->entryTids, ntids,
-									 true);
+									 true, &newgroup);
 			if (ntids == 0)
 			{
 				if (fetched)
@@ -3710,7 +3909,8 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 									 &pos->nextTupleOffset, itup, resolved);
 		/* a tagged entry has one TID; a LIST, POSTING or multikey entry 0 */
 		item->tag = BarkEntryGetTag(itup);
-		item->indexOffset = offnum | (recheck ? BARK_ITEM_RECHECK : 0);
+		item->indexOffset = offnum | (recheck ? BARK_ITEM_RECHECK : 0) |
+			(newgroup ? BARK_ITEM_NEWGROUP : 0);
 		item->tupleOffset = tupoff;
 		if (so->mk != NULL ? ntids > 1 :
 			(shape == BARK_SHAPE_LIST || shape == BARK_SHAPE_POSTING))
@@ -4555,6 +4755,8 @@ bool
 bark_gettuple(IndexScanDesc scan, ScanDirection dir)
 {
 	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	bool		ruled;
+	ItemPointerData tid;
 
 	if (so->mk != NULL && so->mk->gin && so->mk->nkeys > 0)
 		return bark_mk_gin_gettuple(scan, dir);
@@ -4573,6 +4775,15 @@ bark_gettuple(IndexScanDesc scan, ScanDirection dir)
 	 */
 	if (so->mk != NULL && so->mk->order)
 		dir = so->mk->orderdir;
+
+	/*
+	 * Rule D: settle the entry returned last by the table AM's verdict on
+	 * it, before anything else moves ("Versioned multikey scans" in the
+	 * README).
+	 */
+	ruled = bark_mk_ruled(scan);
+	if (ruled)
+		bark_mk_settle(scan);
 
 	/*
 	 * A scan with a seen set that reverses direction would meet the entries
@@ -4610,20 +4821,44 @@ bark_gettuple(IndexScanDesc scan, ScanDirection dir)
 
 	/*
 	 * Here the row returned last (currPos's member memberIndex of item
-	 * itemIndex) is settled: the executor has said whether it was dead.  A
-	 * per-row decision that needs the table AM's answer about the previous
-	 * row (V2's entry verdict) belongs here too, before the position moves.
+	 * itemIndex) is settled: the executor has said whether it was dead, and
+	 * under rule D the table AM whether it returned the row through the
+	 * entry (bark_mk_settle), before the position moves.
 	 *
 	 * Advance within the page read last, a member at a time.  A reversal of
 	 * direction continues from the row returned last, in the new direction,
 	 * which is what a scroll cursor needs; only running off either end of the
 	 * page's items steps to a page.  A fresh page enters its first item in
-	 * the scan direction.
+	 * the scan direction.  Under rule D an entry of a row in R, or one the
+	 * table AM rejected (J), is passed over.
 	 */
-	while (!bark_step_member(so, dir))
+	for (;;)
 	{
-		if (!bark_steppage(scan, dir) && !bark_mk_order_rest(scan, dir))
-			return false;
+		BarkScanPosItem *item;
+
+		while (!bark_step_member(so, dir))
+		{
+			if (!bark_steppage(scan, dir) && !bark_mk_order_rest(scan, dir))
+				return false;
+		}
+		if (!ruled)
+			break;
+		item = &so->currPos.items[so->currPos.itemIndex];
+		if (likely((item->indexOffset & BARK_ITEM_MEMBERS) == 0))
+			tid = item->heapTid;
+		else
+		{
+			if (so->memberItem != so->currPos.itemIndex)
+				(void) bark_load_members(so, so->currPos.itemIndex);
+			tid = so->memberTids[so->currPos.memberIndex];
+		}
+		/* the group changes on the item's first member in the scan's order */
+		if (bark_mk_admit(scan, &tid, item->tag,
+						  (item->indexOffset & BARK_ITEM_NEWGROUP) != 0 &&
+						  so->currPos.memberIndex ==
+						  (ScanDirectionIsForward(dir) ? 0 :
+						   so->currPos.nmembers - 1)))
+			break;
 	}
 
 	bark_saveitem(scan);
@@ -5679,9 +5914,13 @@ bark_markpos(IndexScanDesc scan)
 	 * The rows the scan adds to the seen set from here on are the ones a
 	 * restore must take out again; the ones before stay, since the scan
 	 * returns them, or returns them again from the marked page's copy.
+	 * Under rule D the marked row is settled now: a restore resumes after
+	 * it, so its verdict belongs to the time before the mark.
 	 */
 	if (so->mk != NULL)
 	{
+		if (bark_mk_ruled(scan))
+			bark_mk_settle(scan);
 		so->mk->marked = true;
 		so->mk->nundo = 0;
 	}
@@ -5736,6 +5975,12 @@ bark_restrpos(IndexScanDesc scan)
 	{
 		BarkMkScanState *mk = so->mk;
 
+		/*
+		 * The entry whose verdict is due was returned after the mark, so
+		 * the restored scan returns it again; core has reset its verdict
+		 * (index_restrpos).  The marked row was settled by bark_markpos.
+		 */
+		mk->verdictdue = false;
 		for (int i = 0; i < mk->nundo; i++)
 		{
 			uint64		key = bark_tid_to_key(&mk->undo[i],

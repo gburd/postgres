@@ -9,7 +9,7 @@ PGFILEDESC = "test_versioned_tableam - test version-tag plumbing"
 EXTRA_INSTALL = contrib/amcheck contrib/pageinspect src/test/modules/bark_multikey contrib/pg_walinspect \
 	src/test/modules/injection_points
 
-REGRESS = versioned
+REGRESS = versioned bark_mk_versioned
 ISOLATION = cic_versioned
 TAP_TESTS = 1
 

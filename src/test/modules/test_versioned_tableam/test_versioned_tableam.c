@@ -620,6 +620,27 @@ static int	build_tag_percent = 100;
 /* older versions its build scan hands for each row it tags; ditto */
 static int	build_history = 0;
 
+/*
+ * forget_verdict breaks the verdict obligation (amlocator.h), for the tests
+ * of the index AM's protocol check: "all" leaves every returned entry's
+ * verdict UNKNOWN, "ios" only an index-only scan's.
+ */
+typedef enum
+{
+	FORGET_VERDICT_OFF,
+	FORGET_VERDICT_ALL,
+	FORGET_VERDICT_IOS,
+} ForgetVerdictMode;
+
+static int	forget_verdict = FORGET_VERDICT_OFF;
+
+static const struct config_enum_entry forget_verdict_options[] = {
+	{"off", FORGET_VERDICT_OFF, false},
+	{"all", FORGET_VERDICT_ALL, false},
+	{"ios", FORGET_VERDICT_IOS, false},
+	{NULL, 0, false}
+};
+
 
 static const struct config_enum_entry stale_tags_options[] = {
 	{"dead", STALE_TAGS_DEAD, false},
@@ -763,6 +784,10 @@ tvh_index_getnext_slot(IndexScanDesc scan, ScanDirection direction,
 		scan->xs_entry_verdict = INDEX_SCAN_ENTRY_INVALID;
 	}
 
+	if (result &&
+		(forget_verdict == FORGET_VERDICT_ALL ||
+		 (forget_verdict == FORGET_VERDICT_IOS && scan->xs_want_itup)))
+		scan->xs_entry_verdict = INDEX_SCAN_ENTRY_UNKNOWN;
 	if (result && index_can_version(scan->indexRelation))
 	{
 		tv_check_tag(scan->heapRelation, &tid, scan->xs_heaptag,
@@ -1523,5 +1548,14 @@ _PG_init(void)
 							   "Index scans treat the untagged entry at this TID as invalid.",
 							   NULL, &invalid_untagged, "",
 							   PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomEnumVariable("test_versioned_tableam.forget_verdict",
+							 "Makes heap_versioned leave its verdict on returned index entries unset.",
+							 NULL,
+							 &forget_verdict,
+							 FORGET_VERDICT_OFF,
+							 forget_verdict_options,
+							 PGC_USERSET,
+							 0,
+							 NULL, NULL, NULL);
 	MarkGUCPrefixReserved("test_versioned_tableam");
 }
