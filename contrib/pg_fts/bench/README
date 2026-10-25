@@ -1,0 +1,29 @@
+# pg_fts benchmark harness (stage 12 parity gate)
+
+This directory holds the A/B benchmark comparing pg_fts against the existing
+tsvector + GIN + ts_rank stack, per FTS_NEXTGEN_PLAN.md section 12.5.
+
+`bench.sql` is a minimal, reproducible harness: populate a table
+`bench_corpus(id serial primary key, body text)` with a text corpus, then:
+
+    psql -d yourdb -f bench.sql
+
+It builds both indexes, runs `EXPLAIN (ANALYZE, BUFFERS)` for a ranked top-10
+query on each stack, and prints index sizes.
+
+## The full gate (not automated here)
+
+The committer-facing performance gate requires, on a standard corpus (a
+Wikipedia or MS MARCO subset):
+
+  * build time and index size for both stacks
+  * ranked-query latency at p50/p99 across a query log
+  * relevance (NDCG@10 / recall) against a qrels file
+  * write throughput under concurrent ingest (the pending-list path)
+
+pg_fts must meet or beat the tsvector/GIN stack on ranked-query latency, and
+`fts_bm25_opts()` must reproduce Lucene/bm25s scores on shared vectors (the
+variant argument exists for exactly this conformance check).
+
+This is deliberately not wired into `make check`: it needs an external corpus
+and is a manual, reported measurement, not a pass/fail regression test.

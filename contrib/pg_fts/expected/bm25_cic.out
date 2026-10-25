@@ -1,0 +1,20 @@
+Parsed test spec with 2 sessions
+
+starting permutation: b_cic w_beta b_ric b_check
+step b_cic: CREATE INDEX CONCURRENTLY cic_bm25 ON cic USING bm25 (d);
+step w_beta: INSERT INTO cic SELECT g, to_ftsdoc('beta doc ' || g)
+                     FROM generate_series(200, 249) g;
+step b_ric: REINDEX INDEX CONCURRENTLY cic_bm25;
+step b_check: SET enable_seqscan = off;
+                 SELECT count(*) AS alpha FROM cic WHERE d @@@ 'alpha'::ftsquery;
+                 SELECT count(*) AS beta  FROM cic WHERE d @@@ 'beta'::ftsquery;
+alpha
+-----
+  100
+(1 row)
+
+beta
+----
+  50
+(1 row)
+
