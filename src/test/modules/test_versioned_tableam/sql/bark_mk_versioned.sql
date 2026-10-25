@@ -11,6 +11,7 @@
 CREATE EXTENSION test_versioned_tableam;
 CREATE EXTENSION bark_multikey;
 CREATE EXTENSION pageinspect;
+CREATE EXTENSION amcheck;
 SET enable_seqscan = off;
 SET enable_bitmapscan = off;
 
@@ -218,6 +219,147 @@ SELECT count(*) FROM tmi WHERE a = 2;
 SELECT id FROM tmb WHERE doc && '{1001}';
 RESET test_versioned_tableam.forget_verdict;
 
+-- T6a: an update that keeps the locator inserts the new value's full key
+-- set, tagged, unchanged keys included.  ({1,2} -> {2,3}: with only the
+-- added key 3 inserted, doc && '{2}' would lose the row.)  heap_versioned
+-- moves the row and, with keep_locator = pretend, says it kept it, so the
+-- executor inserts only into the indexes the update affected.
+CREATE TABLE tmu (id int, doc int4[]) USING heap_versioned
+  WITH (autovacuum_enabled = off);
+INSERT INTO tmu SELECT g, ARRAY[10 * g, 10 * g + 1] FROM generate_series(2, 40) g;
+INSERT INTO tmu VALUES (1, '{1,2}');
+CREATE INDEX tmu_doc ON tmu USING bark (doc bark_int4_array_ops);
+SET test_versioned_tableam.keep_locator = pretend;
+SELECT test_versioned_reset();
+UPDATE tmu SET doc = '{2,3}' WHERE id = 1;
+SELECT n FROM test_versioned_counts() WHERE counter = 'update_kept';
+RESET test_versioned_tableam.keep_locator;
+SELECT count(*) AS entries,
+       count(*) FILTER (WHERE tag = (SELECT xmin::text::int8 FROM tmu WHERE id = 1)) AS tagged_new
+  FROM bark_page_items('tmu_doc', 1) WHERE htid = (SELECT ctid FROM tmu WHERE id = 1);
+SELECT id FROM tmu WHERE doc && '{2}';
+SELECT id FROM tmu WHERE doc && '{3}';
+SELECT id FROM tmu WHERE doc && '{1}';
+SELECT id, doc |<| 0 AS k FROM tmu WHERE id < 3 ORDER BY doc |<| 0;
+SET enable_indexscan = off;
+SET enable_bitmapscan = on;
+SELECT id FROM tmu WHERE doc && '{2}';
+SELECT id FROM tmu WHERE doc && '{1}';
+RESET enable_indexscan;
+SET enable_bitmapscan = off;
+
+-- T6b: {20,21} -> {21,20} gives the same entries (the class sorts keys):
+-- the index is not affected, keeps its entries, and gets none.
+SELECT count(*) AS before FROM bark_page_items('tmu_doc', 1);
+SET test_versioned_tableam.keep_locator = pretend;
+SELECT test_versioned_reset();
+UPDATE tmu SET doc = '{21,20}' WHERE id = 2;
+SELECT n FROM test_versioned_counts() WHERE counter = 'update_kept';
+RESET test_versioned_tableam.keep_locator;
+SELECT count(*) AS after FROM bark_page_items('tmu_doc', 1);
+
+-- T6c: an index on an expression of the column and the multikey index are
+-- both affected, both get tagged entries, and both find the row.
+CREATE INDEX tmu_len ON tmu USING bark (cardinality(doc));
+SET test_versioned_tableam.keep_locator = pretend;
+SELECT test_versioned_reset();
+UPDATE tmu SET doc = '{30,31,32}' WHERE id = 3;
+SELECT n FROM test_versioned_counts() WHERE counter = 'update_kept';
+RESET test_versioned_tableam.keep_locator;
+SELECT (SELECT count(*) FROM bark_page_items('tmu_len', 1)
+         WHERE htid = t.ctid AND tag = t.xmin::text::int8) AS len_tagged,
+       (SELECT count(*) FROM bark_page_items('tmu_doc', 1)
+         WHERE htid = t.ctid AND tag = t.xmin::text::int8) AS doc_tagged
+  FROM tmu t WHERE id = 3;
+SELECT id FROM tmu WHERE cardinality(doc) = 3;
+SELECT id FROM tmu WHERE doc && '{32}';
+DROP INDEX tmu_len;
+
+-- T6d: an aborted update's tagged entries are valid for no snapshot; the
+-- row is found by its old keys only, and VACUUM removes them.
+SELECT count(*) AS before FROM bark_page_items('tmu_doc', 1);
+BEGIN;
+SET LOCAL test_versioned_tableam.keep_locator = pretend;
+UPDATE tmu SET doc = '{40,41,42}' WHERE id = 4;
+ROLLBACK;
+SELECT count(*) AS with_aborted FROM bark_page_items('tmu_doc', 1);
+SELECT id FROM tmu WHERE doc && '{40,41,42}';
+SELECT id FROM tmu WHERE doc && '{42}';
+VACUUM tmu;
+SELECT count(*) AS after_vacuum FROM bark_page_items('tmu_doc', 1);
+SELECT bark_index_check('tmu_doc');
+DROP TABLE tmu;
+
+-- A tagged multikey index made an exclusion constraint's after its build
+-- (as DocumentDB's collMod prepareUnique does: index_constraint_create on
+-- the existing index, then pg_index.indisexclusion by hand) keeps
+-- BARK_META_MKTAGS and its tags, but no longer lets an update keep the
+-- locator (amindexmaykeeplocator).  Its MVCC scans still skip a stale
+-- entry (rule D), and the constraint is checked through it.
+CREATE TABLE tmc (id int, doc int4[]) USING heap_versioned
+  WITH (autovacuum_enabled = off);
+INSERT INTO tmc SELECT g, ARRAY[10 * g, 10 * g + 1] FROM generate_series(2, 40) g;
+INSERT INTO tmc VALUES (1, '{1,2}');
+CREATE INDEX tmc_doc ON tmc USING bark (doc bark_int4_array_ops);
+UPDATE tmc SET doc = '{2,3}' WHERE id = 1;
+SELECT test_versioned_mark_history('tmc', ctid, 'doc') FROM tmc WHERE id = 1;
+SELECT test_versioned_insert_entry('tmc_doc', ctid, 0, '{1,2}') FROM tmc WHERE id = 1;
+SET test_versioned_tableam.keep_locator = pretend;
+SELECT test_versioned_reset();
+UPDATE tmc SET doc = '{100,101,102}' WHERE id = 10;
+SELECT n AS kept_before FROM test_versioned_counts() WHERE counter = 'update_kept';
+RESET test_versioned_tableam.keep_locator;
+SELECT test_versioned_add_exclusion('tmc_doc', '&&(anyarray,anyarray)');
+UPDATE pg_catalog.pg_index SET indisexclusion = true
+  WHERE indexrelid = 'tmc_doc'::regclass;
+SELECT contype, conname FROM pg_constraint WHERE conindid = 'tmc_doc'::regclass;
+SELECT flags & 6 AS versioned_mktags FROM bark_metap('tmc_doc');
+-- an update of the column now moves the row; its new entries are tagged
+SET test_versioned_tableam.keep_locator = pretend;
+SELECT test_versioned_reset();
+UPDATE tmc SET doc = '{110,111,112}' WHERE id = 11;
+SELECT n AS kept_after FROM test_versioned_counts() WHERE counter = 'update_kept';
+RESET test_versioned_tableam.keep_locator;
+SELECT count(*) FILTER (WHERE tag = t.xmin::text::int8) AS tagged
+  FROM tmc t, bark_page_items('tmc_doc', 1) i WHERE t.id = 11 AND i.htid = t.ctid;
+-- MVCC scans: the stale (1,L,0) is skipped, the valid (2,L,x) returned
+SELECT id FROM tmc WHERE doc && '{1,2}';
+SELECT id FROM tmc WHERE doc && '{1}';
+-- the exclusion check: {1} overlaps only row 1's stale entry, no conflict;
+-- {3} overlaps row 1's valid one, and {112} row 11's
+INSERT INTO tmc VALUES (100, '{1}');
+INSERT INTO tmc VALUES (101, '{3}');
+INSERT INTO tmc VALUES (102, '{112,500}');
+INSERT INTO tmc VALUES (103, '{500,501}');
+SELECT id FROM tmc WHERE doc && '{1,500}' ORDER BY id;
+SELECT bark_index_check('tmc_doc');
+DROP TABLE tmc;
+
+-- The same for a unique index (pg_index.indisunique set by hand): the
+-- unique check judges each entry with its tag, so the stale (1,L,0) is no
+-- conflict, and a live key is.
+CREATE TABLE tmq (id int, doc int4[]) USING heap_versioned
+  WITH (autovacuum_enabled = off);
+INSERT INTO tmq SELECT g, ARRAY[10 * g, 10 * g + 1] FROM generate_series(2, 40) g;
+INSERT INTO tmq VALUES (1, '{1,2}');
+CREATE INDEX tmq_doc ON tmq USING bark (doc bark_int4_array_ops);
+UPDATE tmq SET doc = '{2,3}' WHERE id = 1;
+SELECT test_versioned_mark_history('tmq', ctid, 'doc') FROM tmq WHERE id = 1;
+SELECT test_versioned_insert_entry('tmq_doc', ctid, 0, '{1,2}') FROM tmq WHERE id = 1;
+UPDATE pg_catalog.pg_index SET indisunique = true
+  WHERE indexrelid = 'tmq_doc'::regclass;
+SET test_versioned_tableam.keep_locator = pretend;
+SELECT test_versioned_reset();
+UPDATE tmq SET doc = '{110,111,112}' WHERE id = 11;
+SELECT n AS kept FROM test_versioned_counts() WHERE counter = 'update_kept';
+RESET test_versioned_tableam.keep_locator;
+INSERT INTO tmq VALUES (100, '{1}');
+INSERT INTO tmq VALUES (101, '{3}');
+INSERT INTO tmq VALUES (102, '{112}');
+SELECT id FROM tmq WHERE doc && '{1,2,3}' ORDER BY id;
+SELECT bark_index_check('tmq_doc');
+DROP TABLE tmq;
+
 -- An index without MKTAGS keeps the page-read seen set: the GIN-interface
 -- class, and a multikey index on heap.
 CREATE INDEX tmv_gin ON tmv USING bark (doc bark_gin_int4_array_ops);
@@ -227,6 +369,7 @@ DROP INDEX tmv_gin;
 RESET enable_seqscan;
 RESET enable_bitmapscan;
 DROP TABLE tmv, tmw, tmo, tml, tmi, tmb;
+DROP EXTENSION amcheck;
 DROP EXTENSION pageinspect;
 DROP EXTENSION bark_multikey;
 DROP EXTENSION test_versioned_tableam;

@@ -67,3 +67,9 @@ CREATE FUNCTION test_versioned_mark_history(regclass, tid, name)
 RETURNS void
 AS 'MODULE_PATHNAME'
 LANGUAGE C;
+
+-- make an existing index an exclusion constraint's, as DocumentDB does
+CREATE FUNCTION test_versioned_add_exclusion(regclass, regoperator)
+RETURNS void
+AS 'MODULE_PATHNAME'
+LANGUAGE C STRICT;

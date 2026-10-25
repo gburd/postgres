@@ -2536,7 +2536,29 @@ version 2 index on a versioned table, which only pg_upgrade of a
 pre-version-3 BARK index could produce, then works as an index of heap's
 does; REINDEX makes it store tags.
 
-Writers.  barkhandler sets amcanversion and amindexcanversion.  aminsert
+Conversion.  A multikey index with BARK_META_MKTAGS that the catalog
+later calls unique or exclusion (a constraint added after the build, as
+DocumentDB's collMod prepareUnique adds one) keeps the bit and its tagged
+entries, which the table AM still judges and rule D still reads.  But it
+answers false to amindexmaykeeplocator (bark_indexmaykeeplocator, read
+from rd_index at run time), so an update that needs new entries in it
+moves the row, and a constraint check never meets two versions at one
+locator through an update that began after the change.  An update whose
+statement began before it can still keep the locator; waiting those out
+is the conversion barrier, left to a later change.
+
+Updates.  An update that keeps the locator inserts, into each index it
+affects, the new version's entries, tagged.  For a multikey index that is
+the new value's full key set, unchanged keys included: the old entries are
+invalid for the new version once the column changed (the table AM's rule
+is per index, not per key), so `doc && '{b}'` after {a,b} became {b,c}
+finds the row through (b,L,new).  The old entries stay until VACUUM
+removes them.  barkcomparedatums still tells the executor when a value
+gives the same entries ({a,b} to {b,a} on a class that sorts keys), and
+then nothing is inserted.
+
+Writers.  barkhandler sets amcanversion, amindexcanversion and
+amindexmaykeeplocator.  aminsert
 and the build callback read IndexInfo.ii_VersionTag (the executor, or the
 table AM's build and validation scans, set it).  A tagged row's entry is
 placed by (key, TID, tag), as a tagged SINGLE or a tagged OVERSIZED entry,

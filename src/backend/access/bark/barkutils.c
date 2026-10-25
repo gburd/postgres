@@ -657,6 +657,25 @@ bark_indexcanversion(Relation index)
 		(bark_index_extracted_column(index) == 0 || bark_index_mktags(index));
 }
 
+/*
+ * amindexmaykeeplocator: may an update that needs new entries in the index
+ * keep the row's locator?  A multikey index that stores tags refuses once
+ * the catalog says it is unique or exclusion (a constraint added after the
+ * build, as DocumentDB's collMod prepareUnique adds one): a check under a
+ * dirty snapshot could meet two versions at one locator.  Read at run
+ * time, from rd_index, which a writer whose statement began after the
+ * change has.  The index keeps BARK_META_MKTAGS, so its tagged entries are
+ * still judged, and its scans keep rule D.  Every other index that stores
+ * tags lets the locator be kept.
+ */
+bool
+bark_indexmaykeeplocator(Relation index)
+{
+	if (bark_index_extracted_column(index) == 0)
+		return true;
+	return !index->rd_index->indisunique && !index->rd_index->indisexclusion;
+}
+
 /* Is an index of `heap` built to hold tags (BARK_META_VERSIONED)? */
 bool
 bark_heap_versioned(Relation heap)

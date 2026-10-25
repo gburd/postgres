@@ -3230,6 +3230,7 @@ barkhandler(PG_FUNCTION_ARGS)
 		.amimplements = BTREE_AM_OID,
 		.amcanversion = true,
 		.amindexcanversion = bark_indexcanversion,
+		.amindexmaykeeplocator = bark_indexmaykeeplocator,
 
 		.ambuild = barkbuild,
 		.ambuildempty = barkbuildempty,
