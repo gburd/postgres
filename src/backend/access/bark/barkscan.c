@@ -49,6 +49,7 @@
 #include "postgres.h"
 
 #include "access/bark.h"
+#include "access/detoast.h"
 #include "access/gin.h"
 #include "access/htup_details.h"
 #include "access/relscan.h"
@@ -75,6 +76,8 @@
 #include "utils/wait_event.h"
 
 static int	bark_key_cmp(IndexScanDesc scan, int i, IndexTuple itup);
+static bool bark_prefix_past_bound(IndexScanDesc scan, IndexTuple itup,
+								   ScanDirection dir);
 static void bark_killitems(IndexScanDesc scan);
 static bool bark_mk_gin_gettuple(IndexScanDesc scan, ScanDirection dir);
 static bool bark_key_bounds(IndexScanDesc scan, ScanKey sk, bool *lower,
@@ -2280,6 +2283,43 @@ bark_past_bound(IndexScanDesc scan, IndexTuple itup, ScanDirection dir)
 }
 
 /*
+ * Can a scan moving in direction dir stop at OVERSIZED entry itup on its
+ * inline prefix alone, before its overflow chain is read?  As
+ * bark_past_bound does for a key on column 1, when the prefix decides the
+ * order (bark_oversized_prefix_cmp).  An entry past such a bound fails that
+ * key, so it is not a match either.  False whenever the prefix cannot tell,
+ * and for the keys bark_past_bound reads on later columns or row
+ * comparisons: the caller then reads the chain and asks bark_past_bound.
+ */
+static bool
+bark_prefix_past_bound(IndexScanDesc scan, IndexTuple itup, ScanDirection dir)
+{
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	bool		forward = ScanDirectionIsForward(dir);
+
+	for (int i = 0; i < so->numberOfKeys; i++)
+	{
+		ScanKey		sk = &scan->keyData[i];
+		bool		lower;
+		bool		upper;
+		bool		known;
+		int			c;
+
+		if (sk->sk_attno != 1 || !bark_key_bounds(scan, sk, &lower, &upper) ||
+			(forward ? !upper : !lower))
+			continue;
+		c = bark_oversized_prefix_cmp(so->keyinfo, itup, &so->keyCmp[i],
+									  sk->sk_collation, sk->sk_argument,
+									  &known);
+		if (so->keyinfo->cols[0].reverse)
+			c = -c;
+		if (forward ? c > 0 : c < 0)
+			return true;
+	}
+	return false;
+}
+
+/*
  * Compare index tuple itup's value in scan key i's column with the key's
  * argument, through the key's ORDER proc: <0, 0 or >0 as the value sorts
  * before, with or after the argument in index order (DESC inverted).  A NULL
@@ -2447,7 +2487,14 @@ bark_skip_save(IndexScanDesc scan, BarkScanBound *bound, bool palloced)
 	if (!so->skipValueByVal && so->skipValue != (Datum) 0)
 		pfree(DatumGetPointer(so->skipValue));
 	oldcxt = MemoryContextSwitchTo(so->scanCxt);
-	so->skipValue = datumCopy(bound->args[0], att->attbyval, att->attlen);
+
+	/*
+	 * A value read from an OVERSIZED entry's full tuple may be compressed:
+	 * decompress it once here rather than in every comparison of the descent.
+	 */
+	so->skipValue = att->attlen == -1 ?
+		PointerGetDatum(PG_DETOAST_DATUM_COPY(bound->args[0])) :
+		datumCopy(bound->args[0], att->attbyval, att->attlen);
 	MemoryContextSwitchTo(oldcxt);
 	so->skipValueByVal = att->attbyval;
 	if (palloced)
@@ -2864,6 +2911,47 @@ bark_setup_key_procs(IndexScanDesc scan)
 	MemoryContextSwitchTo(oldcxt);
 }
 
+/*
+ * Detoast, once per rescan, the compressed or external arguments of the keys
+ * on a bytewise first column (a Const; the executor detoasts runtime keys
+ * itself).  Each comparison with an OVERSIZED entry reads an argument's
+ * leading bytes for the inline-prefix fast path, and the column's comparator
+ * would decompress it on every call.  The plain copy also serves the final
+ * comparison with a full value.  It lives in the array keys' context, which
+ * the next rescan resets, along with the keys themselves.
+ *
+ * shortcut: row comparison members are left as they are (they belong to the
+ * executor), so a compressed one is sliced per comparison; detoast those too
+ * if a keyset scan over OVERSIZED keys turns up in a profile.
+ */
+static void
+bark_detoast_first_keys(IndexScanDesc scan)
+{
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	Oid			opcintype = scan->indexRelation->rd_opcintype[0];
+
+	if (!so->keyinfo->cols[0].bytewise)
+		return;
+	for (int i = 0; i < so->numberOfKeys; i++)
+	{
+		ScanKey		sk = &scan->keyData[i];
+		varlena    *arg;
+		MemoryContext oldcxt;
+
+		/* A cross-type key's argument need not even be a varlena. */
+		if (sk->sk_attno != 1 ||
+			(sk->sk_flags & (SK_ISNULL | SK_ROW_HEADER | SK_SEARCHARRAY)) ||
+			(OidIsValid(sk->sk_subtype) && sk->sk_subtype != opcintype))
+			continue;
+		arg = (varlena *) DatumGetPointer(sk->sk_argument);
+		if (!VARATT_IS_EXTERNAL(arg) && !VARATT_IS_COMPRESSED(arg))
+			continue;
+		oldcxt = MemoryContextSwitchTo(bark_array_cxt(so));
+		sk->sk_argument = PointerGetDatum(detoast_attr(arg));
+		MemoryContextSwitchTo(oldcxt);
+	}
+}
+
 IndexScanDesc
 bark_beginscan(Relation index, int nkeys, int norderbys)
 {
@@ -2967,6 +3055,7 @@ bark_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 	 */
 	bark_free_array_keys(so);
 	bark_setup_array_keys(scan);
+	bark_detoast_first_keys(scan);
 	bark_setup_key_procs(scan);
 	if (so->mk != NULL)
 	{
@@ -3503,6 +3592,21 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 		/* A marker names no row ("Markers" in BARK-Design.mediawiki). */
 		if (BarkEntryIsMarker(itup))
 			continue;
+
+		/*
+		 * An OVERSIZED entry's inline prefix can show that the scan is past
+		 * its bound, so that the entry's chain need not be read: a lookup
+		 * then reads only the chain of the entry it returns.
+		 */
+		if (!allsatisfied && BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED &&
+			bark_prefix_past_bound(scan, itup, dir))
+		{
+			if (forward)
+				pos->moreRight = false;
+			else
+				pos->moreLeft = false;
+			break;
+		}
 
 		resolved = bark_scan_resolve(index, itup, &fetched);
 		if (!allsatisfied && !bark_tuple_matches(scan, resolved, skipkeys))

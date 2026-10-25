@@ -2586,6 +2586,17 @@ bark_insert_state(Relation index, IndexInfo *indexInfo)
 }
 
 /*
+ * Make itup the key whose first-column prefix bark_compare_itups caches
+ * (BarkKeyInfo.pfxkey), or forget the cached one (NULL).
+ */
+static inline void
+bark_set_insert_key(BarkKeyInfo *keyinfo, IndexTuple itup)
+{
+	keyinfo->pfxkey = itup;
+	keyinfo->pfxready = false;
+}
+
+/*
  * Outcome of bark_insert_key.
  */
 typedef enum BarkPlaceResult
@@ -3079,6 +3090,7 @@ bark_insert_entries(Relation index, BarkInsertState *state,
 	 */
 retry:
 	itup = itups[i];
+	bark_set_insert_key(keyinfo, itup);
 	checking = checkkeys != NULL && checkkeys[i];
 	insertoff = InvalidOffsetNumber;
 
@@ -3192,7 +3204,10 @@ check:
 		if (stack)
 			bark_freestack(stack);
 		if (++i == nitups)
+		{
+			bark_set_insert_key(keyinfo, NULL);
 			return result;
+		}
 		goto retry;
 	}
 
@@ -3269,6 +3284,7 @@ check:
 		}
 
 		itup = itups[i];
+		bark_set_insert_key(keyinfo, itup);
 		checking = checkkeys != NULL && checkkeys[i];
 		if (placed == BARK_PLACE_SPLIT)
 		{
@@ -3317,6 +3333,7 @@ check:
 
 	if (stack)
 		bark_freestack(stack);
+	bark_set_insert_key(keyinfo, NULL);
 	return result;
 }
 

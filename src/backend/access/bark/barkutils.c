@@ -1206,6 +1206,207 @@ bark_get_free_page(Relation index, Relation heaprel)
 }
 
 /*
+ * Order two values of a bytewise column (text under a C/POSIX collation:
+ * memcmp, then length) by their leading bytes alone, as an OVERSIZED entry
+ * keeps them inline (BarkOverflowRef.prefix): `alen` bytes of a and `blen` of
+ * b, each the whole value when its `complete` flag is set.  Returns -1 or 1
+ * when the bytes decide, in value order (before any DESC); 0 with *known set
+ * when both are whole and equal; 0 with *known clear when only the full
+ * values can tell: equal bytes, and the shorter side cut short.
+ */
+static int
+bark_prefix_cmp(const uint8 *a, uint16 alen, bool acomplete,
+				const uint8 *b, uint16 blen, bool bcomplete, bool *known)
+{
+	int			c = memcmp(a, b, Min(alen, blen));
+
+	*known = true;
+	if (c != 0)
+		return c < 0 ? -1 : 1;
+	/* A whole value no longer than the other side's bytes is a prefix of it. */
+	if (acomplete && bcomplete)
+		return (alen > blen) - (alen < blen);
+	if (acomplete && alen <= blen)
+		return -1;
+	if (bcomplete && blen <= alen)
+		return 1;
+	*known = false;
+	return 0;
+}
+
+/*
+ * The leading bytes of varlena datum `d` for bark_prefix_cmp: its own bytes
+ * when it is stored plain, or else up to one byte past the prefix length
+ * detoasted into `buf` (bark_value_prefix).
+ */
+static void
+bark_datum_prefix(Datum d, const uint8 **pfx, uint16 *len, bool *complete,
+				  uint8 *buf)
+{
+	varlena    *attr = (varlena *) DatumGetPointer(d);
+	Size		rawlen;
+
+	if (VARATT_IS_EXTERNAL(attr) || VARATT_IS_COMPRESSED(attr))
+	{
+		bark_value_prefix(d, buf, len, complete);
+		*pfx = buf;
+		return;
+	}
+	rawlen = VARSIZE_ANY_EXHDR(attr);
+	*pfx = (const uint8 *) VARDATA_ANY(attr);
+	*len = (uint16) Min(rawlen, BARK_OVERSIZED_PREFIX_LEN);
+	*complete = rawlen <= BARK_OVERSIZED_PREFIX_LEN;
+}
+
+/*
+ * The leading bytes of the first key column of itup, which has that column,
+ * in a bytewise index: an OVERSIZED entry's inline prefix, or an inline
+ * tuple's value.  The insert key bark_insert_entries is placing
+ * (keyinfo->pfxkey) is detoasted once and its bytes kept in keyinfo.  False
+ * when there are none: an OVERSIZED entry without a prefix, or a NULL.
+ */
+static bool
+bark_tuple_prefix(BarkKeyInfo *keyinfo, TupleDesc tupdesc, IndexTuple itup,
+				  const uint8 **pfx, uint16 *len, bool *complete, uint8 *buf)
+{
+	Datum		d;
+	bool		isnull;
+
+	if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED)
+	{
+		BarkOverflowRef *ref = BarkOverflowGetRef(itup);
+
+		*pfx = ref->prefix;
+		*len = ref->prefixlen;
+		*complete = ref->prefixcomplete;
+		return ref->prefixlen > 0;
+	}
+	if (itup == keyinfo->pfxkey && keyinfo->pfxready)
+	{
+#ifdef USE_ASSERT_CHECKING
+		/* The cache must be this key's, not a previous key's. */
+		uint8		check[BARK_OVERSIZED_PREFIX_LEN];
+		uint16		checklen;
+		bool		checkcomplete;
+
+		d = index_getattr(itup, 1, tupdesc, &isnull);
+		Assert(isnull == keyinfo->pfxnull);
+		if (!isnull)
+		{
+			bark_value_prefix(d, check, &checklen, &checkcomplete);
+			Assert(checklen == keyinfo->pfxlen &&
+				   checkcomplete == keyinfo->pfxcomplete &&
+				   memcmp(check, keyinfo->pfx, checklen) == 0);
+		}
+#endif
+		*pfx = keyinfo->pfx;
+		*len = keyinfo->pfxlen;
+		*complete = keyinfo->pfxcomplete;
+		return !keyinfo->pfxnull;
+	}
+	d = index_getattr(itup, 1, tupdesc, &isnull);
+	if (itup == keyinfo->pfxkey)
+	{
+		keyinfo->pfxready = true;
+		keyinfo->pfxnull = isnull;
+		if (!isnull)
+			bark_value_prefix(d, keyinfo->pfx, &keyinfo->pfxlen,
+							  &keyinfo->pfxcomplete);
+		return bark_tuple_prefix(keyinfo, tupdesc, itup, pfx, len, complete,
+								 buf);
+	}
+	if (isnull)
+		return false;
+	bark_datum_prefix(d, pfx, len, complete, buf);
+	return true;
+}
+
+/*
+ * Order a and b on their first key column by its leading bytes, as
+ * bark_prefix_cmp does, when the column is bytewise, both carry it, and one
+ * is an OVERSIZED entry with an inline prefix (the other may be OVERSIZED
+ * too, or inline): the fast path that spares reading overflow chains.
+ * Returns 0 with *known clear when the bytes cannot tell.
+ */
+static int
+bark_itups_prefix_cmp(BarkKeyInfo *keyinfo, TupleDesc tupdesc,
+					  IndexTuple a, IndexTuple b, bool *known)
+{
+	bool		aover = BarkEntryGetShape(a) == BARK_SHAPE_OVERSIZED;
+	bool		bover = BarkEntryGetShape(b) == BARK_SHAPE_OVERSIZED;
+	uint8		abuf[BARK_OVERSIZED_PREFIX_LEN];
+	uint8		bbuf[BARK_OVERSIZED_PREFIX_LEN];
+	const uint8 *apfx;
+	const uint8 *bpfx;
+	uint16		alen;
+	uint16		blen;
+	bool		acomplete;
+	bool		bcomplete;
+
+	*known = false;
+	if (!keyinfo->cols[0].bytewise || !(aover || bover))
+		return 0;
+	/* An OVERSIZED side first: its bytes are inline, an inline side's may not be. */
+	if ((aover && !bark_tuple_prefix(keyinfo, tupdesc, a, &apfx, &alen,
+									 &acomplete, abuf)) ||
+		(bover && !bark_tuple_prefix(keyinfo, tupdesc, b, &bpfx, &blen,
+									 &bcomplete, bbuf)) ||
+		(!aover && !bark_tuple_prefix(keyinfo, tupdesc, a, &apfx, &alen,
+									  &acomplete, abuf)) ||
+		(!bover && !bark_tuple_prefix(keyinfo, tupdesc, b, &bpfx, &blen,
+									  &bcomplete, bbuf)))
+		return 0;
+	return bark_prefix_cmp(apfx, alen, acomplete, bpfx, blen, bcomplete,
+						   known);
+}
+
+/*
+ * Order OVERSIZED entry `entry`'s first key column against `arg` by the
+ * entry's inline prefix, as bark_prefix_cmp does, for a scan bound or key
+ * that compares the column with `proc` under `collation`: <0 or >0 (value
+ * order, entry against arg) when the bytes decide, 0 with *known set when
+ * the column equals arg, 0 with *known clear when only the full value can
+ * tell.  Only text's own comparator under the index's bytewise collation
+ * qualifies; any other (a cross-type name argument, say) cannot use it.
+ */
+int
+bark_oversized_prefix_cmp(BarkKeyInfo *keyinfo, IndexTuple entry,
+						  const FmgrInfo *proc, Oid collation, Datum arg,
+						  bool *known)
+{
+	BarkOverflowRef *ref = BarkOverflowGetRef(entry);
+	uint8		buf[BARK_OVERSIZED_PREFIX_LEN];
+	const uint8 *apfx;
+	uint16		alen;
+	bool		acomplete;
+
+	Assert(BarkEntryGetShape(entry) == BARK_SHAPE_OVERSIZED);
+	*known = false;
+	if (!keyinfo->cols[0].bytewise || ref->prefixlen == 0 ||
+		proc->fn_oid != F_BTTEXTCMP || collation != keyinfo->cols[0].collation)
+		return 0;
+	bark_datum_prefix(arg, &apfx, &alen, &acomplete, buf);
+	return bark_prefix_cmp(ref->prefix, ref->prefixlen, ref->prefixcomplete,
+						   apfx, alen, acomplete, known);
+}
+
+/* The key attributes a BARK tuple of any shape carries (see below). */
+static inline int
+bark_entry_key_natts(BarkKeyInfo *keyinfo, IndexTuple itup)
+{
+	switch (BarkEntryGetShape(itup))
+	{
+		case BARK_SHAPE_OVERSIZED:
+			return BarkOverflowIsLeaf(itup) ? keyinfo->nkeys :
+				BarkOverflowGetRef(itup)->natts;
+		case BARK_SHAPE_PIVOT:
+			return BarkPivotGetNAtts(itup);
+		default:
+			return keyinfo->nkeys;
+	}
+}
+
+/*
  * Compare two BARK index tuples by their key columns.
  *
  * Returns <0, 0, or >0 as a sorts before, equal to, or after b.  NULLs are
@@ -1214,15 +1415,19 @@ bark_get_free_page(Relation index, Relation heaprel)
  * imposes, which is what lets BARK share btree operator families.
  *
  * An OVERSIZED entry carries no key attributes inline (its full tuple lives on
- * an overflow chain).  Two OVERSIZED entries whose first key column sorts
- * bytewise (a C/POSIX collation) are first compared on the short inline prefix
- * each one caches (BarkOverflowRef.prefix); only when those prefixes tie, or
- * when either operand lacks a usable prefix, do we fetch the full tuple(s) from
- * the chain and compare those.  Fetching the whole key is what makes out-of-
- * line storage transparent: two keys that share a long prefix still order on
- * their full value, because the comparison ultimately sees the whole key.  (The
- * caller must pass a non-NULL `index` so the overflow chain can be read; every
- * caller does.)
+ * an overflow chain).  When the first key column sorts bytewise (text under a
+ * C/POSIX collation), an OVERSIZED operand is first compared on the short
+ * inline prefix it caches (BarkOverflowRef.prefix) against the other
+ * operand's leading bytes, whether that is another OVERSIZED entry's prefix
+ * or an inline tuple's value, an insert key's among them
+ * (bark_itups_prefix_cmp).  Only when those tie and one is cut short, when
+ * they tie whole on the first column and there are later columns to compare,
+ * or when an operand has no usable prefix, do we fetch the full tuple(s)
+ * from the chain and compare those.  Fetching the whole key is what makes
+ * out-of-line storage transparent: two keys that share a long prefix still
+ * order on their full value, because the comparison ultimately sees the
+ * whole key.  (The caller must pass a non-NULL `index` so the overflow chain
+ * can be read; every caller does.)
  */
 int
 bark_compare_itups(BarkKeyInfo *keyinfo, Relation index,
@@ -1231,92 +1436,41 @@ bark_compare_itups(BarkKeyInfo *keyinfo, Relation index,
 	TupleDesc	 tupdesc = RelationGetDescr(index);
 	IndexTuple	 afull = NULL;
 	IndexTuple	 bfull = NULL;
-	int			 na;
-	int			 nb;
-	int			 ncmp;
+	int			 na = bark_entry_key_natts(keyinfo, a);
+	int			 nb = bark_entry_key_natts(keyinfo, b);
+	int			 ncmp = Min(na, nb);
 	int			 result = 0;
-	int			 na_override = -1;
-	int			 nb_override = -1;
 
 	/*
-	 * OVERSIZED compare fast path.  When both operands are OVERSIZED entries
-	 * that carry an inline prefix of a bytewise (C/POSIX-collation) first key
-	 * column, compare those prefixes before touching the overflow chains: a
-	 * leading-byte difference decides the order with no I/O.  The chains are
-	 * fetched (below) only when the prefixes tie and at least one is truncated,
-	 * so a tie might not be real.  Two complete prefixes that are byte-equal
-	 * and the same length are equal on the first column -- but there may be
-	 * further key columns, so a decisive answer here requires the prefix
-	 * comparison to be non-zero; an equal prefix always falls through to the
-	 * full compare.  reverse is applied exactly as the per-column loop does.
+	 * OVERSIZED compare fast path.  A leading-byte difference decides the
+	 * order with no I/O, and reverse is applied exactly as the per-column
+	 * loop does.  A whole-value tie on the first column decides only when it
+	 * is the last column both carry; otherwise the later columns are read
+	 * from the full tuples.
 	 */
-	if (keyinfo->nkeys > 0 && keyinfo->cols[0].bytewise &&
-		BarkEntryGetShape(a) == BARK_SHAPE_OVERSIZED &&
-		BarkEntryGetShape(b) == BARK_SHAPE_OVERSIZED)
+	if (ncmp > 0 &&
+		(BarkEntryGetShape(a) == BARK_SHAPE_OVERSIZED ||
+		 BarkEntryGetShape(b) == BARK_SHAPE_OVERSIZED))
 	{
-		BarkOverflowRef *ra = BarkOverflowGetRef(a);
-		BarkOverflowRef *rb = BarkOverflowGetRef(b);
+		bool		known;
+		int			c = bark_itups_prefix_cmp(keyinfo, tupdesc, a, b, &known);
 
-		if (ra->prefixlen > 0 && rb->prefixlen > 0)
-		{
-			uint16		cmplen = Min(ra->prefixlen, rb->prefixlen);
-			int			c = memcmp(ra->prefix, rb->prefix, cmplen);
-
-			if (c != 0)
-				return keyinfo->cols[0].reverse ? -c : c;
-
-			/*
-			 * Equal over the shared prefix length.  If the shorter prefix is
-			 * COMPLETE (its whole column fit), the columns differ in length:
-			 * the shorter column sorts first (bytewise, a prefix is less than
-			 * a longer string sharing it).  Only decide here when the longer
-			 * side actually has more bytes; equal length + both complete is a
-			 * genuine first-column tie that must fall through to later columns.
-			 */
-			if (ra->prefixlen != rb->prefixlen)
-			{
-				bool		shorter_a = ra->prefixlen < rb->prefixlen;
-				bool		shorter_complete = shorter_a ? ra->prefixcomplete
-					: rb->prefixcomplete;
-
-				if (shorter_complete)
-				{
-					c = shorter_a ? -1 : 1;
-					return keyinfo->cols[0].reverse ? -c : c;
-				}
-			}
-			/* else: tie so far with a truncated prefix -- fall through, fetch. */
-		}
+		if (c != 0)
+			return keyinfo->cols[0].reverse ? -c : c;
+		if (known && ncmp == 1)
+			return (na > nb) - (na < nb);
 	}
 
 	/*
-	 * Resolve any OVERSIZED operand to its full, inline-comparable tuple.  An
-	 * OVERSIZED pivot's full tuple is a plain truncated key tuple carrying only
-	 * its natts attributes, so remember that count from the ref before fetching
-	 * (the fetched tuple no longer records that it is a pivot).
+	 * Resolve any OVERSIZED operand to its full, inline-comparable tuple,
+	 * unless there is no attribute to compare (a minus-infinity pivot).  An
+	 * OVERSIZED pivot's full tuple is a plain truncated key tuple carrying
+	 * only its natts attributes, which is why na and nb come from the refs.
 	 */
-	if (BarkEntryGetShape(a) == BARK_SHAPE_OVERSIZED)
-	{
-		if (!BarkOverflowIsLeaf(a))
-			na_override = BarkOverflowGetRef(a)->natts;
+	if (ncmp > 0 && BarkEntryGetShape(a) == BARK_SHAPE_OVERSIZED)
 		a = afull = bark_fetch_oversized(index, a);
-	}
-	if (BarkEntryGetShape(b) == BARK_SHAPE_OVERSIZED)
-	{
-		if (!BarkOverflowIsLeaf(b))
-			nb_override = BarkOverflowGetRef(b)->natts;
+	if (ncmp > 0 && BarkEntryGetShape(b) == BARK_SHAPE_OVERSIZED)
 		b = bfull = bark_fetch_oversized(index, b);
-	}
-
-	if (na_override >= 0)
-		na = na_override;
-	else
-		na = (BarkEntryGetShape(a) == BARK_SHAPE_PIVOT) ? BarkPivotGetNAtts(a) : keyinfo->nkeys;
-	if (nb_override >= 0)
-		nb = nb_override;
-	else
-		nb = (BarkEntryGetShape(b) == BARK_SHAPE_PIVOT) ? BarkPivotGetNAtts(b) : keyinfo->nkeys;
-	ncmp = Min(na, nb);
 
 	/*
 	 * Compare the key attributes both tuples carry.  Only a PIVOT tuple may
@@ -1397,6 +1551,16 @@ bark_keep_natts(Relation index, BarkKeyInfo *keyinfo, IndexTuple lastleft,
 	IndexTuple	left = lastleft;
 	IndexTuple	right = firstright;
 	int			keepnatts = 1;
+	bool		known;
+
+	/*
+	 * An OVERSIZED item's inline prefix may show the first column differs,
+	 * or is the whole (single-column) key and equal, with no chain read.
+	 */
+	if (bark_itups_prefix_cmp(keyinfo, tupdesc, left, right, &known) != 0)
+		return 1;
+	if (known && keyinfo->nkeys == 1)
+		return 2;
 
 	if (BarkEntryGetShape(left) == BARK_SHAPE_OVERSIZED)
 		left = bark_fetch_oversized(index, left);
