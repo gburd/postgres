@@ -146,17 +146,20 @@ BarkKeyInfo *
 bark_build_keyinfo(Relation index)
 {
 	return bark_build_keyinfo_stride(index, bark_index_tid_stride(index),
-									 bark_index_versioned(index));
+									 bark_index_versioned(index),
+									 bark_index_mktags(index));
 }
 
 /*
- * bark_build_keyinfo for an index whose TID stride is `stride` and whose
- * entries may carry tags when `versioned`: CREATE INDEX's, whose meta page
- * is not written yet, takes the heap's (bark_heap_tid_stride,
- * bark_heap_versioned).
+ * bark_build_keyinfo for an index whose TID stride is `stride`, built for
+ * tags when `versioned`, and whose key entries may carry them, if it has an
+ * extracted column, when `mktags`: CREATE INDEX's, whose meta page is not
+ * written yet, takes the heap's (bark_heap_tid_stride, bark_heap_versioned,
+ * bark_build_mktags).
  */
 BarkKeyInfo *
-bark_build_keyinfo_stride(Relation index, uint16 stride, bool versioned)
+bark_build_keyinfo_stride(Relation index, uint16 stride, bool versioned,
+						  bool mktags)
 {
 	int			nkeys = IndexRelationGetNumberOfKeyAttributes(index);
 	BarkKeyInfo *keyinfo;
@@ -167,7 +170,9 @@ bark_build_keyinfo_stride(Relation index, uint16 stride, bool versioned)
 	keyinfo->nkeys = nkeys;
 	keyinfo->tidstride = stride;
 	keyinfo->versioned = versioned;
-	keyinfo->canversion = versioned && bark_index_extracted_column(index) == 0;
+	keyinfo->mktags = mktags;
+	keyinfo->canversion = versioned &&
+		(bark_index_extracted_column(index) == 0 || mktags);
 
 	for (int i = 0; i < nkeys; i++)
 	{
@@ -535,35 +540,37 @@ bark_index_tid_stride(Relation index)
 }
 
 /*
- * May the index hold version tags?  Its meta page's BARK_META_VERSIONED,
- * which a version 2 meta page never has.  Fixed for the relfilenode, so it
- * is read once per relcache entry, as the TID stride is.
+ * Read the meta page's BARK_META_VERSIONED and BARK_META_MKTAGS into the
+ * cache, or, during CREATE INDEX or REINDEX, when the meta page is not
+ * written yet and the table AM's build scan asks (index_can_version), put
+ * what the build will write in *versioned and *mktags and leave the cache
+ * alone.  The caller holds a lock on the table.
  */
-bool
-bark_index_versioned(Relation index)
+static void
+bark_read_meta_flags(Relation index, BarkAmCache *cache, bool *versioned,
+					 bool *mktags)
 {
-	BarkAmCache *cache = bark_get_amcache(index);
-
-	/*
-	 * During CREATE INDEX or REINDEX the meta page is not written yet, and
-	 * the table AM's build scan asks (index_can_version): answer what the
-	 * build will write.  The caller holds a lock on the table.
-	 */
-	if (cache->versioned < 0 && RelationGetNumberOfBlocks(index) == 0)
+	if (cache->versioned >= 0)
 	{
-		Relation	heap = table_open(index->rd_index->indrelid, NoLock);
-		bool		versioned = bark_heap_versioned(heap);
-
-		table_close(heap, NoLock);
-		return versioned;
+		*versioned = cache->versioned > 0;
+		*mktags = cache->mktags > 0;
+		return;
 	}
 
-	if (cache->versioned < 0)
+	if (RelationGetNumberOfBlocks(index) == 0)
+	{
+		Relation	heap = table_open(index->rd_index->indrelid, NoLock);
+
+		*versioned = bark_heap_versioned(heap);
+		table_close(heap, NoLock);
+		*mktags = bark_build_mktags(index, *versioned);
+	}
+	else
 	{
 		Buffer		metabuf = ReadBuffer(index, BARK_METAPAGE);
 		Page		metapage;
 		BarkMetaPageData *meta;
-		bool		versioned = false;
+		uint32		flags = 0;
 
 		LockBuffer(metabuf, BUFFER_LOCK_SHARE);
 		metapage = BufferGetPage(metabuf);
@@ -572,27 +579,82 @@ bark_index_versioned(Relation index)
 			((PageHeader) metapage)->pd_lower >=
 			((char *) &meta->bark_flags + sizeof(meta->bark_flags)) -
 			(char *) metapage)
-			versioned = (meta->bark_flags & BARK_META_VERSIONED) != 0;
+			flags = meta->bark_flags;
 		UnlockReleaseBuffer(metabuf);
-		cache->versioned = versioned ? 1 : 0;
+		*versioned = (flags & BARK_META_VERSIONED) != 0;
+		*mktags = (flags & BARK_META_MKTAGS) != 0;
+		cache->versioned = *versioned ? 1 : 0;
+		cache->mktags = *mktags ? 1 : 0;
 	}
-	return cache->versioned > 0;
+}
+
+/*
+ * May the index hold version tags?  Its meta page's BARK_META_VERSIONED,
+ * which a version 2 meta page never has.  Fixed for the relfilenode, so it
+ * is read once per relcache entry, as the TID stride is.
+ */
+bool
+bark_index_versioned(Relation index)
+{
+	bool		versioned;
+	bool		mktags;
+
+	bark_read_meta_flags(index, bark_get_amcache(index), &versioned, &mktags);
+	return versioned;
+}
+
+/*
+ * May the index's key entries, if it has an extracted column, hold version
+ * tags?  Its meta page's BARK_META_MKTAGS, read as bark_index_versioned
+ * reads BARK_META_VERSIONED.
+ */
+bool
+bark_index_mktags(Relation index)
+{
+	bool		versioned;
+	bool		mktags;
+
+	bark_read_meta_flags(index, bark_get_amcache(index), &versioned, &mktags);
+	return mktags;
+}
+
+/*
+ * Does a build of `index`, built for tags when `versioned`, set
+ * BARK_META_MKTAGS?  Only for an index with an extracted column that is
+ * neither GIN-interface nor, in the catalog, unique or exclusion.  The
+ * catalog, not the IndexInfo: CLUSTER, VACUUM FULL and REPACK rebuild with
+ * ii_Unique cleared (see bark_index_coalesces).  A GIN-interface scan
+ * returns rows from a TIDBitmap, which carries no tag to judge; a unique or
+ * exclusion check under a dirty snapshot would meet two versions at one
+ * locator.  Such indexes store no tags, and a row moves when an update
+ * affects them.
+ */
+bool
+bark_build_mktags(Relation index, bool versioned)
+{
+	return versioned && bark_index_extracted_column(index) > 0 &&
+		!bark_index_gin_query(index) &&
+		!index->rd_index->indisunique && !index->rd_index->indisexclusion;
 }
 
 /*
  * amindexcanversion: does the index store version tags?  Only an index
- * built for them (BARK_META_VERSIONED, so never a version 2 index), and
- * without an extracted column.  A multikey index's scans return each row
- * once by TID (the seen set, and a GIN-interface scan's TIDBitmap), which is
- * right only while no row has two entries valid for different versions; so
- * such an index stores no tags, and the executor moves a row whenever an
- * update affects it, as for an index of an AM without amcanversion.
+ * built for them (BARK_META_VERSIONED, so never a version 2 index), and,
+ * if it has an extracted column, built for tags on its key entries
+ * (BARK_META_MKTAGS).  Its scans then settle each entry of a row by the
+ * table AM's verdict ("Versioned multikey scans" in the README).  Every
+ * other multikey index returns each row once by TID (the seen set, and a
+ * GIN-interface scan's TIDBitmap), which is right only while no row has
+ * two entries valid for different versions; so it stores no tags, and the
+ * executor moves a row whenever an update affects it, as for an index of
+ * an AM without amcanversion.  The answer is the meta page's alone, never
+ * rd_index's, which can change after the build.
  */
 bool
 bark_indexcanversion(Relation index)
 {
 	return bark_index_versioned(index) &&
-		bark_index_extracted_column(index) == 0;
+		(bark_index_extracted_column(index) == 0 || bark_index_mktags(index));
 }
 
 /* Is an index of `heap` built to hold tags (BARK_META_VERSIONED)? */

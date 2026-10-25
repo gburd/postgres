@@ -690,6 +690,18 @@ typedef struct BarkMetaPageData
 #define BARK_META_VERSIONED	(1 << 1)
 
 /*
+ * BARK_META_MKTAGS: a multikey index (one with an extracted column) whose
+ * key entries may carry version tags.  Set by a build that sets
+ * BARK_META_VERSIONED, for an index that is neither GIN-interface
+ * (bark_index_gin_query), unique nor exclusion in the catalog
+ * (bark_build_mktags); never changed otherwise.  Its scans settle each
+ * returned entry by the table AM's verdict ("Versioned multikey scans" in
+ * the README).  Markers are never tagged.  A meta page written before the
+ * bit existed reads 0, which is right: such an index holds no tag.
+ */
+#define BARK_META_MKTAGS	(1 << 2)
+
+/*
  * bark_tid_stride is the largest locator offset of the table, its
  * LocatorDesc's max_offset, when the index was built: every mapping of a
  * heap TID to an integer (bark_tid_to_key, and a coded LIST's) is laid out
@@ -1420,6 +1432,7 @@ typedef struct BarkKeyInfo
 	uint16		tidstride;		/* bark_index_tid_stride: the TID mappings'
 								 * stride */
 	bool		versioned;		/* bark_index_versioned: the 16-byte reserve */
+	bool		mktags;			/* bark_index_mktags: BARK_META_MKTAGS */
 	bool		canversion;		/* bark_indexcanversion: may hold tags */
 	IndexVersionTag instag;		/* the version tag of the entries an insert
 								 * is placing; set by bark_insert_entries */
@@ -1442,8 +1455,10 @@ typedef struct BarkKeyInfo
 
 extern BarkKeyInfo *bark_build_keyinfo(Relation index);
 extern BarkKeyInfo *bark_build_keyinfo_stride(Relation index, uint16 stride,
-											 bool versioned);
+											 bool versioned, bool mktags);
 extern bool bark_index_versioned(Relation index);
+extern bool bark_index_mktags(Relation index);
+extern bool bark_build_mktags(Relation index, bool versioned);
 extern bool bark_indexcanversion(Relation index);
 extern bool bark_heap_versioned(Relation heap);
 extern IndexTuple bark_entry_untag(IndexTuple itup);
@@ -1752,6 +1767,8 @@ extern bool bark_len_is_oversized(BarkKeyInfo *keyinfo, Size fulllen);
 extern void bark_page_verify(Relation index, BarkKeyInfo *keyinfo,
 							 const char *relname, Page page,
 							 BlockNumber blkno, int flags, int elevel);
+extern void bark_verify_meta(Relation index, const char *relname, Page page,
+							 BlockNumber blkno, int elevel);
 
 /*
  * The page validator: in cassert builds, every change to a BARK page is
@@ -2001,6 +2018,7 @@ typedef struct BarkAmCache
 	bool		multikey;		/* BARK_META_MULTIKEY seen set */
 	uint16		tidstride;		/* bark_index_tid_stride, or 0 until read */
 	int8		versioned;		/* bark_index_versioned, or -1 until read */
+	int8		mktags;			/* bark_index_mktags, or -1 until read */
 	int			nmarkers;		/* markers seen present */
 	Size		markerlen;		/* bytes of markerdata in use */
 	int			nl1;			/* level-1 slots in use */
