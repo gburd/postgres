@@ -52,7 +52,11 @@ typedef struct BarkSearchKey
 /*
  * Compare a scan bound with an index tuple: <0 or >0 as the bound sorts
  * before or after the tuple in index order (never 0, see below).  Truncated
- * pivot attributes are minus infinity, as in bark_compare_itups.
+ * pivot attributes are minus infinity, as in bark_compare_itups.  An
+ * OVERSIZED tuple is first compared on its inline prefix
+ * (bark_oversized_prefix_cmp), and its overflow chain is read only when that
+ * cannot decide: a tie with a prefix cut short, or a tie on column 1 with
+ * later columns to compare.
  */
 int
 bark_compare_bound(Relation index, BarkKeyInfo *keyinfo,
@@ -75,7 +79,6 @@ bark_compare_bound(Relation index, BarkKeyInfo *keyinfo,
 			natts = BarkOverflowGetRef(itup)->natts;
 			notid = bark_pivot_heap_tid(itup) == NULL;
 		}
-		itup = full = bark_fetch_oversized(index, itup);
 	}
 	else if (BarkEntryGetShape(itup) == BARK_SHAPE_PIVOT)
 	{
@@ -86,6 +89,26 @@ bark_compare_bound(Relation index, BarkKeyInfo *keyinfo,
 		natts = keyinfo->nkeys;
 
 	ncmp = Min(natts, bound->nkeys);
+	if (ncmp > 0 && BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED)
+	{
+		bool		known = false;
+		int32		cmp = 0;
+
+		/* A NULL bound (procs[0] NULL) always reads the chain. */
+		if (bound->procs[0] != NULL)
+			cmp = bark_oversized_prefix_cmp(keyinfo, itup, bound->procs[0],
+											bound->collations[0],
+											bound->args[0], &known);
+		if (cmp != 0)
+		{
+			result = keyinfo->cols[0].reverse ? cmp : -cmp;
+			ncmp = 0;
+		}
+		else if (known && ncmp == 1)
+			ncmp = 0;			/* equal on the one column compared */
+		else
+			itup = full = bark_fetch_oversized(index, itup);
+	}
 	for (int i = 0; i < ncmp; i++)
 	{
 		BarkKeyColumn *col = &keyinfo->cols[i];

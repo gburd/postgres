@@ -1423,6 +1423,20 @@ typedef struct BarkKeyInfo
 	bool		canversion;		/* bark_indexcanversion: may hold tags */
 	IndexVersionTag instag;		/* the version tag of the entries an insert
 								 * is placing; set by bark_insert_entries */
+
+	/*
+	 * The key bark_insert_entries is placing, set for each key and cleared
+	 * when it returns, and once bark_compare_itups has needed them
+	 * (pfxready) the leading bytes of its first key column, as an
+	 * OVERSIZED entry's inline prefix keeps them: detoasted once per key
+	 * rather than once per comparison.  Only a bytewise column uses them.
+	 */
+	IndexTuple	pfxkey;
+	bool		pfxready;
+	bool		pfxnull;		/* the key's first column is NULL */
+	bool		pfxcomplete;
+	uint16		pfxlen;
+	uint8		pfx[BARK_OVERSIZED_PREFIX_LEN];
 	BarkKeyColumn cols[FLEXIBLE_ARRAY_MEMBER];
 } BarkKeyInfo;
 
@@ -1783,6 +1797,9 @@ extern IndexTuple bark_form_oversized_entry(ItemPointer locator, Size fulllen,
 											IndexVersionTag tag);
 extern void bark_value_prefix(Datum d, uint8 *buf, uint16 *len,
 							  bool *complete);
+extern int	bark_oversized_prefix_cmp(BarkKeyInfo *keyinfo, IndexTuple entry,
+									  const FmgrInfo *proc, Oid collation,
+									  Datum arg, bool *known);
 extern void bark_set_oversized_prefix(IndexTuple entry, Relation index,
 									  IndexTuple full);
 

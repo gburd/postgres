@@ -2189,8 +2189,17 @@ There are five entry shapes (BarkEntryShape):
            the chain of an entry it removes (bark_free_oversized).  A normal-size entry never uses
            this shape, so it is pure overhead-free opt-in.  When the first
            key column is text under a C/POSIX collation, the ref also keeps
-           that column's first 32 bytes, which order two OVERSIZED entries
-           without reading their chains when they differ.  No other column
+           that column's first 32 bytes, decompressed when the full tuple
+           stores the value compressed (bark_value_prefix).  They order the
+           entry without reading its chain whenever they differ from the
+           other side's leading bytes: another OVERSIZED entry, an inline
+           key, an insert's key (detoasted once per key), or a scan bound
+           (its argument detoasted once per rescan).  Descent, leaf
+           positioning, the insert's search and the end of a scan
+           (bark_prefix_past_bound) all use them, so a lookup reads the
+           chain of the entry it returns and no other.  A tie reads the
+           chain, unless both sides are whole and column 1 is the only
+           column compared.  No other column
            gets them, even under "C": bpchar ignores trailing spaces, arrays
            compare element by element, and name is a cstring, so their bytes
            are not their order (bark_first_column_bytewise).
