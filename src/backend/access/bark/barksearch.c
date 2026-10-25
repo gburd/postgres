@@ -359,6 +359,7 @@ bark_get_amcache(Relation index)
 		cache->multikey = false;
 		cache->tidstride = 0;
 		cache->versioned = -1;
+		cache->mktags = -1;
 		cache->nmarkers = 0;
 		cache->markerlen = 0;
 		cache->nl1 = cache->maxl1 = 0;

@@ -2280,15 +2280,22 @@ Which indexes.  The meta page's BARK_META_VERSIONED says the table's
 locator was versioned when the index was built; CREATE INDEX and every
 rebuild (REINDEX, the rewrite of ALTER TABLE ... SET ACCESS METHOD) set it
 from the table's LocatorDesc, and nothing else changes it.  Such an index
-stores tags unless it has an extracted column: amindexcanversion
-(bark_indexcanversion) answers the executor's index_can_version().  A
-multikey index returns each row once by TID (the seen set, and a
-GIN-interface index scan's TIDBitmap), which is right only while no row has
-two valid entries of different versions, so it stores no tags, and the
+stores tags, if it has an extracted column only when its meta page also
+has BARK_META_MKTAGS: amindexcanversion (bark_indexcanversion) answers the
+executor's index_can_version() from those two bits alone, never from
+rd_index, which can change after the build.  A build sets MKTAGS with
+VERSIONED for a multikey index that is neither GIN-interface nor, in the
+catalog, unique or exclusion (bark_build_mktags); REINDEX recomputes it.
+A tagged multikey index's scans settle each entry of a row by the table
+AM's verdict ("Versioned multikey scans").  Every other multikey index
+returns each row once by TID (the seen set, and a GIN-interface index
+scan's TIDBitmap, which carries no tag), which is right only while no row
+has two valid entries of different versions, so it stores no tags, and the
 executor moves a row whenever an update affects it; its entries stay
-untagged, as an index of heap's.  (Versioned multikey indexes need
-deduplication after the table AM's verdict, or untagging a row's entries
-together, and are left as a follow-up.)  An index with BARK_META_VERSIONED
+untagged, as an index of heap's.  A tagged multikey index's key entries
+carry the row's tag, its markers never: a marker names no row, so nothing
+could judge its tag (bark_insert_entries forces it to 0).  An index with
+BARK_META_VERSIONED
 has a pivot suffix reserve (BarkPivotSuffixReserve) of 16 bytes, room for a
 pivot's heap TID and tag (6 + 4, MAXALIGNed); every other
 index keeps the 8-byte reserve, so an index of a heap table is laid out
@@ -2527,8 +2534,12 @@ SINGLE or OVERSIZED entry, the trailer at the MAXALIGNed end of the key and
 ending the entry, a tag never 0, no tag in an index not built for tags), the
 pivot rule (a tagged pivot has every key attribute and a heap TID), the
 (key, TID, tag) order on a page and against the high key and across
-downlinks, and that a version 2 meta page does not claim
-BARK_META_VERSIONED.  amcheck also checks that a leaf whose lower bound has a
+downlinks, that a version 2 meta page does not claim
+BARK_META_VERSIONED, and that BARK_META_MKTAGS comes with
+BARK_META_VERSIONED (redo too, from the page alone) on an index with an
+extracted column that is not GIN-interface (with the index at hand), and
+that no marker is tagged.  An index that is unique or exclusion now but has
+MKTAGS is not corrupt: rd_index can change after the build.  amcheck also checks that a leaf whose lower bound has a
 tag has BARK_LOWBOUND_TAGGED, and the validator that only a leaf with a left
 sibling has it.  pageinspect's bark_page_items shows a tag column, and
 bark_page_stats the flag as lowbound_tagged.
@@ -2555,7 +2566,9 @@ Invariants
     OVERSIZED entry, and on a PIVOT the same bit is BARK_PIVOT_HEAP_TID
     (see "Version tags").
   * Leaf entries are in (key, TID, tag) order; only a SINGLE or OVERSIZED
-    entry of an index with BARK_META_VERSIONED has a tag, never 0.
+    entry of an index with BARK_META_VERSIONED, and with BARK_META_MKTAGS
+    if it has an extracted column, has a tag, never 0; a marker never has
+    one.  BARK_META_MKTAGS implies BARK_META_VERSIONED.
   * An OVERSIZED entry's full tuple lives on a chain of BARK_OVERFLOW pages
     (bark_flags has BARK_OVERFLOW, not BARK_LEAF): each page holds up to
     BarkOverflowChunkSize raw bytes of the tuple and links to the next chunk

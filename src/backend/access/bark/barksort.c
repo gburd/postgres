@@ -644,8 +644,9 @@ bark_build_row_keys(BarkBuildState *bs, ItemPointer tid, Datum *values,
 	if (rk.nkeys > 1)
 		bs->multikey = true;
 
-	/* A multikey index stores no tags (bark_indexcanversion). */
-	Assert(bs->indexInfo->ii_VersionTag == InvalidIndexVersionTag);
+	/* Only an index with BARK_META_MKTAGS stores tags on its keys. */
+	Assert(bs->keyinfo->canversion ||
+		   bs->indexInfo->ii_VersionTag == InvalidIndexVersionTag);
 	if (!tupleIsAlive && bs->deadsort != NULL)
 	{
 		sortstate = bs->deadsort;
@@ -663,7 +664,7 @@ bark_build_row_keys(BarkBuildState *bs, ItemPointer tid, Datum *values,
 		if (bark_build_row_oversized(bs, tupdesc, kvalues, knulls))
 			bs->has_oversized = true;
 		else
-			bark_sort_put(sortstate, index, tid, InvalidIndexVersionTag,
+			bark_sort_put(sortstate, index, tid, bs->indexInfo->ii_VersionTag,
 						  kvalues, knulls);
 	}
 	bs->indtuples += rk.nkeys;
@@ -1172,7 +1173,8 @@ bark_finish(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *leaf)
 	meta->bark_level = rootlevel;
 	meta->bark_allequalimage = bs->allequalimage;
 	meta->bark_flags = (bs->multikey ? BARK_META_MULTIKEY : 0) |
-		(bs->keyinfo->versioned ? BARK_META_VERSIONED : 0);
+		(bs->keyinfo->versioned ? BARK_META_VERSIONED : 0) |
+		(bs->keyinfo->mktags ? BARK_META_MKTAGS : 0);
 	meta->bark_nkeys = (uint64) bs->indtuples;
 	meta->bark_tid_stride = bs->keyinfo->tidstride;
 	((PageHeader) metabuf)->pd_lower =
@@ -1639,7 +1641,9 @@ bark_parallel_scan_and_sort(Relation heap, Relation index,
 	bs.heap = heap;
 	bs.index = index;
 	bs.keyinfo = bark_build_keyinfo_stride(index, bark_heap_tid_stride(heap),
-										   bark_heap_versioned(heap));
+										   bark_heap_versioned(heap),
+										   bark_build_mktags(index,
+															 bark_heap_versioned(heap)));
 	bs.keyinfo->heaprel = heap;
 	bs.nkeyatts = IndexRelationGetNumberOfKeyAttributes(index);
 	bs.isunique = false;		/* leader enforces uniqueness during load */
@@ -2037,7 +2041,9 @@ bark_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	bs.heap = heap;
 	bs.index = index;
 	bs.keyinfo = bark_build_keyinfo_stride(index, bark_heap_tid_stride(heap),
-										   bark_heap_versioned(heap));
+										   bark_heap_versioned(heap),
+										   bark_build_mktags(index,
+															 bark_heap_versioned(heap)));
 	bs.keyinfo->heaprel = heap;
 	bs.nkeyatts = IndexRelationGetNumberOfKeyAttributes(index);
 	bs.nblocks = 1;				/* block 0 is reserved for the meta page */
@@ -2148,12 +2154,14 @@ bark_buildempty(Relation index)
 	Relation	heap;
 	uint16		stride;
 	bool		versioned;
+	bool		mktags;
 
 	/* index_build, the only caller, holds a lock on the table. */
 	heap = table_open(index->rd_index->indrelid, NoLock);
 	stride = bark_heap_tid_stride(heap);
 	versioned = bark_heap_versioned(heap);
 	table_close(heap, NoLock);
+	mktags = bark_build_mktags(index, versioned);
 
 	bulk = smgr_bulk_start_rel(index, INIT_FORKNUM);
 	metabuf = smgr_bulk_get_buf(bulk);
@@ -2174,7 +2182,8 @@ bark_buildempty(Relation index)
 	meta->bark_level = 0;
 	meta->bark_allequalimage = bark_allequalimage(index);
 	meta->bark_tid_stride = stride;
-	meta->bark_flags = versioned ? BARK_META_VERSIONED : 0;
+	meta->bark_flags = (versioned ? BARK_META_VERSIONED : 0) |
+		(mktags ? BARK_META_MKTAGS : 0);
 	((PageHeader) metabuf)->pd_lower =
 		((char *) meta + sizeof(BarkMetaPageData)) - (char *) metabuf;
 
