@@ -575,6 +575,20 @@ tvb_indexcanversion(Relation index)
 	return !(len >= 6 && strcmp(name + len - 6, "_notag") == 0);
 }
 
+/*
+ * amindexmaykeeplocator: an index whose name ends in "_nokeep" stores tags
+ * but refuses to let an update keep a row's locator, so that a test can
+ * show the executor moving the row while the index still judges by tag.
+ */
+static bool
+tvb_indexmaykeeplocator(Relation index)
+{
+	const char *name = RelationGetRelationName(index);
+	size_t		len = strlen(name);
+
+	return !(len >= 7 && strcmp(name + len - 7, "_nokeep") == 0);
+}
+
 PG_FUNCTION_INFO_V1(test_versioned_btree_handler);
 Datum
 test_versioned_btree_handler(PG_FUNCTION_ARGS)
@@ -585,6 +599,7 @@ test_versioned_btree_handler(PG_FUNCTION_ARGS)
 
 		routine.amcanversion = true;
 		routine.amindexcanversion = tvb_indexcanversion;
+		routine.amindexmaykeeplocator = tvb_indexmaykeeplocator;
 		routine.amimplements = BTREE_AM_OID;
 		routine.amcanbuildparallel = false; /* see tvb_build_record */
 		routine.aminsert = tvb_insert;

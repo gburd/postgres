@@ -193,6 +193,28 @@ SELECT test_versioned_tag('tn_a', ctid) = xmin::text::bigint AS a_tagged
 RESET test_versioned_tableam.keep_locator;
 DROP TABLE tn;
 
+-- An index that stores tags but refuses to keep a locator
+-- (amindexmaykeeplocator; test_versioned_btree: a name ending in _nokeep):
+-- an update affecting it moves the row (TU_All), and its new entry is still
+-- tagged, since the index stores tags; one not affecting it keeps the
+-- locator.
+CREATE TABLE tq (id int, a int, b int) USING heap_versioned;
+CREATE INDEX tq_a ON tq (a);
+CREATE INDEX tq_b_nokeep ON tq (b);
+INSERT INTO tq VALUES (1, 1, 1);
+SET test_versioned_tableam.keep_locator = pretend;
+SELECT test_versioned_reset();
+UPDATE tq SET b = 2;
+SELECT * FROM test_versioned_seen;
+SELECT test_versioned_tag('tq_a', ctid) = xmin::text::bigint AS a_tagged,
+       test_versioned_tag('tq_b_nokeep', ctid) = xmin::text::bigint AS b_tagged
+  FROM tq;
+SELECT test_versioned_reset();
+UPDATE tq SET a = 2;
+SELECT * FROM test_versioned_seen;
+RESET test_versioned_tableam.keep_locator;
+DROP TABLE tq;
+
 -- An exclusion constraint's index that keeps its entries under TU_Affected
 -- gets no new entry, so its constraint is checked after the update
 -- (ExecCheckHotExclusion), as after a HOT update.  hashint8(1) =

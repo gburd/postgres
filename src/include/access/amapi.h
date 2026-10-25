@@ -115,6 +115,9 @@ typedef StrategyNumber (*amtranslate_cmptype_function) (CompareType cmptype, Oid
 /* can this index, of an AM with amcanversion, store version tags? */
 typedef bool (*amindexcanversion_function) (Relation indexRelation);
 
+/* may an update keep a row's locator, as far as this index is concerned? */
+typedef bool (*amindexmaykeeplocator_function) (Relation indexRelation);
+
 /* would two non-null values of an index column give the same entries? */
 typedef bool (*amcomparedatums_function) (Relation indexRelation,
 										  IndexInfo *indexInfo,
@@ -401,6 +404,15 @@ typedef struct IndexAmRoutine
 	 * every index of the AM does.  Ask index_can_version().
 	 */
 	amindexcanversion_function amindexcanversion;	/* can be NULL */
+
+	/*
+	 * May an update that needs a new entry in this index keep the row's
+	 * locator?  An index that stores tags may refuse, for example after a
+	 * constraint is added that its checks cannot serve under a versioned
+	 * locator; its entries stay tagged and are judged as before.  NULL means
+	 * the answer of amindexcanversion.  Ask index_may_keep_locator().
+	 */
+	amindexmaykeeplocator_function amindexmaykeeplocator;	/* can be NULL */
 } IndexAmRoutine;
 
 
