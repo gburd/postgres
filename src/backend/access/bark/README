@@ -1488,11 +1488,60 @@ TID array instead.  Bitmap scans and the GIN interface's streams take each
 item's members as a batch.
 
 bark_gettuple settles the row returned last at the top of each call (the
-kill_prior_tuple test, bark_kill_prior) before bark_step_member moves the
-position.  A per-row rule that needs the table AM's answer about the
-previous row, such as V2's entry verdict (xs_entry_verdict), goes at the
-same place: the position still names that row's (item, member) there, and
-the table AM sets the verdict before it asks for the next row (relscan.h).
+kill_prior_tuple test, bark_kill_prior, and the entry verdict of
+"Versioned multikey scans") before bark_step_member moves the position:
+the position still names that row's (item, member) there, and the table
+AM sets the verdict before it asks for the next row (relscan.h).
+
+Versioned multikey scans
+------------------------
+
+An index with BARK_META_MKTAGS (see "Version tags") can hold entries of a
+row that are valid for different versions: an update that kept the
+locator inserted the new version's full key set, tagged, and the old
+entries stay until VACUUM removes them.  The page-read seen set, which
+keeps a row's first entry by TID, would then keep a stale entry and drop
+the valid one (`doc && '{a,b}'` after {a,b} became {b,c} in place loses
+the row).  Such a scan, through a table AM, follows rule D instead
+(bark_mk_ruled; the decision is the meta page's alone, so tagged entries
+already on disk are always handled so):
+
+  * A page read keeps every entry the filters and procedure 9 accept
+    (bark_mk_seen only records a group change, as BARK_ITEM_NEWGROUP on
+    the item).
+  * At the top of bark_gettuple (and bark_knn_gettuple) the entry
+    returned last is settled by the table AM's verdict,
+    xs_entry_verdict (bark_mk_settle): VALID puts its row in R, the seen
+    set's radix tree; INVALID puts (TID, tag) in J, a hash, under an MVCC
+    snapshot only; UNKNOWN is an error, since the table AM broke its
+    obligation (amlocator.h), and guessing could return a row twice or
+    not at all.
+  * An entry is then returned only if its row is not in R and its
+    (TID, tag) is not in J (bark_mk_admit); it becomes the entry whose
+    verdict is due.
+  * R and J empty when the scan returns from the first item of a new
+    group of the columns before the extracted one, unless the scan is
+    marked.  A KNN scan interleaves groups and keeps them whole.
+  * bark_markpos settles the due verdict first (the marked row was
+    returned); bark_restrpos drops it (the row is behind the mark and is
+    returned again) and takes the rows added since the mark out of R.  J
+    needs no undo: under an MVCC snapshot its facts hold for the scan.
+  * A rescan clears R, J and the due verdict, so a LIMIT, a closed cursor
+    or a nested loop's inner rescan, which leave a verdict unread, raise
+    nothing.
+  * A non-MVCC snapshot keeps R and never fills J.  Under one, heap may
+    return several tuples through one entry (xs_heap_continue); the
+    verdict is about the entry, and BARK reads it only at its next call.
+  * A caller of amgettuple without a table AM (scan->heapRelation NULL)
+    gets the page-read seen set: dedup by TID, no verdict.
+
+useseen is decided as before (bark_mk_rescan): when one point boundary,
+procedure 8's oneentry or a never-multikey index rules a second matching
+entry of one version out, no set is used; a stale entry is rejected by
+the table AM whether or not the set is used.  Bitmap scans need none of
+this: the bitmap holds each locator once, and the table AM rechecks every
+row with history against the original qual.  A GIN-interface index gets
+no MKTAGS: its TIDBitmap has no entry to judge.
 
 The scan's memory stays under AllocSet's chunk limit (ALLOC_CHUNK_LIMIT,
 8 kB), so it comes from the context's blocks with no malloc of its own:

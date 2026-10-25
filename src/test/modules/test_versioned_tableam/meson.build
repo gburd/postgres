@@ -28,6 +28,7 @@ tests += {
   'regress': {
     'sql': [
       'versioned',
+      'bark_mk_versioned',
     ],
     'regress_args': ['--temp-config', files('versioned.conf')],
     'runningcheck': false,

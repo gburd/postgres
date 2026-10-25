@@ -2313,6 +2313,7 @@ typedef struct BarkScanPosItem
 } BarkScanPosItem;
 
 #define BARK_ITEM_OFFSET_MASK	0x0FFF	/* indexOffset's offset bits */
+#define BARK_ITEM_NEWGROUP		0x2000	/* rule D: first item of a group */
 #define BARK_ITEM_MEMBERS		0x4000	/* several members, in currTuples */
 #define BARK_ITEM_RECHECK		0x8000	/* return it with xs_recheck */
 
@@ -2585,7 +2586,11 @@ extern Buffer bark_lock_and_validate_left(Relation index, BlockNumber *blkno,
 extern int	bark_mk_accept(IndexScanDesc scan, IndexTuple itup,
 						   ItemPointer tids, int ntids, bool *recheck);
 extern int	bark_mk_seen(IndexScanDesc scan, IndexTuple itup, ItemPointer tids,
-						 int ntids, bool newgroups);
+						 int ntids, bool newgroups, bool *newgroup);
+extern bool bark_mk_ruled(IndexScanDesc scan);
+extern void bark_mk_settle(IndexScanDesc scan);
+extern bool bark_mk_admit(IndexScanDesc scan, ItemPointer tid,
+						  IndexVersionTag tag, bool newgroup);
 extern int	bark_mk_point(IndexScanDesc scan, AttrNumber attno, Datum *key,
 						  FmgrInfo **cmp, Oid *collation);
 extern HeapTuple bark_mk_form_hitup(IndexScanDesc scan, IndexTuple itup);
