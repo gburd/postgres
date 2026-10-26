@@ -102,7 +102,7 @@ INSERT INTO wb_q VALUES
   ('SELECT id, k FROM wb WHERE k = -1 AND id > 5000'),
   ('SELECT id FROM wb WHERE a && ''{3}''::int4[]'),
   ('SELECT id FROM wb WHERE a @> ''{5,105}''::int4[]');
-SELECT q, wb_same(q) FROM wb_q ORDER BY q;
+SELECT q, wb_same(q) FROM wb_q ORDER BY q COLLATE "C";
 SELECT wb_order('SELECT u, ctid FROM wb WHERE u > 14000 ORDER BY u DESC') AS backward,
        wb_order('SELECT k, id, ctid FROM wb WHERE k IN (-1, 5) ORDER BY k DESC, id DESC') AS backward_kp,
        wb_order('SELECT ctid FROM wb WHERE k = -1 ORDER BY k DESC') AS backward_posting;
@@ -123,13 +123,13 @@ INSERT INTO wb VALUES (0, 7, 7, '{1}');
 UPDATE wb SET k = k + 1 WHERE id % 9 = 0 AND k >= 0;
 UPDATE wb SET a = a || 200 WHERE id % 11 = 0;
 DELETE FROM wb WHERE id % 7 = 0;
-SELECT q, wb_same(q) FROM wb_q ORDER BY q;
+SELECT q, wb_same(q) FROM wb_q ORDER BY q COLLATE "C";
 SELECT bark_index_check(i, true) FROM unnest(ARRAY['wb_k', 'wb_u', 'wb_a', 'wb_kp']::regclass[]) i;
 
 -- VACUUM removes the deleted rows' TIDs, and only theirs.
 VACUUM wb;
 SELECT bark_index_check(i, true) FROM unnest(ARRAY['wb_k', 'wb_u', 'wb_a', 'wb_kp']::regclass[]) i;
-SELECT q, wb_same(q) FROM wb_q ORDER BY q;
+SELECT q, wb_same(q) FROM wb_q ORDER BY q COLLATE "C";
 -- the index holds exactly the live rows' TIDs
 SELECT (SELECT array_agg(ctid ORDER BY ctid) FROM wb) =
        (SELECT array_agg(t ORDER BY t) FROM bark_multi_page_stats('wb_k', 1, -1) s,

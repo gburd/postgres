@@ -129,7 +129,7 @@ INSERT INTO wb_q VALUES
   ('SELECT id, k FROM wb WHERE k = -1 AND id > 5000'),
   ('SELECT id FROM wb WHERE a && ''{3}''::int4[]'),
   ('SELECT id FROM wb WHERE a @> ''{5,105}''::int4[]');
-SELECT q, wb_same(q) FROM wb_q ORDER BY q;
+SELECT q, wb_same(q) FROM wb_q ORDER BY q COLLATE "C";
                              q                             | wb_same 
 -----------------------------------------------------------+---------
  SELECT id FROM wb WHERE a && '{3}'::int4[]                | ok
@@ -179,7 +179,7 @@ DETAIL:  Key (u)=(7) already exists.
 UPDATE wb SET k = k + 1 WHERE id % 9 = 0 AND k >= 0;
 UPDATE wb SET a = a || 200 WHERE id % 11 = 0;
 DELETE FROM wb WHERE id % 7 = 0;
-SELECT q, wb_same(q) FROM wb_q ORDER BY q;
+SELECT q, wb_same(q) FROM wb_q ORDER BY q COLLATE "C";
                              q                             | wb_same 
 -----------------------------------------------------------+---------
  SELECT id FROM wb WHERE a && '{3}'::int4[]                | ok
@@ -212,7 +212,7 @@ SELECT bark_index_check(i, true) FROM unnest(ARRAY['wb_k', 'wb_u', 'wb_a', 'wb_k
  
 (4 rows)
 
-SELECT q, wb_same(q) FROM wb_q ORDER BY q;
+SELECT q, wb_same(q) FROM wb_q ORDER BY q COLLATE "C";
                              q                             | wb_same 
 -----------------------------------------------------------+---------
  SELECT id FROM wb WHERE a && '{3}'::int4[]                | ok
