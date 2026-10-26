@@ -3,6 +3,9 @@
 --
 CREATE EXTENSION test_index_impl;
 CREATE EXTENSION amcheck;
+-- test_index_impl_scans() counts this backend's calls; a scan run by a
+-- parallel worker would not be counted.
+SET debug_parallel_query = off;
 CREATE EXTENSION pageinspect;
 CREATE EXTENSION pgstattuple;
 CREATE FUNCTION implam(idx regclass) RETURNS name

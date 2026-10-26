@@ -51,6 +51,7 @@ sub check_served
 	my ($node, $name) = @_;
 	my $r = $node->safe_psql(
 		'postgres', q{
+SET debug_parallel_query = off;
 SET enable_seqscan = off;
 SET enable_bitmapscan = off;
 SELECT test_index_impl_reset();
