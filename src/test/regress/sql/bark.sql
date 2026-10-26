@@ -4443,11 +4443,15 @@ SELECT bark_nk_run('a, b, c', 'a DESC, b DESC, c DESC');
 -- and the inner pages (it would read every leaf of the run otherwise).
 CREATE FUNCTION bark_nk_pages(q text) RETURNS int LANGUAGE plpgsql AS $$
 DECLARE
+  warm refcursor;
   plan json;
   node json;
 BEGIN
   SET LOCAL enable_seqscan = off;
   SET LOCAL enable_bitmapscan = off;
+  SET LOCAL debug_parallel_query = off;	-- as in bark_xt_buffers
+  OPEN warm FOR EXECUTE q;
+  MOVE warm;
   EXECUTE 'EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, FORMAT JSON) ' || q
     INTO plan;
   node := plan->0->'Plan';
