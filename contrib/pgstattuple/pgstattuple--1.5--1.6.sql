@@ -20,7 +20,7 @@ CREATE FUNCTION pgstatbarkindex(IN relname regclass,
     OUT posting_entries BIGINT,
     OUT oversized_entries BIGINT)
 AS 'MODULE_PATHNAME', 'pgstatbarkindex'
-LANGUAGE C STRICT PARALLEL SAFE;
+LANGUAGE C STRICT PARALLEL RESTRICTED;
 
 REVOKE EXECUTE ON FUNCTION pgstatbarkindex(regclass) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION pgstatbarkindex(regclass) TO pg_stat_scan_tables;
