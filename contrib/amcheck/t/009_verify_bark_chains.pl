@@ -232,7 +232,10 @@ SELECT count(*) FROM vac_t WHERE k > '0']),
 # Keys of 2.4 kB inserted in ascending order, enough for the levels above
 # the leaves that make an insert cache the rightmost leaf
 # (BARK_FASTPATH_MIN_LEVEL).  The cache is the backend's, so the inserts
-# that fill the leaf and the row that tries it share one session.
+# that fill the leaf and the row that tries it share one session, and a
+# transaction with a cursor open on the index, which keeps its relcache
+# entry and so the cache (under RELCACHE_FORCE_RELEASE an entry nothing
+# holds open is rebuilt, without it, after every statement).
 my $pages = q[SELECT count(*) FILTER (WHERE type = 'overflow') || ',' ||
   count(*) FILTER (WHERE type = 'deleted') FROM bark_multi_page_stats('fp_idx', 1, -1)];
 my ($level, $free, $before, $after) = split /\n/, $node->safe_psql(
@@ -244,6 +247,10 @@ INSERT INTO fp_t SELECT g, ARRAY['k' || lpad(g::text, 6, '0') || big(g, 2400)]
 CREATE FUNCTION fp_free() RETURNS int LANGUAGE sql AS
 \$\$ SELECT free_size FROM bark_multi_page_stats('fp_idx', 1, -1)
    WHERE type = 'leaf' AND bark_next = 0 \$\$;
+BEGIN;
+SET LOCAL enable_seqscan = off;
+SET LOCAL enable_bitmapscan = off;
+DECLARE pin CURSOR FOR SELECT id FROM fp_t WHERE a %^% 'none';
 -- Fill the rightmost leaf, in ascending order, to 48 bytes free.
 DO \$\$
 DECLARE i int := 0; f int;
@@ -262,6 +269,7 @@ SELECT fp_free();
 $pages;
 INSERT INTO fp_t VALUES (9999, ARRAY['m', 'n' || big(7, 20000)]);
 $pages;
+COMMIT;
 ]);
 cmp_ok($level, '>=', 2, 'fp_idx has two levels above its leaves');
 # Room for the 16-byte entry of 'm' and the 8-byte reserve, not for an
