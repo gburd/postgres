@@ -785,11 +785,18 @@ INSERT INTO bark_bnd_q VALUES
 SELECT * FROM bark_bnd_check('bark_xt') WHERE idx <> seq;
 CREATE FUNCTION bark_xt_buffers(q text) RETURNS int LANGUAGE plpgsql AS $$
 DECLARE
+  warm refcursor;
   line text;
   n int := 0;
 BEGIN
   SET LOCAL enable_seqscan = off;
   SET LOCAL enable_bitmapscan = off;
+  -- The scan runs here, not in a parallel worker whose caches are cold,
+  -- with the index open and its caches warm (an open cursor keeps them
+  -- under RELCACHE_FORCE_RELEASE), so only the scan's own pages count.
+  SET LOCAL debug_parallel_query = off;
+  OPEN warm FOR EXECUTE q;
+  MOVE warm;
   FOR line IN EXECUTE 'EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
     IF line ~ 'Buffers: shared' AND n = 0 THEN
       n := coalesce(substring(line from 'hit=([0-9]+)')::int, 0) +
