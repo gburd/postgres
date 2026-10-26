@@ -15,6 +15,7 @@
 
 #include "access/amapi.h"
 #include "access/htup_details.h"
+#include "access/parallel.h"
 #include "access/xact.h"
 #include "catalog/pg_am.h"
 #include "catalog/pg_opclass.h"
@@ -242,9 +243,13 @@ check_default_btree_implementation(char **newval, void **extra,
 	 * If we aren't inside a transaction, or not connected to a database, we
 	 * cannot do the catalog access necessary to verify the method.  Must
 	 * accept the value on faith.  Whether the method can implement btree
-	 * indexes is checked when an index is created.
+	 * indexes is checked when an index is created.  A parallel worker adopts
+	 * its leader's value as it is: the leader may have accepted it on faith
+	 * (from postgresql.conf, at startup), and the method need not exist in
+	 * every database, so checking it here would fail every parallel query.
 	 */
-	if (!IsTransactionState() || MyDatabaseId == InvalidOid)
+	if (!IsTransactionState() || MyDatabaseId == InvalidOid ||
+		InitializingParallelWorker)
 		return true;
 
 	tuple = SearchSysCache1(AMNAME, CStringGetDatum(*newval));
