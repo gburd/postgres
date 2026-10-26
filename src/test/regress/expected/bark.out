@@ -8485,12 +8485,16 @@ VACUUM ANALYZE bark_ovz;
 -- The index and heap blocks an index scan's node reads.
 CREATE FUNCTION bark_ovz_blocks(q text) RETURNS int LANGUAGE plpgsql AS $$
 DECLARE
+  warm refcursor;
   plan json;
   node json;
 BEGIN
   SET LOCAL enable_seqscan = off;
   SET LOCAL enable_bitmapscan = off;
   SET LOCAL enable_indexonlyscan = off;
+  SET LOCAL debug_parallel_query = off;	-- as in bark_xt_buffers
+  OPEN warm FOR EXECUTE q;
+  MOVE warm;
   EXECUTE 'EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, FORMAT JSON) ' || q
     INTO plan;
   node := plan->0->'Plan';
