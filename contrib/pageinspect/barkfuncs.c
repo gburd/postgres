@@ -477,8 +477,11 @@ bark_check_entry_bounds(IndexTuple itup, BarkEntryShape shape, OffsetNumber off)
 						dataoff + BarkPivotSuffixReserveFor(true) <= size);
 			break;
 		case BARK_SHAPE_SINGLE:
+			/* the trailer is read in place, so it must be aligned */
 			ok = ok && (!BarkEntryIsAltTID(itup) ||
 						(BarkEntryGetBodyOffset(itup) >= dataoff &&
+						 BarkEntryGetBodyOffset(itup) ==
+						 MAXALIGN(BarkEntryGetBodyOffset(itup)) &&
 						 BarkEntryGetBodyOffset(itup) +
 						 sizeof(BarkTagTrailer) <= size));
 			break;

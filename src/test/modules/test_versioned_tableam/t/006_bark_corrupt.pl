@@ -122,6 +122,8 @@ patch('c2_k', 1, sub { s16($_[0], $o + 2, g16($_[0], $o + 2) + 1) });
 ($e1, $e2) = reports('c2_k', 1);
 like($e1, qr/BARK index "c2_k" has a malformed tagged entry on page 1 at offset 3/,
 	'c2: amcheck reports a misplaced trailer');
+like($e2, qr/invalid SINGLE entry at offset number 3/,
+	'c2: pageinspect refuses to read the misplaced trailer');
 
 # (3) An untagged LIST with BARK_HAS_TAG: rows 1..20 all k = 5, untagged.
 $node->safe_psql(
