@@ -3671,9 +3671,14 @@ INSERT INTO bark_fpu SELECT lpad(g::text, 400, '0'), g
   FROM generate_series(1, 3000) g;
 DO $$
 DECLARE
-  b0 bigint := pg_stat_get_xact_idx_blocks_fetched('bark_fpu_idx'::regclass);
+  pin refcursor;
+  b0 bigint;
   b1 bigint;
 BEGIN
+  SET LOCAL enable_seqscan = off;
+  SET LOCAL enable_bitmapscan = off;
+  OPEN pin FOR SELECT k FROM bark_fpu WHERE k = '';	-- as for bark_fp
+  b0 := pg_stat_get_xact_idx_blocks_fetched('bark_fpu_idx'::regclass);
   FOR g IN 3001..4000 LOOP
     INSERT INTO bark_fpu VALUES (lpad(g::text, 400, '0'), g);
   END LOOP;
