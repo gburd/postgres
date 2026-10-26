@@ -6,6 +6,30 @@ why, the state of the upstream discussion, how to build and test it (which must
 happen on an EC2 box, not locally), the methodology for the numbers, what is
 left to do, and the traps already hit.
 
+## 0. STATUS (2026-10-26) — read this first; sections 3, 4 and 7 describe the
+## abandoned POC and are kept only as history
+
+- v1 is done: commit "Don't wait for the hash index metapage lock just to
+  count a tuple" on top of the 3 local commits (2 `ci:` + `dev: local
+  dev-setup`), pushed to `origin/hash-metapage-overflow-signal`. Produce the
+  patch with `git format-patch -v<N> <dev-setup-commit>` (i.e. `HEAD~1` while
+  the patch is one commit) so the ci/dev commits never appear in the set.
+- The overflow-signal POC was dropped: pending counts die with the backend and
+  VACUUM only recounts when it removes tuples, so `pgbench -C` drove ntuples
+  to 487 for 200k rows (maxbucket 7). Design now: `ConditionalLockBuffer` on
+  the metapage; on failure defer the count in a backend-local dynahash keyed
+  by index OID; wait anyway after adding an overflow page or at 32 pending.
+  Metapage block ref omitted from XLOG_HASH_INSERT when deferred; increment
+  carried as block-1 data when >1.
+- Results, scripts, raw output: `/scratch/hegel-pg/hash-metapage/v1/`
+  (RESULTS.md). 2.04x at 64 clients, 2.23x at 128; count ~1% low worst case.
+- Email draft for the thread: `/tmp/hash-metapage-v1-reply.eml` (never send
+  email yourself; Greg sends).
+- Tests: `src/test/modules/hash` (`hash_deferred_count` regress via injection
+  point `hash-insert-defer-count`, `t/001_concurrent_inserts.pl` TAP).
+- `wal_consistency_checking=hash` still fails on unpatched upstream master.
+- Next: review feedback from the list; XLOG_PAGE_MAGIC bump left to committer.
+
 ## 1. What this is
 
 A performance fix for PostgreSQL **hash indexes**: concurrent single-row
