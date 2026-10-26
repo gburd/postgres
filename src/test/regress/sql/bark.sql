@@ -3780,11 +3780,19 @@ SELECT bark_nnd_try('TRUNCATE %I');
 SELECT bark_nnd_try('INSERT INTO %I (v) SELECT lpad(g::text, 400, ''0'') FROM generate_series(1, 3000) g');
 SELECT bark_nnd_try('CREATE UNIQUE INDEX %1$s_v ON %1$I USING %2$s (v) NULLS NOT DISTINCT');
 SELECT bark_nnd_try('INSERT INTO %I (v) SELECT lpad(g::text, 400, ''0'') FROM generate_series(3001, 3100) g');
+INSERT INTO bark_nnd_btree (v) VALUES (lpad('3101', 400, '0'));	-- as below
 INSERT INTO bark_nnd_btree (a) VALUES (1);
 DO $$
 DECLARE
-  b0 bigint := pg_stat_get_xact_idx_blocks_fetched('bark_nnd_bark_v'::regclass);
+  pin refcursor;
+  b0 bigint;
 BEGIN
+  SET LOCAL enable_seqscan = off;
+  SET LOCAL enable_bitmapscan = off;
+  OPEN pin FOR SELECT v FROM bark_nnd_bark WHERE v = '';	-- as for bark_fp
+  -- an ascending insert caches the rightmost leaf again, with the pin held
+  INSERT INTO bark_nnd_bark (v) VALUES (lpad('3101', 400, '0'));
+  b0 := pg_stat_get_xact_idx_blocks_fetched('bark_nnd_bark_v'::regclass);
   INSERT INTO bark_nnd_bark (a) VALUES (1);
   RAISE NOTICE 'NULL key insert read one block: %',
     pg_stat_get_xact_idx_blocks_fetched('bark_nnd_bark_v'::regclass) - b0 = 1;
