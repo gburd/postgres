@@ -2248,6 +2248,7 @@ DROP TABLE bark_sfx_lb;
 -- a = -1 reads the upper levels and one leaf, a >= 0 every leaf.
 CREATE FUNCTION bark_sfx_blocks(q text) RETURNS int LANGUAGE plpgsql AS $$
 DECLARE
+  warm refcursor;
   plan json;
   node json;
 BEGIN
@@ -2256,6 +2257,9 @@ BEGIN
   PERFORM set_config('enable_indexonlyscan', 'off', true);
   PERFORM set_config('enable_bitmapscan', 'on', true);
   PERFORM set_config('max_parallel_workers_per_gather', '0', true);
+  SET LOCAL debug_parallel_query = off;	-- as in bark_xt_buffers
+  OPEN warm FOR EXECUTE q;
+  MOVE warm;
   EXECUTE 'EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, FORMAT JSON) ' || q
     INTO plan;
   node := plan->0->'Plan';
