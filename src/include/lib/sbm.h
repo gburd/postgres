@@ -132,8 +132,7 @@ typedef struct Sbm Sbm;
  * sbm_cardinality() biased by one, so a zeroed struct reads as "unknown";
  * every mutation resets it.
  */
-struct pg_attribute_aligned (8)
-Sbm
+struct Sbm
 {
 	size_t		m_capacity;		/* capacity in bytes | lineage tag */
 	size_t		m_data_used;	/* bytes of m_data in use */
@@ -274,7 +273,7 @@ pg_nodiscard extern Sbm *sbm_copy(const Sbm *other);
 pg_nodiscard extern Sbm *sbm_owned_copy(const Sbm *map);
 
 /*
- * Allocate a map struct around a caller-owned, 8-byte-aligned buffer of
+ * Allocate a map struct around a caller-owned buffer, aligned for uint64, of
  * size bytes.  The buffer is not cleared; call sbm_clear() to start empty,
  * or sbm_open() to adopt existing contents.
  *

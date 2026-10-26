@@ -526,10 +526,21 @@ sbm_chunk_get_run_length(const SbmChunk *chunk)
  */
 
 /*
+ * The data buffer is read and written a uint64 word at a time in place
+ * (sbm_small_words, the chunk start offsets), so it must be aligned as the
+ * platform aligns a uint64.  That is ALIGNOF_INT64_T, which can be less than
+ * 8 (it is 4 on i386); palloc's MAXALIGN covers it, so a map that owns its
+ * struct and buffer in one chunk puts the buffer at the struct's MAXALIGNed
+ * size.
+ */
+#define SbmDataIsAligned(p)	(((uintptr_t) (p) % ALIGNOF_INT64_T) == 0)
+#define SBM_CONTIGUOUS_DATA_OFFSET	MAXALIGN(sizeof(Sbm))
+
+/*
  * Allocation lineage.  Tracked per Sbm so the grow / dispose
  * paths know what they may safely realloc or free.
  *
- * SBM_OWNED_CONTIGUOUS  Single palloc0(sizeof(Sbm) + size).
+ * SBM_OWNED_CONTIGUOUS  Single palloc0(SBM_CONTIGUOUS_DATA_OFFSET + size).
  *                      Both the struct and m_data live in one chunk;
  *                      m_data sits immediately after the struct.
  *                      Set by sbm_create() and sbm_copy().  May be
@@ -653,7 +664,7 @@ sbm_card_store(Sbm *m, size_t count)
  *
  *   - m_data is non-NULL when the byte capacity > 0
  *   - m_data_used <= byte capacity (no buffer overrun)
- *   - m_data is 8-byte aligned (the chunk codec assumes this)
+ *   - m_data is aligned for uint64 (the chunk codec reads words in place)
  *   - the lineage tag (low bits of m_capacity) is one of the three
  *     known values
  *
@@ -669,7 +680,7 @@ sbm_check_invariants(const Sbm *map)
 		return;
 	Assert(sbm_cap(map) == 0 || map->m_data != NULL);
 	Assert(map->m_data_used <= sbm_cap(map));
-	Assert(PointerIsAligned(map->m_data, uint64));
+	Assert(SbmDataIsAligned(map->m_data));
 	Assert(sbm_kind(map) == SBM_OWNED_CONTIGUOUS ||
 		   sbm_kind(map) == SBM_WRAPPED ||
 		   sbm_kind(map) == SBM_OWNED_SPLIT);
@@ -3584,9 +3595,8 @@ sbm_clear(Sbm *map)
  * Allocates and initializes a sparse bitmap of the given size.
  *
  * This function creates a new sparse bitmap structure with allocated memory.
- * If the specified size is zero, a default size of 1024 is used. The function
- * ensures that the internal data array is 8-byte aligned and initializes the sparse bitmap
- * structure.
+ * If the specified size is zero, a default size of 1024 is used.  The data
+ * array follows the struct in the same chunk, at SBM_CONTIGUOUS_DATA_OFFSET.
  *
  * `size` is the size of the sparse bitmap to allocate.
  * Returns a pointer to the allocated sparse bitmap structure, or NULL if allocation fails.
@@ -3594,11 +3604,7 @@ sbm_clear(Sbm *map)
 Sbm *
 sbm_create(size_t size)
 {
-	size_t		data_size;
-	size_t		total_size;
-	size_t		padding;
 	Sbm		   *map;
-	uint8	   *data;
 
 	if (size == 0)
 	{
@@ -3611,23 +3617,15 @@ sbm_create(size_t size)
 	 */
 	size = (size + 7u) & ~(size_t) 7;
 
-	data_size = size * sizeof(uint8);
-
-	/* Ensure that m_data is 8-byte aligned. */
-	total_size = sizeof(Sbm) + data_size;
-	padding = total_size % 8 == 0 ? 0 : 8 - (total_size % 8);
-	total_size += padding;
-
-	map = (Sbm *) palloc0(total_size);
-	data = (uint8 *) (((uintptr_t) map + sizeof(Sbm)) & ~(uintptr_t) 7);
-	sbm_init(map, data, size);
+	map = (Sbm *) palloc0(SBM_CONTIGUOUS_DATA_OFFSET + size);
+	sbm_init(map, (uint8 *) map + SBM_CONTIGUOUS_DATA_OFFSET, size);
 
 	/*
 	 * sbm_init tags the map as SBM_WRAPPED (caller-supplied buffer); override
 	 * here because the buffer is contiguous with the struct and we own both.
 	 */
 	sbm_set_kind(map, SBM_OWNED_CONTIGUOUS);
-	Assert(PointerIsAligned(map->m_data, uint64));
+	Assert(SbmDataIsAligned(map->m_data));
 	return map;
 }
 
@@ -4029,8 +4027,6 @@ sbm_set_data_size(Sbm *map, uint8 *data, const size_t size)
 	{
 		case SBM_OWNED_CONTIGUOUS:
 			{
-				size_t		total_size;
-				size_t		padding;
 				const size_t old_capacity = cur_cap;
 				Sbm		   *m;
 
@@ -4039,19 +4035,9 @@ sbm_set_data_size(Sbm *map, uint8 *data, const size_t size)
 					return map;
 				}
 
-				/*
-				 * Realloc the single block.  Allocate room for the struct +
-				 * the new data buffer + alignment padding so m_data lands on
-				 * an 8-byte boundary.
-				 */
-				total_size = sizeof(Sbm) + size;
-				padding =
-					total_size % 8 == 0 ? 0 : 8 - (total_size % 8);
-				total_size += padding;
-
-				m = (Sbm *) repalloc(map, total_size);
-				m->m_data =
-					(uint8 *) (((uintptr_t) m + sizeof(Sbm)) & ~(uintptr_t) 7);
+				/* Realloc the single block; the buffer stays at its offset. */
+				m = (Sbm *) repalloc(map, SBM_CONTIGUOUS_DATA_OFFSET + size);
+				m->m_data = (uint8 *) m + SBM_CONTIGUOUS_DATA_OFFSET;
 				if (size > old_capacity)
 				{
 					/*
@@ -4072,7 +4058,7 @@ sbm_set_data_size(Sbm *map, uint8 *data, const size_t size)
 				{
 					m->m_data_used = sbm_cap(m);
 				}
-				Assert(PointerIsAligned(m->m_data, uint64));
+				Assert(SbmDataIsAligned(m->m_data));
 				return m;
 			}
 
