@@ -2269,7 +2269,7 @@ test_split_positions(void)
 	/* split argument checking and a too-small destination */
 	{
 		Sbm		   *map = sbm_create_from_range(0, 5000);
-		uint8		small[64] pg_attribute_aligned(8);
+		alignas(uint64) uint8 small[64];
 		Sbm			tiny;
 
 		errno = 0;
@@ -2302,7 +2302,7 @@ test_lineages(void)
 
 	/* caller-initialized struct and buffer, filled until ENOSPC */
 	{
-		uint8		buf[256] pg_attribute_aligned(8);
+		alignas(uint64) uint8 buf[256];
 		Sbm			m;
 		int			added = 0;
 
@@ -2330,7 +2330,7 @@ test_lineages(void)
 
 		/* open adopts the bytes: same contents */
 		{
-			uint8		copy[256] pg_attribute_aligned(8);
+			alignas(uint64) uint8 copy[256];
 			Sbm			m2;
 
 			memcpy(copy, buf, sizeof(copy));
@@ -3379,7 +3379,7 @@ test_enospc(void)
 								sbm_add_many(m, arr, lengthof(arr)));
 	}
 	{
-		uint8		obuf[16] pg_attribute_aligned(8);
+		alignas(uint64) uint8 obuf[16];
 		Sbm			o;
 
 		sbm_init(&o, obuf, sizeof(obuf));
