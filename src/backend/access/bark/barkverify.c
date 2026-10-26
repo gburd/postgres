@@ -600,7 +600,7 @@ bark_verify_posting(BarkVerify *v, OffsetNumber off, IndexTuple itup)
 						 v->relname, v->blkno, off);
 
 	if (!sbm_validate(map) || sbm_cardinality(map) < 2)
-		bark_verify_fail(v, "BARK index \"%s\" has an invalid posting set (%zu members) on page %u at offset %u",
+		bark_verify_fail(v, "BARK index \"%s\" has an invalid posting set (" UINT64_FORMAT " members) on page %u at offset %u",
 						 v->relname, sbm_cardinality(map), v->blkno, off);
 
 	reserved = BarkPostingEntrySize(BarkEntryGetBodyOffset(itup),

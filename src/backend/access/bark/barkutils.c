@@ -51,6 +51,7 @@
 #include "utils/datum.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
+#include "utils/memutils.h"
 #include "utils/pg_locale.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
@@ -2429,10 +2430,13 @@ int
 bark_posting_count(IndexTuple itup)
 {
 	Sbm		   *map = bark_posting_open(itup);
-	int			n = (int) sbm_cardinality(map);
+	uint64		n = sbm_cardinality(map);
 
 	sbm_free(map);
-	return n;
+	/* the members are TIDs in one entry, far fewer than this */
+	if (n > (uint64) (MaxAllocSize / sizeof(ItemPointerData)))
+		elog(ERROR, "BARK posting entry has a corrupt sbm serialization");
+	return (int) n;
 }
 
 /* Destination for bark_posting_collect: an ItemPointer array and its fill. */
@@ -2471,12 +2475,14 @@ bark_posting_body_get_tids(const uint8 *data, Size len, ItemPointer *out,
 {
 	Sbm		   *map = sbm_deserialize(data, len);
 	BarkTidSink sink;
-	size_t		n;
+	uint64		n;
 
 	if (map == NULL)
 		elog(ERROR, "BARK posting entry has a corrupt sbm serialization");
 	n = sbm_cardinality(map);
-	if (n > (size_t) *outalloc)
+	if (n > (uint64) (MaxAllocSize / sizeof(ItemPointerData)))
+		elog(ERROR, "BARK posting entry has a corrupt sbm serialization");
+	if (n > (uint64) *outalloc)
 	{
 		if (*out != NULL)
 			pfree(*out);
