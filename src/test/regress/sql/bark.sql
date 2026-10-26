@@ -1090,11 +1090,15 @@ SELECT count(*) AS knn_checks,
 -- index pages only.
 CREATE FUNCTION bark_knn_buffers(q text) RETURNS int LANGUAGE plpgsql AS $$
 DECLARE
+  warm refcursor;
   line text;
   n int := 0;
 BEGIN
   SET LOCAL enable_seqscan = off;
   SET LOCAL enable_bitmapscan = off;
+  SET LOCAL debug_parallel_query = off;	-- as in bark_xt_buffers
+  OPEN warm FOR EXECUTE q;
+  MOVE warm;
   FOR line IN EXECUTE 'EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
     IF line ~ 'Buffers:' THEN
       SELECT sum(m[2]::int) INTO n
