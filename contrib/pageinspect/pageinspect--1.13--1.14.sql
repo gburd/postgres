@@ -15,7 +15,7 @@ CREATE FUNCTION bark_metap(IN relname text,
     OUT flags int8,
     OUT nkeys int8)
 AS 'MODULE_PATHNAME', 'bark_metap'
-LANGUAGE C STRICT PARALLEL SAFE;
+LANGUAGE C STRICT PARALLEL RESTRICTED;
 
 --
 -- bark_page_stats()
@@ -34,7 +34,7 @@ CREATE FUNCTION bark_page_stats(IN relname text, IN blkno int8,
     OUT bark_cycleid int4,
     OUT flags text[])
 AS 'MODULE_PATHNAME', 'bark_page_stats'
-LANGUAGE C STRICT PARALLEL SAFE;
+LANGUAGE C STRICT PARALLEL RESTRICTED;
 
 --
 -- bark_multi_page_stats()
@@ -74,7 +74,7 @@ CREATE FUNCTION bark_page_items(IN relname text, IN blkno int8,
     OUT data text)
 RETURNS SETOF record
 AS 'MODULE_PATHNAME', 'bark_page_items'
-LANGUAGE C STRICT PARALLEL SAFE;
+LANGUAGE C STRICT PARALLEL RESTRICTED;
 
 CREATE FUNCTION bark_page_items(IN page bytea,
     OUT itemoffset smallint,
