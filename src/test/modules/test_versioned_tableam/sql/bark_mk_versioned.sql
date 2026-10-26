@@ -360,6 +360,49 @@ SELECT id FROM tmq WHERE doc && '{1,2,3}' ORDER BY id;
 SELECT bark_index_check('tmq_doc');
 DROP TABLE tmq;
 
+-- keep_locator = inplace: an update of the column keeps the row's locator L
+-- for real (heap's HOT chain at L holds the row's versions) and inserts the
+-- new key set tagged.  While the update is in progress (a prepared
+-- transaction here), a dirty snapshot, as a constraint check uses, sees two
+-- versions at L.  A scalar index's scan (on doc[1]) returns both, each
+-- through the entry valid for it.  Rule D's R, keyed by L, returns only the
+-- first version a multikey scan reaches: v0, through (2,L,0); v1 = {2,3}
+-- is never compared, which is the hole a constraint check must not have.
+CREATE TABLE tmp (id int, doc int4[]) USING heap_versioned
+  WITH (autovacuum_enabled = off, fillfactor = 50);
+INSERT INTO tmp VALUES (1, '{1,2}'), (2, '{20,21}');
+CREATE INDEX tmp_doc ON tmp USING bark (doc bark_int4_array_ops);
+CREATE INDEX tmp_d1 ON tmp USING bark ((doc[1]));
+SET test_versioned_tableam.keep_locator = inplace;
+SELECT test_versioned_reset();
+BEGIN;
+UPDATE tmp SET doc = '{2,3}' WHERE id = 1;
+PREPARE TRANSACTION 'tmp_inplace';
+RESET test_versioned_tableam.keep_locator;
+SELECT n AS kept FROM test_versioned_counts() WHERE counter = 'update_kept';
+SELECT count(*) AS entries, count(tag) AS tagged
+  FROM bark_page_items('tmp_doc', 1) WHERE htid = '(0,1)';
+SELECT locator, version, version = locator AS v0, recheck
+  FROM test_versioned_dirty_scan('tmp_d1', '>=(int4,int4)', 1) ORDER BY version;
+SELECT locator, version = locator AS v0, recheck
+  FROM test_versioned_dirty_scan('tmp_doc', '&&(anyarray,anyarray)', '{2,3}'::int4[]);
+-- MVCC scans see v0 only, through its entries, once
+SELECT id, doc FROM tmp WHERE doc && '{1,2,3}';
+SELECT id, doc FROM tmp WHERE doc[1] >= 1;
+COMMIT PREPARED 'tmp_inplace';
+SELECT id, doc FROM tmp WHERE doc && '{1}';
+SELECT id, doc FROM tmp WHERE doc && '{1,2,3}';
+SELECT id, doc FROM tmp WHERE doc[1] = 1;
+SELECT id, doc FROM tmp WHERE doc[1] >= 1;
+SELECT locator, version = locator AS v0, recheck
+  FROM test_versioned_dirty_scan('tmp_doc', '&&(anyarray,anyarray)', '{1,2,3}'::int4[]);
+VACUUM tmp;
+SELECT count(*) AS entries, count(tag) AS tagged
+  FROM bark_page_items('tmp_doc', 1) WHERE htid = '(0,1)';
+SELECT id, doc FROM tmp WHERE doc && '{1,2,3}';
+SELECT bark_index_check('tmp_doc'), bark_index_check('tmp_d1');
+DROP TABLE tmp;
+
 -- An index without MKTAGS keeps the page-read seen set: the GIN-interface
 -- class, and a multikey index on heap.
 CREATE INDEX tmv_gin ON tmv USING bark (doc bark_gin_int4_array_ops);

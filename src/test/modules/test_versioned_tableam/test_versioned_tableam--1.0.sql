@@ -73,3 +73,12 @@ CREATE FUNCTION test_versioned_add_exclusion(regclass, regoperator)
 RETURNS void
 AS 'MODULE_PATHNAME'
 LANGUAGE C STRICT;
+
+-- what a constraint check's dirty-snapshot scan of an index returns
+CREATE FUNCTION test_versioned_dirty_scan(index regclass, op regoperator,
+                                          value anyelement,
+                                          OUT locator tid, OUT version tid,
+                                          OUT xmin int8, OUT recheck bool)
+RETURNS SETOF record
+AS 'MODULE_PATHNAME'
+LANGUAGE C STRICT;
