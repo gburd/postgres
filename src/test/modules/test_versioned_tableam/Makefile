@@ -10,7 +10,9 @@ EXTRA_INSTALL = contrib/amcheck contrib/pageinspect src/test/modules/bark_multik
 	src/test/modules/injection_points
 
 REGRESS = versioned bark_mk_versioned
-ISOLATION = cic_versioned
+REGRESS_OPTS = --temp-config $(top_srcdir)/src/test/modules/test_versioned_tableam/versioned.conf
+ISOLATION = cic_versioned cic_bark
+ISOLATION_OPTS = --temp-config $(top_srcdir)/src/test/modules/test_versioned_tableam/versioned.conf
 TAP_TESTS = 1
 
 ifdef USE_PGXS

@@ -13,6 +13,8 @@ ISOLATION = bark_concurrent_split bark_vacuum_split bark_deleted_page \
 	bark_nnd_upsert bark_recently_dead bark_broken_hot_chain \
 	bark_lock_right bark_root_split_race bark_walk_left bark_l1_concurrent \
 	bark_lpdead_snapshot bark_unique_rebuild bark_excl_hot bark_sample_split
+REGRESS_OPTS = --temp-config $(top_srcdir)/src/test/modules/injection_points/extra.conf
+ISOLATION_OPTS = --temp-config $(top_srcdir)/src/test/modules/injection_points/extra.conf
 TAP_TESTS = 1
 
 ifdef USE_PGXS
