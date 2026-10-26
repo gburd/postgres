@@ -3763,7 +3763,7 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 		IndexTuple	itup;
 		bool		fetched;
 		IndexTuple	resolved;
-		int			ntids;
+		int			ntids = 0;
 		uint32		tupoff = 0;
 		bool		recheck = false;
 		bool		newgroup = false;
