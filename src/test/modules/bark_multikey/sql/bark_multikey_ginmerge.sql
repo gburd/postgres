@@ -55,7 +55,7 @@ SELECT q, gm_run('gm', NULL, q) AS seq, gm_run('gm', 'gm_bark', q) AS bark,
 FROM gm_q;
 SELECT q, cardinality(seq) AS n, bark = seq AS bark_ok, bark11 = seq AS bark11_ok,
        bark_g = seq AS bark_g_ok, gin = seq AS gin_ok
-FROM gm_res ORDER BY q;
+FROM gm_res ORDER BY q COLLATE "C";
 
 -- After DELETE, INSERT (LIST entries) and VACUUM.
 DELETE FROM gm WHERE id % 5 = 0;
@@ -108,7 +108,7 @@ INSERT INTO gt_q SELECT format('v @@ %L::tsquery', t) FROM unnest(ARRAY[
 SELECT q, cardinality(gm_run('gt', NULL, q)) AS n,
        gm_run('gt', 'gt_bark', q) = gm_run('gt', NULL, q) AS bark_ok,
        gm_run('gt', 'gt_gin', q) = gm_run('gt', NULL, q) AS gin_ok
-FROM gt_q ORDER BY q;
+FROM gt_q ORDER BY q COLLATE "C";
 
 DROP TABLE gm, gm_q, gm_res, gt, gt_q;
 DROP FUNCTION gm_run(text, text, text);
