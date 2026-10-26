@@ -41,7 +41,7 @@ SELECT q, cardinality(mg_run(NULL, q)) AS n,
        mg_run('mg_bark', q) = mg_run(NULL, q) AS bark_ok,
        mg_run('mg_bark11', q) = mg_run(NULL, q) AS bark11_ok,
        mg_run('mg_gin', q) = mg_run(NULL, q) AS gin_ok
-FROM mg_q ORDER BY q;
+FROM mg_q ORDER BY q COLLATE "C";
 -- = ANY over int4[] values cannot be written as an index qual (an array of
 -- int4[] is a two-dimensional int4[]), so the scan's ScalarArrayOp path is
 -- unreachable for this class; ANY over a sub-select is a filter, checked
@@ -174,10 +174,10 @@ INSERT INTO mb_q VALUES ($$t %^% 'p'$$), ($$t %^% 'pp'$$), ($$t %^% 'p1'$$),
   ($$t %^% 'p1' AND t %^% 'q1'$$);
 SET work_mem = '64kB';
 SELECT q, cardinality(b.ids) AS n, b.ids = s.ids AS ok, b.lossy
-FROM mb_q, mb_run(q, true) b, mb_run(q, false) s ORDER BY q;
+FROM mb_q, mb_run(q, true) b, mb_run(q, false) s ORDER BY q COLLATE "C";
 SET work_mem = '64MB';
 SELECT q, cardinality(b.ids) AS n, b.ids = s.ids AS ok, b.lossy
-FROM mb_q, mb_run(q, true) b, mb_run(q, false) s ORDER BY q;
+FROM mb_q, mb_run(q, true) b, mb_run(q, false) s ORDER BY q COLLATE "C";
 -- An index scan keeps its result in a TIDBitmap too (bark_mk_gin_gettuple),
 -- so work_mem bounds it alike: at 64kB its heap pages go lossy, each lossy
 -- page returns every offset with a recheck, and the recheck removes the
@@ -199,10 +199,10 @@ BEGIN
 END $$;
 SET work_mem = '64kB';
 SELECT q, cardinality(i.ids) AS n, i.ids = s.ids AS ok, i.removed
-FROM mb_q, mb_idx(q) i, mb_run(q, false) s ORDER BY q;
+FROM mb_q, mb_idx(q) i, mb_run(q, false) s ORDER BY q COLLATE "C";
 SET work_mem = '64MB';
 SELECT q, cardinality(i.ids) AS n, i.ids = s.ids AS ok, i.removed
-FROM mb_q, mb_idx(q) i, mb_run(q, false) s ORDER BY q;
+FROM mb_q, mb_idx(q) i, mb_run(q, false) s ORDER BY q COLLATE "C";
 RESET work_mem;
 DROP TABLE mb, mb_q;
 DROP FUNCTION mb_run(text, bool), mb_idx(text);

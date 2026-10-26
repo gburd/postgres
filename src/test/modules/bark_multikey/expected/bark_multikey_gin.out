@@ -51,7 +51,7 @@ SELECT q, cardinality(mg_run(NULL, q)) AS n,
        mg_run('mg_bark', q) = mg_run(NULL, q) AS bark_ok,
        mg_run('mg_bark11', q) = mg_run(NULL, q) AS bark11_ok,
        mg_run('mg_gin', q) = mg_run(NULL, q) AS gin_ok
-FROM mg_q ORDER BY q;
+FROM mg_q ORDER BY q COLLATE "C";
                          q                          |  n   | bark_ok | bark11_ok | gin_ok 
 ----------------------------------------------------+------+---------+-----------+--------
  a && '{0}'::int4[]                                 |  135 | t       | t         | t
@@ -329,7 +329,7 @@ INSERT INTO mb_q VALUES ($$t %^% 'p'$$), ($$t %^% 'pp'$$), ($$t %^% 'p1'$$),
   ($$t %^% 'p1' AND t %^% 'q1'$$);
 SET work_mem = '64kB';
 SELECT q, cardinality(b.ids) AS n, b.ids = s.ids AS ok, b.lossy
-FROM mb_q, mb_run(q, true) b, mb_run(q, false) s ORDER BY q;
+FROM mb_q, mb_run(q, true) b, mb_run(q, false) s ORDER BY q COLLATE "C";
                q                |   n   | ok | lossy 
 --------------------------------+-------+----+-------
  t %^% 'p'                      | 60000 | t  | t
@@ -343,7 +343,7 @@ FROM mb_q, mb_run(q, true) b, mb_run(q, false) s ORDER BY q;
 
 SET work_mem = '64MB';
 SELECT q, cardinality(b.ids) AS n, b.ids = s.ids AS ok, b.lossy
-FROM mb_q, mb_run(q, true) b, mb_run(q, false) s ORDER BY q;
+FROM mb_q, mb_run(q, true) b, mb_run(q, false) s ORDER BY q COLLATE "C";
                q                |   n   | ok | lossy 
 --------------------------------+-------+----+-------
  t %^% 'p'                      | 60000 | t  | f
@@ -376,7 +376,7 @@ BEGIN
 END $$;
 SET work_mem = '64kB';
 SELECT q, cardinality(i.ids) AS n, i.ids = s.ids AS ok, i.removed
-FROM mb_q, mb_idx(q) i, mb_run(q, false) s ORDER BY q;
+FROM mb_q, mb_idx(q) i, mb_run(q, false) s ORDER BY q COLLATE "C";
                q                |   n   | ok | removed 
 --------------------------------+-------+----+---------
  t %^% 'p'                      | 60000 | t  | f
@@ -390,7 +390,7 @@ FROM mb_q, mb_idx(q) i, mb_run(q, false) s ORDER BY q;
 
 SET work_mem = '64MB';
 SELECT q, cardinality(i.ids) AS n, i.ids = s.ids AS ok, i.removed
-FROM mb_q, mb_idx(q) i, mb_run(q, false) s ORDER BY q;
+FROM mb_q, mb_idx(q) i, mb_run(q, false) s ORDER BY q COLLATE "C";
                q                |   n   | ok | removed 
 --------------------------------+-------+----+---------
  t %^% 'p'                      | 60000 | t  | f
