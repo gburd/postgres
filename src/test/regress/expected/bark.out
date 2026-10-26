@@ -7321,55 +7321,63 @@ WHERE a.amname = 'bark';
              45 |    45
 (1 row)
 
-\dAc bark
-                              List of operator classes
-  AM  |         Input type          | Storage type |   Operator class    | Default? 
-------+-----------------------------+--------------+---------------------+----------
- bark | "char"                      |              | char_ops            | yes
- bark | anyarray                    |              | array_ops           | yes
- bark | anyenum                     |              | enum_ops            | yes
- bark | anymultirange               |              | multirange_ops      | yes
- bark | anyrange                    |              | range_ops           | yes
- bark | bigint                      |              | int8_ops            | yes
- bark | bit                         |              | bit_ops             | yes
- bark | bit varying                 |              | varbit_ops          | yes
- bark | boolean                     |              | bool_ops            | yes
- bark | bytea                       |              | bytea_ops           | yes
- bark | character                   |              | bpchar_ops          | yes
- bark | character                   |              | bpchar_pattern_ops  | no
- bark | date                        |              | date_ops            | yes
- bark | double precision            |              | float8_ops          | yes
- bark | inet                        |              | cidr_ops            | no
- bark | inet                        |              | inet_ops            | yes
- bark | integer                     |              | int4_ops            | yes
- bark | interval                    |              | interval_ops        | yes
- bark | jsonb                       |              | jsonb_ops           | yes
- bark | macaddr                     |              | macaddr_ops         | yes
- bark | macaddr8                    |              | macaddr8_ops        | yes
- bark | money                       |              | money_ops           | yes
- bark | name                        | cstring      | name_ops            | yes
- bark | numeric                     |              | numeric_ops         | yes
- bark | oid                         |              | oid_ops             | yes
- bark | oid8                        |              | oid8_ops            | yes
- bark | oidvector                   |              | oidvector_ops       | yes
- bark | pg_lsn                      |              | pg_lsn_ops          | yes
- bark | real                        |              | float4_ops          | yes
- bark | record                      |              | record_image_ops    | no
- bark | record                      |              | record_ops          | yes
- bark | smallint                    |              | int2_ops            | yes
- bark | text                        |              | text_ops            | yes
- bark | text                        |              | text_pattern_ops    | no
- bark | text                        |              | varchar_ops         | no
- bark | text                        |              | varchar_pattern_ops | no
- bark | tid                         |              | tid_ops             | yes
- bark | time with time zone         |              | timetz_ops          | yes
- bark | time without time zone      |              | time_ops            | yes
- bark | timestamp with time zone    |              | timestamptz_ops     | yes
- bark | timestamp without time zone |              | timestamp_ops       | yes
- bark | tsquery                     |              | tsquery_ops         | yes
- bark | tsvector                    |              | tsvector_ops        | yes
- bark | uuid                        |              | uuid_ops            | yes
- bark | xid8                        |              | xid8_ops            | yes
+-- psql's \dAc sorts by type name in the database's collation; list them
+-- in a fixed order instead
+SELECT c.opcintype::regtype::text COLLATE "C" AS "Input type",
+       CASE WHEN c.opckeytype <> 0 AND c.opckeytype <> c.opcintype
+            THEN c.opckeytype::regtype::text END AS "Storage type",
+       c.opcname AS "Operator class",
+       CASE WHEN c.opcdefault THEN 'yes' ELSE 'no' END AS "Default?"
+FROM pg_opclass c JOIN pg_am a ON a.oid = c.opcmethod
+WHERE a.amname = 'bark' AND c.oid < 16384
+ORDER BY 1, 3;
+         Input type          | Storage type |   Operator class    | Default? 
+-----------------------------+--------------+---------------------+----------
+ "char"                      |              | char_ops            | yes
+ anyarray                    |              | array_ops           | yes
+ anyenum                     |              | enum_ops            | yes
+ anymultirange               |              | multirange_ops      | yes
+ anyrange                    |              | range_ops           | yes
+ bigint                      |              | int8_ops            | yes
+ bit                         |              | bit_ops             | yes
+ bit varying                 |              | varbit_ops          | yes
+ boolean                     |              | bool_ops            | yes
+ bytea                       |              | bytea_ops           | yes
+ character                   |              | bpchar_ops          | yes
+ character                   |              | bpchar_pattern_ops  | no
+ date                        |              | date_ops            | yes
+ double precision            |              | float8_ops          | yes
+ inet                        |              | cidr_ops            | no
+ inet                        |              | inet_ops            | yes
+ integer                     |              | int4_ops            | yes
+ interval                    |              | interval_ops        | yes
+ jsonb                       |              | jsonb_ops           | yes
+ macaddr                     |              | macaddr_ops         | yes
+ macaddr8                    |              | macaddr8_ops        | yes
+ money                       |              | money_ops           | yes
+ name                        | cstring      | name_ops            | yes
+ numeric                     |              | numeric_ops         | yes
+ oid                         |              | oid_ops             | yes
+ oid8                        |              | oid8_ops            | yes
+ oidvector                   |              | oidvector_ops       | yes
+ pg_lsn                      |              | pg_lsn_ops          | yes
+ real                        |              | float4_ops          | yes
+ record                      |              | record_image_ops    | no
+ record                      |              | record_ops          | yes
+ smallint                    |              | int2_ops            | yes
+ text                        |              | text_ops            | yes
+ text                        |              | text_pattern_ops    | no
+ text                        |              | varchar_ops         | no
+ text                        |              | varchar_pattern_ops | no
+ tid                         |              | tid_ops             | yes
+ time with time zone         |              | timetz_ops          | yes
+ time without time zone      |              | time_ops            | yes
+ timestamp with time zone    |              | timestamptz_ops     | yes
+ timestamp without time zone |              | timestamp_ops       | yes
+ tsquery                     |              | tsquery_ops         | yes
+ tsvector                    |              | tsvector_ops        | yes
+ uuid                        |              | uuid_ops            | yes
+ xid8                        |              | xid8_ops            | yes
 (45 rows)
 
 -- Every class works, not only exists.  For each one, bark_opc_check builds a

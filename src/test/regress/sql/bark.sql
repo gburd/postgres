@@ -4048,7 +4048,16 @@ WHERE b.oid < 16384 AND NOT EXISTS
 SELECT count(*) AS bark_opclasses, count(*) FILTER (WHERE amvalidate(c.oid)) AS valid
 FROM pg_opclass c JOIN pg_am a ON a.oid = c.opcmethod
 WHERE a.amname = 'bark';
-\dAc bark
+-- psql's \dAc sorts by type name in the database's collation; list them
+-- in a fixed order instead
+SELECT c.opcintype::regtype::text COLLATE "C" AS "Input type",
+       CASE WHEN c.opckeytype <> 0 AND c.opckeytype <> c.opcintype
+            THEN c.opckeytype::regtype::text END AS "Storage type",
+       c.opcname AS "Operator class",
+       CASE WHEN c.opcdefault THEN 'yes' ELSE 'no' END AS "Default?"
+FROM pg_opclass c JOIN pg_am a ON a.oid = c.opcmethod
+WHERE a.amname = 'bark' AND c.oid < 16384
+ORDER BY 1, 3;
 
 -- Every class works, not only exists.  For each one, bark_opc_check builds a
 -- BARK index over 600 rows (400 keys, a few NULLs), inserts 600 more (so keys
