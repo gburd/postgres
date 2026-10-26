@@ -74,7 +74,7 @@ CREATE FUNCTION gs_check(tab text, qtab text, idxs text[])
 RETURNS TABLE (q text, n int, ok bool[], lim1_ok bool[], lim7_ok bool[])
 LANGUAGE plpgsql AS $$
 BEGIN
-  FOR q IN EXECUTE format('SELECT q FROM %I ORDER BY q', qtab) LOOP
+  FOR q IN EXECUTE format('SELECT q FROM %I ORDER BY q COLLATE "C"', qtab) LOOP
     n := cardinality(gs_run(tab, NULL, q));
     SELECT array_agg(gs_run(tab, i, q) = gs_run(tab, NULL, q) ORDER BY o),
            array_agg(gs_run(tab, i, q, 1) = gs_run(tab, NULL, q, 1) ORDER BY o),
