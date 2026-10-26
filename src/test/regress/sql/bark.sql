@@ -2797,11 +2797,15 @@ BEGIN
 END $$;
 CREATE FUNCTION bark_skip_stats(q text, idx text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE
+  warm refcursor;
   plan json;
   node json;
 BEGIN
   SET LOCAL enable_seqscan = off;
   SET LOCAL enable_bitmapscan = off;
+  SET LOCAL debug_parallel_query = off;	-- as in bark_xt_buffers
+  OPEN warm FOR EXECUTE q;
+  MOVE warm;
   EXECUTE 'EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, FORMAT JSON) ' || q
     INTO plan;
   node := plan->0->'Plan';
