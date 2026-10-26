@@ -530,6 +530,15 @@ typedef struct BarkMkScanState
 	 */
 	bool		ruled;
 	bool		verdictdue;
+
+	/*
+	 * unsettled: rule D under a non-MVCC snapshot on an index the catalog
+	 * calls unique or exclusion although it may hold tags (a constraint
+	 * added after the build).  R then holds only the row this backend
+	 * inserted last, and every row comes back with xs_recheck
+	 * (bark_mk_settle).
+	 */
+	bool		unsettled;
 	ItemPointerData pendingtid;
 	IndexVersionTag pendingtag;
 	HTAB	   *rejected;		/* J, in seenCxt, or NULL while empty */
@@ -1047,6 +1056,18 @@ bark_mk_rescan(IndexScanDesc scan)
 	 */
 	mk->ruled = so->keyinfo->mktags && scan->heapRelation != NULL;
 	mk->verdictdue = false;
+
+	/*
+	 * A constraint check on an index that may hold tags and was made unique
+	 * or exclusion after its build ("Conversion" in the README): an update
+	 * that began before the change may still keep a row's locator, so a
+	 * non-MVCC snapshot can see two versions at one locator, each reached
+	 * only through its own entries.  R by locator would return the first
+	 * and drop the other.
+	 */
+	mk->unsettled = mk->ruled && !IsMVCCSnapshot(scan->xs_snapshot) &&
+		(scan->indexRelation->rd_index->indisunique ||
+		 scan->indexRelation->rd_index->indisexclusion);
 	mk->havegroup = false;
 	MemoryContextReset(mk->groupCxt);
 	bark_mk_clear_seen(mk);
@@ -1276,6 +1297,16 @@ bark_mk_seen_add(IndexScanDesc scan, BarkMkScanState *mk, ItemPointer tid)
  * obligation (amlocator.h), and the scan stops rather than guess.  Nothing
  * is pending after a rescan or a restore (bark_restrpos), and the row
  * returned before a LIMIT stopped the scan is never settled.
+ *
+ * An unsettled scan (BarkMkScanState.unsettled) puts in R only the row
+ * this backend's transaction inserted last into the index, the row a
+ * constraint check right after the insert is about: core raises "found
+ * self tuple multiple times" if it meets that TID twice, and the index AM
+ * is not told it.  Such a row has one version visible to a dirty snapshot
+ * (nobody else can update a row whose insert is in progress, and our own
+ * update hides the version it replaced), so returning it once loses
+ * nothing.  Every other entry is judged by itself, and the table AM
+ * returns the version that entry is valid for.
  */
 void
 bark_mk_settle(IndexScanDesc scan)
@@ -1288,7 +1319,9 @@ bark_mk_settle(IndexScanDesc scan)
 	switch (scan->xs_entry_verdict)
 	{
 		case INDEX_SCAN_ENTRY_VALID:
-			bark_mk_seen_add(scan, mk, &mk->pendingtid);
+			if (!mk->unsettled ||
+				bark_is_last_insert(scan->indexRelation, &mk->pendingtid))
+				bark_mk_seen_add(scan, mk, &mk->pendingtid);
 			break;
 		case INDEX_SCAN_ENTRY_INVALID:
 			if (scan->xs_snapshot != NULL &&
@@ -4141,7 +4174,14 @@ bark_saveitem(IndexScanDesc scan)
 		keyoff = ((BarkScanMembers *) (so->currTuples + keyoff))->keyOffset;
 	}
 	scan->xs_heaptag = item->tag;
-	scan->xs_recheck = (item->indexOffset & BARK_ITEM_RECHECK) != 0;
+
+	/*
+	 * An unsettled scan's rows are rechecked: a constraint check takes a row
+	 * it returns without recheck as a conflict, and the table AM may return
+	 * a version the entry's key is not in.
+	 */
+	scan->xs_recheck = (item->indexOffset & BARK_ITEM_RECHECK) != 0 ||
+		(so->mk != NULL && so->mk->unsettled);
 	if (scan->xs_want_itup)
 	{
 		scan->xs_itup = (IndexTuple) (so->currTuples + keyoff);

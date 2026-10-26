@@ -2069,6 +2069,7 @@ extern bool bark_insert(Relation index, Datum *values, bool *isnull,
 						 ItemPointer ht_ctid, Relation heapRel,
 						 IndexUniqueCheck checkUnique,
 						 bool indexUnchanged, IndexInfo *indexInfo);
+extern bool bark_is_last_insert(Relation index, ItemPointer tid);
 extern void bark_check_can_tag(Relation index, BarkKeyInfo *keyinfo,
 							   IndexVersionTag tag);
 extern void bark_insert_oversized_keys(Relation index, Datum *values,

@@ -330,7 +330,13 @@ SELECT id FROM tmc WHERE doc && '{1}';
 INSERT INTO tmc VALUES (100, '{1}');
 INSERT INTO tmc VALUES (101, '{3}');
 INSERT INTO tmc VALUES (102, '{112,500}');
+-- T12c: the new row's own entries 500 and 501 both match.  The check's
+-- dirty scan of an index made a constraint's after its build keeps no row
+-- per locator (V2-DESIGN 12.1 item 5), except the row this backend
+-- inserted last, so it meets its own row once, not twice ("found self tuple
+-- multiple times").
 INSERT INTO tmc VALUES (103, '{500,501}');
+INSERT INTO tmc VALUES (104, '{600,601,602}');
 SELECT id FROM tmc WHERE doc && '{1,500}' ORDER BY id;
 SELECT bark_index_check('tmc_doc');
 DROP TABLE tmc;
@@ -356,7 +362,11 @@ RESET test_versioned_tableam.keep_locator;
 INSERT INTO tmq VALUES (100, '{1}');
 INSERT INTO tmq VALUES (101, '{3}');
 INSERT INTO tmq VALUES (102, '{112}');
-SELECT id FROM tmq WHERE doc && '{1,2,3}' ORDER BY id;
+-- ON CONFLICT's pre-check scans the converted index under a dirty
+-- snapshot (V2-DESIGN 12.1 item 5): {3,700} meets row 1, {700} nothing
+INSERT INTO tmq VALUES (103, '{3,700}') ON CONFLICT DO NOTHING;
+INSERT INTO tmq VALUES (104, '{700}') ON CONFLICT DO NOTHING;
+SELECT id FROM tmq WHERE doc && '{1,2,3,700}' ORDER BY id;
 SELECT bark_index_check('tmq_doc');
 DROP TABLE tmq;
 
@@ -384,6 +394,15 @@ SELECT count(*) AS entries, count(tag) AS tagged
   FROM bark_page_items('tmp_doc', 1) WHERE htid = '(0,1)';
 SELECT locator, version, version = locator AS v0, recheck
   FROM test_versioned_dirty_scan('tmp_d1', '>=(int4,int4)', 1) ORDER BY version;
+SELECT locator, version = locator AS v0, recheck
+  FROM test_versioned_dirty_scan('tmp_doc', '&&(anyarray,anyarray)', '{2,3}'::int4[]);
+-- Once the index is made an exclusion constraint's, its dirty scans keep
+-- no row per locator (V2-DESIGN 12.1 item 5): each entry is judged by
+-- itself, so v1 is returned through (2,L,t1) and (3,L,t1), and every row
+-- with xs_recheck, since a version need not hold the key that reached it.
+SELECT test_versioned_add_exclusion('tmp_doc', '=(anyarray,anyarray)');
+UPDATE pg_catalog.pg_index SET indisexclusion = true
+  WHERE indexrelid = 'tmp_doc'::regclass;
 SELECT locator, version = locator AS v0, recheck
   FROM test_versioned_dirty_scan('tmp_doc', '&&(anyarray,anyarray)', '{2,3}'::int4[]);
 -- MVCC scans see v0 only, through its entries, once

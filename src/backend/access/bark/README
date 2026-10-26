@@ -2544,8 +2544,31 @@ answers false to amindexmaykeeplocator (bark_indexmaykeeplocator, read
 from rd_index at run time), so an update that needs new entries in it
 moves the row, and a constraint check never meets two versions at one
 locator through an update that began after the change.  An update whose
-statement began before it can still keep the locator; waiting those out
-is the conversion barrier, left to a later change.
+statement began before it can still keep the locator: DocumentDB's
+prepareUnique holds only AccessShareLock on the table, so nothing waits
+for it.  While that update is in progress, a dirty snapshot sees two
+versions at its locator, v0 (being replaced) and v1, each reached only
+through its own entries.  Rule D's R, keyed by the locator, would return
+the first the scan reaches and skip the rest: with v0 = {1,2}, v1 =
+{2,3} and a check for {2,3} under EXCLUDE (doc WITH =), the stale
+(2,L,0) returns v0, its recheck fails, and v1 is never compared, so a
+duplicate commits.  So a scan under a non-MVCC snapshot of a multikey
+index with MKTAGS whose rd_index says unique or exclusion
+(BarkMkScanState.unsettled, set in bark_mk_rescan) puts no row in R but
+one: the row this backend's transaction inserted last into the index
+(bark_is_last_insert), which is the row a check right after its insert is
+about, and which core must not meet twice ("found self tuple multiple
+times").  That row has one version a dirty snapshot sees, since nobody
+else can update a row whose insert is in progress.  Every other entry is
+judged by itself, the table AM returns the version that entry is valid
+for, and every row comes back with xs_recheck, since a version need not
+hold the key that reached it.  A check of a row other than the last
+inserted (a deferred exclusion recheck, or the check after a HOT or
+kept-locator update, which inserted nothing) can then meet its own row
+twice and raise that error: a refused statement, not a wrong answer.  The
+rule is read from rd_index, so it holds until the index is reindexed;
+waiting out the old writers once, after which it is no longer needed, is
+the conversion barrier, left to a later change.
 
 Updates.  An update that keeps the locator inserts, into each index it
 affects, the new version's entries, tagged.  For a multikey index that is

@@ -1223,7 +1223,13 @@ CREATE INDEX orders_customer_idx ON orders (customer);
    columns, as for any index that stores none.  A multikey index that
    stores tags and later becomes unique or an exclusion constraint's keeps
    its tags but no longer lets an update keep a locator
-   (<function>amindexmaykeeplocator</function>).  An index built by a
+   (<function>amindexmaykeeplocator</function>).  An update that began
+   before the change may still be keeping one, so the index's constraint
+   checks then judge each entry on its own and recheck every row they
+   find; a check of a row other than the one the statement inserted last
+   (a deferred exclusion check, or the check after an update that inserted
+   no entries) can then fail with <quote>found self tuple multiple
+   times</quote> until the index is rebuilt.  An index built by a
    version of BARK without version tags stores none until it is rebuilt.
   </para>
 

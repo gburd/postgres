@@ -397,6 +397,22 @@ about once per parent fan-out of tagged bounds; lowering it at the upper
 levels too would clear every tag, if a table AM needs that
 (xid-wraparound). V2: versioned multikey indexes.
 
+''V2 conversion (a tagged multikey index made unique or exclusion after its
+build).'' The design is section 12.1 of the V2 design report; README
+"Conversion" has the as-built rules. Item by item:
+* Item 5, done (this commit): until the conversion settles, a non-MVCC
+  scan of such an index (a constraint check) keeps no row per locator but
+  the one this backend inserted last, and rechecks every row, so it meets
+  every version an in-progress in-place update left at a locator. Tests:
+  isolation <code>bark_mk_convert</code> (T12b; a duplicate committed
+  before), <code>bark_mk_versioned</code> (T12c and the dirty-scan cases).
+  Limit: a check of a row other than the last inserted can raise "found
+  self tuple multiple times"; an amapi hint carrying the self TID would
+  lift it.
+* Items 1-2 (meta bits <code>BARK_META_CONVERTING</code>,
+  <code>BARK_META_SETTLED</code> and who sets them), 4 (the VACUUM barrier),
+  6 (per-leaf conversion) and 7 (completion, clearing MKTAGS): open.
+
 === C-MVCC: visibility, SSI, and the index-only / recheck path ===
 
 BARK entries obey the same visibility rules as nbtree. Four obligations:

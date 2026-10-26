@@ -13,7 +13,7 @@ test_versioned_add_exclusion
                             
 (1 row)
 
-step s2_insert: INSERT INTO tmx VALUES (3, ARRAY[2,3]);
+step s2_insert: INSERT INTO tmx VALUES (3, ARRAY[2,3]); <waiting ...>
 step s3_wakeup: SELECT injection_points_wakeup('tmx-update-done');
 injection_points_wakeup
 -----------------------
@@ -22,6 +22,8 @@ injection_points_wakeup
 
 step s1_update: <... completed>
 step s1_commit: COMMIT;
+step s2_insert: <... completed>
+ERROR:  conflicting key value violates exclusion constraint "tmx_doc"
 step s3_check: 
 	SELECT id, doc FROM tmx ORDER BY id;
 	SELECT n AS kept FROM test_versioned_counts() WHERE counter = 'update_kept';
@@ -31,8 +33,7 @@ id|doc
 --+-------
  1|{2,3}  
  2|{20,21}
- 3|{2,3}  
-(3 rows)
+(2 rows)
 
 kept
 ----
@@ -63,7 +64,7 @@ test_versioned_add_exclusion
                             
 (1 row)
 
-step s2_insert: INSERT INTO tmx VALUES (3, ARRAY[2,3]);
+step s2_insert: INSERT INTO tmx VALUES (3, ARRAY[2,3]); <waiting ...>
 step s3_wakeup: SELECT injection_points_wakeup('tmx-update-done');
 injection_points_wakeup
 -----------------------
@@ -72,6 +73,7 @@ injection_points_wakeup
 
 step s1_update: <... completed>
 step s1_rollback: ROLLBACK;
+step s2_insert: <... completed>
 step s3_check: 
 	SELECT id, doc FROM tmx ORDER BY id;
 	SELECT n AS kept FROM test_versioned_counts() WHERE counter = 'update_kept';
