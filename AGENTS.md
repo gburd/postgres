@@ -10,10 +10,10 @@ left to do, and the traps already hit.
 ## abandoned POC and are kept only as history
 
 - v1 is done: commit "Don't wait for the hash index metapage lock just to
-  count a tuple" on top of the 3 local commits (2 `ci:` + `dev: local
-  dev-setup`), pushed to `origin/hash-metapage-overflow-signal`. Produce the
-  patch with `git format-patch -v<N> <dev-setup-commit>` (i.e. `HEAD~1` while
-  the patch is one commit) so the ci/dev commits never appear in the set.
+  count a tuple", pushed to `origin/hash-metapage-overflow-signal`. Every
+  commit whose subject starts with `ci:` or `dev:` stays in the branch but is
+  never part of a patch set. Produce the set from the patch commits only, e.g.
+  `git format-patch -v<N> -1 <patch-commit>` for the one-commit series.
 - The overflow-signal POC was dropped: pending counts die with the backend and
   VACUUM only recounts when it removes tuples, so `pgbench -C` drove ntuples
   to 487 for 200k rows (maxbucket 7). Design now: `ConditionalLockBuffer` on
