@@ -85,7 +85,13 @@ step s1_attach_descend
 {
 	SELECT injection_points_attach('bark-search-descend', 'wait');
 }
-step s1_count	{ SELECT count(*) AS index_count FROM bark_dp WHERE a >= 1500; }
+# pg_backend_pid() is parallel restricted, so the scan runs in this backend,
+# where the local injection point is attached, under debug_parallel_query too.
+step s1_count
+{
+	SELECT count(*) AS index_count FROM bark_dp
+	 WHERE a >= 1500 AND pg_backend_pid() <> 0;
+}
 step s1_snapshot
 {
 	BEGIN ISOLATION LEVEL REPEATABLE READ;

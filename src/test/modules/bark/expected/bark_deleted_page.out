@@ -14,7 +14,10 @@ injection_points_attach
                        
 (1 row)
 
-step s1_count: SELECT count(*) AS index_count FROM bark_dp WHERE a >= 1500; <waiting ...>
+step s1_count: 
+	SELECT count(*) AS index_count FROM bark_dp
+	 WHERE a >= 1500 AND pg_backend_pid() <> 0;
+ <waiting ...>
 step s2_vacuum: VACUUM (INDEX_CLEANUP ON, TRUNCATE OFF) bark_dp;
 step s3_wakeup_descend: 
 	SELECT injection_points_detach('bark-search-descend');
