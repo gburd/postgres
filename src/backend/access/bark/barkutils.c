@@ -4187,10 +4187,6 @@ bark_free_oversized(Relation index, IndexTuple entry)
  * overflow at the extremes of the integer range (e.g. INT64_MIN - INT64_MAX).
  * ----------------------------------------------------------------------------
  */
-PG_FUNCTION_INFO_V1(bark_int2_distance);
-PG_FUNCTION_INFO_V1(bark_int4_distance);
-PG_FUNCTION_INFO_V1(bark_int8_distance);
-
 Datum
 bark_int2_distance(PG_FUNCTION_ARGS)
 {
