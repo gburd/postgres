@@ -20,7 +20,27 @@
 #include "access/xloginsert.h"
 #include "miscadmin.h"
 #include "storage/predicate.h"
+#include "utils/injection_point.h"
+#include "utils/memutils.h"
 #include "utils/rel.h"
+
+/*
+ * Tuples this backend inserted without adding them to the metapage's
+ * hashm_ntuples, because another backend held the metapage lock.  See the
+ * description of the insertion algorithm in the README.  Entries are keyed by
+ * index OID and never removed; a stale count left by a dropped or truncated
+ * index is at most HASH_MAX_PENDING_TUPLES, which is harmless.
+ */
+typedef struct HashPendingTuples
+{
+	Oid			indexrelid;		/* hash key */
+	uint32		ntuples;
+} HashPendingTuples;
+
+static HTAB *hash_pending_tuples = NULL;
+
+/* Wait for the metapage lock once this many tuples are pending */
+#define HASH_MAX_PENDING_TUPLES	32
 
 static void _hash_vacuum_one_page(Relation rel, Relation hrel,
 								  Buffer metabuf, Buffer buf);
@@ -47,6 +67,10 @@ _hash_doinsert(Relation rel, IndexTuple itup, Relation heapRel, bool sorted)
 	HashPageOpaque pageopaque;
 	Size		itemsz;
 	bool		do_expand;
+	bool		added_ovfl = false;
+	bool		metalocked;
+	HashPendingTuples *pending = NULL;
+	uint32		ntup_delta = 0;
 	uint32		hashkey;
 	Bucket		bucket;
 	OffsetNumber itup_off;
@@ -181,6 +205,7 @@ restart_insert:
 			/* chain to a new overflow page */
 			buf = _hash_addovflpage(rel, metabuf, buf, (buf == bucket_buf));
 			page = BufferGetPage(buf);
+			added_ovfl = true;
 
 			/* should fit now, given test above */
 			Assert(PageGetFreeSpace(page) >= itemsz);
@@ -193,8 +218,60 @@ restart_insert:
 	/*
 	 * Write-lock the metapage so we can increment the tuple count. After
 	 * incrementing it, check to see if it's time for a split.
+	 *
+	 * Every insert wants this lock, so under concurrency it serializes the
+	 * inserters.  If someone else holds it, don't wait: leave the tuple
+	 * pending, to be counted by this backend's next insert that gets the
+	 * lock.  Do wait if we just added an overflow page, since the bucket may
+	 * be due for a split, or if too many tuples are pending already.
 	 */
-	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
+	if (hash_pending_tuples != NULL)
+	{
+		Oid			indexrelid = RelationGetRelid(rel);
+
+		pending = hash_search(hash_pending_tuples, &indexrelid, HASH_FIND,
+							  NULL);
+	}
+
+	if (added_ovfl ||
+		(pending != NULL && pending->ntuples >= HASH_MAX_PENDING_TUPLES))
+	{
+		LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
+		metalocked = true;
+	}
+	else
+	{
+#ifdef USE_INJECTION_POINTS
+		/* let tests act as if the lock was taken */
+		if (IS_INJECTION_POINT_ATTACHED("hash-insert-defer-count"))
+			metalocked = false;
+		else
+#endif
+			metalocked = ConditionalLockBuffer(metabuf);
+	}
+
+	if (!metalocked && pending == NULL)
+	{
+		Oid			indexrelid = RelationGetRelid(rel);
+		bool		found;
+
+		if (hash_pending_tuples == NULL)
+		{
+			HASHCTL		ctl;
+
+			ctl.keysize = sizeof(Oid);
+			ctl.entrysize = sizeof(HashPendingTuples);
+			ctl.hcxt = TopMemoryContext;
+			hash_pending_tuples = hash_create("hash index pending tuples",
+											  16, &ctl,
+											  HASH_ELEM | HASH_BLOBS |
+											  HASH_CONTEXT);
+		}
+		pending = hash_search(hash_pending_tuples, &indexrelid, HASH_ENTER,
+							  &found);
+		if (!found)
+			pending->ntuples = 0;
+	}
 
 	/* Do the update.  No ereport(ERROR) until changes are logged */
 	START_CRIT_SECTION();
@@ -203,15 +280,28 @@ restart_insert:
 	itup_off = _hash_pgaddtup(rel, buf, itemsz, itup, sorted);
 	MarkBufferDirty(buf);
 
-	/* metapage operations */
-	metap = HashPageGetMeta(metapage);
-	metap->hashm_ntuples += 1;
+	do_expand = false;
+	if (metalocked)
+	{
+		/* metapage operations */
+		ntup_delta = 1;
+		if (pending != NULL)
+		{
+			ntup_delta += pending->ntuples;
+			pending->ntuples = 0;
+		}
 
-	/* Make sure this stays in sync with _hash_expandtable() */
-	do_expand = metap->hashm_ntuples >
-		(double) metap->hashm_ffactor * (metap->hashm_maxbucket + 1);
+		metap = HashPageGetMeta(metapage);
+		metap->hashm_ntuples += ntup_delta;
 
-	MarkBufferDirty(metabuf);
+		/* Make sure this stays in sync with _hash_expandtable() */
+		do_expand = metap->hashm_ntuples >
+			(double) metap->hashm_ffactor * (metap->hashm_maxbucket + 1);
+
+		MarkBufferDirty(metabuf);
+	}
+	else
+		pending->ntuples++;
 
 	/* XLOG stuff */
 	if (RelationNeedsWAL(rel))
@@ -223,7 +313,12 @@ restart_insert:
 		XLogBeginInsert();
 		XLogRegisterData(&xlrec, SizeOfHashInsert);
 
-		XLogRegisterBuffer(1, metabuf, REGBUF_STANDARD);
+		if (metalocked)
+		{
+			XLogRegisterBuffer(1, metabuf, REGBUF_STANDARD);
+			if (ntup_delta > 1)
+				XLogRegisterBufData(1, &ntup_delta, sizeof(uint32));
+		}
 
 		XLogRegisterBuffer(0, buf, REGBUF_STANDARD);
 		XLogRegisterBufData(0, itup, IndexTupleSize(itup));
@@ -234,12 +329,14 @@ restart_insert:
 		recptr = XLogGetFakeLSN(rel);
 
 	PageSetLSN(BufferGetPage(buf), recptr);
-	PageSetLSN(BufferGetPage(metabuf), recptr);
+	if (metalocked)
+		PageSetLSN(BufferGetPage(metabuf), recptr);
 
 	END_CRIT_SECTION();
 
 	/* drop lock on metapage, but keep pin */
-	LockBuffer(metabuf, BUFFER_LOCK_UNLOCK);
+	if (metalocked)
+		LockBuffer(metabuf, BUFFER_LOCK_UNLOCK);
 
 	/*
 	 * Release the modified page and ensure to release the pin on primary
@@ -417,8 +514,12 @@ _hash_vacuum_one_page(Relation rel, Relation hrel, Buffer metabuf, Buffer buf)
 		pageopaque = HashPageGetOpaque(page);
 		pageopaque->hasho_flag &= ~LH_PAGE_HAS_DEAD_TUPLES;
 
+		/* the count can be low by pending tuples; don't let it go negative */
 		metap = HashPageGetMeta(BufferGetPage(metabuf));
-		metap->hashm_ntuples -= ndeletable;
+		if (metap->hashm_ntuples > ndeletable)
+			metap->hashm_ntuples -= ndeletable;
+		else
+			metap->hashm_ntuples = 0;
 
 		MarkBufferDirty(buf);
 		MarkBufferDirty(metabuf);
