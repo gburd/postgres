@@ -169,7 +169,7 @@ array_to_sbm(ArrayType *arr)
 static ArrayType *
 sbm_members_to_array(const Sbm *map)
 {
-	size_t		card = sbm_cardinality((Sbm *) map);
+	uint64		card = sbm_cardinality((Sbm *) map);
 	Datum	   *elems;
 	uint64		idx;
 	SbmCursor	cur = SBM_CURSOR_INIT;
@@ -177,8 +177,10 @@ sbm_members_to_array(const Sbm *map)
 
 	if (card == 0)
 		return construct_empty_array(INT8OID);
+	if (card > MaxAllocSize / sizeof(Datum))
+		elog(ERROR, "sbm has too many members for an array");
 
-	elems = palloc_array(Datum, card);
+	elems = palloc_array(Datum, (size_t) card);
 	idx = SBM_IDX_MAX;			/* start-of-scan sentinel */
 	while ((idx = sbm_next_member(map, idx, &cur)) != SBM_IDX_MAX)
 	{
@@ -488,7 +490,7 @@ test_sbm_span(PG_FUNCTION_ARGS)
 	value = PG_GETARG_BOOL(3);
 	if (start < 0 || len < 0)
 		elog(ERROR, "sbm span start/len must be non-negative");
-	res = sbm_span(map, (uint64) start, (size_t) len, value);
+	res = sbm_span(map, (uint64) start, (uint64) len, value);
 	if (res == SBM_IDX_MAX)
 		PG_RETURN_NULL();
 	PG_RETURN_INT64((int64) res);
@@ -752,7 +754,7 @@ test_sbm_offset(PG_FUNCTION_ARGS)
 	if (PG_ARGISNULL(1))
 		PG_RETURN_NULL();
 	off = PG_GETARG_INT64(1);
-	PG_RETURN_SBM_AS_ARRAY(sbm_offset(map, (ssize_t) off));
+	PG_RETURN_SBM_AS_ARRAY(sbm_offset(map, off));
 }
 
 Datum
@@ -793,9 +795,9 @@ test_sbm_split(PG_FUNCTION_ARGS)
 	Sbm		   *map = PG_ARG_GETSBM(0);
 	int64		idx;
 	Sbm		   *other;
-	size_t		orig_card;
-	size_t		left_card;
-	size_t		right_card;
+	uint64		orig_card;
+	uint64		left_card;
+	uint64		right_card;
 	uint64		m;
 	SbmCursor	cur = SBM_CURSOR_INIT;
 	Datum		out[2];
@@ -1506,15 +1508,17 @@ Datum
 test_sbm_to_array(PG_FUNCTION_ARGS)
 {
 	Sbm		   *map = PG_ARG_GETSBM(0);
-	size_t		card = sbm_cardinality(map);
+	uint64		card = sbm_cardinality(map);
 	uint64	   *out;
 	size_t		n;
 	Datum	   *d;
 
 	if (card == 0)
 		PG_RETURN_ARRAYTYPE_P(construct_empty_array(INT8OID));
-	out = palloc_array(uint64, card);
-	n = card;
+	if (card > MaxAllocSize / sizeof(Datum))
+		elog(ERROR, "sbm has too many members for an array");
+	out = palloc_array(uint64, (size_t) card);
+	n = (size_t) card;
 	sbm_to_array(map, out, &n);
 	d = palloc_array(Datum, n);
 	for (size_t i = 0; i < n; i++)
@@ -1744,7 +1748,7 @@ test_sbm_locator_check(PG_FUNCTION_ARGS)
 	SbmCursor	cur = SBM_CURSOR_INIT;
 	uint64		idx;
 	int			k = 0;
-	size_t		card;
+	uint64		card;
 
 	if (map == NULL)
 		map = sbm_create(TEST_SBM_INITIAL_CAP);
@@ -1965,7 +1969,7 @@ check_against_oracle(const Sbm *map, const SbmOracle * o, const char *what)
 
 	/* call twice: first fills the cardinality cache, second reads it */
 	if (sbm_cardinality(map) != n || sbm_cardinality(map) != n)
-		elog(ERROR, "%s: cardinality %zu, expected %zu", what,
+		elog(ERROR, "%s: cardinality " UINT64_FORMAT ", expected %zu", what,
 			 sbm_cardinality(map), n);
 	if (sbm_is_empty(map) != (n == 0))
 		elog(ERROR, "%s: sbm_is_empty disagrees with cardinality", what);
@@ -2592,7 +2596,7 @@ test_binary_ops(void)
 	/* per-shape unary operations over the same encodings */
 	for (int s = 1; s < NSHAPES; s++)
 	{
-		static const ssize_t shifts[] = {1, 63, 64, 2047, 2048, 5000,
+		static const int64 shifts[] = {1, 63, 64, 2047, 2048, 5000,
 		-1, -64, -2048, -5000};
 		char		what[64];
 
@@ -2616,7 +2620,7 @@ test_binary_ops(void)
 				sbm_free(sh);
 				sh = clip;
 			}
-			snprintf(what, sizeof(what), "offset(%d, %zd)", s, shifts[k]);
+			snprintf(what, sizeof(what), "offset(%d, " INT64_FORMAT ")", s, shifts[k]);
 			check_against_oracle(sh, r, what);
 			sbm_free(sh);
 		}
@@ -2772,7 +2776,7 @@ test_binary_ops(void)
 		/* scan with skip delivers the tail of the member sequence */
 		{
 			uint64		acc = 0;
-			size_t		card = sbm_cardinality(m[s]);
+			uint64		card = sbm_cardinality(m[s]);
 
 			sbm_scan(m[s], test_sbm_scan_cb, card / 3, &acc);
 			if (acc != card - card / 3)
@@ -2925,8 +2929,8 @@ test_raw_encodings(void)
 		for (int i = 9000; i < 15000; i += 3)	/* sparse tail */
 			sbm_add_grow(&m, i);
 		{
-			size_t		card = sbm_cardinality(m);
-			static const size_t skips[] = {0, 1, 2048, 5000, 9000, 9001};
+			uint64		card = sbm_cardinality(m);
+			static const uint64 skips[] = {0, 1, 2048, 5000, 9000, 9001};
 
 			for (int k = 0; k < lengthof(skips); k++)
 			{
@@ -2936,8 +2940,8 @@ test_raw_encodings(void)
 					continue;
 				sbm_scan(m, test_sbm_scan_cb, skips[k], &acc);
 				if (acc != card - skips[k])
-					elog(ERROR, "scan skip %zu: got " UINT64_FORMAT
-						 ", want %zu", skips[k], acc, card - skips[k]);
+					elog(ERROR, "scan skip " UINT64_FORMAT ": got " UINT64_FORMAT
+						 ", want " UINT64_FORMAT, skips[k], acc, card - skips[k]);
 			}
 		}
 		sbm_free(m);
@@ -3004,7 +3008,7 @@ test_raw_encodings(void)
 	 * starts below 0.
 	 */
 	{
-		static const ssize_t shifts[] = {
+		static const int64 shifts[] = {
 			2048, 4096, 100,	/* up: aligned, aligned, unaligned */
 			-2048, -100,		/* down: aligned, unaligned */
 			-5000, -100000,		/* down: partial clip, full clip */
@@ -3028,7 +3032,7 @@ test_raw_encodings(void)
 			{
 				Sbm		   *clip = sbm_extract_range(sh, 0, ORACLE_BITS);
 
-				snprintf(what, sizeof(what), "raw: RLE offset %zd",
+				snprintf(what, sizeof(what), "raw: RLE offset " INT64_FORMAT,
 						 shifts[k]);
 				check_against_oracle(clip ? clip : sh, o, what);
 				if (clip)
@@ -3340,7 +3344,7 @@ test_enospc(void)
 	Sbm		   *src;
 	Sbm		   *m;
 	uint8	   *buf;
-	size_t		card;
+	uint64		card;
 
 	/* small-set mode: a new word does not fit */
 	src = sbm_create(0);
@@ -4096,7 +4100,7 @@ test_validate_shape(void)
 			elog(ERROR, "validate_shape: baseline should validate");
 		if (sbm_cardinality(m) !=
 			(uint64) (VS_FLAGS_PER_INDEX - 1) * VS_BITS_PER_VECTOR + 1)
-			elog(ERROR, "validate_shape: baseline cardinality %zu wrong",
+			elog(ERROR, "validate_shape: baseline cardinality " UINT64_FORMAT " wrong",
 				 sbm_cardinality(m));
 		if (sbm_cardinality(m) != validate_walk_count(m))
 			elog(ERROR, "validate_shape: baseline card != walk");
@@ -4182,7 +4186,7 @@ test_validate_shape(void)
 		if (m == NULL || !sbm_validate(m))
 			elog(ERROR, "validate_shape: encoder-shaped NONE chunk rejected");
 		if (sbm_cardinality(m) != 8 || validate_walk_count(m) != 8)
-			elog(ERROR, "validate_shape: encoder-shaped NONE chunk cardinality %zu",
+			elog(ERROR, "validate_shape: encoder-shaped NONE chunk cardinality " UINT64_FORMAT,
 				 sbm_cardinality(m));
 		sbm_free(m);
 	}
@@ -4434,13 +4438,163 @@ test_bulk_build(void)
 			elog(ERROR, "bulk_build[%s]: add_many_grow != add_grow loop",
 				 cases[c].name);
 		if (sbm_cardinality(loop) != oracle_card)
-			elog(ERROR, "bulk_build[%s]: cardinality %zu != oracle %zu",
+			elog(ERROR, "bulk_build[%s]: cardinality " UINT64_FORMAT " != oracle %zu",
 				 cases[c].name, sbm_cardinality(loop), oracle_card);
 
 		sbm_free(bulk);
 		sbm_free(loop);
 		sbm_free(bulk2);
 	}
+}
+
+/*
+ * Sets whose members, runs and counts go past 2^32.  Member indexes, counts,
+ * ranks, run lengths and shifts are uint64 on every platform; on a 32-bit
+ * one each of these failed while sbm kept any of them in a size_t.  Every
+ * expected value below is worked out from the intervals, not from sbm.
+ */
+#define W32			(UINT64CONST(1) << 32)
+#define W33			(UINT64CONST(1) << 33)
+
+static void
+test_wide(void)
+{
+	/* a run longer than 2^32: [5, 2^33) */
+	Sbm		   *big = sbm_create_from_range(5, W33);
+
+	/* two runs straddling 2^32: [2^32 - 3000, 2^32 + 3000) */
+	Sbm		   *a = sbm_create_from_range(W32 - 3000, W32 + 3000);
+	Sbm		   *b = sbm_create_from_range(W32 - 1000, W32 + 1000);
+	Sbm		   *r;
+	SbmLocator *loc;
+
+	EXPECT_TRUE(sbm_cardinality(big) == W33 - 5);
+	EXPECT_TRUE(sbm_minimum(big) == 5 && sbm_maximum(big) == W33 - 1);
+	EXPECT_TRUE(sbm_rank(big, 0, SBM_IDX_MAX, true) == W33 - 5);
+	EXPECT_TRUE(sbm_rank(big, W32, W32 + 9, true) == 10);
+	EXPECT_TRUE(sbm_rank(big, 0, W32, false) == 5);
+	EXPECT_TRUE(sbm_select(big, W32, true) == W32 + 5);
+	EXPECT_TRUE(sbm_select(big, 5, false) == W33);
+	EXPECT_TRUE(sbm_span(big, 0, W32 + 1, true) == 5);
+	EXPECT_TRUE(sbm_span(big, 0, W32, false) == W33);
+	EXPECT_TRUE(sbm_contains(big, W32 + 7, NULL));
+	EXPECT_TRUE(!sbm_contains(big, W33, NULL));
+	EXPECT_TRUE(sbm_validate(big));
+
+	/* the locator's prefix counts and select remainders exceed 2^32 too */
+	sbm_add_grow(&big, W33 + 10);
+	sbm_add_grow(&big, W33 + 20);
+	loc = sbm_locator_build(big);
+	EXPECT_TRUE(sbm_locator_rank(loc, 0, SBM_IDX_MAX, true) == W33 - 3);
+	EXPECT_TRUE(sbm_locator_select(loc, W33 - 4, true) == W33 + 20);
+	EXPECT_TRUE(sbm_locator_contains(loc, W33 + 10));
+	sbm_locator_free(loc);
+
+	/* a member scan that skips more than 2^32 members */
+	{
+		uint64		acc = 0;
+
+		sbm_scan(big, test_sbm_scan_cb, W33 - 6, &acc);
+		EXPECT_TRUE(acc == 3);	/* W33 - 1, W33 + 10, W33 + 20 */
+	}
+
+	/* the set operations, on chunks straddling 2^32 */
+	r = sbm_intersection(a, b);
+	EXPECT_TRUE(sbm_cardinality(r) == 2000 && sbm_minimum(r) == W32 - 1000);
+	sbm_free(r);
+	r = sbm_difference(a, b);
+	EXPECT_TRUE(sbm_cardinality(r) == 4000);
+	EXPECT_TRUE(sbm_contains(r, W32 - 1001, NULL) &&
+				!sbm_contains(r, W32 - 1000, NULL) &&
+				!sbm_contains(r, W32 + 999, NULL) &&
+				sbm_contains(r, W32 + 1000, NULL));
+	EXPECT_TRUE(sbm_validate(r));
+	sbm_free(r);
+	r = sbm_union(a, big);
+	EXPECT_TRUE(sbm_cardinality(r) == W33 - 3);
+	sbm_free(r);
+	r = sbm_xor(a, b);
+	EXPECT_TRUE(sbm_cardinality(r) == 4000);
+	sbm_free(r);
+	EXPECT_TRUE(sbm_union_cardinality(a, big) == W33 - 3);
+	EXPECT_TRUE(sbm_intersection_cardinality(a, big) == 6000);
+	EXPECT_TRUE(sbm_difference_cardinality(big, a) == W33 - 3 - 6000);
+	EXPECT_TRUE(sbm_xor_cardinality(a, b) == 4000);
+
+	/* a set operation whose result is a single run longer than 2^32 */
+	{
+		Sbm		   *lo = sbm_create_from_range(0, W32 + 100);
+		Sbm		   *hi = sbm_create_from_range(W32 + 100, W33);
+
+		r = sbm_union(lo, hi);
+		EXPECT_TRUE(sbm_cardinality(r) == W33);
+		EXPECT_TRUE(sbm_validate(r));
+		sbm_free(r);
+		r = sbm_difference(big, lo);
+		EXPECT_TRUE(sbm_cardinality(r) == W33 - W32 - 100 + 2);
+		EXPECT_TRUE(sbm_minimum(r) == W32 + 100);
+		sbm_free(r);
+		sbm_free(lo);
+		sbm_free(hi);
+	}
+
+	/* shifts by more than 2^32, both ways, and a run cut by bit 0 */
+	r = sbm_offset(a, -(int64) W32);
+	EXPECT_TRUE(sbm_cardinality(r) == 3000 && sbm_minimum(r) == 0 &&
+				sbm_maximum(r) == 2999);
+	sbm_free(r);
+	r = sbm_offset(a, (int64) W32);
+	EXPECT_TRUE(sbm_cardinality(r) == 6000 &&
+				sbm_minimum(r) == W33 - 3000);
+	sbm_free(r);
+	r = sbm_offset(a, INT64CONST(-9000000000000000000));
+	EXPECT_TRUE(r == NULL || sbm_is_empty(r));
+	sbm_free(r);
+	r = sbm_offset(big, -(int64) W32);
+	EXPECT_TRUE(sbm_cardinality(r) == W32 + 2 && sbm_minimum(r) == 0);
+	sbm_free(r);
+
+	/* set and clear single members above 2^32, splitting a long run */
+	r = sbm_set_data_size(sbm_copy(big), NULL, 4096);
+	EXPECT_TRUE(sbm_remove(r, W32 + 1) == W32 + 1);
+	EXPECT_TRUE(!sbm_contains(r, W32 + 1, NULL) &&
+				sbm_contains(r, W32, NULL) &&
+				sbm_contains(r, W32 + 2, NULL));
+	EXPECT_TRUE(sbm_cardinality(r) == W33 - 4);
+	EXPECT_TRUE(sbm_validate(r));
+	EXPECT_TRUE(sbm_add(r, W32 + 1) == W32 + 1);
+	EXPECT_TRUE(sbm_cardinality(r) == W33 - 3 && sbm_equals(r, big));
+	sbm_free(r);
+
+	/* split at a member above 2^32 */
+	{
+		Sbm		   *other = sbm_create(4096);
+
+		r = sbm_set_data_size(sbm_copy(a), NULL, 4096);
+		EXPECT_TRUE(sbm_split(r, W32 + 17, other) == W32 + 17);
+		EXPECT_TRUE(sbm_cardinality(r) == 3017 &&
+					sbm_cardinality(other) == 2983);
+		EXPECT_TRUE(sbm_minimum(other) == W32 + 17);
+		sbm_free(r);
+		sbm_free(other);
+	}
+
+	/* the serialized form round-trips such sets */
+	{
+		size_t		need = sbm_serialized_size(big);
+		uint8	   *buf = palloc(need);
+
+		EXPECT_TRUE(sbm_serialize(big, buf, need) == need);
+		r = sbm_deserialize(buf, need);
+		EXPECT_TRUE(r != NULL && sbm_equals(r, big));
+		EXPECT_TRUE(sbm_cardinality(r) == W33 - 3);
+		sbm_free(r);
+		pfree(buf);
+	}
+
+	sbm_free(a);
+	sbm_free(b);
+	sbm_free(big);
 }
 
 /*
@@ -4465,6 +4619,7 @@ test_sbm_internals(PG_FUNCTION_ARGS)
 	test_difference_align();
 	test_lineages();
 	test_binary_ops();
+	test_wide();
 	PG_RETURN_BOOL(true);
 }
 
@@ -4481,7 +4636,7 @@ bench_make_indices(int64 n, int64 universe, int64 seed, int64 *n_out)
 
 	if (universe < n)
 		n = universe;			/* cannot draw more distinct than universe */
-	idx = (uint64 *) palloc(sizeof(uint64) * (n > 0 ? n : 1));
+	idx = (uint64 *) palloc(sizeof(uint64) * (size_t) (n > 0 ? n : 1));
 	pg_prng_seed(&rng, (uint64) seed);
 	while (got < n)
 	{
