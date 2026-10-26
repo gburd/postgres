@@ -43,18 +43,20 @@ end $$;
 
 -- Warm the table: a descent through the root records the level-1 pages its
 -- level-2 page names.  A full ordered scan descends once; point lookups
--- across the key range record the rest.
-set enable_seqscan = off; set enable_bitmapscan = off;
+-- across the key range record the rest.  The table lives in the index's
+-- relcache entry, which the open cursor pin keeps (a build with
+-- RELCACHE_FORCE_RELEASE rebuilds an entry nothing holds open, without it).
+begin;
+set local enable_seqscan = off; set local enable_bitmapscan = off;
+declare pin cursor for select k from l1 where k = '';
 select count(*) from generate_series(0, 300) g,
   lateral (select k from l1 where k >= l1k(g * 97 % 8000) order by k limit 1) s;
-reset enable_seqscan; reset enable_bitmapscan;
 
 -- Now descents start below the root: one NOTICE per lookup.
 SELECT injection_points_attach('bark-l1-start', 'notice');
-set enable_seqscan = off; set enable_bitmapscan = off;
 select count(*) from l1 where k = l1k(4000);
-reset enable_seqscan; reset enable_bitmapscan;
 SELECT injection_points_detach('bark-l1-start');
+commit;
 
 -- Every value, its neighbours, and ranges starting and ending at each one:
 -- among them every cached low key and every run that spans a boundary.
@@ -77,9 +79,14 @@ from (select g from l1_keys where g % 53 = 0) s,
      l1_check(format('k in (select k from l1 where k <= %L order by k desc limit 4)', l1k(g))) c;
 
 -- An insert's descent starts below the root too: one NOTICE.
+begin;
+set local enable_seqscan = off; set local enable_bitmapscan = off;
+declare pin cursor for select k from l1 where k = '';
+select count(*) from l1 where k = l1k(4000);	-- warm, as above
 SELECT injection_points_attach('bark-l1-start', 'notice');
 insert into l1 values (l1k(4000) || 'q', 99999);
 SELECT injection_points_detach('bark-l1-start');
+commit;
 delete from l1 where n = 99999;
 
 -- Splits of cached level-1 pages: insert keys between the existing ones
@@ -133,15 +140,18 @@ select bark_index_check('l1_idx', true);
 -- for a level-1 page that is not one any more, which the invariants rule
 -- out): the table is dropped, the descent starts at the root, and the next
 -- descents refill the table and start below the root again.
+begin;
+set local enable_seqscan = off; set local enable_bitmapscan = off;
+declare pin cursor for select k from l1 where k = '';	-- as above
+select count(*) from l1 where k = l1k(3000);
 SELECT injection_points_attach('bark-l1-stale', 'notice');
-set enable_seqscan = off; set enable_bitmapscan = off;
 select count(*) from l1 where k = l1k(3000);
 SELECT injection_points_detach('bark-l1-stale');
 select count(*) from l1 where k = l1k(3000);
 SELECT injection_points_attach('bark-l1-start', 'notice');
 select count(*) from l1 where k = l1k(3000);
 SELECT injection_points_detach('bark-l1-start');
-reset enable_seqscan; reset enable_bitmapscan;
+commit;
 
 -- REINDEX gives the index a new relfilenode; the relcache rebuild drops the
 -- cache, so no descent may start at a page of the old file.

@@ -1,10 +1,14 @@
 Parsed test spec with 2 sessions
 
-starting permutation: s1_warm s1_level s2_split s2_more s1_notice s1_one s1_one s1_quiet s1_check
+starting permutation: s1_pin s1_warm s1_level s2_split s2_more s1_notice s1_one s1_one s1_quiet s1_unpin s1_check
 injection_points_set_local
 --------------------------
                           
 (1 row)
+
+step s1_pin: 
+	BEGIN;
+	DECLARE pin CURSOR FOR SELECT k FROM l1s WHERE k = '';
 
 step s1_warm: 
 	SELECT count(*) FROM generate_series(0, 7999, 5) g,
@@ -48,6 +52,7 @@ injection_points_detach
                        
 (1 row)
 
+step s1_unpin: COMMIT;
 step s1_check: SELECT l1s_ok() AS mismatches;
 mismatches
 ----------

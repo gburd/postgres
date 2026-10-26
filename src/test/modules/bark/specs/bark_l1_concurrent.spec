@@ -78,6 +78,15 @@ step s1_warm
 		LATERAL (SELECT k FROM l1s WHERE k >= l1k(g) ORDER BY k LIMIT 1) s;
 }
 step s1_level	{ SELECT level >= 2 AS tall FROM bark_metap('l1s_idx'); }
+# The level-1 table lives in the index's relcache entry, which an open
+# cursor keeps across steps (under RELCACHE_FORCE_RELEASE an entry nothing
+# holds open is rebuilt, without it, after every statement).
+step s1_pin
+{
+	BEGIN;
+	DECLARE pin CURSOR FOR SELECT k FROM l1s WHERE k = '';
+}
+step s1_unpin	{ COMMIT; }
 step s1_notice	{ SELECT injection_points_attach('bark-l1-start', 'notice'); }
 step s1_one		{ SELECT count(*) FROM l1s WHERE k = l1k(4000); }
 step s1_quiet	{ SELECT injection_points_detach('bark-l1-start'); }
@@ -117,6 +126,6 @@ step s2_upwake
 	SELECT injection_points_wakeup('bark-find-upper-path');
 }
 
-permutation s1_warm s1_level s2_split s2_more s1_notice s1_one s1_one s1_quiet s1_check
+permutation s1_pin s1_warm s1_level s2_split s2_more s1_notice s1_one s1_one s1_quiet s1_unpin s1_check
 permutation s1_warm s1_wait s1_stuck s2_near s2_wake s1_check
 permutation s1_warm s2_warm s1_upwait s1_upsplit s2_wide s2_upwake s1_check s1_parent
