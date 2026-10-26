@@ -137,7 +137,7 @@ SELECT q, gn_run('gn', NULL, q) AS seq, gn_run('gn', 'gn_bark', q) AS bark,
 FROM gn_q;
 SELECT q, cardinality(seq) AS n, bark = seq AS bark_ok, bark_g = seq AS bark_g_ok,
        bark_n = seq AS bark_n_ok, gin = seq AS gin_ok
-FROM gn_res ORDER BY q;
+FROM gn_res ORDER BY q COLLATE "C";
 
 -- After DELETE, INSERT (images other than the entries' own) and VACUUM.
 DELETE FROM gn WHERE id % 5 = 0;
@@ -183,7 +183,7 @@ FROM unnest(ARRAY['&&', '@>', '<@', '=']) op,
 SELECT q, cardinality(gn_run('gb', NULL, q)) AS n,
        gn_run('gb', 'gb_bark', q) = gn_run('gb', NULL, q) AS bark_ok,
        gn_run('gb', 'gb_gin', q) = gn_run('gb', NULL, q) AS gin_ok
-FROM gb_q ORDER BY q;
+FROM gb_q ORDER BY q COLLATE "C";
 
 DROP TABLE gn, gn_q, gn_arr, gn_res, gb, gb_q;
 DROP FUNCTION gn_run(text, text, text), gn_image(numeric), gn_items(text);
