@@ -3617,12 +3617,20 @@ CREATE TABLE bark_fp (k text, v int) WITH (autovacuum_enabled = off);
 CREATE INDEX bark_fp_idx ON bark_fp USING bark (k);
 INSERT INTO bark_fp SELECT lpad(g::text, 400, '0'), g
   FROM generate_series(1, 3000) g;
+-- The cached leaf lives in the index's relcache entry, which an open cursor
+-- on the index keeps (under RELCACHE_FORCE_RELEASE an entry nothing holds
+-- open is rebuilt, without it, at the end of every statement).
 DO $$
 DECLARE
-  b0 bigint := pg_stat_get_xact_idx_blocks_fetched('bark_fp_idx'::regclass);
+  pin refcursor;
+  b0 bigint;
   b1 bigint;
   b2 bigint;
 BEGIN
+  SET LOCAL enable_seqscan = off;
+  SET LOCAL enable_bitmapscan = off;
+  OPEN pin FOR SELECT k FROM bark_fp WHERE k = '';
+  b0 := pg_stat_get_xact_idx_blocks_fetched('bark_fp_idx'::regclass);
   FOR g IN 6002..7001 LOOP
     INSERT INTO bark_fp VALUES (lpad((g / 2)::text, 400, '0'), g);
   END LOOP;
