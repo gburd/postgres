@@ -1,0 +1,101 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1_begin s1_update s3_convert s2_insert s3_wakeup s1_commit s3_check
+step s1_begin: BEGIN;
+step s1_update: UPDATE tmx SET doc = ARRAY[2,3] WHERE id = 1; <waiting ...>
+step s3_convert: 
+	SELECT test_versioned_add_exclusion('tmx_doc', '=(anyarray,anyarray)');
+	UPDATE pg_catalog.pg_index SET indisexclusion = true
+	  WHERE indexrelid = 'tmx_doc'::regclass;
+
+test_versioned_add_exclusion
+----------------------------
+                            
+(1 row)
+
+step s2_insert: INSERT INTO tmx VALUES (3, ARRAY[2,3]);
+step s3_wakeup: SELECT injection_points_wakeup('tmx-update-done');
+injection_points_wakeup
+-----------------------
+                       
+(1 row)
+
+step s1_update: <... completed>
+step s1_commit: COMMIT;
+step s3_check: 
+	SELECT id, doc FROM tmx ORDER BY id;
+	SELECT n AS kept FROM test_versioned_counts() WHERE counter = 'update_kept';
+	SELECT bark_index_check('tmx_doc');
+
+id|doc    
+--+-------
+ 1|{2,3}  
+ 2|{20,21}
+ 3|{2,3}  
+(3 rows)
+
+kept
+----
+   1
+(1 row)
+
+bark_index_check
+----------------
+                
+(1 row)
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+
+starting permutation: s1_begin s1_update s3_convert s2_insert s3_wakeup s1_rollback s3_check
+step s1_begin: BEGIN;
+step s1_update: UPDATE tmx SET doc = ARRAY[2,3] WHERE id = 1; <waiting ...>
+step s3_convert: 
+	SELECT test_versioned_add_exclusion('tmx_doc', '=(anyarray,anyarray)');
+	UPDATE pg_catalog.pg_index SET indisexclusion = true
+	  WHERE indexrelid = 'tmx_doc'::regclass;
+
+test_versioned_add_exclusion
+----------------------------
+                            
+(1 row)
+
+step s2_insert: INSERT INTO tmx VALUES (3, ARRAY[2,3]);
+step s3_wakeup: SELECT injection_points_wakeup('tmx-update-done');
+injection_points_wakeup
+-----------------------
+                       
+(1 row)
+
+step s1_update: <... completed>
+step s1_rollback: ROLLBACK;
+step s3_check: 
+	SELECT id, doc FROM tmx ORDER BY id;
+	SELECT n AS kept FROM test_versioned_counts() WHERE counter = 'update_kept';
+	SELECT bark_index_check('tmx_doc');
+
+id|doc    
+--+-------
+ 1|{1,2}  
+ 2|{20,21}
+ 3|{2,3}  
+(3 rows)
+
+kept
+----
+   1
+(1 row)
+
+bark_index_check
+----------------
+                
+(1 row)
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
