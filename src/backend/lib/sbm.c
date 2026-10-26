@@ -11339,9 +11339,9 @@ sbm_union(const Sbm *a, const Sbm *b)
 						const size_t max_e = ae > be ? ae : be;
 
 						/* Check if runs overlap or are adjacent. */
-						const size_t earlier_e =
+						const size_t earlier_e PG_USED_FOR_ASSERTS_ONLY =
 							as <= bs ? ae : be;
-						const size_t later_s =
+						const size_t later_s PG_USED_FOR_ASSERTS_ONLY =
 							as <= bs ? bs : as;
 
 						/*
