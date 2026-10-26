@@ -91,6 +91,12 @@
  * empty set would, and mutators return their failure value and set errno to
  * EINVAL.
  *
+ * Indexes, counts of members, ranks, run lengths and shifts are uint64 (or
+ * int64), whatever the platform's word size: a set can hold members up to
+ * SBM_IDX_MAX and more members than size_t can count on a 32-bit platform.
+ * size_t is used only for sizes of buffers in bytes and for counts of things
+ * a buffer holds (chunks, array elements).
+ *
  * Sbm is not thread-safe.  Concurrent readers are safe only when no writer
  * is active.
  *
@@ -110,8 +116,6 @@
  */
 #ifndef SBM_H
 #define SBM_H
-
-#include <sys/types.h>			/* for ssize_t */
 
 /*
  * Handle to a sparse bitmap.
@@ -137,7 +141,7 @@ struct Sbm
 	size_t		m_capacity;		/* capacity in bytes | lineage tag */
 	size_t		m_data_used;	/* bytes of m_data in use */
 	uint8	   *m_data;			/* the encoded bitmap */
-	size_t		m_card_plus1;	/* cached cardinality + 1, or 0 */
+	uint64		m_card_plus1;	/* cached cardinality + 1, or 0 */
 };
 #endif
 
@@ -202,7 +206,7 @@ typedef struct SbmLocator
 	size_t		n_sb;			/* number of superblocks */
 	uint64	   *sb_start;		/* [n_sb] first index of each superblock */
 	size_t	   *sb_offset;		/* [n_sb] byte offset of each superblock */
-	size_t	   *sb_prefix;		/* [n_sb] set bits before each superblock */
+	uint64	   *sb_prefix;		/* [n_sb] set bits before each superblock */
 } SbmLocator;
 
 /* Result of sbm_membership() */
@@ -457,7 +461,7 @@ extern bool sbm_flip_range(Sbm *map, uint64 lo, uint64 hi);
 extern bool sbm_is_empty(const Sbm *map);
 
 /* Number of members; O(1) after the first call following a mutation. */
-extern size_t sbm_cardinality(const Sbm *map);
+extern uint64 sbm_cardinality(const Sbm *map);
 
 /* Smallest (largest) member, or 0 for an empty map. */
 extern uint64 sbm_minimum(const Sbm *map);
@@ -481,7 +485,7 @@ extern uint64 sbm_singleton_member(const Sbm *map);
  */
 
 /* Number of indexes in the inclusive range [x, y] whose bit equals value. */
-extern size_t sbm_rank(const Sbm *map, uint64 x, uint64 y, bool value);
+extern uint64 sbm_rank(const Sbm *map, uint64 x, uint64 y, bool value);
 
 /*
  * Index of the n'th (0-based) index whose bit equals value, or SBM_IDX_MAX
@@ -493,7 +497,7 @@ extern uint64 sbm_select(const Sbm *map, uint64 n, bool value);
  * First index >= start that begins a run of len consecutive indexes whose
  * bits all equal value, or SBM_IDX_MAX.
  */
-extern uint64 sbm_span(const Sbm *map, uint64 start, size_t len, bool value);
+extern uint64 sbm_span(const Sbm *map, uint64 start, uint64 len, bool value);
 
 /*
  * Build a locator (see SbmLocator) for map.  Returns NULL for a NULL or
@@ -502,7 +506,7 @@ extern uint64 sbm_span(const Sbm *map, uint64 start, size_t len, bool value);
 pg_nodiscard extern SbmLocator *sbm_locator_build(const Sbm *map);
 extern void sbm_locator_free(SbmLocator *loc);
 extern bool sbm_locator_contains(const SbmLocator *loc, uint64 idx);
-extern size_t sbm_locator_rank(const SbmLocator *loc, uint64 lo, uint64 hi,
+extern uint64 sbm_locator_rank(const SbmLocator *loc, uint64 lo, uint64 hi,
 							   bool value);
 extern uint64 sbm_locator_select(const SbmLocator *loc, uint64 n,
 								 bool value);
@@ -538,13 +542,14 @@ extern uint64 sbm_prev_member(const Sbm *map, uint64 prev_idx,
  */
 extern void sbm_scan(const Sbm *map,
 					 void (*scanner) (uint64 vec[], size_t n, void *aux),
-					 size_t skip, void *aux);
+					 uint64 skip, void *aux);
 
 /*
  * Copy the members, ascending, into out.  On entry *n_out is out's capacity;
  * on return it is the number written.  With out == NULL only *n_out is set,
- * to the cardinality.  The output is O(cardinality), so bound untrusted maps
- * with sbm_extract_range() first.
+ * to the cardinality, or SIZE_MAX if that does not fit in a size_t.  The
+ * output is O(cardinality), so bound untrusted maps with sbm_extract_range()
+ * first.
  */
 extern void sbm_to_array(const Sbm *map, uint64 *out, size_t *n_out);
 
@@ -574,7 +579,7 @@ pg_nodiscard extern Sbm *sbm_extract_range(const Sbm *map, uint64 lo,
  * dropped.  Returns NULL with errno = ERANGE if a member would overflow
  * past SBM_IDX_MAX.
  */
-pg_nodiscard extern Sbm *sbm_offset(const Sbm *map, ssize_t offset);
+pg_nodiscard extern Sbm *sbm_offset(const Sbm *map, int64 offset);
 
 
 /*
@@ -658,10 +663,10 @@ extern int	sbm_compare(const Sbm *a, const Sbm *b);
 extern uint64 sbm_hash(const Sbm *map);
 
 /* Cardinality of a OP b, without materializing it. */
-extern size_t sbm_union_cardinality(const Sbm *a, const Sbm *b);
-extern size_t sbm_intersection_cardinality(const Sbm *a, const Sbm *b);
-extern size_t sbm_difference_cardinality(const Sbm *a, const Sbm *b);
-extern size_t sbm_xor_cardinality(const Sbm *a, const Sbm *b);
+extern uint64 sbm_union_cardinality(const Sbm *a, const Sbm *b);
+extern uint64 sbm_intersection_cardinality(const Sbm *a, const Sbm *b);
+extern uint64 sbm_difference_cardinality(const Sbm *a, const Sbm *b);
+extern uint64 sbm_xor_cardinality(const Sbm *a, const Sbm *b);
 
 /* |a & b| / |a | b|, or 0 if both are empty. */
 extern double sbm_jaccard_index(const Sbm *a, const Sbm *b);

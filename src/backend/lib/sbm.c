@@ -259,7 +259,7 @@ typedef struct
 	} while (0)
 
 #define SBM_CHUNK_GET_FLAGS(data, at) \
-	((((data)) & ((SbmBitvec)SBM_FLAG_MASK << ((at) * 2))) >> ((at) * 2))
+	((size_t) ((((data)) & ((SbmBitvec)SBM_FLAG_MASK << ((at) * 2))) >> ((at) * 2)))
 #define SBM_CHUNK_SET_FLAGS(data, at, to)                                    \
 	((data) = ((data) & ~((SbmBitvec)SBM_FLAG_MASK << ((at) * 2))) | \
 	        ((SbmBitvec)(to) << ((at) * 2)))
@@ -344,7 +344,7 @@ sbm_chunk_rle_get_capacity(const SbmChunk *chunk)
 		chunk->m_data[0] & (SbmBitvec) SBM_RLE_CAPACITY_MASK;
 
 	w >>= 31;
-	return w;
+	return (size_t) w;			/* a 31-bit field */
 }
 
 /*
@@ -361,7 +361,7 @@ sbm_chunk_rle_get_capacity(const SbmChunk *chunk)
  * capacity to set for the RLE chunk.
  */
 static void
-sbm_chunk_rle_set_capacity(const SbmChunk *chunk, const size_t capacity)
+sbm_chunk_rle_set_capacity(const SbmChunk *chunk, const uint64 capacity)
 {
 	SbmBitvec	w;
 
@@ -392,7 +392,7 @@ sbm_chunk_rle_get_length(const SbmChunk *chunk)
 	const SbmBitvec w =
 		chunk->m_data[0] & (SbmBitvec) SBM_RLE_LENGTH_MASK;
 
-	return w;
+	return (size_t) w;			/* a 31-bit field */
 }
 
 /*
@@ -406,7 +406,7 @@ sbm_chunk_rle_get_length(const SbmChunk *chunk)
  * to set for the chunk.
  */
 static void
-sbm_chunk_rle_set_length(const SbmChunk *chunk, const size_t length)
+sbm_chunk_rle_set_length(const SbmChunk *chunk, const uint64 length)
 {
 	SbmBitvec	w;
 
@@ -640,20 +640,20 @@ sbm_card_is_valid(const Sbm *m)
 	return m->m_card_plus1 != 0;
 }
 
-static inline size_t
+static inline uint64
 sbm_card_get(const Sbm *m)
 {
 	return m->m_card_plus1 - 1u;
 }
 
 static inline void
-sbm_card_store(Sbm *m, size_t count)
+sbm_card_store(Sbm *m, uint64 count)
 {
 	/*
 	 * count + 1 cannot wrap in practice (count <= SBM_IDX_MAX bits), but
 	 * guard: a would-be-wrapping count simply stays uncached.
 	 */
-	if (m != NULL && count != SIZE_MAX)
+	if (m != NULL && count != PG_UINT64_MAX)
 		m->m_card_plus1 = count + 1u;
 }
 
@@ -1026,7 +1026,7 @@ sbm_chunk_get_size(const SbmChunk *chunk)
  * Returns true if the bit at the specified index is set, false otherwise.
  */
 static pg_always_inline bool
-sbm_chunk_is_set(const SbmChunk *chunk, const size_t idx)
+sbm_chunk_is_set(const SbmChunk *chunk, const uint64 idx)
 {
 	size_t		bv;
 	size_t		flags;
@@ -1051,7 +1051,7 @@ sbm_chunk_is_set(const SbmChunk *chunk, const size_t idx)
 		return false;
 	}
 	/* in which SbmBitvec is |idx| stored? */
-	bv = idx / SBM_BITS_PER_VECTOR;
+	bv = (size_t) (idx / SBM_BITS_PER_VECTOR);
 	Assert(bv < SBM_FLAGS_PER_INDEX);
 
 	/* now retrieve the flags of that SbmBitvec */
@@ -1095,9 +1095,9 @@ static int
 sbm_chunk_clr_bit(const SbmChunk *chunk, const uint64 idx, size_t *pos)
 {
 	SbmBitvec	w;
-	const size_t bv = idx / SBM_BITS_PER_VECTOR;
+	const size_t bv = (size_t) (idx / SBM_BITS_PER_VECTOR);
 
-	Assert(bv < SBM_FLAGS_PER_INDEX);
+	Assert(idx < SBM_CHUNK_MAX_CAPACITY);
 
 	switch (SBM_CHUNK_GET_FLAGS(*chunk->m_data, bv))
 	{
@@ -1173,10 +1173,10 @@ sbm_chunk_set_bit(const SbmChunk *chunk, const uint64 idx, size_t *pos)
 	 * Where in the descriptor does this idx fall, which flag should we
 	 * examine?
 	 */
-	const size_t bv = idx / SBM_BITS_PER_VECTOR;
+	const size_t bv = (size_t) (idx / SBM_BITS_PER_VECTOR);
 	SbmBitvec	w;
 
-	Assert(bv < SBM_FLAGS_PER_INDEX);
+	Assert(idx < SBM_CHUNK_MAX_CAPACITY);
 	Assert(sbm_chunk_is_rle(chunk) == false);
 
 	switch (SBM_CHUNK_GET_FLAGS(*chunk->m_data, bv))
@@ -1238,7 +1238,7 @@ sbm_chunk_set_bit(const SbmChunk *chunk, const uint64 idx, size_t *pos)
  * number of bits scanned (at most SBM_BITS_PER_VECTOR).
  */
 static size_t
-sbm_chunk_select(const SbmChunk *chunk, ssize_t n, ssize_t *offset,
+sbm_chunk_select(const SbmChunk *chunk, int64 n, int64 *offset,
 				 const bool value)
 {
 	size_t		ret = 0;
@@ -1255,7 +1255,7 @@ sbm_chunk_select(const SbmChunk *chunk, ssize_t n, ssize_t *offset,
 		{
 			/* Selecting nth set bit (1) */
 			/* RLE has run of 1s from index 0 to length-1 */
-			if (n < (ssize_t) length)
+			if (n < (int64) length)
 			{
 				*offset = -1;
 				return (size_t) n;	/* nth set bit is at index n */
@@ -1263,7 +1263,7 @@ sbm_chunk_select(const SbmChunk *chunk, ssize_t n, ssize_t *offset,
 			else
 			{
 				*offset = n -
-					(ssize_t) length;	/* propagate remainder to next chunk */
+					(int64) length; /* propagate remainder to next chunk */
 				return capacity;
 			}
 		}
@@ -1280,7 +1280,7 @@ sbm_chunk_select(const SbmChunk *chunk, ssize_t n, ssize_t *offset,
 				*offset = n;
 				return capacity;
 			}
-			if (n < (ssize_t) unset_count)
+			if (n < (int64) unset_count)
 			{
 				*offset = -1;
 				return length +
@@ -1289,7 +1289,7 @@ sbm_chunk_select(const SbmChunk *chunk, ssize_t n, ssize_t *offset,
 			else
 			{
 				*offset =
-					n - (ssize_t) unset_count;	/* propagate remainder */
+					n - (int64) unset_count;	/* propagate remainder */
 				return capacity;
 			}
 		}
@@ -1684,7 +1684,17 @@ sbm_get_chunk_count(const Sbm *map)
 	{
 		return 0;
 	}
-	return (size_t) sbm_load_u64(&map->m_data[0]);
+
+	/*
+	 * A valid count is bounded by the buffer's size.  A corrupt one too big
+	 * for size_t (a 32-bit platform) saturates, so sbm_validate sees a count
+	 * the buffer cannot hold rather than a truncated one it can.
+	 */
+	{
+		const uint64 n = sbm_load_u64(&map->m_data[0]);
+
+		return n > SIZE_MAX ? SIZE_MAX : (size_t) n;
+	}
 }
 
 /*
@@ -1719,10 +1729,10 @@ sbm_chunk_rle_capacity_limit(const Sbm *map, const SbmIdx start,
 							 const size_t length, const size_t offset)
 {
 	/* Calculate where the data extends to */
-	const size_t data_end = start + length;
+	const SbmIdx data_end = start + length;
 
 	/* Round up to next VEC boundary (2048-aligned) */
-	size_t		capacity =
+	uint64		capacity =
 		((data_end + SBM_CHUNK_MAX_CAPACITY - 1) / SBM_CHUNK_MAX_CAPACITY) *
 		SBM_CHUNK_MAX_CAPACITY -
 		start;
@@ -1736,7 +1746,7 @@ sbm_chunk_rle_capacity_limit(const Sbm *map, const SbmIdx start,
 	{
 		uint8	   *p = sbm_get_chunk_data(map, next_offset);
 		const SbmIdx next_start = sbm_load_idx((const uint8 *) p);
-		const size_t available = next_start - start;
+		const uint64 available = next_start - start;
 
 		/* Use whichever is smaller: VEC-aligned or available space */
 		if (available < capacity)
@@ -1757,7 +1767,7 @@ sbm_chunk_rle_capacity_limit(const Sbm *map, const SbmIdx start,
 		capacity = SBM_CHUNK_RLE_MAX_CAPACITY;
 	}
 
-	return capacity;
+	return (size_t) capacity;
 }
 
 /*
@@ -2104,7 +2114,7 @@ sbm_small_set_header(Sbm *map, size_t nwords)
 static bool
 sbm_small_contains(const Sbm *map, uint64 idx)
 {
-	const size_t w = (size_t) (idx / 64);
+	const uint64 w = idx / 64;
 
 	if (w >= sbm_small_nwords(map))
 	{
@@ -2406,7 +2416,7 @@ sbm_coalesce_chunk(Sbm *map, SbmChunk *chunk, size_t offset,
 							 * Calculate new length as span from adjacent
 							 * start to end of current run
 							 */
-							const size_t new_length =
+							const uint64 new_length =
 								(start +
 								 run_length) -
 								adj_start;
@@ -2416,13 +2426,12 @@ sbm_coalesce_chunk(Sbm *map, SbmChunk *chunk, size_t offset,
 							 * looking past the current chunk (being absorbed)
 							 * to find the real next neighbor.
 							 */
-							const size_t
-										merge_data_end =
+							const SbmIdx merge_data_end =
 								adj_start +
 								new_length;
 							bool		can_coalesce =
 								true;
-							size_t		new_capacity =
+							uint64		new_capacity =
 								((merge_data_end +
 								  SBM_CHUNK_MAX_CAPACITY -
 								  1) /
@@ -2455,7 +2464,7 @@ sbm_coalesce_chunk(Sbm *map, SbmChunk *chunk, size_t offset,
 												 sbm_get_chunk_data(
 																	map,
 																	post_offset));
-								const size_t avail =
+								const uint64 avail =
 									next_start -
 									adj_start;
 
@@ -2574,12 +2583,12 @@ sbm_coalesce_chunk(Sbm *map, SbmChunk *chunk, size_t offset,
 				if (is_set_op && idx != SBM_IDX_MAX &&
 					idx >= adj_start)
 				{
-					const size_t idx_based_length =
+					const uint64 idx_based_length =
 						idx - adj_start + 1;
 
 					if (idx_based_length < adj_length)
 					{
-						adj_length = idx_based_length;
+						adj_length = (size_t) idx_based_length;
 					}
 				}
 				if (adj_length)
@@ -2605,7 +2614,7 @@ sbm_coalesce_chunk(Sbm *map, SbmChunk *chunk, size_t offset,
 							 * Calculate new length as span from this start to
 							 * end of adjacent run
 							 */
-							const size_t new_length =
+							const uint64 new_length =
 								(adj_start +
 								 adj_length) -
 								start;
@@ -2615,8 +2624,7 @@ sbm_coalesce_chunk(Sbm *map, SbmChunk *chunk, size_t offset,
 							 * looking past the adjacent chunk (being
 							 * absorbed) to find the real next neighbor.
 							 */
-							const size_t
-										r_data_end = start +
+							const SbmIdx r_data_end = start +
 								new_length;
 							const size_t r_adj_size =
 								sbm_chunk_get_size(
@@ -2627,7 +2635,7 @@ sbm_coalesce_chunk(Sbm *map, SbmChunk *chunk, size_t offset,
 								r_adj_size;
 							bool		can_coalesce =
 								true;
-							size_t		new_capacity =
+							uint64		new_capacity =
 								((r_data_end +
 								  SBM_CHUNK_MAX_CAPACITY -
 								  1) /
@@ -2654,8 +2662,7 @@ sbm_coalesce_chunk(Sbm *map, SbmChunk *chunk, size_t offset,
 												 sbm_get_chunk_data(
 																	map,
 																	r_post));
-								const size_t
-											avail =
+								const uint64 avail =
 									nxt -
 									start;
 
@@ -2938,8 +2945,8 @@ sbm_separate_rle_chunk(Sbm *map, SbmChunkSep *sep, const uint64 idx,
 	if (state == 0)
 	{
 		/* To unset, change the flag at the position of the idx to "mixed" ... */
-		const size_t vec_idx = (idx - aligned_idx) / SBM_BITS_PER_VECTOR;
-		const size_t bit_pos = (idx - aligned_idx) % SBM_BITS_PER_VECTOR;
+		const size_t vec_idx = (size_t) (idx - aligned_idx) / SBM_BITS_PER_VECTOR;
+		const size_t bit_pos = (size_t) (idx - aligned_idx) % SBM_BITS_PER_VECTOR;
 
 		SBM_CHUNK_SET_FLAGS(pivot_chunk.m_data[0], vec_idx,
 							SBM_PAYLOAD_MIXED);
@@ -3027,7 +3034,7 @@ sbm_separate_rle_chunk(Sbm *map, SbmChunkSep *sep, const uint64 idx,
 			{
 				/* The index of the first 0 bit. */
 				const size_t first_zero =
-					SBM_CHUNK_MAX_CAPACITY - amt_over;
+					(size_t) (SBM_CHUNK_MAX_CAPACITY - amt_over);
 				const size_t bv =
 					first_zero / SBM_BITS_PER_VECTOR;
 
@@ -3148,9 +3155,9 @@ sbm_separate_rle_chunk(Sbm *map, SbmChunkSep *sep, const uint64 idx,
 				idx > sep->target.start + sep->target.length)
 			{
 				const size_t vec_idx =
-					(idx - aligned_idx) / SBM_BITS_PER_VECTOR;
+					(size_t) (idx - aligned_idx) / SBM_BITS_PER_VECTOR;
 				const size_t bit_pos =
-					(idx - aligned_idx) % SBM_BITS_PER_VECTOR;
+					(size_t) (idx - aligned_idx) % SBM_BITS_PER_VECTOR;
 				const size_t existing_mixed =
 					sbm_chunk_get_size(&pivot_chunk) /
 					sizeof(SbmBitvec) -
@@ -3296,9 +3303,9 @@ sbm_separate_rle_chunk(Sbm *map, SbmChunkSep *sep, const uint64 idx,
 				 * "mixed" ...
 				 */
 				const size_t vec_idx =
-					(idx - aligned_idx) / SBM_BITS_PER_VECTOR;
+					(size_t) (idx - aligned_idx) / SBM_BITS_PER_VECTOR;
 				const size_t bit_pos =
-					(idx - aligned_idx) % SBM_BITS_PER_VECTOR;
+					(size_t) (idx - aligned_idx) % SBM_BITS_PER_VECTOR;
 
 				SBM_CHUNK_SET_FLAGS(pivot_chunk.m_data[0],
 									vec_idx, SBM_PAYLOAD_MIXED);
@@ -3361,7 +3368,7 @@ sbm_separate_rle_chunk(Sbm *map, SbmChunkSep *sep, const uint64 idx,
 			{
 				/* ... we need a run-length encoding (RLE), chunk ... */
 				/* Capacity is set before length to satisfy the invariant */
-				const size_t rle_length =
+				const uint64 rle_length =
 					sep->ex[i].end - sep->ex[i].start + 1;
 
 				sbm_chunk_set_rle(&lrc);
@@ -3412,7 +3419,7 @@ sbm_separate_rle_chunk(Sbm *map, SbmChunkSep *sep, const uint64 idx,
 					 * the following chunk's index range and the sequential
 					 * walk resolves lookups against the wrong chunk.
 					 */
-					size_t		right_cap =
+					uint64		right_cap =
 						(sep->target.start +
 						 sep->target.capacity) -
 						sep->ex[i].start;
@@ -3435,7 +3442,7 @@ sbm_separate_rle_chunk(Sbm *map, SbmChunkSep *sep, const uint64 idx,
 			{
 				/* ... we need a new sparse chunk, how long should it be? ... */
 				const size_t lrl =
-					sep->ex[i].end - sep->ex[i].start + 1;
+					(size_t) (sep->ex[i].end - sep->ex[i].start + 1);
 
 				/* ... how many flags can we mark as all ones? ... */
 				if (lrl >= SBM_BITS_PER_VECTOR)
@@ -4980,7 +4987,7 @@ sbm_remove(Sbm *map, const uint64 idx)
 	sbm_card_invalidate(map);
 	if (sbm_is_small(map))
 	{
-		const size_t w = (size_t) (idx / 64);
+		const uint64 w = idx / 64;
 
 		if (w < sbm_small_nwords(map))
 		{
@@ -5279,7 +5286,7 @@ sbm_map_set(Sbm *map, uint64 idx, const bool coalesce, SbmCursor *cur)
 			sbm_get_chunk_aligned_offset(idx) == start)
 		{
 			capacity = sbm_chunk_rle_capacity_limit(map, start,
-													idx - start + 1,
+													(size_t) (idx - start + 1),
 													offset);
 			sbm_chunk_rle_set_capacity(&chunk, capacity);
 		}
@@ -5424,6 +5431,8 @@ sbm_small_add(Sbm *map, uint64 idx)
 {
 	const size_t w = (size_t) (idx / 64);
 	size_t		n = sbm_small_nwords(map);
+
+	Assert(idx < SBM_SMALL_MAX_BITS);
 
 	if (w >= n)
 	{
@@ -5903,7 +5912,7 @@ sbm_maximum(const Sbm *map)
 double
 sbm_fill_factor(const Sbm *map)
 {
-	size_t		rank;
+	uint64		rank;
 	uint64		lo;
 	uint64		hi;
 	uint64		range;
@@ -5983,17 +5992,17 @@ sbm_get_size(const Sbm *map)
  * `map` is a pointer to the Sbm instance to be counted.
  * Returns the total number of elements in the sparse map.
  */
-size_t
+uint64
 sbm_cardinality(const Sbm *map)
 {
-	size_t		count;
+	uint64		count;
 
 	if (map == NULL)
 		return 0;
 	if (sbm_card_is_valid(map))
 		return sbm_card_get(map);
 	if (sbm_is_small(map))
-		count = (size_t) sbm_small_cardinality(map);
+		count = sbm_small_cardinality(map);
 	else
 		count = sbm_rank(map, 0, SBM_IDX_MAX, true);
 
@@ -6021,7 +6030,7 @@ sbm_cardinality(const Sbm *map)
  */
 void
 sbm_scan(const Sbm *map, void (*scanner) (uint64[], size_t, void *aux),
-		 size_t skip, void *aux)
+		 uint64 skip, void *aux)
 {
 	uint8	   *p;
 	size_t		count;
@@ -6054,8 +6063,11 @@ sbm_scan(const Sbm *map, void (*scanner) (uint64[], size_t, void *aux),
 		{
 			pg_prefetch(p + chunk_size + SBM_SIZEOF_OVERHEAD);
 		}
+		/* a chunk holds fewer than 2^31 members, so this clamp skips it all */
 		skipped =
-			sbm_chunk_scan(&chunk, start, scanner, skip, aux);
+			sbm_chunk_scan(&chunk, start, scanner,
+						   (size_t) Min(skip, (uint64) SBM_CHUNK_RLE_MAX_LENGTH),
+						   aux);
 		if (skip)
 		{
 			Assert(skip >= skipped);
@@ -6230,15 +6242,15 @@ sbm_expand_rle_as_words(const SbmChunk *rle_chunk, SbmIdx rle_start,
 						const int *target_cap_flags)
 {
 	const size_t rle_len = sbm_chunk_rle_get_length(rle_chunk);
-	const size_t rle_set_start = (size_t) rle_start;
-	const size_t rle_set_end = rle_set_start + rle_len;
+	const SbmIdx rle_set_start = rle_start;
+	const SbmIdx rle_set_end = rle_set_start + rle_len;
 	int			i;
 
 	for (i = 0; i < (int) SBM_FLAGS_PER_INDEX; i++)
 	{
-		const size_t slot_start =
-			(size_t) target_start + (size_t) i * SBM_BITS_PER_VECTOR;
-		const size_t slot_end = slot_start + SBM_BITS_PER_VECTOR;
+		const SbmIdx slot_start =
+			target_start + (SbmIdx) i * SBM_BITS_PER_VECTOR;
+		const SbmIdx slot_end = slot_start + SBM_BITS_PER_VECTOR;
 
 		if (target_cap_flags)
 		{
@@ -6265,10 +6277,10 @@ sbm_expand_rle_as_words(const SbmChunk *rle_chunk, SbmIdx rle_start,
 			/* Boundary slot: partial overlap */
 			SbmBitvec	mask = 0;
 			size_t		lo = (rle_set_start > slot_start) ?
-				(rle_set_start - slot_start) :
+				(size_t) (rle_set_start - slot_start) :
 				0;
 			size_t		hi = (rle_set_end < slot_end) ?
-				(rle_set_end - slot_start) :
+				(size_t) (rle_set_end - slot_start) :
 				SBM_BITS_PER_VECTOR;
 
 			if (hi == SBM_BITS_PER_VECTOR)
@@ -6486,12 +6498,11 @@ sbm_append_rle_chunk(Sbm **resultp, SbmIdx start, size_t capacity,
 			const size_t last_len =
 				sbm_chunk_rle_get_length(&last_chunk);
 
-			if ((size_t) last_start + last_len == (size_t) start)
+			if (last_start + last_len == start)
 			{
 				/* Contiguous: extend the last chunk in place */
-				size_t		new_len = last_len + length;
-				size_t		new_cap = (size_t) start + capacity -
-					(size_t) last_start;
+				uint64		new_len = (uint64) last_len + length;
+				uint64		new_cap = start + capacity - last_start;
 
 				if (new_len <= SBM_CHUNK_RLE_MAX_LENGTH &&
 					new_cap <= SBM_CHUNK_RLE_MAX_CAPACITY)
@@ -6513,15 +6524,14 @@ sbm_append_rle_chunk(Sbm **resultp, SbmIdx start, size_t capacity,
 				sbm_chunk_get_capacity(&last_chunk);
 
 			if (last_run == last_cap && last_run > 0 &&
-				(size_t) last_start + last_run == (size_t) start)
+				last_start + last_run == start)
 			{
 				/*
 				 * All-ones sparse chunk contiguous with this RLE: replace
 				 * sparse with RLE
 				 */
-				size_t		new_len = last_run + length;
-				size_t		new_cap = (size_t) start + capacity -
-					(size_t) last_start;
+				uint64		new_len = (uint64) last_run + length;
+				uint64		new_cap = start + capacity - last_start;
 
 				if (new_len <= SBM_CHUNK_RLE_MAX_LENGTH &&
 					new_cap <= SBM_CHUNK_RLE_MAX_CAPACITY)
@@ -6603,8 +6613,8 @@ typedef struct sbm_emitter
 	 * that already lies inside it.
 	 */
 	SbmIdx		rle_start;
-	size_t		rle_end;
-	size_t		rle_len;
+	uint64		rle_end;
+	uint64		rle_len;
 	bool		have_rle;
 } SbmEmitter;
 
@@ -6665,8 +6675,7 @@ sbm_emit_words(SbmEmitter *e, SbmIdx start,
 	 * to repair it here -- an overlap means an upstream caller computed the
 	 * wrong output start.
 	 */
-	Assert(!(e->have_rle && (size_t) start >= (size_t) e->rle_start &&
-			 (size_t) start < e->rle_end));
+	Assert(!(e->have_rle && start >= e->rle_start && start < e->rle_end));
 
 	sbm_emit_flush(e);
 	memcpy(e->words, words, sizeof(e->words));
@@ -6694,8 +6703,8 @@ sbm_emit_words(SbmEmitter *e, SbmIdx start,
  * miscomputes how many bytes to remove and walks off the buffer.
  */
 static void
-sbm_emit_rle(SbmEmitter *e, SbmIdx start, size_t capacity,
-			 size_t length)
+sbm_emit_rle(SbmEmitter *e, SbmIdx start, uint64 capacity,
+			 uint64 length)
 {
 	/*
 	 * Never advertise capacity the run does not fill.  Callers round a
@@ -6718,9 +6727,9 @@ sbm_emit_rle(SbmEmitter *e, SbmIdx start, size_t capacity,
 	(void) capacity;
 
 	{
-		const size_t full = (length / SBM_CHUNK_MAX_CAPACITY) *
+		const uint64 full = (length / SBM_CHUNK_MAX_CAPACITY) *
 			SBM_CHUNK_MAX_CAPACITY;
-		const size_t rem = length - full;
+		const size_t rem = (size_t) (length - full);
 		SbmBitvec	w[32];
 		int			c[32];
 		int			i;
@@ -6734,17 +6743,17 @@ sbm_emit_rle(SbmEmitter *e, SbmIdx start, size_t capacity,
 		const size_t rle_max = (SBM_CHUNK_RLE_MAX_LENGTH /
 								SBM_CHUNK_MAX_CAPACITY) *
 			SBM_CHUNK_MAX_CAPACITY;
-		size_t		done = 0;
+		uint64		done = 0;
 
 		while (done < full)
 		{
-			const size_t piece = Min(full - done, rle_max);
-			const SbmIdx piece_start = (SbmIdx) ((size_t) start + done);
+			const size_t piece = (size_t) Min(full - done, rle_max);
+			const SbmIdx piece_start = start + done;
 
 			sbm_emit_flush(e);
 			sbm_append_rle_chunk(e->resultp, piece_start, piece, piece);
 			e->rle_start = piece_start;
-			e->rle_end = (size_t) piece_start + piece;
+			e->rle_end = piece_start + piece;
 			e->rle_len = piece;
 			e->have_rle = true;
 			done += piece;
@@ -6783,8 +6792,7 @@ sbm_emit_rle(SbmEmitter *e, SbmIdx start, size_t capacity,
 		 * confused by the boundary case.
 		 */
 		e->have_rle = false;
-		sbm_emit_words(e,
-					   (SbmIdx) ((size_t) start + full), w, c);
+		sbm_emit_words(e, start + full, w, c);
 		return;
 	}
 }
@@ -6845,7 +6853,7 @@ sbm_emit_run(SbmEmitter *e, uint64 lo, uint64 hi)
 		for (bit = lo; bit < head_hi; bit++)
 		{
 			const uint64 off = bit - chunk_start;
-			const size_t slot = off / SBM_BITS_PER_VECTOR;
+			const size_t slot = (size_t) (off / SBM_BITS_PER_VECTOR);
 
 			w[slot] |= (SbmBitvec) 1
 				<< (off % SBM_BITS_PER_VECTOR);
@@ -6864,12 +6872,7 @@ sbm_emit_run(SbmEmitter *e, uint64 lo, uint64 hi)
 	 * chunks as RLE and forwards its own sub-chunk tail to the words path.
 	 * capacity == length keeps the RLE chunk-aligned.
 	 */
-	{
-		const size_t len = (size_t) (hi - body_lo);
-
-		sbm_emit_rle(e, (SbmIdx) body_lo, len, len);
-		return;
-	}
+	sbm_emit_rle(e, (SbmIdx) body_lo, hi - body_lo, hi - body_lo);
 }
 
 /*
@@ -6889,7 +6892,7 @@ sbm_emit_run(SbmEmitter *e, uint64 lo, uint64 hi)
  * style).
  */
 static inline uint64
-sbm_offset_abs_start(uint64 src_start, ssize_t offset, bool *neg)
+sbm_offset_abs_start(uint64 src_start, int64 offset, bool *neg)
 {
 	uint64		down;
 
@@ -6915,7 +6918,7 @@ sbm_offset_abs_start(uint64 src_start, ssize_t offset, bool *neg)
 }
 
 Sbm *
-sbm_offset(const Sbm *map, ssize_t offset)
+sbm_offset(const Sbm *map, int64 offset)
 {
 	size_t		count;
 	size_t		chunk_bytes;
@@ -7046,12 +7049,12 @@ sbm_offset(const Sbm *map, ssize_t offset)
 			if (neg)
 			{
 				/* Run starts mag bits below 0. */
-				if (rle_len <= (size_t) mag)
+				if (rle_len <= mag)
 				{
 					goto next_chunk;	/* wholly below 0 */
 				}
 				clipped_start = 0;
-				new_len = rle_len - (size_t) mag;
+				new_len = rle_len - (size_t) mag;	/* mag < rle_len */
 			}
 			else
 			{
@@ -7064,11 +7067,8 @@ sbm_offset(const Sbm *map, ssize_t offset)
 			}
 
 			/* Align the start to chunk boundary */
-			aligned_start =
-				(SbmIdx) sbm_get_chunk_aligned_offset(
-													  (size_t) clipped_start);
-			rle_offset_in_chunk =
-				(size_t) clipped_start - aligned_start;
+			aligned_start = sbm_get_chunk_aligned_offset(clipped_start);
+			rle_offset_in_chunk = (size_t) (clipped_start - aligned_start);
 
 			if (rle_offset_in_chunk == 0)
 			{
@@ -7245,7 +7245,7 @@ sbm_offset(const Sbm *map, ssize_t offset)
 			if (!neg)
 			{
 				const uint64 oa =
-					sbm_get_chunk_aligned_offset((size_t) mag);
+					sbm_get_chunk_aligned_offset(mag);
 
 				out_aligned = oa;
 				intra_shift = (ssize_t) (mag - oa);
@@ -7612,9 +7612,9 @@ sbm_next_member(const Sbm *map, uint64 prev_idx, SbmCursor *cur)
 		if (prev_idx != SBM_IDX_MAX &&
 			prev_idx >= (uint64) n * 64)
 			return SBM_IDX_MAX;
-		w = (size_t) (from / 64);
-		if (w >= n)
+		if (from / 64 >= n)
 			return SBM_IDX_MAX;
+		w = (size_t) (from / 64);
 		word = words[w] & (~(uint64) 0 << (from % 64));
 		for (;;)
 		{
@@ -8260,7 +8260,7 @@ sbm_run_pair_counts(const Sbm *a, const Sbm *b, uint64 *cnt_a,
 		*uni = ca + cb - ci;
 }
 
-size_t
+uint64
 sbm_union_cardinality(const Sbm *a, const Sbm *b)
 {
 	uint64		uni = 0;
@@ -8270,10 +8270,10 @@ sbm_union_cardinality(const Sbm *a, const Sbm *b)
 	if (sbm_is_empty(b))
 		return sbm_cardinality(a);
 	sbm_run_pair_counts(a, b, NULL, NULL, NULL, &uni);
-	return (size_t) uni;
+	return uni;
 }
 
-size_t
+uint64
 sbm_intersection_cardinality(const Sbm *a, const Sbm *b)
 {
 	uint64		inter = 0;
@@ -8281,10 +8281,10 @@ sbm_intersection_cardinality(const Sbm *a, const Sbm *b)
 	if (sbm_is_empty(a) || sbm_is_empty(b))
 		return 0;
 	sbm_run_pair_counts(a, b, NULL, NULL, &inter, NULL);
-	return (size_t) inter;
+	return inter;
 }
 
-size_t
+uint64
 sbm_difference_cardinality(const Sbm *a, const Sbm *b)
 {
 	uint64		ca = 0,
@@ -8295,7 +8295,7 @@ sbm_difference_cardinality(const Sbm *a, const Sbm *b)
 	if (sbm_is_empty(b))
 		return sbm_cardinality(a);
 	sbm_run_pair_counts(a, b, &ca, NULL, &inter, NULL);
-	return (size_t) (ca - inter);
+	return ca - inter;
 }
 
 bool
@@ -8580,8 +8580,13 @@ sbm_to_array(const Sbm *map, uint64 *out, size_t *n_out)
 
 	if (out == NULL)
 	{
-		/* Query: just count. */
-		*n_out = sbm_is_empty(map) ? 0 : sbm_cardinality(map);
+		/*
+		 * Query: just count.  A count no array could hold (above SIZE_MAX,
+		 * possible on a 32-bit platform) is reported as SIZE_MAX.
+		 */
+		uint64		card = sbm_is_empty(map) ? 0 : sbm_cardinality(map);
+
+		*n_out = card > SIZE_MAX ? SIZE_MAX : (size_t) card;
 		return;
 	}
 
@@ -9013,7 +9018,7 @@ sbm_extract_range(const Sbm *map, uint64 lo, uint64 hi)
 	return r;
 }
 
-size_t
+uint64
 sbm_xor_cardinality(const Sbm *a, const Sbm *b)
 {
 	uint64		inter = 0,
@@ -9026,7 +9031,7 @@ sbm_xor_cardinality(const Sbm *a, const Sbm *b)
 	if (sbm_is_empty(b))
 		return sbm_cardinality(a);
 	sbm_run_pair_counts(a, b, NULL, NULL, &inter, &uni);
-	return (size_t) (uni - inter);
+	return uni - inter;
 }
 
 Sbm *
@@ -10095,15 +10100,19 @@ sbm_serialized_size(const Sbm *map)
 static size_t
 sbm_bound_from_counts(uint64 nwin, uint64 nvec, int top)
 {
-	size_t		chunkform;
-	size_t		smallform = 0;
+	uint64		chunkform;
+	uint64		smallform = 0;
+	uint64		bound;
 
 	chunkform = SBM_SIZEOF_OVERHEAD +
 		nwin * (SBM_SIZEOF_OVERHEAD + sizeof(SbmBitvec)) +
 		nvec * sizeof(SbmBitvec);
 	if (top >= 0)
 		smallform = SBM_SIZEOF_OVERHEAD + (top + 1) * sizeof(uint64);
-	return SBM_WIRE_HEADER_LEN + Max(chunkform, smallform);
+	bound = SBM_WIRE_HEADER_LEN + Max(chunkform, smallform);
+
+	/* a bound no buffer could reach (possible on 32-bit) saturates */
+	return bound > SIZE_MAX ? SIZE_MAX : (size_t) bound;
 }
 
 /*
@@ -10443,26 +10452,26 @@ sbm_intersection(const Sbm *a, const Sbm *b)
 		bool		a_rle;
 		size_t		a_cap;
 		size_t		a_size;
-		size_t		a_end;
+		SbmIdx		a_end;
 		const SbmIdx b_start = sbm_load_idx((const uint8 *) bp);
 		SbmChunk	b_chunk;
 		bool		b_rle;
 		size_t		b_cap;
 		size_t		b_size;
-		size_t		b_end;
+		SbmIdx		b_end;
 
 		sbm_chunk_init(&a_chunk, ap + SBM_SIZEOF_OVERHEAD);
 		a_rle = SBM_IS_CHUNK_RLE(&a_chunk);
 		a_cap = sbm_chunk_get_capacity(&a_chunk);
 		a_size = sbm_chunk_get_size(&a_chunk);
-		a_end = (size_t) a_start + a_cap;	/* one past last bit */
+		a_end = a_start + a_cap;	/* one past last bit */
 
 		/* Read chunk b metadata */
 		sbm_chunk_init(&b_chunk, bp + SBM_SIZEOF_OVERHEAD);
 		b_rle = SBM_IS_CHUNK_RLE(&b_chunk);
 		b_cap = sbm_chunk_get_capacity(&b_chunk);
 		b_size = sbm_chunk_get_size(&b_chunk);
-		b_end = (size_t) b_start + b_cap;
+		b_end = b_start + b_cap;
 
 		/* Prefetch next chunks */
 		if (ai + 1 < a_count)
@@ -10534,21 +10543,22 @@ sbm_intersection(const Sbm *a, const Sbm *b)
 			 * a has set bits [a_start, a_start+a_len), b has [b_start,
 			 * b_start+b_len)
 			 */
-			const size_t overlap_start =
+			const SbmIdx overlap_start =
 				a_start > b_start ? a_start : b_start;
-			const size_t a_set_end = (size_t) a_start + a_len;
-			const size_t b_set_end = (size_t) b_start + b_len;
-			const size_t overlap_end =
+			const SbmIdx a_set_end = a_start + a_len;
+			const SbmIdx b_set_end = b_start + b_len;
+			const SbmIdx overlap_end =
 				a_set_end < b_set_end ? a_set_end : b_set_end;
 
 			if (overlap_start < overlap_end)
 			{
+				/* within a, so bounded by an RLE length */
 				const size_t run_len =
-					overlap_end - overlap_start;
+					(size_t) (overlap_end - overlap_start);
 				const size_t run_cap =
 					run_len;	/* tight capacity */
 
-				sbm_append_rle_chunk(&result, (SbmIdx) overlap_start, run_cap, run_len);
+				sbm_append_rle_chunk(&result, overlap_start, run_cap, run_len);
 			}
 		}
 		else
@@ -10639,7 +10649,7 @@ sbm_intersection(const Sbm *a, const Sbm *b)
  */
 static void
 sbm_emit_chunk_bits(Sbm **resultp, const SbmChunk *chunk, bool is_rle,
-					SbmIdx chunk_start, size_t from, size_t to)
+					SbmIdx chunk_start, uint64 from, uint64 to)
 {
 	SbmBitvec	words[SBM_FLAGS_PER_INDEX];
 	int			cap_flags[SBM_FLAGS_PER_INDEX];
@@ -10658,10 +10668,10 @@ sbm_emit_chunk_bits(Sbm **resultp, const SbmChunk *chunk, bool is_rle,
 	if (is_rle)
 	{
 		const size_t len = sbm_chunk_rle_get_length(chunk);
-		const size_t set_start = (size_t) chunk_start;
-		const size_t set_end = set_start + len;
-		const size_t emit_start = from > set_start ? from : set_start;
-		const size_t emit_end = to < set_end ? to : set_end;
+		const uint64 set_start = chunk_start;
+		const uint64 set_end = set_start + len;
+		const uint64 emit_start = from > set_start ? from : set_start;
+		const uint64 emit_end = to < set_end ? to : set_end;
 
 		/*
 		 * The clipped run [emit_start, emit_end) can start and end anywhere
@@ -10680,7 +10690,7 @@ sbm_emit_chunk_bits(Sbm **resultp, const SbmChunk *chunk, bool is_rle,
 
 			memset(&em, 0, sizeof(em));
 			em.resultp = resultp;
-			sbm_emit_run(&em, (uint64) emit_start, (uint64) emit_end);
+			sbm_emit_run(&em, emit_start, emit_end);
 			sbm_emit_flush(&em);
 		}
 		return;
@@ -10690,8 +10700,10 @@ sbm_emit_chunk_bits(Sbm **resultp, const SbmChunk *chunk, bool is_rle,
 	sbm_expand_sparse_chunk(chunk, words, cap_flags);
 
 	/* Mask out bits outside [from, to) range relative to chunk_start */
-	rel_from = from - (size_t) chunk_start;
-	rel_to = to - (size_t) chunk_start;
+	/* a sparse chunk spans one window, so these fit */
+	Assert(from >= chunk_start && to - chunk_start <= SBM_CHUNK_MAX_CAPACITY);
+	rel_from = (size_t) (from - chunk_start);
+	rel_to = (size_t) (to - chunk_start);
 	start_word = (int) (rel_from / SBM_BITS_PER_VECTOR);
 	end_word =
 		(int) ((rel_to + SBM_BITS_PER_VECTOR - 1) / SBM_BITS_PER_VECTOR);
@@ -10807,19 +10819,19 @@ sbm_difference(const Sbm *a, const Sbm *b)
 		/* Read chunk a metadata */
 		const SbmIdx a_start = sbm_load_idx((const uint8 *) ap);
 		SbmChunk	a_chunk;
-		size_t		a_cursor;
+		SbmIdx		a_cursor;
 		uint8	   *bp_save;
 		size_t		bi_save;
 		bool		a_rle;
 		size_t		a_cap_bits;
 		size_t		a_size;
-		size_t		a_end;
+		SbmIdx		a_end;
 
 		sbm_chunk_init(&a_chunk, ap + SBM_SIZEOF_OVERHEAD);
 		a_rle = SBM_IS_CHUNK_RLE(&a_chunk);
 		a_cap_bits = sbm_chunk_get_capacity(&a_chunk);
 		a_size = sbm_chunk_get_size(&a_chunk);
-		a_end = (size_t) a_start + a_cap_bits;
+		a_end = a_start + a_cap_bits;
 
 		/* Prefetch next a chunk */
 		if (ai + 1 < a_count)
@@ -10837,7 +10849,7 @@ sbm_difference(const Sbm *a, const Sbm *b)
 		}
 
 		/* Cursor: tracks how far into this a chunk we've processed */
-		a_cursor = (size_t) a_start;
+		a_cursor = a_start;
 
 		/* Save b state so we can iterate b within this a chunk */
 		bp_save = bp;
@@ -10851,19 +10863,19 @@ sbm_difference(const Sbm *a, const Sbm *b)
 			SbmChunk	b_chunk;
 			bool		b_rle;
 			size_t		b_cap_bits;
-			size_t		ov_start;
-			size_t		ov_end;
+			SbmIdx		ov_start;
+			SbmIdx		ov_end;
 			size_t		b_size;
-			size_t		b_end;
+			SbmIdx		b_end;
 
 			sbm_chunk_init(&b_chunk, bp + SBM_SIZEOF_OVERHEAD);
 			b_rle = SBM_IS_CHUNK_RLE(&b_chunk);
 			b_cap_bits = sbm_chunk_get_capacity(&b_chunk);
 			b_size = sbm_chunk_get_size(&b_chunk);
-			b_end = (size_t) b_start + b_cap_bits;
+			b_end = b_start + b_cap_bits;
 
 			/* b is past a: no more overlaps for this a chunk */
-			if (a_end <= (size_t) b_start)
+			if (a_end <= b_start)
 				break;
 
 			/* b is entirely before cursor: skip b */
@@ -10875,8 +10887,8 @@ sbm_difference(const Sbm *a, const Sbm *b)
 			}
 
 			/* Overlap region */
-			ov_start = (size_t) b_start > a_cursor ?
-				(size_t) b_start :
+			ov_start = b_start > a_cursor ?
+				b_start :
 				a_cursor;
 			ov_end = a_end < b_end ? a_end : b_end;
 
@@ -10892,16 +10904,16 @@ sbm_difference(const Sbm *a, const Sbm *b)
 				 * Work on the runs directly: within the overlap, a's set bits
 				 * survive exactly where b's run does not reach.
 				 */
-				const size_t b_set_end = (size_t) b_start +
+				const SbmIdx b_set_end = b_start +
 					sbm_chunk_rle_get_length(&b_chunk);
 
 				/* a's bits before b's run starts. */
-				if (ov_start < (size_t) b_start)
+				if (ov_start < b_start)
 				{
-					const size_t upto =
-						ov_end < (size_t) b_start ?
+					const SbmIdx upto =
+						ov_end < b_start ?
 						ov_end :
-						(size_t) b_start;
+						b_start;
 
 					sbm_emit_chunk_bits(&result, &a_chunk, a_rle, a_start, ov_start, upto);
 				}
@@ -10909,7 +10921,7 @@ sbm_difference(const Sbm *a, const Sbm *b)
 				/* a's bits after b's run ends. */
 				if (b_set_end < ov_end)
 				{
-					const size_t from =
+					const SbmIdx from =
 						b_set_end > ov_start ? b_set_end :
 						ov_start;
 
@@ -11094,8 +11106,8 @@ sbm_union(const Sbm *a, const Sbm *b)
 	 * is partially consumed, the cursor holds the absolute bit position up to
 	 * which bits have been emitted.
 	 */
-	size_t		a_cursor = 0;
-	size_t		b_cursor = 0;
+	SbmIdx		a_cursor = 0;
+	SbmIdx		b_cursor = 0;
 
 	sbm_check_invariants(a);
 	sbm_check_invariants(b);
@@ -11152,33 +11164,33 @@ sbm_union(const Sbm *a, const Sbm *b)
 		bool		a_rle;
 		size_t		a_cap_bits;
 		size_t		a_size;
-		size_t		a_end;
+		SbmIdx		a_end;
 		const SbmIdx b_start = sbm_load_idx((const uint8 *) bp);
 		SbmChunk	b_chunk;
 		bool		b_rle;
 		size_t		b_cap_bits;
 		size_t		b_size;
-		size_t		b_end;
+		SbmIdx		b_end;
 
 		sbm_chunk_init(&a_chunk, ap + SBM_SIZEOF_OVERHEAD);
 		a_rle = SBM_IS_CHUNK_RLE(&a_chunk);
 		a_cap_bits = sbm_chunk_get_capacity(&a_chunk);
 		a_size = sbm_chunk_get_size(&a_chunk);
-		a_end = (size_t) a_start + a_cap_bits;
+		a_end = a_start + a_cap_bits;
 
 		/* Ensure cursor is at least at chunk start. */
-		if (a_cursor < (size_t) a_start)
-			a_cursor = (size_t) a_start;
+		if (a_cursor < a_start)
+			a_cursor = a_start;
 
 		/* ---- Read chunk b metadata ---- */
 		sbm_chunk_init(&b_chunk, bp + SBM_SIZEOF_OVERHEAD);
 		b_rle = SBM_IS_CHUNK_RLE(&b_chunk);
 		b_cap_bits = sbm_chunk_get_capacity(&b_chunk);
 		b_size = sbm_chunk_get_size(&b_chunk);
-		b_end = (size_t) b_start + b_cap_bits;
+		b_end = b_start + b_cap_bits;
 
-		if (b_cursor < (size_t) b_start)
-			b_cursor = (size_t) b_start;
+		if (b_cursor < b_start)
+			b_cursor = b_start;
 
 		/* Prefetch next chunks for the merge loop. */
 		if (ai + 1 < a_count)
@@ -11189,7 +11201,7 @@ sbm_union(const Sbm *a, const Sbm *b)
 		/* ---- No overlap: a's remaining range ends before b's ---- */
 		if (a_end <= b_cursor)
 		{
-			if (a_cursor == (size_t) a_start)
+			if (a_cursor == a_start)
 			{
 				sbm_copy_chunk_to_result(&result, ap);
 			}
@@ -11206,7 +11218,7 @@ sbm_union(const Sbm *a, const Sbm *b)
 		/* ---- No overlap: b's remaining range ends before a's ---- */
 		if (b_end <= a_cursor)
 		{
-			if (b_cursor == (size_t) b_start)
+			if (b_cursor == b_start)
 			{
 				sbm_copy_chunk_to_result(&result, bp);
 			}
@@ -11222,9 +11234,9 @@ sbm_union(const Sbm *a, const Sbm *b)
 
 		/* ---- Chunks overlap.  Compute overlap bounds. ---- */
 		{
-			const size_t ov_start =
+			const SbmIdx ov_start =
 				a_cursor > b_cursor ? a_cursor : b_cursor;
-			const size_t ov_end = a_end < b_end ? a_end : b_end;
+			const SbmIdx ov_end = a_end < b_end ? a_end : b_end;
 
 			/* ---- Fast path: both sparse, aligned ---- */
 
@@ -11252,8 +11264,8 @@ sbm_union(const Sbm *a, const Sbm *b)
 				 * other map's next chunk then starts at a later window, so
 				 * two aligned chunks are always consumed from the start.
 				 */
-				Assert(a_cursor == (size_t) a_start &&
-					   b_cursor == (size_t) b_start);
+				Assert(a_cursor == a_start &&
+					   b_cursor == b_start);
 				sbm_expand_sparse_chunk(&a_chunk, aw, ac);
 				sbm_expand_sparse_chunk(&b_chunk, bw, bc);
 
@@ -11301,19 +11313,19 @@ sbm_union(const Sbm *a, const Sbm *b)
 						sbm_chunk_rle_get_length(&b_chunk);
 
 					/* Clamp each run to the overlap window. */
-					const size_t a_set_end =
-						(size_t) a_start + a_len;
-					const size_t b_set_end =
-						(size_t) b_start + b_len;
-					const size_t as = ov_start > (size_t) a_start ?
+					const SbmIdx a_set_end =
+						a_start + a_len;
+					const SbmIdx b_set_end =
+						b_start + b_len;
+					const SbmIdx as = ov_start > a_start ?
 						ov_start :
-						(size_t) a_start;
-					const size_t ae =
+						a_start;
+					const SbmIdx ae =
 						ov_end < a_set_end ? ov_end : a_set_end;
-					const size_t bs = ov_start > (size_t) b_start ?
+					const SbmIdx bs = ov_start > b_start ?
 						ov_start :
-						(size_t) b_start;
-					const size_t be =
+						b_start;
+					const SbmIdx be =
 						ov_end < b_set_end ? ov_end : b_set_end;
 
 					const bool	a_has = as < ae;
@@ -11321,13 +11333,13 @@ sbm_union(const Sbm *a, const Sbm *b)
 
 					if (a_has && b_has)
 					{
-						const size_t min_s = as < bs ? as : bs;
-						const size_t max_e = ae > be ? ae : be;
+						const SbmIdx min_s = as < bs ? as : bs;
+						const SbmIdx max_e = ae > be ? ae : be;
 
 						/* Check if runs overlap or are adjacent. */
-						const size_t earlier_e PG_USED_FOR_ASSERTS_ONLY =
+						const SbmIdx earlier_e PG_USED_FOR_ASSERTS_ONLY =
 							as <= bs ? ae : be;
-						const size_t later_s PG_USED_FOR_ASSERTS_ONLY =
+						const SbmIdx later_s PG_USED_FOR_ASSERTS_ONLY =
 							as <= bs ? bs : as;
 
 						/*
@@ -11336,16 +11348,20 @@ sbm_union(const Sbm *a, const Sbm *b)
 						 * touch -- a gap between them is impossible.
 						 */
 						Assert(earlier_e >= later_s);
-						sbm_append_rle_chunk(&result, (SbmIdx) min_s,
-											 max_e - min_s, max_e - min_s);
+						/* each run is within one RLE chunk, so so is this */
+						sbm_append_rle_chunk(&result, min_s,
+											 (size_t) (max_e - min_s),
+											 (size_t) (max_e - min_s));
 					}
 					else if (a_has)
 					{
-						sbm_append_rle_chunk(&result, (SbmIdx) as, ae - as, ae - as);
+						sbm_append_rle_chunk(&result, as, (size_t) (ae - as),
+											 (size_t) (ae - as));
 					}
 					else if (b_has)
 					{
-						sbm_append_rle_chunk(&result, (SbmIdx) bs, be - bs, be - bs);
+						sbm_append_rle_chunk(&result, bs, (size_t) (be - bs),
+											 (size_t) (be - bs));
 					}
 					/* else: no set bits in overlap -- nothing to emit. */
 
@@ -11443,13 +11459,13 @@ sbm_union(const Sbm *a, const Sbm *b)
 
 		sbm_chunk_init(&c, ap + SBM_SIZEOF_OVERHEAD);
 		sz = sbm_chunk_get_size(&c);
-		if (a_cursor > 0 && a_cursor > (size_t) start)
+		if (a_cursor > 0 && a_cursor > start)
 		{
 			/* Partially consumed: emit only remaining bits. */
 			const bool	rle = SBM_IS_CHUNK_RLE(&c);
 			const size_t cap_bits = sbm_chunk_get_capacity(&c);
 
-			sbm_emit_chunk_bits(&result, &c, rle, start, a_cursor, (size_t) start + cap_bits);
+			sbm_emit_chunk_bits(&result, &c, rle, start, a_cursor, start + cap_bits);
 		}
 		else
 		{
@@ -11467,12 +11483,12 @@ sbm_union(const Sbm *a, const Sbm *b)
 
 		sbm_chunk_init(&c, bp + SBM_SIZEOF_OVERHEAD);
 		sz = sbm_chunk_get_size(&c);
-		if (b_cursor > 0 && b_cursor > (size_t) start)
+		if (b_cursor > 0 && b_cursor > start)
 		{
 			const bool	rle = SBM_IS_CHUNK_RLE(&c);
 			const size_t cap_bits = sbm_chunk_get_capacity(&c);
 
-			sbm_emit_chunk_bits(&result, &c, rle, start, b_cursor, (size_t) start + cap_bits);
+			sbm_emit_chunk_bits(&result, &c, rle, start, b_cursor, start + cap_bits);
 		}
 		else
 		{
@@ -11656,7 +11672,7 @@ sbm_split(Sbm *map, uint64 idx, Sbm *other)
 
 		if (begin != end)
 		{
-			const size_t rank = sbm_rank(map, begin, end, true);
+			const uint64 rank = sbm_rank(map, begin, end, true);
 
 			idx = sbm_select(map, rank / 2, true);
 		}
@@ -11722,7 +11738,7 @@ sbm_split(Sbm *map, uint64 idx, Sbm *other)
 					d_chunk;
 		SbmIdx		src_start;
 		size_t		mid_off;
-		size_t		j;
+		uint64		j;
 
 		src_start = sbm_load_idx((const uint8 *) src);
 
@@ -11984,7 +12000,7 @@ sbm_select(const Sbm *map, uint64 n, bool value)
 			const SbmIdx start =
 				sbm_load_idx((const uint8 *) p);
 			SbmChunk	chunk;
-			ssize_t		new_n;
+			int64		new_n;
 			size_t		index;
 
 			/*
@@ -12002,8 +12018,8 @@ sbm_select(const Sbm *map, uint64 n, bool value)
 			p += SBM_SIZEOF_OVERHEAD;
 			sbm_chunk_init(&chunk, p);
 
-			new_n = (ssize_t) n;
-			index = sbm_chunk_select(&chunk, (ssize_t) n, &new_n,
+			new_n = (int64) n;
+			index = sbm_chunk_select(&chunk, (int64) n, &new_n,
 									 value);
 			if (new_n == -1)
 			{
@@ -12022,13 +12038,13 @@ sbm_select(const Sbm *map, uint64 n, bool value)
 	}
 }
 
-static size_t
+static uint64
 sbm_rank_range(const Sbm *map, uint64 begin, uint64 end, bool value)
 {
 	uint64		span_width;
-	size_t		width;
+	uint64		width;
 	size_t		count;
-	size_t		set = 0;
+	uint64		set = 0;
 	uint8	   *p;
 	size_t		i;
 
@@ -12041,14 +12057,14 @@ sbm_rank_range(const Sbm *map, uint64 begin, uint64 end, bool value)
 
 	/*
 	 * Range width as a count.  When [begin, end] spans the entire 64-bit
-	 * universe (begin == 0, end == PG_UINT64_MAX) the +1 overflows to 0;
-	 * size_t saturates instead so the derived unset count below stays
+	 * universe (begin == 0, end == PG_UINT64_MAX) the +1 overflows to 0; the
+	 * count saturates instead so the derived unset count below stays
 	 * meaningful.  A full-universe unset query is degenerate (the answer is
 	 * ~2^64) but must not wrap.
 	 */
 	span_width = end - begin;
 	width =
-		(span_width == PG_UINT64_MAX) ? SIZE_MAX : (size_t) (span_width + 1);
+		(span_width == PG_UINT64_MAX) ? PG_UINT64_MAX : span_width + 1;
 
 	/*
 	 * Rank is computed from the set-bit count only.  A bit is set iff some
@@ -12136,19 +12152,19 @@ sbm_rank_range(const Sbm *map, uint64 begin, uint64 end, bool value)
 	{
 		return set;
 	}
-	Assert((uint64) set <= width);
-	return (size_t) (width - set);
+	Assert(set <= width);
+	return width - set;
 }
 
-size_t
+uint64
 sbm_rank(const Sbm *map, uint64 begin, uint64 end, bool value)
 {
 	/* A NULL map is the empty set: every index in the range is unset. */
 	if (map == NULL)
 	{
 		if (!value && begin <= end)
-			return end - begin == PG_UINT64_MAX ? SIZE_MAX :
-				(size_t) (end - begin + 1);
+			return end - begin == PG_UINT64_MAX ? PG_UINT64_MAX :
+				end - begin + 1;
 		return 0;
 	}
 	if (sbm_is_small(map))
@@ -12156,7 +12172,7 @@ sbm_rank(const Sbm *map, uint64 begin, uint64 end, bool value)
 		Sbm		   *m = sbm_materialize(map);
 
 		{
-			const size_t r = sbm_rank(m, begin, end, value);
+			const uint64 r = sbm_rank(m, begin, end, value);
 
 			sbm_free(m);
 			return r;
@@ -12167,7 +12183,7 @@ sbm_rank(const Sbm *map, uint64 begin, uint64 end, bool value)
 }
 
 uint64
-sbm_span(const Sbm *map, uint64 idx, size_t len, bool value)
+sbm_span(const Sbm *map, uint64 idx, uint64 len, bool value)
 {
 	SbmRunIter	it;
 	uint64		lo = 0,
@@ -12444,11 +12460,11 @@ sbm_locator_build(const Sbm *map)
 		size_t		n_sb;
 		uint64	   *sb_start;
 		size_t	   *sb_offset;
-		size_t	   *sb_prefix;
+		uint64	   *sb_prefix;
 		uint8	   *base;
 		uint8	   *p;
 		size_t		stream_end;
-		size_t		running = 0;	/* set bits in chunks strictly before p */
+		uint64		running = 0;	/* set bits in chunks strictly before p */
 		size_t		sb = 0;
 		size_t		last_offset = 0;
 		SbmIdx		last_start = 0;
@@ -12466,7 +12482,7 @@ sbm_locator_build(const Sbm *map)
 
 		sb_start = (uint64 *) palloc(n_sb * sizeof(uint64));
 		sb_offset = (size_t *) palloc(n_sb * sizeof(size_t));
-		sb_prefix = (size_t *) palloc(n_sb * sizeof(size_t));
+		sb_prefix = (uint64 *) palloc(n_sb * sizeof(uint64));
 
 		/*
 		 * One O(count) walk: sample every stride-th chunk into the superblock
@@ -12580,7 +12596,7 @@ sbm_locator_find_sb(const SbmLocator *loc, uint64 idx)
  * are window-aligned and ascending, so the superblock boundary never splits a
  * chunk and sb_prefix is exact.
  */
-static size_t
+static uint64
 sbm_locator_rank_upto(const SbmLocator *loc, uint64 x)
 {
 	const Sbm  *map = loc->map;
@@ -12588,7 +12604,7 @@ sbm_locator_rank_upto(const SbmLocator *loc, uint64 x)
 	const size_t stream_end =
 		(size_t) map->m_data_used - SBM_SIZEOF_OVERHEAD;
 	const size_t sb = sbm_locator_find_sb(loc, x);
-	size_t		set = loc->sb_prefix[sb];
+	uint64		set = loc->sb_prefix[sb];
 	uint8	   *p = base + loc->sb_offset[sb];
 
 	for (;;)
@@ -12681,11 +12697,11 @@ sbm_locator_contains(const SbmLocator *loc, uint64 idx)
 	}
 }
 
-size_t
+uint64
 sbm_locator_rank(const SbmLocator *loc, uint64 lo, uint64 hi, bool value)
 {
-	size_t		hi_cnt;
-	size_t		lo_cnt;
+	uint64		hi_cnt;
+	uint64		lo_cnt;
 
 	/*
 	 * value=false and staleness both fall back to the plain path: the unset
@@ -12735,7 +12751,7 @@ sbm_locator_select(const SbmLocator *loc, uint64 n, bool value)
 	uint8	   *base;
 	size_t		stream_end;
 	size_t		sb = 0;
-	ssize_t		rem;
+	int64		rem;
 	uint8	   *p;
 
 	/*
@@ -12775,7 +12791,7 @@ sbm_locator_select(const SbmLocator *loc, uint64 n, bool value)
 		{
 			const size_t mid = l + (r - l) / 2;
 
-			if ((uint64) loc->sb_prefix[mid] <= n)
+			if (loc->sb_prefix[mid] <= n)
 			{
 				l = mid + 1;
 			}
@@ -12787,13 +12803,13 @@ sbm_locator_select(const SbmLocator *loc, uint64 n, bool value)
 		sb = (l == 0) ? 0 : l - 1;
 	}
 
-	rem = (ssize_t) (n - (uint64) loc->sb_prefix[sb]);
+	rem = (int64) (n - loc->sb_prefix[sb]);
 	p = base + loc->sb_offset[sb];
 	for (;;)
 	{
 		const SbmIdx s = sbm_load_idx((const uint8 *) p);
 		SbmChunk	chunk;
-		ssize_t		new_n;
+		int64		new_n;
 		size_t		index;
 		size_t		next_off;
 
