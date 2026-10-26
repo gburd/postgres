@@ -536,7 +536,7 @@ FROM (VALUES ('tenant IN (1, 3) AND a |><| ''{100,160}'''),
              ('tenant IN (0, 6) AND a IS NOT NULL')) AS v(q),
      (VALUES ('mk_bd'), ('mk_3'), ('mk_bn')) AS w(t)
 WHERE t <> 'mk_bn' OR q !~ '\|'
-ORDER BY t, q;
+ORDER BY t COLLATE "C", q COLLATE "C";
 SELECT mk_backward('mk_3', 'tenant IN (1, 2) AND a |=| ANY (ARRAY[5, 77]) AND id BETWEEN 3000 AND 6000')
   = mk_run('mk_seq', 'tenant IN (1, 2) AND a |=| ANY (ARRAY[5, 77]) AND id BETWEEN 3000 AND 6000', 'seq')
   AS same;
@@ -821,7 +821,7 @@ SELECT t, op, f, mk_order(t, op, f)
        unnest('{|<|,|>>|}'::text[]) op,
        unnest(ARRAY['true', 'a && ''{1,5,77}''',
                     'a <@ ''{1,2,3,4,5,6,7,8,9,10}''', 'a IS NOT NULL']) f
-  ORDER BY 1, 2, 3;
+  ORDER BY t COLLATE "C", op COLLATE "C", f COLLATE "C";
 SET enable_seqscan = off;
 SET enable_bitmapscan = off;
 EXPLAIN (COSTS OFF)
