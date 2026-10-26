@@ -160,6 +160,11 @@ CREATE TEMP TABLE wc_grow (id int, doc jsonb);
 INSERT INTO wc_grow SELECT g, jsonb_build_object('id', g) FROM generate_series(1, 2000) g;
 CREATE INDEX wc_grow_doc ON wc_grow USING bark (doc bark_jsonb_wildcard_ops);
 ANALYZE wc_grow;
+-- The sample lives in the index's relcache entry; the open cursor keeps it
+-- (under RELCACHE_FORCE_RELEASE an entry nothing holds open is rebuilt,
+-- with a fresh sample, after every statement).
+BEGIN;
+DECLARE pin CURSOR FOR SELECT id FROM wc_grow WHERE doc #= '["none", 0]';
 SELECT est, act FROM wc_est('wc_grow', 'doc #>= ''["g", 0]''');
 INSERT INTO wc_grow SELECT g, jsonb_build_object('g', g) FROM generate_series(1, 3000) g;
 INSERT INTO wc_grow SELECT g, jsonb_build_object('f', g) FROM generate_series(1, 3000) g;
@@ -171,6 +176,7 @@ RESET enable_seqscan;
 RESET enable_bitmapscan;
 SELECT est < act AS low, act FROM wc_est('wc_grow', 'doc #>= ''["g", 0]''');
 SELECT est > 1 AS from_fraction, act FROM wc_est('wc_grow', 'doc #>= ''["f", 0]''');
+COMMIT;
 DROP TABLE wc_grow;
 
 -- An empty build is one leaf, which cannot say: here a table never
