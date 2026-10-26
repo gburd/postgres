@@ -523,22 +523,25 @@ RESET test_versioned_tableam.keep_locator;
 DROP TABLE tq;
 -- An exclusion constraint's index that keeps its entries under TU_Affected
 -- gets no new entry, so its constraint is checked after the update
--- (ExecCheckHotExclusion), as after a HOT update.  hashint8(1) =
--- hashint8(2^32), so changing k from 1 to 2^32 gives the hash index the same
--- entry; the change to a needs an entry in tx_a, so the update is not HOT,
+-- (ExecCheckHotExclusion), as after a HOT update.  An interval hashes as
+-- hashint8() of its span in microseconds, and spans of 1 and 2^32
+-- microseconds collide, so changing k from one to the other gives the hash
+-- index the same entry (int8 itself would not do: its equality implies image
+-- equality, so the index is not asked about two different int8 values); the
+-- change to a needs an entry in tx_a, so the update is not HOT,
 -- and with keep_locator = pretend the row keeps its locator.  A conflict
 -- with another row is found by that check alone.  tx_a is partial, so the
 -- executor evaluates it: a plain btree index, whose access method cannot
 -- compare entries, would leave k modified too, and the hash index, which
 -- stores no tags, would then make the row move.
-CREATE TABLE tx (id int, k int8, a int, EXCLUDE USING hash (k WITH =))
+CREATE TABLE tx (id int, k interval, a int, EXCLUDE USING hash (k WITH =))
   USING heap_versioned;
 CREATE INDEX tx_a ON tx (a) WHERE a > 0;
-INSERT INTO tx VALUES (1, 1, 1), (2, 4294967296, 2);
+INSERT INTO tx VALUES (1, '00:00:00.000001', 1), (2, '01:11:34.967296', 2);
 SET test_versioned_tableam.keep_locator = pretend;
-UPDATE tx SET k = 4294967296, a = 10 WHERE id = 1;
+UPDATE tx SET k = '01:11:34.967296', a = 10 WHERE id = 1;
 ERROR:  conflicting key value violates exclusion constraint "tx_k_excl"
-DETAIL:  Key (k)=(4294967296) conflicts with existing key (k)=(4294967296).
+DETAIL:  Key (k)=(@ 1 hour 11 mins 34.967296 secs) conflicts with existing key (k)=(@ 1 hour 11 mins 34.967296 secs).
 DELETE FROM tx WHERE id = 2;
 SELECT test_versioned_reset();
  test_versioned_reset 
@@ -546,7 +549,7 @@ SELECT test_versioned_reset();
  
 (1 row)
 
-UPDATE tx SET k = 4294967296, a = 10 WHERE id = 1;
+UPDATE tx SET k = '01:11:34.967296', a = 10 WHERE id = 1;
 SELECT * FROM test_versioned_seen;
     counter    | n 
 ---------------+---
