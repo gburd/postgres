@@ -1492,6 +1492,24 @@ reads the page (bark_mk_accept, bark_mk_seen) and copies the survivors as a
 TID array instead.  Bitmap scans and the GIN interface's streams take each
 item's members as a batch.
 
+A bitmap scan (bark_getbitmap, and every GIN-interface path that fills a
+TIDBitmap) adds TIDs through a BarkTbmBatch: tbm_add_tuples caches a heap
+page's entry only within one call, so a call per TID pays a hash lookup
+per TID.  The batch, allocated once per scan at 6 kB (below AllocSet's
+chunk limit), keeps two arrays of 512 single TIDs, one exact and one to
+recheck (a bitmap keeps the recheck flag per heap page, so splitting by it
+changes nothing), flushed when one is full and once when amgetbitmap's
+additions end.  bark_tbm_add_pos copies a page's items with the counts in
+locals, since a store through an ItemPointer may alias them under
+-fno-strict-aliasing.  A bitmap is a set and is not read before amgetbitmap
+returns, so a leaf boundary needs no flush.  A LIST or POSTING entry's
+members are already an array, decoded per item, and go to tbm_add_tuples
+directly.  An index scan's own bitmap of an index whose TID stride exceeds
+TBM_MAX_TUPLES_PER_PAGE folds each TID before it joins the batch
+(bark_mk_gin_tbm_add).  This is the batching of nbtree's btgetbitmap
+proposed for core in the "Batch B-tree TIDs when building a bitmap"
+thread on pgsql-hackers.
+
 bark_gettuple settles the row returned last at the top of each call (the
 kill_prior_tuple test, bark_kill_prior, and the entry verdict of
 "Versioned multikey scans") before bark_step_member moves the position:

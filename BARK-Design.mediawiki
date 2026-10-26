@@ -1243,6 +1243,12 @@ BENCHMARK-2026-10b.md, at 5d4e2883b10)
   one pivot-suffix reserve, a page validator after every page change in
   cassert builds, and a read stream in VACUUM's scan. ''(done, branch
   bark-rethink: see "As built (RethinkDB review)" below)''
+* '''BMP''' -- bounded memory and batched TIDs in bitmap and GIN-interface
+  scans. ''(part 1, batched <code>tbm_add_tuples</code>, done, branch
+  bark-bmp: every bitmap path adds single TIDs through a fixed 6 kB batch
+  per scan, one exact and one recheck array, as the "Batch B-tree TIDs when
+  building a bitmap" patch does for nbtree; LIST and POSTING members go in
+  as the array they already are. README "Scans".)''
 
 '''As built (RethinkDB review).'''
 * ''R3.1, one pivot-suffix reserve.'' <code>BarkPivotSuffixReserve</code>

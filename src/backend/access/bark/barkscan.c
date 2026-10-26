@@ -4919,6 +4919,130 @@ bark_gettuple(IndexScanDesc scan, ScanDirection dir)
 }
 
 /*
+ * TIDs go into a TIDBitmap in batches.  tbm_add_tuples looks up a heap
+ * page's entry once per run of TIDs on that page within one call, so a call
+ * per TID pays a hash lookup per TID.  A bitmap scan collects its single
+ * TIDs into a batch per recheck flag (the flag is kept per heap page in the
+ * bitmap, so splitting by it is exact), allocated once per scan below
+ * AllocSet's chunk limit and flushed when full and when the scan's
+ * additions end (bark_tbm_end).  The order in which TIDs reach a bitmap
+ * does not matter and nothing reads it until amgetbitmap returns, so a page
+ * boundary needs no flush.  A LIST or POSTING entry's members are an array
+ * already and go straight in.
+ */
+#define BARK_TBM_BATCH_SIZE	512
+
+typedef struct BarkTbmBatch
+{
+	TIDBitmap  *tbm;
+	int			ntids[2];		/* exact, recheck */
+	ItemPointerData tids[2][BARK_TBM_BATCH_SIZE];
+} BarkTbmBatch;
+
+StaticAssertDecl(sizeof(BarkTbmBatch) <= ALLOCSET_SEPARATE_THRESHOLD,
+				 "BarkTbmBatch must stay below AllocSet's chunk limit");
+
+/* Start adding TIDs to tbm, through the scan's batch. */
+static BarkTbmBatch *
+bark_tbm_begin(BarkScanOpaque so, TIDBitmap *tbm)
+{
+	if (so->tbmBatch == NULL)
+		so->tbmBatch = MemoryContextAlloc(so->scanCxt, sizeof(BarkTbmBatch));
+	so->tbmBatch->tbm = tbm;
+	so->tbmBatch->ntids[0] = so->tbmBatch->ntids[1] = 0;
+	return so->tbmBatch;
+}
+
+static void
+bark_tbm_flush(BarkTbmBatch *batch, int r)
+{
+	tbm_add_tuples(batch->tbm, batch->tids[r], batch->ntids[r], r == 1);
+	batch->ntids[r] = 0;
+}
+
+/* Add the n TIDs at tids to the batch's bitmap, with recheck. */
+static inline void
+bark_tbm_add(BarkTbmBatch *batch, ItemPointer tids, int n, bool recheck)
+{
+	int			r = recheck ? 1 : 0;
+
+	if (n > 1)
+		tbm_add_tuples(batch->tbm, tids, n, recheck);
+	else if (n == 1)
+	{
+		if (batch->ntids[r] == BARK_TBM_BATCH_SIZE)
+			bark_tbm_flush(batch, r);
+		batch->tids[r][batch->ntids[r]++] = *tids;
+	}
+}
+
+/*
+ * Add every TID of currPos's items to the batch's bitmap, each with a
+ * recheck when recheck or its item asks for one, and return how many.  The
+ * counts are kept in locals while copying: PostgreSQL is built with
+ * -fno-strict-aliasing, so a count in the batch would be reloaded after
+ * every TID stored.
+ */
+static int64
+bark_tbm_add_pos(BarkScanOpaque so, BarkTbmBatch *batch, bool recheck)
+{
+	int			nexact = batch->ntids[0];
+	int			nrecheck = batch->ntids[1];
+	int64		ntids = 0;
+
+	for (int i = so->currPos.firstItem; i <= so->currPos.lastItem; i++)
+	{
+		BarkScanPosItem *item = &so->currPos.items[i];
+		bool		r = recheck || (item->indexOffset & BARK_ITEM_RECHECK) != 0;
+
+		if (item->indexOffset & BARK_ITEM_MEMBERS)
+		{
+			ItemPointer tids;
+			int			n = bark_item_tids(so, i, &tids);
+
+			tbm_add_tuples(batch->tbm, tids, n, r);
+			ntids += n;
+			continue;
+		}
+		if (!r)
+		{
+			if (nexact == BARK_TBM_BATCH_SIZE)
+			{
+				batch->ntids[0] = nexact;
+				bark_tbm_flush(batch, 0);
+				nexact = 0;
+			}
+			batch->tids[0][nexact++] = item->heapTid;
+		}
+		else
+		{
+			if (nrecheck == BARK_TBM_BATCH_SIZE)
+			{
+				batch->ntids[1] = nrecheck;
+				bark_tbm_flush(batch, 1);
+				nrecheck = 0;
+			}
+			batch->tids[1][nrecheck++] = item->heapTid;
+		}
+		ntids++;
+	}
+	batch->ntids[0] = nexact;
+	batch->ntids[1] = nrecheck;
+	return ntids;
+}
+
+/* Flush what the batch holds into its bitmap. */
+static void
+bark_tbm_end(BarkTbmBatch *batch)
+{
+	for (int r = 0; r < 2; r++)
+	{
+		if (batch->ntids[r] > 0)
+			bark_tbm_flush(batch, r);
+	}
+}
+
+/*
  * GIN's query interface (procedures 10-13; "Which interface first." in
  * BARK-Design.mediawiki).  A scan key on a column whose class has
  * procedure 10 and not 8 is answered row by row, as ginget.c answers it:
@@ -5103,7 +5227,8 @@ bark_mk_gin_read(IndexScanDesc scan, const BarkMkBoundary *b, int entry,
 }
 
 /*
- * Add tid to tbm with recheck.  A TIDBitmap holds offsets only up to
+ * Add the n TIDs at tids to the batch's bitmap with recheck.  A TIDBitmap
+ * holds offsets only up to
  * TBM_MAX_TUPLES_PER_PAGE, so the bitmap of an index scan (gintbm) of an
  * index whose TID stride is larger keeps heap block B's offset O at page
  * B * ginfold + (O - 1) / TBM_MAX_TUPLES_PER_PAGE, offset
@@ -5117,46 +5242,55 @@ bark_mk_gin_read(IndexScanDesc scan, const BarkMkBoundary *b, int entry,
  * has no page, and the scan errors; a TID set of its own would lift that.
  */
 static void
-bark_mk_gin_tbm_add(BarkMkScanState *mk, TIDBitmap *tbm, ItemPointer tid,
-					bool recheck)
+bark_mk_gin_tbm_add(BarkMkScanState *mk, BarkTbmBatch *batch,
+					ItemPointer tids, int n, bool recheck)
 {
-	BlockNumber blk;
-	OffsetNumber off;
-	ItemPointerData folded;
-
-	if (tbm != mk->gintbm || mk->ginfold == 1)
+	if (batch->tbm != mk->gintbm || mk->ginfold == 1)
 	{
-		tbm_add_tuples(tbm, tid, 1, recheck);
+		bark_tbm_add(batch, tids, n, recheck);
 		return;
 	}
-	blk = ItemPointerGetBlockNumber(tid);
-	off = ItemPointerGetOffsetNumber(tid) - 1;
-	if (blk > (MaxBlockNumber - (mk->ginfold - 1)) / mk->ginfold)
-		ereport(ERROR,
-				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("heap block %u is too large for an index scan through GIN's query interface",
-						blk)));
-	ItemPointerSet(&folded,
-				   blk * mk->ginfold + off / TBM_MAX_TUPLES_PER_PAGE,
-				   off % TBM_MAX_TUPLES_PER_PAGE + 1);
-	tbm_add_tuples(tbm, &folded, 1, recheck);
+	for (int i = 0; i < n; i++)
+	{
+		BlockNumber blk = ItemPointerGetBlockNumber(&tids[i]);
+		OffsetNumber off = ItemPointerGetOffsetNumber(&tids[i]) - 1;
+		ItemPointerData folded;
+
+		if (blk > (MaxBlockNumber - (mk->ginfold - 1)) / mk->ginfold)
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("heap block %u is too large for an index scan through GIN's query interface",
+							blk)));
+		ItemPointerSet(&folded,
+					   blk * mk->ginfold + off / TBM_MAX_TUPLES_PER_PAGE,
+					   off % TBM_MAX_TUPLES_PER_PAGE + 1);
+		bark_tbm_add(batch, &folded, 1, recheck);
+	}
 }
 
 /*
- * Read boundary b's entries straight into tbm, each TID with recheck when
- * recheck or its entry asks for one.  Returns how many TIDs were added.
+ * Read boundary b's entries straight into the batch's bitmap, each TID with
+ * recheck when recheck or its entry asks for one.  Returns how many TIDs
+ * were added.
  */
 static int64
 bark_mk_gin_read_bitmap(IndexScanDesc scan, const BarkMkBoundary *b,
-						bool recheck, TIDBitmap *tbm)
+						bool recheck, BarkTbmBatch *batch)
 {
 	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
 	int64		ntids = 0;
+
+	bool		fold = batch->tbm == so->mk->gintbm && so->mk->ginfold > 1;
 
 	if (!bark_mk_gin_first(scan, b))
 		return 0;
 	do
 	{
+		if (!fold)
+		{
+			ntids += bark_tbm_add_pos(so, batch, recheck);
+			continue;
+		}
 		for (int i = so->currPos.firstItem; i <= so->currPos.lastItem; i++)
 		{
 			ItemPointer tids;
@@ -5164,8 +5298,7 @@ bark_mk_gin_read_bitmap(IndexScanDesc scan, const BarkMkBoundary *b,
 			bool		r = recheck || (so->currPos.items[i].indexOffset &
 										BARK_ITEM_RECHECK) != 0;
 
-			for (int j = 0; j < n; j++)
-				bark_mk_gin_tbm_add(so->mk, tbm, &tids[j], r);
+			bark_mk_gin_tbm_add(so->mk, batch, tids, n, r);
 			ntids += n;
 		}
 	} while (bark_steppage(scan, ForwardScanDirection));
@@ -5304,9 +5437,10 @@ bark_mk_gin_union(BarkMkScanState *mk, ScanKey sk, Datum query,
  * The rows that scan key sk, with query as its argument, accepts: sorted by
  * TID into *out, with their recheck flags.  Returns how many.
  *
- * With tbm (a bitmap scan) the rows go into tbm instead, and the count is of
- * the TIDs added.  When the key's rows are the union of its boundaries'
- * (bark_mk_gin_union) each boundary is read straight into tbm, as ginget.c's
+ * With batch (a bitmap scan) the rows go into its bitmap instead, and the
+ * count is of the TIDs added.  When the key's rows are the union of its
+ * boundaries' (bark_mk_gin_union) each boundary is read straight into the
+ * bitmap, as ginget.c's
  * collectMatchBitmap reads a partial match: no stream, no sort and no merge,
  * and the memory is the bitmap's, bounded by work_mem (lossy beyond it).
  * That is the common shape of a partial match over a whole path.  Any other
@@ -5314,7 +5448,7 @@ bark_mk_gin_union(BarkMkScanState *mk, ScanKey sk, Datum query,
  */
 static int64
 bark_mk_gin_key(IndexScanDesc scan, ScanKey sk, Datum query, BarkGinItem **out,
-				TIDBitmap *tbm)
+				BarkTbmBatch *batch)
 {
 	BarkMkScanState *mk = ((BarkScanOpaque) scan->opaque)->mk;
 	int32		nentries = 0;
@@ -5365,7 +5499,7 @@ bark_mk_gin_key(IndexScanDesc scan, ScanKey sk, Datum query, BarkGinItem **out,
 	}
 	check = palloc0_array(bool, nentries + 1);
 	tcheck = palloc_array(GinTernaryValue, nentries + 1);
-	direct = tbm != NULL && !nulltest && mode == GIN_SEARCH_MODE_DEFAULT &&
+	direct = batch != NULL && !nulltest && mode == GIN_SEARCH_MODE_DEFAULT &&
 		bark_mk_gin_union(mk, sk, query, nentries, extra, qkeys, nullFlags,
 						  check, tcheck, &rmask);
 
@@ -5394,7 +5528,7 @@ bark_mk_gin_key(IndexScanDesc scan, ScanKey sk, Datum query, BarkGinItem **out,
 		if (direct)
 			nadded += bark_mk_gin_read_bitmap(scan, &b,
 											  (rmask & (((uint32) 1) << i)) != 0,
-											  tbm);
+											  batch);
 		else
 			bark_mk_gin_read(scan, &b, i, &streams[nstreams++]);
 	}
@@ -5516,10 +5650,11 @@ bark_mk_gin_key(IndexScanDesc scan, ScanKey sk, Datum query, BarkGinItem **out,
 		}
 		CHECK_FOR_INTERRUPTS();
 	}
-	if (tbm != NULL)
+	if (batch != NULL)
 	{
 		for (int i = 0; i < nout; i++)
-			bark_mk_gin_tbm_add(mk, tbm, &(*out)[i].tid, (*out)[i].recheck);
+			bark_mk_gin_tbm_add(mk, batch, &(*out)[i].tid, 1,
+								(*out)[i].recheck);
 	}
 	return nout;
 }
@@ -5570,7 +5705,8 @@ bark_mk_gin_combine(BarkGinItem **a, int na, BarkGinItem *b, int nb,
  * Add the rows that a scan with keys on a column that uses GIN's query
  * interface accepts, every key accepting each, as in GIN, to tbm, with their
  * recheck flags, and return how many TIDs were added.  A single key on the
- * column passes tbm down, so that bark_mk_gin_key can fill it directly.
+ * column passes the bitmap's batch down, so that bark_mk_gin_key can fill it
+ * directly.
  * The work happens in a context of its own, deleted before returning, and
  * no buffer stays pinned.  Both a bitmap scan and an index scan
  * (bark_mk_gin_gettuple) come here, so both are bounded alike.
@@ -5585,7 +5721,8 @@ bark_mk_gin_items(IndexScanDesc scan, TIDBitmap *tbm)
 	MemoryContext oldcxt = MemoryContextSwitchTo(cxt);
 	BarkGinItem *acc = NULL;
 	int			nacc = 0;
-	TIDBitmap  *ktbm = mk->nkeys == 1 ? tbm : NULL;
+	BarkTbmBatch *batch = bark_tbm_begin((BarkScanOpaque) scan->opaque, tbm);
+	BarkTbmBatch *kbatch = mk->nkeys == 1 ? batch : NULL;
 	int64		nadded = 0;
 
 	Assert(scan->parallel_scan == NULL);
@@ -5619,18 +5756,18 @@ bark_mk_gin_items(IndexScanDesc scan, TIDBitmap *tbm)
 
 				if (nulls[e])
 					continue;
-				if (ktbm != NULL)
+				if (kbatch != NULL)
 				{
 					/* The bitmap is the union. */
-					nadded += bark_mk_gin_key(scan, sk, elems[e], NULL, ktbm);
+					nadded += bark_mk_gin_key(scan, sk, elems[e], NULL, kbatch);
 					continue;
 				}
 				none = bark_mk_gin_key(scan, sk, elems[e], &one, NULL);
 				nres = bark_mk_gin_combine(&res, nres, one, none, false);
 			}
 		}
-		else if (ktbm != NULL)
-			nadded = bark_mk_gin_key(scan, sk, sk->sk_argument, NULL, ktbm);
+		else if (kbatch != NULL)
+			nadded = bark_mk_gin_key(scan, sk, sk->sk_argument, NULL, kbatch);
 		else
 			nres = bark_mk_gin_key(scan, sk, sk->sk_argument, &res, NULL);
 
@@ -5649,12 +5786,13 @@ bark_mk_gin_items(IndexScanDesc scan, TIDBitmap *tbm)
 	mk->startlatch = mk->instart = false;
 
 	MemoryContextSwitchTo(oldcxt);
-	if (ktbm == NULL)
+	if (kbatch == NULL)
 	{
 		for (int i = 0; i < nacc; i++)
-			bark_mk_gin_tbm_add(mk, tbm, &acc[i].tid, acc[i].recheck);
+			bark_mk_gin_tbm_add(mk, batch, &acc[i].tid, 1, acc[i].recheck);
 		nadded = nacc;
 	}
+	bark_tbm_end(batch);
 	MemoryContextDelete(cxt);
 	return nadded;
 }
@@ -5865,6 +6003,7 @@ int64
 bark_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 {
 	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	BarkTbmBatch *batch;
 	int64		ntids = 0;
 
 	if (so->mk != NULL)
@@ -5873,18 +6012,12 @@ bark_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 		return bark_mk_gin_items(scan, tbm);
 	if (!bark_first(scan, ForwardScanDirection))
 		return 0;
+	batch = bark_tbm_begin(so, tbm);
 	do
 	{
-		for (int i = so->currPos.firstItem; i <= so->currPos.lastItem; i++)
-		{
-			ItemPointer tids;
-			int			n = bark_item_tids(so, i, &tids);
-
-			tbm_add_tuples(tbm, tids, n,
-						   (so->currPos.items[i].indexOffset & BARK_ITEM_RECHECK) != 0);
-			ntids += n;
-		}
+		ntids += bark_tbm_add_pos(so, batch, false);
 	} while (bark_steppage(scan, ForwardScanDirection));
+	bark_tbm_end(batch);
 	return ntids;
 }
 
@@ -5911,6 +6044,8 @@ bark_endscan(IndexScanDesc scan)
 		pfree(so->markTuples);
 	if (so->entryTids)
 		pfree(so->entryTids);
+	if (so->tbmBatch)
+		pfree(so->tbmBatch);
 	if (so->killRuns)
 		pfree(so->killRuns);
 	if (so->keyCmp)
