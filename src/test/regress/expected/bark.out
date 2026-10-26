@@ -8089,6 +8089,10 @@ DECLARE
 BEGIN
   SET LOCAL enable_seqscan = off;
   SET LOCAL enable_bitmapscan = off;
+  -- bark_cnt_cmp counts its calls with nextval(), which a parallel worker
+  -- cannot run; the planner does not look at an opclass's support
+  -- functions, so keep the scan in this backend.
+  SET LOCAL debug_parallel_query = off;
   EXECUTE 'EXPLAIN (COSTS OFF, FORMAT JSON) ' || q INTO plan;
   node := plan->0->'Plan';
   WHILE node->>'Index Name' IS NULL AND node->'Plans' IS NOT NULL LOOP
