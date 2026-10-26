@@ -1514,7 +1514,9 @@ bark_mk_partition_keys(IndexScanDesc scan)
 		else
 			scan->keyData[n++] = *sk;
 	}
-	memcpy(&scan->keyData[n], moved, m * sizeof(ScanKeyData));
+	/* keyData is NULL in a scan without keys, and memcpy must not see that */
+	if (m > 0)
+		memcpy(&scan->keyData[n], moved, m * sizeof(ScanKeyData));
 	pfree(moved);
 	so->numberOfKeys = n;
 	mk->keys = &scan->keyData[n];
