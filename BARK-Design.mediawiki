@@ -1185,11 +1185,6 @@ place of an inverted AM, without changing the scalar design above.
   that matches through several keys once. The meta page records whether the
   index has multikey rows. It needs heap TID order, so that (key, TID) names
   exactly one entry member. Design: [[#Multikey keys|Multikey keys]] below.
-  ''(done: design 76d2f802ab2; M1a catalog interface 36e18a3ca93; M1b
-  insert and build ac12fa1e140; M1c scans 181eb9d700d; M1d planner
-  3d965d5537d (no parallel or backward plans, amproperty), 60c38f44e86
-  (ordering operators on the multikey column) and 90fc2758f2f (costing).
-  See "As built" under "Scans")''
 * '''Operator classes on RUM's model.''' BARK takes GIN's support
   functions for extracted keys (extract a value's keys; extract a query's
   keys, with partial match; consistent) and RUM's ordering functions
@@ -1218,8 +1213,7 @@ place of an inverted AM, without changing the scalar design above.
   heap recheck). A scan walks the ranges in order, as BARK's array scan
   walks an IN-list, re-descending only where the next range starts past the
   page. An operator class may provide either interface; one written for
-  pg_extended_btree ports to BARK unchanged. ''(the pg_extended_btree
-  interface, procedures 7-9, is built and used by M1c's scans and M5a's
+  pg_extended_btree ports to BARK unchanged. As built: the
   wildcard class; M2a, GIN's query interface (procedures 10-13, partial
   match included) in bitmap scans, is built: "As built (M2a)" under
   "Which interface first.", P1, merging its TID streams with required
