@@ -122,11 +122,11 @@ INSERT INTO mk_quals (q, gin) VALUES
   ('tenant = 4 AND a IS NULL', false), ('tenant = 4 AND a IS NOT NULL', false),
   ('tenant = 5', false), ('tenant IN (1, 6)', false), ('tenant >= 5', false),
   ('a && ''{1,5,77}'' AND id < 5000', false);
-SELECT n, q, (mk_compare(q, CASE WHEN gin
+SELECT n, q, c.*
+  FROM mk_quals, mk_compare(q, CASE WHEN gin
     THEN '{mk_gin,mk_b1,mk_b2,mk_bn,mk_ins}'::text[]
     WHEN q LIKE '%a %' THEN '{mk_b1,mk_b2,mk_bn,mk_ins}'
-    ELSE '{mk_b2,mk_bn,mk_ins}' END)).*
-  FROM mk_quals ORDER BY n;
+    ELSE '{mk_b2,mk_bn,mk_ins}' END) c ORDER BY n;
 
 -- The range class: boundaries that are half-bounded, strict, closed below
 -- and open above, unions of ranges (a ScalarArrayOp), and points that
@@ -157,7 +157,7 @@ INSERT INTO mk_rquals (q) VALUES
   ('tenant IN (2, 3) AND a |?| ANY (ARRAY[30, 3])'),
   ('a |~| 1004'), ('a |~| ANY (ARRAY[1004, 1050])'),
   ('a |~| ANY (ARRAY[1000, 1003])'), ('a |~| ANY (ARRAY[1002, 1001])');
-SELECT n, q, (mk_compare(q, '{mk_r1,mk_rn,mk_bd}')).* FROM mk_rquals ORDER BY n;
+SELECT n, q, c.* FROM mk_rquals, mk_compare(q, '{mk_r1,mk_rn,mk_bd}') c ORDER BY n;
 
 -- NULLs in the fixed column form a group of their own.
 CREATE TABLE mk_nulls (id int, tenant int, a int4[]);
@@ -490,12 +490,13 @@ SELECT bark_multikey_mark_restore('mk_b1_a', '<@(anyarray,anyarray)',
 CREATE TABLE mk_3 AS SELECT * FROM mk_rows();
 CREATE INDEX mk_3_tai ON mk_3 USING bark
   (tenant, a bark_int4_array_range_ops, id);
-SELECT q, (mk_compare(q, '{mk_3}')).* FROM (VALUES
+SELECT q, c.* FROM (VALUES
   ('tenant = 1 AND a && ''{5,77,150}'' AND id < 9000'),
   ('tenant = 1 AND a && ''{5,77,150}'' AND id > 9000'),
   ('tenant IN (1, 2) AND a |=| ANY (ARRAY[5, 77]) AND id BETWEEN 3000 AND 6000'),
   ('tenant = 1 AND a |><| ''{5,40}'' AND id < 9000'),
-  ('tenant = 3 AND a |>| 250 AND id > 15000')) AS v(q);
+  ('tenant = 3 AND a |>| 250 AND id > 15000')) AS v(q),
+  mk_compare(q, '{mk_3}') c;
 
 -- Backward over ranges, strict ends and the NULL entries, on an ascending
 -- and a descending extracted column, and with a key after it.
@@ -716,7 +717,7 @@ SELECT count(*), count(DISTINCT id), md5(string_agg(id::text, ',' ORDER BY id))
   FROM mk_b2;
 SELECT count(*), count(DISTINCT id), md5(string_agg(id::text, ',' ORDER BY id))
   FROM mk_seq;
-SELECT n, q, (mk_compare(q, '{mk_b2}')).* FROM mk_quals
+SELECT n, q, c.* FROM mk_quals, mk_compare(q, '{mk_b2}') c
   WHERE q IN ('a && ''{1,5,77}''', 'tenant = 3 AND a && ''{1,5,77}''',
               'tenant IN (2, 4) AND a && ''{10,20,30}''')
   ORDER BY n;
