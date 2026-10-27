@@ -1221,8 +1221,7 @@ place of an inverted AM, without changing the scalar design above.
   keys, "As built (P1)" there, P2, coalescing its keys by GIN's rule,
   "As built (P2)", and M2c, index scans of such a column, "As built (M2c)"
   there. M2b part 1, RUM's addon ordering (an
-  ordering operator on the column after the extracted one, inside a
-  point's run), is built: "As built (M2b part 1)" under "M3: per-locator
+  (an ordering operator on the column after the extracted one, inside a
   data". M2b part 2, an array similarity class after rum_anyarray_ops, is
   built for its % operator, "As built (M2b part 2)" there, with the <=>
   ordering operator left to the executor's Sort for the reasons given.
@@ -2787,7 +2786,7 @@ them, as well as to BARK's scan and barkcostestimate. This is RUM's
 created</code> would need the planner to learn from a qual that the
 extracted column is fixed, and is left out.
 
-'''As built (M2b part 1).''' The planner asks the AM. A new optional
+'''As built, RUM's addon ordering.''' The planner asks the AM. A new optional
 IndexAmRoutine callback, <code>amorderbyopcolumn(IndexOptInfo *, List
 *indexclauses)</code>, copied into IndexOptInfo by get_relation_info, names
 the one column besides the leading one on which an index that is both
@@ -2817,7 +2816,7 @@ cursor at the first entry outside the run. A row's keys are distinct, so a
 row has at most one entry in a point's run: the cursors use no seen set and
 no row repeats. A NULL fixed value (a generic plan's <code>tenant =
 $1</code> with $1 NULL) makes the run empty and the scan returns nothing, as
-the qual matches nothing; a NULL center (12b6ed60d3a) returns every row of
+the qual matches nothing; a NULL center returns every row of
 the run at distance infinity. A scan whose keys do not fix the prefix
 raises an error rather than return rows out of order; only a direct caller
 of the AM can build one, since the planner offers the path only when they
