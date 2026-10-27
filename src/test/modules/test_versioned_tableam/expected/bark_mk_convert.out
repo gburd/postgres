@@ -134,7 +134,7 @@ injection_points_detach
 (1 row)
 
 
-starting permutation: s1_begin s1_update s3_convert s3_wakeup s4_vacuum s3_waiting s1_commit s3_check
+starting permutation: s1_begin s1_update s3_convert s3_wakeup s1_rows s4_vacuum s3_waiting s1_commit s3_check
 injection_points_attach
 -----------------------
                        
@@ -159,6 +159,12 @@ injection_points_wakeup
 (1 row)
 
 step s1_update: <... completed>
+step s1_rows: SELECT count(*) AS rows FROM tmx;
+rows
+----
+   2
+(1 row)
+
 s4: NOTICE:  notice triggered for injection point bark-convert-barrier-wait
 step s4_vacuum: VACUUM tmx; <waiting ...>
 step s3_waiting: 

@@ -66,6 +66,7 @@ setup
 }
 step s1_begin		{ BEGIN; }
 step s1_update		{ UPDATE tmx SET doc = ARRAY[2,3] WHERE id = 1; }
+step s1_rows		{ SELECT count(*) AS rows FROM tmx; }
 step s1_commit		{ COMMIT; }
 step s1_rollback	{ ROLLBACK; }
 teardown	{ SELECT injection_points_detach('tmx-update-done'); }
@@ -107,4 +108,4 @@ teardown	{ SELECT injection_points_detach('bark-convert-barrier-wait'); }
 
 permutation s1_begin s1_update s3_convert s2_insert s3_wakeup s1_commit s3_check
 permutation s1_begin s1_update s3_convert s2_insert s3_wakeup s1_rollback s3_check
-permutation s1_begin s1_update s3_convert s3_wakeup s4_vacuum(s1_update) s3_waiting s1_commit s3_check
+permutation s1_begin s1_update s3_convert s3_wakeup s1_rows s4_vacuum s3_waiting s1_commit s3_check
