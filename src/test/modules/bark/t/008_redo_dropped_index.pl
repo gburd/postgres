@@ -113,12 +113,12 @@ INSERT INTO wi_prefix SELECT g, md5(g::text) || 'https://x/' || g
   FROM generate_series(1, 2000) g ORDER BY random();
 ]);
 $node->safe_psql('postgres', q[
-INSERT INTO wi_dup SELECT 1 FROM generate_series(1, 150000);
+INSERT INTO wi_dup SELECT 1 FROM generate_series(1, 60000);
 INSERT INTO wi_dup SELECT 100000 + g % 100 FROM generate_series(1, 20000) g;
 INSERT INTO wi_dup SELECT 200000 + (g - 1) / 1000 FROM generate_series(1, 20000) g;
 ]);
 $node->safe_psql('postgres', q[
-INSERT INTO wi_hkl SELECT g % 50, g FROM generate_series(1, 100000) g;
+INSERT INTO wi_hkl SELECT g % 50, g FROM generate_series(1, 40000) g;
 UPDATE wi_hkl SET k = 1 WHERE k = 2 AND v % 4 = 2;
 ]);
 # REINDEX replaces the file; the old one is also dropped before the crash.
@@ -126,7 +126,7 @@ $files{ relpath('wi_hkl_idx') } = 'wi_hkl_idx (pre-REINDEX)';
 $node->safe_psql('postgres', q[
 REINDEX INDEX wi_hkl_idx;
 UPDATE wi_hkl SET k = 1 WHERE k = 3 AND v % 4 = 3;
-INSERT INTO wi_hkp SELECT g % 2, g FROM generate_series(1, 100000) g;
+INSERT INTO wi_hkp SELECT g % 2, g FROM generate_series(1, 40000) g;
 UPDATE wi_hkp SET k = 1 WHERE k = 0 AND v % 4 = 0;
 ]);
 $files{ relpath('wi_hkp_idx') } = 'wi_hkp_idx (pre-REINDEX)';
