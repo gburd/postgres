@@ -1264,10 +1264,11 @@ place of an inverted AM, without changing the scalar design above.
   members are compared both ways with the keys of the heap's rows, which
   heapallindexed now also checks one way (2026-10-15). M5b part 1, the per-path
   no-seen-set extension (BarkQueryFlags.oneentry and .index), and part 2,
-  sorting by a path (BarkQueryFlags.orderrest), are built. W6: procedure 7
+  (BarkQueryFlags.oneentry and .index) and sorting by a path
+  (BarkQueryFlags.orderrest) are built. Procedure 7
   writes every number with its scale trimmed, so keys that jsonb_cmp finds
   equal are equal bytes, and the class declares equalimage (btequalimage):
-  its equal keys coalesce into LIST and POSTING entries. Not yet: a
+  its equal keys coalesce into LIST and POSTING entries. Not compared yet
   with GIN's jsonb_path_ops.
 
 === Multikey keys ===
