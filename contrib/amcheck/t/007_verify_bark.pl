@@ -21,6 +21,9 @@ $node->init(no_data_checksums => 1);
 $node->append_conf('postgresql.conf', 'autovacuum=off');
 $node->start;
 my $blksz = int($node->safe_psql('postgres', 'SHOW block_size'));
+# Blocks per relation file (--with-segsize-blocks can make it small).
+my $segblks = int($node->safe_psql('postgres',
+	"SELECT setting FROM pg_settings WHERE name = 'segment_size'"));
 
 $node->safe_psql(
 	'postgres', q(
@@ -125,12 +128,21 @@ is($info{i_big_out}{off_OVERSIZED}, 1, 't_big has an OVERSIZED first entry');
 $node->stop;
 
 # Page access.  A page is a string; offsets are bytes from its start.
+# The file of a relation's block, and the block's offset in it.
+sub seg
+{
+	my ($path, $blk) = @_;
+	my $segno = int($blk / $segblks);
+	return ($segno ? "$path.$segno" : $path, ($blk % $segblks) * $blksz);
+}
+
 sub rd
 {
 	my ($path, $blk) = @_;
-	open(my $fh, '<:raw', $path) or die "open $path: $!";
-	seek($fh, $blk * $blksz, 0) or die "seek: $!";
-	read($fh, my $p, $blksz) == $blksz or die "short read of $path";
+	my ($file, $off) = seg($path, $blk);
+	open(my $fh, '<:raw', $file) or die "open $file: $!";
+	seek($fh, $off, 0) or die "seek: $!";
+	read($fh, my $p, $blksz) == $blksz or die "short read of $file";
 	close $fh;
 	return $p;
 }
@@ -138,11 +150,11 @@ sub rd
 sub patch
 {
 	my ($i, $blk, $f) = @_;
-	my $path = $info{$i}{path};
-	my $p = rd($path, $blk);
+	my $p = rd($info{$i}{path}, $blk);
 	$f->(\$p);
-	open(my $fh, '+<:raw', $path) or die "open $path: $!";
-	seek($fh, $blk * $blksz, 0) or die "seek: $!";
+	my ($file, $off) = seg($info{$i}{path}, $blk);
+	open(my $fh, '+<:raw', $file) or die "open $file: $!";
+	seek($fh, $off, 0) or die "seek: $!";
 	print $fh $p;
 	close $fh;
 }
