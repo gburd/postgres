@@ -1747,15 +1747,17 @@ and 805-806 faults with MALLOC_MMAP_THRESHOLD_ and MALLOC_TRIM_THRESHOLD_
 at 128 kB (musl-like) against 962-971 and 956-957. What is left is the
 executor's TIDBitmap and the page read's member decoding (three 32 kB
 allocations; README, "Bounded streams, next step"). Tests
-(bark_multikey_ginbound.sql): 26 queries on 40,000 rows over 1,600 heap
+(bark_multikey_ginbound.sql): 27 queries on 40,000 rows over 1,600 heap
 pages, as bitmap and index scans of a class with and without
 triConsistent, at work_mem 64kB (lossy, and checked to be) and 64MB
 (exact), equal to a seqscan and to GIN. The queries cover a key whose
-rows span many leaves, rare and frequent AND, OR, two keys, five
-frequent keys (more MAYBE entries than the shim tries), NULL and empty
-arrays, IS NULL, partial match over many keys and its ScalarArrayOp, and
-an index with a column before. They run again after DELETE, INSERT and
-VACUUM. bark_multikey_gin_concurrent.spec stops a scan between two
+rows span many leaves, rare and frequent AND, OR, two keys, NULL and
+empty arrays, IS NULL, partial match over many keys and its
+ScalarArrayOp, an index with a column before, and one with a key column
+after, where each point's exact stream turns into a bitmap partway. A
+class without triConsistent on that last shape, at 64kB, takes the shim
+on lossy pages with two, three and five MAYBE entries (five identical
+streams). They run again after DELETE, INSERT and VACUUM. bark_multikey_gin_concurrent.spec stops a scan between two
 boundary reads while another session splits leaves, deletes and
 vacuums; the bitmap and index scans equal a seqscan in the scan's
 snapshot.
