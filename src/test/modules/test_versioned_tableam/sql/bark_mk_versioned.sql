@@ -384,6 +384,35 @@ SELECT flags & 30 AS mktags_converting FROM bark_metap('tmq_doc');
 SELECT bark_index_check('tmq_doc');
 DROP TABLE tmq;
 
+-- Deletion before a split asks the table AM about each tagged entry
+-- (bark_tagged_delete).  A multikey row has an entry per key on a leaf, and
+-- each TID goes to the table AM once, but once per tag: row 1's stale
+-- entries (tag xmin - 5) are dead, its current ones are live, and a split
+-- of their leaf must delete only the stale two.
+CREATE TABLE tmd (id int, doc int4[]) USING heap_versioned
+  WITH (autovacuum_enabled = off);
+INSERT INTO tmd SELECT g, ARRAY[10 * g, 10 * g + 1] FROM generate_series(2, 300) g;
+INSERT INTO tmd VALUES (1, '{100000,100001}');
+SET test_versioned_tableam.build_tag_percent = 100;
+CREATE INDEX tmd_doc ON tmd USING bark (doc bark_int4_array_ops);
+SET test_versioned_tableam.stale_tags = live;
+SELECT test_versioned_insert_entry('tmd_doc', ctid, -5) FROM tmd WHERE id = 1;
+SELECT count(*) AS entries_of_row_1
+  FROM tmd t, generate_series(1, pg_relation_size('tmd_doc') / 8192 - 1) b,
+       LATERAL bark_page_items('tmd_doc', b) i
+ WHERE t.id = 1 AND i.htid = t.ctid;
+RESET test_versioned_tableam.stale_tags;
+INSERT INTO tmd SELECT 1000 + g, ARRAY[200000 + 2 * g, 200001 + 2 * g]
+  FROM generate_series(1, 600) g;
+SELECT count(*) AS entries_of_row_1
+  FROM tmd t, generate_series(1, pg_relation_size('tmd_doc') / 8192 - 1) b,
+       LATERAL bark_page_items('tmd_doc', b) i
+ WHERE t.id = 1 AND i.htid = t.ctid;
+SELECT id FROM tmd WHERE doc && '{100000}';
+SELECT id FROM tmd WHERE doc && '{100001}';
+SELECT bark_index_check('tmd_doc');
+DROP TABLE tmd;
+
 -- VACUUM notices a conversion too, and nothing sets CONVERTING on an
 -- index without MKTAGS (a multikey index on heap made unique by hand).
 -- tmz's index has no tagged entry, so that VACUUM also completes it (T12a).
