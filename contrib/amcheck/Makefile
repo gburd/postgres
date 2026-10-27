@@ -19,7 +19,8 @@ PGFILEDESC = "amcheck - function for verifying relation integrity"
 REGRESS = check check_btree check_gin check_bark check_bark_unique \
 	check_bark_vacuum check_bark_knn check_bark_oversized check_bark_split \
 	check_bark_build check_bark_markpos check_bark_skip check_bark_prefix \
-	check_bark_rowcmp check_bark_tidorder check_bark_opclass check_heap check_subattr
+	check_bark_rowcmp check_bark_tidorder check_bark_opclass \
+	check_bark_anyblock check_heap check_subattr
 
 EXTRA_INSTALL = contrib/pg_walinspect contrib/pageinspect src/test/modules/bark_multikey \
 	src/test/modules/injection_points

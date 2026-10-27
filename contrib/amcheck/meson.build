@@ -56,6 +56,7 @@ tests += {
       'check_bark_rowcmp',
       'check_bark_tidorder',
       'check_bark_opclass',
+      'check_bark_anyblock',
       'check_heap',
       'check_subattr',
     ],
