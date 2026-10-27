@@ -44,7 +44,7 @@ $node->safe_psql(
 	  RETURNS TABLE (blk int, off int, shape text, htid tid, tids tid[], tag int8)
 	  LANGUAGE sql AS $$
 	  SELECT b::int, i.itemoffset, i.shape, i.htid, i.tids, i.tag
-	    FROM generate_series(1, pg_relation_size(idx) / 8192 - 1) b,
+	    FROM generate_series(1, pg_relation_size(idx) / current_setting('block_size')::int - 1) b,
 	         LATERAL bark_page_items(idx::text, b) i
 	   WHERE (SELECT type FROM bark_page_stats(idx::text, b)) = 'leaf'
 	     AND i.shape IN ('SINGLE', 'LIST', 'POSTING', 'OVERSIZED')
