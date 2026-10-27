@@ -1401,8 +1401,7 @@ and ALL every entry. Each boundary's TIDs are read through the ordinary
 descent code into one array sorted by TID, and for each TID
 triConsistent (MAYBE is a recheck), or consistent (whose recheck flag is
 set first, as GIN does), decides on the per-key presence vector. Several
-keys on the column are intersected (P1 below replaced the sort with a
-merge).
+keys on the column are intersected (the merge below replaced the sort).
 barkcostestimate counts extractQuery's keys (plus one for INCLUDE_EMPTY,
 two for ALL) as descents and charges no seen set. Tests
 (bark_multikey_gin.sql): the core GIN array support functions unchanged
@@ -1413,10 +1412,10 @@ compared with a seqscan and with a GIN index, before and after DELETE,
 INSERT and VACUUM; a prefix-match class on <code>text[]</code> with core's
 gin_cmp_prefix as comparePartial, compared with LIKE.
 
-'''As built (P1).''' The boundaries' TIDs are merged as ginget.c merges
+'''As built, merged streams.''' The boundaries' TIDs are merged as ginget.c merges
 posting lists, not collected and sorted together. Each boundary is read into
 a stream of distinct, ascending TIDs: a point boundary of a column that leads
-the index already comes out in TID order (H1; LIST and POSTING members
+the index already comes out in TID order (LIST and POSTING members
 ascend), and any other (a partial-match range, every key, a column after
 another key column) is sorted and made distinct once. A binary heap on the
 streams' next TIDs visits each TID once with its presence vector. With
