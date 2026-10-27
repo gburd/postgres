@@ -66,7 +66,8 @@ PG_FUNCTION_INFO_V1(pgstatginindex_v1_5);
 Datum		pgstatginindex_internal(Oid relid, FunctionCallInfo fcinfo);
 
 #define IS_INDEX(r) ((r)->rd_rel->relkind == RELKIND_INDEX)
-#define IS_BTREE(r) ((r)->rd_rel->relam == BTREE_AM_OID)
+/* nbtree's own code, not another AM implementing a btree index */
+#define IS_BTREE(r) IndexIsNbtree(r)
 #define IS_GIN(r) ((r)->rd_rel->relam == GIN_AM_OID)
 #define IS_HASH(r) ((r)->rd_rel->relam == HASH_AM_OID)
 
