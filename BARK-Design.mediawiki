@@ -256,8 +256,7 @@ none is planned.
 
 ==== Versioned locators: BARK stores version tags ====
 
-''Design: <code>DESIGN-split-and-hot.md</code> sections 2, 5, 6.5b, 6.6
-and 8b; interface: "Versioned locators" in <code>amlocator.h</code>;
+''Interface: "Versioned locators" in <code>amlocator.h</code>;
 details: "Version tags" in the README.''
 
 A table AM whose <code>LocatorDesc.versioned</code> is set hands each index
@@ -266,7 +265,7 @@ entry a 4-byte version tag, and an entry names a row version as
 is valid for the version a snapshot sees; BARK stores, orders and returns
 tags and never interprets them.
 
-''As built (phase 5b, 2026-10-22).''
+''As built.''
 * '''Format version 3.''' A tagged SINGLE sets the alt-TID bit with
   <code>BARK_HAS_TAG</code> (0x4000, once reserved for delete-marking) and
   keeps heap TID then tag in a MAXALIGNed trailer after its key; a tagged
@@ -297,7 +296,7 @@ tags and never interprets them.
   in-place updates keep, re-inserts an entry; a second copy broke the
   strict (key, TID, tag) order and made an index scan return the row
   twice. An insert that meets its copy marked LP_DEAD clears the mark.
-* '''VACUUM and the untag rule (R3.2).''' VACUUM asks the table AM's
+* '''VACUUM and the untag rule.''' VACUUM asks the table AM's
   version callback about every entry. LIVE_UNTAG moves an entry from
   (K, L, t) to (K, L, 0), before every entry of (K, L) with a tag. BARK
   moves it only within its page, in the page's VACUUM record, and only when
@@ -350,7 +349,7 @@ tags and never interprets them.
   before. The index is 1.8x the untagged size, against 2.0x before: a
   tagged SINGLE of an int4 is 32 bytes (key, then heap TID and tag in its
   trailer), an untagged one 16.
-* '''Deletion (R3.3).''' Simple and bottom-up deletion hand the table AM
+* '''Deletion.''' Simple and bottom-up deletion hand the table AM
   each entry's tag in <code>TM_IndexStatus</code>, a TID once per entry.
   Before a leaf of an index that stores tags splits, BARK offers its tagged
   entries to <code>table_index_delete_tuples</code>, so stale entries of
@@ -362,9 +361,8 @@ tags and never interprets them.
   not store them, and that a leaf whose lower bound has a tag has the flag.
   pageinspect shows tags and the flag.
 
-''Tests'' (the table AM side, <code>test_versioned_tableam</code>'s
-<code>heap_versioned</code>, whose tag is a version's raw xmin, lives on a
-test branch and is not to be merged): tagged inserts and builds, serial and
+''Tests'' (the table AM side is <code>test_versioned_tableam</code>'s
+<code>heap_versioned</code>, whose tag is a version's raw xmin): tagged inserts and builds, serial and
 parallel; the tag on every scan path and at the unique checks; split
 points, the flag, its propagation, untagging in place, and the order
 violation that untagging without the rule causes (an injection point turns
