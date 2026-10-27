@@ -1,6 +1,7 @@
 /pg_waldump
 
 # Source files copied from src/backend/access/rmgrdesc/
+/barkdesc.c
 /brindesc.c
 /clogdesc.c
 /committsdesc.c
