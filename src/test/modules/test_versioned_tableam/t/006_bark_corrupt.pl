@@ -60,12 +60,19 @@ sub patch
 	my ($idx, $blk, $f) = @_;
 	my $path = $node->data_dir . '/'
 	  . $node->safe_psql('postgres', "SELECT pg_relation_filepath('$idx')");
+	# the file of the block: --with-segsize-blocks can make a relation file
+	# only a few blocks long
+	my $segblks = $node->safe_psql('postgres',
+		"SELECT setting FROM pg_settings WHERE name = 'segment_size'");
+	my $segno = int($blk / $segblks);
+	my $file = $segno ? "$path.$segno" : $path;
+	my $off = ($blk % $segblks) * $blksz;
 	$node->stop;
-	open(my $fh, '+<:raw', $path) or die "open $path: $!";
-	seek($fh, $blk * $blksz, 0) or die "seek: $!";
-	read($fh, my $p, $blksz) == $blksz or die "short read of $path";
+	open(my $fh, '+<:raw', $file) or die "open $file: $!";
+	seek($fh, $off, 0) or die "seek: $!";
+	read($fh, my $p, $blksz) == $blksz or die "short read of $file";
 	$f->(\$p);
-	seek($fh, $blk * $blksz, 0) or die "seek: $!";
+	seek($fh, $off, 0) or die "seek: $!";
 	print $fh $p;
 	close $fh;
 	$node->start;
