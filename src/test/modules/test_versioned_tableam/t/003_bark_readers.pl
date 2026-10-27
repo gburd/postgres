@@ -4,8 +4,8 @@
 # BARK's readers hand heap_versioned each entry's tag.  heap_versioned's index scan checks every (TID, tag) it is given
 # against the tuple at that TID (the tag is 0 or its raw xmin) and counts
 # tagged and untagged ones, and its fetch_tid_version does the same for
-# unique checks.  An index that stores no tags (multikey) must report 0, or
-# heap_versioned raises an error.
+# unique checks.  An index that stores no tags (a GIN-interface multikey
+# one) must report 0, or heap_versioned raises an error.
 
 use strict;
 use warnings FATAL => 'all';
@@ -194,8 +194,10 @@ is($node->safe_psql('postgres', q{SET enable_indexscan = off; SET enable_bitmaps
 	  SELECT id FROM td WHERE u = 1000}),
 	'1', 'deferred: the row\'s own entries of two tags are no conflict');
 
-# Multikey indexes store no tags; their scans report 0 (heap_versioned
-# raises an error otherwise), a GIN-interface scan's too.
+# A plain multikey index built on heap_versioned stores tags
+# (BARK_META_MKTAGS), and its scans report the moved rows' tags; a
+# GIN-interface index stores none, and its scans report 0 (heap_versioned
+# raises an error otherwise).
 $node->safe_psql(
 	'postgres', q{
 	CREATE TABLE tmk (id int, a int4[]) USING heap_versioned;
@@ -210,7 +212,7 @@ for my $opc (qw(bark_int4_array_ops bark_gin_int4_array_ops))
 	my $q = q{SELECT count(*) FROM tmk WHERE a && '{0}'};
 	like(plan_of($q), qr/Index Scan using tmk_a/, "multikey $opc: an index scan");
 	is($node->safe_psql('postgres', "$noscans $q"), '100',
-		"multikey $opc: rows, all untagged");
+		"multikey $opc: rows");
 	$node->safe_psql('postgres', q{
 		DROP INDEX tmk_a;
 		UPDATE tmk SET a = a[1:2] WHERE id % 10 = 0;

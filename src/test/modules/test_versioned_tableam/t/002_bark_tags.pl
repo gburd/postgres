@@ -552,12 +552,14 @@ is( $node->safe_psql(
 		  FROM pg_index x JOIN pg_am a ON a.oid = x.indimplam WHERE x.indexrelid = 'th_b'::regclass}),
 	'bark|2', 'btree implemented by bark on heap_versioned');
 
-# A multikey BARK index stores no tags (amindexcanversion): an update that
-# affects it moves the row (TU_All) and its entries stay untagged; an
-# update that affects only a scalar BARK index keeps the locator
-# (TU_Affected) and tags that index's entry.  A version 2 index on a
-# versioned table stores no tags either: the update moves the row, with no
-# error.
+# A plain multikey BARK index built on a versioned table has
+# BARK_META_MKTAGS and stores tags on its keys (amindexcanversion): an
+# update that affects it keeps the locator (TU_Affected) and tags its new
+# key entries, as an update that affects only a scalar BARK index tags
+# that index's entry.  A GIN-interface multikey index stores no tags: an
+# update that affects it moves the row (TU_All) and its entries stay
+# untagged.  A version 2 index on a versioned table stores no tags either:
+# the update moves the row, with no error.
 $node->safe_psql(
 	'postgres', q{
 	CREATE TABLE tmk (id int, s int, a int4[]) USING heap_versioned;
@@ -583,22 +585,33 @@ sub update_kept
 		$kept});
 }
 is(update_kept(q{UPDATE tmk SET s = s + 100, a = a || 0 WHERE id = 1}),
-	'0', 'mk: scalar and multikey both affected: the row moves');
+	'1', 'mk: scalar and multikey both affected: the locator is kept');
 is(update_kept(q{UPDATE tmk SET a = a || 1 WHERE id = 2}),
-	'0', 'mk: multikey only affected: the row moves');
+	'1', 'mk: multikey only affected: the locator is kept');
 is(update_kept(q{UPDATE tmk SET s = s + 100 WHERE id = 3}),
 	'1', 'mk: scalar only affected: the locator is kept');
-# heap_versioned tags every new version, so the scalar index's entries of
-# the moved rows are tagged too; the multikey index's never are.
+# Each update tags the entries it makes in the indexes it affected: rows 1
+# and 3 in tmk_s, rows 1 and 2 (three keys each) in tmk_a.
 is( $node->safe_psql(
 		'postgres', q{
 		SELECT (SELECT count(*) FROM bark_entries('tmk_s') WHERE tag IS NOT NULL) || ' ' ||
 		       (SELECT count(*) FROM bark_entries('tmk_a') WHERE tag IS NOT NULL)}),
-	'3 0', 'mk: the scalar index has tagged entries, the multikey none');
-is(tags_right('tmk_s', 'tmk'), '3/3', 'mk: the tags are the xmins');
+	'2 6', 'mk: both indexes have tagged entries');
+is(tags_right('tmk_s', 'tmk'), '2/2', 'mk: the tags are the xmins');
+$node->safe_psql(
+	'postgres', q{
+	CREATE TABLE tmg (id int, a int4[]) USING heap_versioned;
+	CREATE INDEX tmg_a ON tmg USING bark (a bark_gin_int4_array_ops);
+	INSERT INTO tmg SELECT g, ARRAY[g, g + 1] FROM generate_series(1, 50) g;
+});
+is(update_kept(q{UPDATE tmg SET a = a || 1 WHERE id = 2}),
+	'0', 'mk: GIN-interface affected: the row moves');
+is( $node->safe_psql(
+		'postgres', q{SELECT count(*) FROM bark_entries('tmg_a') WHERE tag IS NOT NULL}),
+	'0', 'mk: the GIN-interface index has no tagged entry');
 # keep_locator = pretend leaves the moved row without a tmk_a entry, so no
 # heapallindexed here
-for my $idx (qw(tmk_s tmk_a))
+for my $idx (qw(tmk_s tmk_a tmg_a))
 {
 	is($node->safe_psql('postgres', "SELECT bark_index_parent_check('$idx')"),
 		'', "mk: $idx checks");

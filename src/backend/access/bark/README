@@ -1472,6 +1472,92 @@ seize/release protocol.  Mark and restore copy the position, as nbtree's do;
 the executor does not restore a scan with ORDER BY operators, since its
 reorder queue would not be rewound.
 
+The copy holds one item per matching entry, not one per heap TID.  A LIST
+or POSTING entry's item points at a copy of the entry's body (its TID
+array, coded deltas or sbm) in the tuple workspace, and bark_gettuple
+returns its members one call at a time, decoding the body into
+so->entryTids when it enters the item (a plain array is read in place).
+So a LIMIT 1 decodes the one entry it returns from, not the page: since
+coded LISTs a duplicate-heavy leaf holds about 3200 TIDs in two dozen
+entries, and expanding them all into items made LIMIT 1 cost twice
+nbtree's instructions.  Nothing is read from the page after the lock is
+released, so resuming within an entry needs no new concurrency rule: a
+split, an insert or a VACUUM between two calls changes the page, not the
+copy, exactly as between two pages.  The position records the member
+returned last (memberIndex), and a mark records it too.  A kill names an
+(item, member) run; bark_killitems marks an entry LP_DEAD only when one
+run covers every member of the copy and the entry on the page still holds
+exactly those TIDs.  A multikey scan filters an entry's members when it
+reads the page (bark_mk_accept, bark_mk_seen) and copies the survivors as a
+TID array instead.  Bitmap scans and the GIN interface's streams take each
+item's members as a batch.
+
+bark_gettuple settles the row returned last at the top of each call (the
+kill_prior_tuple test, bark_kill_prior, and the entry verdict of
+"Versioned multikey scans") before bark_step_member moves the position:
+the position still names that row's (item, member) there, and the table
+AM sets the verdict before it asks for the next row (relscan.h).
+
+Versioned multikey scans
+------------------------
+
+An index with BARK_META_MKTAGS (see "Version tags") can hold entries of a
+row that are valid for different versions: an update that kept the
+locator inserted the new version's full key set, tagged, and the old
+entries stay until VACUUM removes them.  The page-read seen set, which
+keeps a row's first entry by TID, would then keep a stale entry and drop
+the valid one (`doc && '{a,b}'` after {a,b} became {b,c} in place loses
+the row).  Such a scan, through a table AM, follows rule D instead
+(bark_mk_ruled; the decision is the meta page's alone, so tagged entries
+already on disk are always handled so):
+
+  * A page read keeps every entry the filters and procedure 9 accept
+    (bark_mk_seen only records a group change, as BARK_ITEM_NEWGROUP on
+    the item).
+  * At the top of bark_gettuple (and bark_knn_gettuple) the entry
+    returned last is settled by the table AM's verdict,
+    xs_entry_verdict (bark_mk_settle): VALID puts its row in R, the seen
+    set's radix tree; INVALID puts (TID, tag) in J, a hash, under an MVCC
+    snapshot only; UNKNOWN is an error, since the table AM broke its
+    obligation (amlocator.h), and guessing could return a row twice or
+    not at all.
+  * An entry is then returned only if its row is not in R and its
+    (TID, tag) is not in J (bark_mk_admit); it becomes the entry whose
+    verdict is due.
+  * R and J empty when the scan returns from the first item of a new
+    group of the columns before the extracted one, unless the scan is
+    marked.  A KNN scan interleaves groups and keeps them whole.
+  * bark_markpos settles the due verdict first (the marked row was
+    returned); bark_restrpos drops it (the row is behind the mark and is
+    returned again) and takes the rows added since the mark out of R.  J
+    needs no undo: under an MVCC snapshot its facts hold for the scan.
+  * A rescan clears R, J and the due verdict, so a LIMIT, a closed cursor
+    or a nested loop's inner rescan, which leave a verdict unread, raise
+    nothing.
+  * A non-MVCC snapshot keeps R and never fills J.  Under one, heap may
+    return several tuples through one entry (xs_heap_continue); the
+    verdict is about the entry, and BARK reads it only at its next call.
+  * A caller of amgettuple without a table AM (scan->heapRelation NULL)
+    gets the page-read seen set: dedup by TID, no verdict.
+
+useseen is decided as before (bark_mk_rescan): when one point boundary,
+procedure 8's oneentry or a never-multikey index rules a second matching
+entry of one version out, no set is used; a stale entry is rejected by
+the table AM whether or not the set is used.  Bitmap scans need none of
+this: the bitmap holds each locator once, and the table AM rechecks every
+row with history against the original qual.  A GIN-interface index gets
+no MKTAGS: its TIDBitmap has no entry to judge.
+
+The scan's memory stays under AllocSet's chunk limit (ALLOC_CHUNK_LIMIT,
+8 kB), so it comes from the context's blocks with no malloc of its own:
+items[] is at most MaxIndexTuplesPerPage items of 16 bytes, 6.5 kB, and a
+plain scan's copied bodies are no larger than the page.  An index-only
+scan's workspace also holds the keys, starts at 16 kB as nbtree's does, and
+grows past that for a page whose keys decode larger (prefix compression,
+OVERSIZED entries); a multikey scan's survivor arrays can grow it too.  The
+one allocation that scales with an entry is entryTids: a LIST decodes to at
+most 4095 TIDs (24 kB), but a dense POSTING entry can decode to many more.
+
 The first descent uses the longest bound the keys give on the leading
 columns (bark_make_bound): equality on columns 1..k-1 and a bound on column
 k, compared through the opfamily's cross-type ORDER procs.  A lower bound
@@ -2157,8 +2243,17 @@ There are five entry shapes (BarkEntryShape):
            the chain of an entry it removes (bark_free_oversized).  A normal-size entry never uses
            this shape, so it is pure overhead-free opt-in.  When the first
            key column is text under a C/POSIX collation, the ref also keeps
-           that column's first 32 bytes, which order two OVERSIZED entries
-           without reading their chains when they differ.  No other column
+           that column's first 32 bytes, decompressed when the full tuple
+           stores the value compressed (bark_value_prefix).  They order the
+           entry without reading its chain whenever they differ from the
+           other side's leading bytes: another OVERSIZED entry, an inline
+           key, an insert's key (detoasted once per key), or a scan bound
+           (its argument detoasted once per rescan).  Descent, leaf
+           positioning, the insert's search and the end of a scan
+           (bark_prefix_past_bound) all use them, so a lookup reads the
+           chain of the entry it returns and no other.  A tie reads the
+           chain, unless both sides are whole and column 1 is the only
+           column compared.  No other column
            gets them, even under "C": bpchar ignores trailing spaces, arrays
            compare element by element, and name is a cstring, so their bytes
            are not their order (bark_first_column_bytewise).
@@ -2179,8 +2274,12 @@ TID mapped to block << 11 | offset as ginpostinglist.c does (more offset
 bits for a TID stride past 2047; see "TID stride").  The first and
 last TIDs stay readable in O(1) for bark_entry_tid_range.  Every reader goes
 through bark_entry_get_tids / bark_entry_count_tids / bark_entry_has_tid, and
-bark_entry_add_tid re-forms a coded LIST (decode, insert, re-encode), which
-is a function of the sorted TID set alone, so redo is deterministic.  Plain
+bark_entry_add_tid splices a TID into a coded LIST's delta stream without
+decoding the set (one delta appended past the last TID, the common case, or
+the spanning delta replaced by two), giving the same bytes as decoding,
+inserting and re-encoding: the coded form is a function of the sorted TID set
+alone, so redo is deterministic, and assert builds check the splice against
+the full re-form.  Plain
 LISTs are unchanged, so no REINDEX is needed.  A subset of a coded LIST never
 codes longer than the whole (a removed member's two deltas become their sum),
 but a plain subset can be longer than the coded original, so VACUUM re-forms
@@ -2235,15 +2334,22 @@ Which indexes.  The meta page's BARK_META_VERSIONED says the table's
 locator was versioned when the index was built; CREATE INDEX and every
 rebuild (REINDEX, the rewrite of ALTER TABLE ... SET ACCESS METHOD) set it
 from the table's LocatorDesc, and nothing else changes it.  Such an index
-stores tags unless it has an extracted column: amindexcanversion
-(bark_indexcanversion) answers the executor's index_can_version().  A
-multikey index returns each row once by TID (the seen set, and a
-GIN-interface index scan's TIDBitmap), which is right only while no row has
-two valid entries of different versions, so it stores no tags, and the
+stores tags, if it has an extracted column only when its meta page also
+has BARK_META_MKTAGS: amindexcanversion (bark_indexcanversion) answers the
+executor's index_can_version() from those two bits alone, never from
+rd_index, which can change after the build.  A build sets MKTAGS with
+VERSIONED for a multikey index that is neither GIN-interface nor, in the
+catalog, unique or exclusion (bark_build_mktags); REINDEX recomputes it.
+A tagged multikey index's scans settle each entry of a row by the table
+AM's verdict ("Versioned multikey scans").  Every other multikey index
+returns each row once by TID (the seen set, and a GIN-interface index
+scan's TIDBitmap, which carries no tag), which is right only while no row
+has two valid entries of different versions, so it stores no tags, and the
 executor moves a row whenever an update affects it; its entries stay
-untagged, as an index of heap's.  (Versioned multikey indexes need
-deduplication after the table AM's verdict, or untagging a row's entries
-together, and are left as a follow-up.)  An index with BARK_META_VERSIONED
+untagged, as an index of heap's.  A tagged multikey index's key entries
+carry the row's tag, its markers never: a marker names no row, so nothing
+could judge its tag (bark_insert_entries forces it to 0).  An index with
+BARK_META_VERSIONED
 has a pivot suffix reserve (BarkPivotSuffixReserve) of 16 bytes, room for a
 pivot's heap TID and tag (6 + 4, MAXALIGNed); every other
 index keeps the 8-byte reserve, so an index of a heap table is laid out
@@ -2339,12 +2445,25 @@ safe when the slot has an entry before it on the page, or the page is
 leftmost, or it lacks BARK_LOWBOUND_TAGGED: an untagged lower bound <=
 (K, L, t) is <= (K, L, 0).  Otherwise (the slot would be the page's first,
 under a lower bound that may be (K, L, t0 > 0)) the entry stays tagged and
-the verdict is taken as LIVE, counted in VACUUM's DEBUG2 line, as is an
-entry whose (K, L, 0) lies in another entry (the row's untagged one, or a
-LIST or POSTING whose range holds L).  An entry is never moved to another
-page: a scan reads one page at a time, and would miss the row or return
-it twice.  Instead, after its scan VACUUM lowers the bound, and untags the
-entries it kept for it then.
+the verdict is taken as LIVE, counted in VACUUM's DEBUG2 line.  An entry
+is never moved to another page: a scan reads one page at a time, and would
+miss the row or return it twice.  Instead, after its scan VACUUM lowers the
+bound, and untags the entries it kept for it then.
+
+An entry whose (K, L, 0) is already on the page, in the row's own
+untagged entry (its twin: a SINGLE, or the last member of the LIST or
+POSTING just before it; no entry holds L strictly inside its range, since
+a tagged insert divides it at L), stays tagged too, counted as "kept (dup,
+AM gave LIVE to an older entry)".  A correct table AM never makes one:
+(K, L, t) exists because t's update changed attrs(i), so the twin is
+invalid from t on, and with t no newer than the new base it is DEAD in the
+same pass.  One verdict is wrong, then.  If it is the twin's LIVE, the
+tagged entry is the row's only valid one and deleting it would lose the
+row (heapallindexed would not notice: the twin still indexes (K, L)); if
+it is the LIVE_UNTAG, keeping costs nothing.  So BARK keeps it, and a count
+above 0 means the table AM answered LIVE for an entry the per-index
+validity rule makes invalid.  t/004_bark_vacuum.pl builds each twin shape
+and shows the row lost under the bark-untag-delete injection point.
 
 Lowering a lower bound.  A leaf P2 whose lower bound is a tagged (K, L, t0),
 its left sibling P1's high key and the parent's downlink to P2, can have
@@ -2435,7 +2554,29 @@ version 2 index on a versioned table, which only pg_upgrade of a
 pre-version-3 BARK index could produce, then works as an index of heap's
 does; REINDEX makes it store tags.
 
-Writers.  barkhandler sets amcanversion and amindexcanversion.  aminsert
+Conversion.  A multikey index with BARK_META_MKTAGS that the catalog
+later calls unique or exclusion (a constraint added after the build, as
+DocumentDB's collMod prepareUnique adds one) keeps the bit and its tagged
+entries, which the table AM still judges and rule D still reads.  But it
+answers false to amindexmaykeeplocator (bark_indexmaykeeplocator, read
+from rd_index at run time), so an update that needs new entries in it
+moves the row, and a constraint check never meets two versions at one
+locator through an update that began after the change.  An update whose
+statement began before it can still keep the locator; waiting those out
+is the conversion barrier, left to a later change.
+
+Updates.  An update that keeps the locator inserts, into each index it
+affects, the new version's entries, tagged.  For a multikey index that is
+the new value's full key set, unchanged keys included: the old entries are
+invalid for the new version once the column changed (the table AM's rule
+is per index, not per key), so `doc && '{b}'` after {a,b} became {b,c}
+finds the row through (b,L,new).  The old entries stay until VACUUM
+removes them.  barkcomparedatums still tells the executor when a value
+gives the same entries ({a,b} to {b,a} on a class that sorts keys), and
+then nothing is inserted.
+
+Writers.  barkhandler sets amcanversion, amindexcanversion and
+amindexmaykeeplocator.  aminsert
 and the build callback read IndexInfo.ii_VersionTag (the executor, or the
 table AM's build and validation scans, set it).  A tagged row's entry is
 placed by (key, TID, tag), as a tagged SINGLE or a tagged OVERSIZED entry,
@@ -2482,8 +2623,12 @@ SINGLE or OVERSIZED entry, the trailer at the MAXALIGNed end of the key and
 ending the entry, a tag never 0, no tag in an index not built for tags), the
 pivot rule (a tagged pivot has every key attribute and a heap TID), the
 (key, TID, tag) order on a page and against the high key and across
-downlinks, and that a version 2 meta page does not claim
-BARK_META_VERSIONED.  amcheck also checks that a leaf whose lower bound has a
+downlinks, that a version 2 meta page does not claim
+BARK_META_VERSIONED, and that BARK_META_MKTAGS comes with
+BARK_META_VERSIONED (redo too, from the page alone) on an index with an
+extracted column that is not GIN-interface (with the index at hand), and
+that no marker is tagged.  An index that is unique or exclusion now but has
+MKTAGS is not corrupt: rd_index can change after the build.  amcheck also checks that a leaf whose lower bound has a
 tag has BARK_LOWBOUND_TAGGED, and the validator that only a leaf with a left
 sibling has it.  pageinspect's bark_page_items shows a tag column, and
 bark_page_stats the flag as lowbound_tagged.
@@ -2510,7 +2655,9 @@ Invariants
     OVERSIZED entry, and on a PIVOT the same bit is BARK_PIVOT_HEAP_TID
     (see "Version tags").
   * Leaf entries are in (key, TID, tag) order; only a SINGLE or OVERSIZED
-    entry of an index with BARK_META_VERSIONED has a tag, never 0.
+    entry of an index with BARK_META_VERSIONED, and with BARK_META_MKTAGS
+    if it has an extracted column, has a tag, never 0; a marker never has
+    one.  BARK_META_MKTAGS implies BARK_META_VERSIONED.
   * An OVERSIZED entry's full tuple lives on a chain of BARK_OVERFLOW pages
     (bark_flags has BARK_OVERFLOW, not BARK_LEAF): each page holds up to
     BarkOverflowChunkSize raw bytes of the tuple and links to the next chunk

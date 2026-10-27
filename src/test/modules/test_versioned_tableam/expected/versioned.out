@@ -587,6 +587,124 @@ SELECT * FROM test_versioned_seen;
 
 RESET test_versioned_tableam.keep_locator;
 DROP TABLE tx, tz;
+-- A row with history in k stands for a row updated in place: its entries in
+-- an index on k are judged by the validity rule, valid only if tagged with
+-- the visible version's xmin.  Row 1 gets a stale entry for its old value
+-- 10, which the index scan, the index-only scan and fetch_tid_version all
+-- judge invalid, and which VACUUM removes; its current entry stays valid.
+CREATE TABLE th (id int, k int) USING heap_versioned;
+CREATE INDEX th_k ON th USING bark (k);
+INSERT INTO th VALUES (1, 10), (2, 20);
+UPDATE th SET k = k + 1;
+SELECT test_versioned_mark_history('th', ctid, 'k') FROM th WHERE id = 1;
+ test_versioned_mark_history 
+-----------------------------
+ 
+(1 row)
+
+SELECT test_versioned_insert_entry('th_k', ctid, -1, '10') FROM th WHERE id = 1;
+ test_versioned_insert_entry 
+-----------------------------
+ 
+(1 row)
+
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT test_versioned_reset();
+ test_versioned_reset 
+----------------------
+ 
+(1 row)
+
+SELECT id FROM th WHERE k = 10;
+ id 
+----
+(0 rows)
+
+SELECT id FROM th WHERE k = 11;
+ id 
+----
+  1
+(1 row)
+
+SELECT * FROM test_versioned_seen;
+    counter    | n 
+---------------+---
+ judge_invalid | 1
+ judge_valid   | 1
+ scan_tagged   | 1
+(3 rows)
+
+SELECT test_versioned_reset();
+ test_versioned_reset 
+----------------------
+ 
+(1 row)
+
+EXPLAIN (COSTS OFF) SELECT k FROM th WHERE k IN (10, 11);
+                   QUERY PLAN                   
+------------------------------------------------
+ Index Only Scan using th_k on th
+   Index Cond: (k = ANY ('{10,11}'::integer[]))
+(2 rows)
+
+SELECT k FROM th WHERE k IN (10, 11);
+ k  
+----
+ 11
+(1 row)
+
+SELECT counter, n FROM test_versioned_seen WHERE counter LIKE 'judge%';
+    counter    | n 
+---------------+---
+ judge_invalid | 1
+ judge_valid   | 1
+(2 rows)
+
+SELECT test_versioned_fetch('th_k', ctid, xmin::text::int8) AS current,
+       test_versioned_fetch('th_k', ctid, 0) AS untagged,
+       test_versioned_fetch('th_k', ctid, xmin::text::int8 - 1) AS stale
+  FROM th WHERE id = 1;
+ current | untagged | stale 
+---------+----------+-------
+ t       | f        | f
+(1 row)
+
+SELECT test_versioned_reset();
+ test_versioned_reset 
+----------------------
+ 
+(1 row)
+
+VACUUM th;
+SELECT counter, n FROM test_versioned_seen WHERE counter LIKE 'vacuum%';
+   counter    | n 
+--------------+---
+ vacuum_dead  | 1
+ vacuum_live  | 1
+ vacuum_untag | 1
+(3 rows)
+
+SELECT id FROM th WHERE k = 10;
+ id 
+----
+(0 rows)
+
+SELECT id FROM th WHERE k = 11;
+ id 
+----
+  1
+(1 row)
+
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SELECT test_versioned_mark_history('th', ctid, NULL) FROM th WHERE id = 1;
+ test_versioned_mark_history 
+-----------------------------
+ 
+(1 row)
+
+DROP TABLE th;
 -- The table AM's verdict on each entry an index scan returned
 -- (xs_entry_verdict), as test_versioned_btree reads it at its next
 -- amgettuple call: valid when a row was returned through the entry,
