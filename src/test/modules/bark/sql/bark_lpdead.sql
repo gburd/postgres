@@ -187,7 +187,7 @@ SET LOCAL enable_bitmapscan = off;
 DECLARE c CURSOR FOR SELECT a FROM lpdr WHERE a > 0;
 FETCH 12 FROM c;
 INSERT INTO lpdr VALUES (5);
-FETCH ALL FROM c \g /dev/null
+MOVE ALL FROM c;
 COMMIT;
 SELECT * FROM lpd_dead('lpdr_a', 1);
 SELECT bark_index_check('lpdr_a', true);

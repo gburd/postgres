@@ -385,7 +385,7 @@ FETCH 12 FROM c;
 (12 rows)
 
 INSERT INTO lpdr VALUES (5);
-FETCH ALL FROM c \g /dev/null
+MOVE ALL FROM c;
 COMMIT;
 SELECT * FROM lpd_dead('lpdr_a', 1);
  itemoffset | shape  | ntids 
