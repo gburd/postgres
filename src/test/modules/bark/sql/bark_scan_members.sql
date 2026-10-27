@@ -71,7 +71,7 @@ RETURNS SETOF record LANGUAGE sql AS $$
            (SELECT s.k FROM sm s WHERE s.ctid = coalesce(i.htid, i.tids[1])) END,
          CASE WHEN i.shape = 'LIST' AND i.itemlen < (SELECT ((8 + 4 + max_data_alignment - 1) / max_data_alignment) * max_data_alignment FROM pg_control_init()) + 6 * i.ntids
               THEN 'LIST coded' ELSE i.shape END, i.ntids, h.lp_flags = 3
-    FROM generate_series(1, pg_relation_size('sm_k') / 8192 - 1) b,
+    FROM generate_series(1, pg_relation_size('sm_k') / current_setting('block_size')::int - 1) b,
          LATERAL bark_page_stats('sm_k', b) p,
          LATERAL bark_page_items('sm_k', b) i
          JOIN heap_page_items(get_raw_page('sm_k', b::int)) h ON h.lp = i.itemoffset
@@ -82,7 +82,7 @@ SELECT CASE WHEN k BETWEEN 7 AND 1206 THEN '7-1206'
        count(*) AS entries, sum(ntids) AS tids
   FROM sm_entries() GROUP BY 1, 2 ORDER BY 1, 2;
 SELECT count(*) > 1 AS several_leaves
-  FROM generate_series(1, pg_relation_size('sm_k') / 8192 - 1) b,
+  FROM generate_series(1, pg_relation_size('sm_k') / current_setting('block_size')::int - 1) b,
        LATERAL bark_page_stats('sm_k', b) p WHERE p.type = 'leaf';
 SELECT bark_index_check('sm_k', true);
 
@@ -276,7 +276,7 @@ BEGIN
   END LOOP;
 END $$;
 CREATE TEMP TABLE sm_leaves AS
-  SELECT count(*) AS n FROM generate_series(1, pg_relation_size('sm_k') / 8192 - 1) b,
+  SELECT count(*) AS n FROM generate_series(1, pg_relation_size('sm_k') / current_setting('block_size')::int - 1) b,
          LATERAL bark_page_stats('sm_k', b) p WHERE p.type = 'leaf';
 BEGIN;
 SET LOCAL enable_seqscan = off;
@@ -285,7 +285,7 @@ DECLARE c NO SCROLL CURSOR FOR SELECT k, v FROM sm WHERE k BETWEEN 3 AND 1206 OR
 MOVE 150 IN c;
 INSERT INTO sm SELECT 7 + g % 200, 50000 + g FROM generate_series(1, 20000) g;
 SELECT count(*) > (SELECT n FROM sm_leaves) AS split
-  FROM generate_series(1, pg_relation_size('sm_k') / 8192 - 1) b,
+  FROM generate_series(1, pg_relation_size('sm_k') / current_setting('block_size')::int - 1) b,
        LATERAL bark_page_stats('sm_k', b) p WHERE p.type = 'leaf';
 SELECT d.n + 150 = w.n AS same_count, d.s FROM sm_drain() d, sm_want3 w;
 COMMIT;
