@@ -1789,9 +1789,9 @@ bark_vacuum_scan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 		 *
 		 * The blocks come from a read stream over [first data block,
 		 * npages), re-armed for the blocks added since each pass, as
-		 * btvacuumscan does since nbtree's c5c239e26e3 (also suggested by
-		 * the RethinkDB review, whose parallel traversal prefetches each
-		 * level).  block_range_read_stream_cb takes no locks, so batch mode
+		 * btvacuumscan does since nbtree's c5c239e26e3 (RethinkDB's
+		 * parallel traversal also prefetches each level).
+		 * block_range_read_stream_cb takes no locks, so batch mode
 		 * is safe.
 		 */
 		p.current_blocknum = BARK_METAPAGE + 1;
