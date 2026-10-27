@@ -372,7 +372,7 @@ sequence of updates and VACUUMs. All of them run under
 <code>wal_consistency_checking</code> with a standby. The validator's own
 test plants a zero tag.
 
-* '''Lowering a lower bound (T2, 2026-10-23).''' After its scan, VACUUM
+* '''Lowering a lower bound.''' After its scan, VACUUM
   lowers a tagged lower bound (K, L, t0) of a page whose first entry it kept
   tagged to (K, L) with no tag (<code>bark_lower_bound</code>): the left
   sibling's high key and the parent's downlink, once the left page holds no
@@ -388,10 +388,10 @@ test plants a zero tag.
   child (the bound is then also a separator a level up), an OVERSIZED bound,
   or an empty left page whose own lower bound is in the run.
 
-''Follow-ups.'' T2 leaves a tag whose bound is a parent's first child's,
+''Follow-ups.'' Lowering leaves a tag whose bound is a parent's first child's,
 about once per parent fan-out of tagged bounds; lowering it at the upper
 levels too would clear every tag, if a table AM needs that
-(xid-wraparound). V2: versioned multikey indexes.
+(xid-wraparound).
 
 ''V2 conversion (a tagged multikey index made unique or exclusion after its
 build).'' The design is section 12.1 of the V2 design report; README
