@@ -416,7 +416,7 @@ make_run('te', 1, 5);
 	q{p1.prev <> 0 AND (SELECT l.prev FROM leaves('te_k') l WHERE l.blk = p1.prev) = 0});
 like($node->safe_psql('postgres', qq{SELECT flags FROM leaves('te_k') WHERE blk = $p1}),
 	qr/lowbound_tagged/, 'empty P1: P1\'s own bound is tagged too');
-my $last = $node->safe_psql('postgres', q{SELECT pg_relation_size('te_k') / 8192 - 1});
+my $last = $node->safe_psql('postgres', q{SELECT pg_relation_size('te_k') / current_setting('block_size')::int - 1});
 $node->safe_psql('postgres',
 	qq{SELECT injection_points_attach('bark-bulkdelete-after-page', 'wait', '$last')});
 $vac = $node->background_psql('postgres', on_error_stop => 0);
