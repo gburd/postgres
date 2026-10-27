@@ -57,7 +57,7 @@ setup
 	         (SELECT min(i.tag) FROM bark_page_items(idx::text, b) i WHERE i.shape = 'SINGLE'),
 	         (SELECT max(i.tag) FROM bark_page_items(idx::text, b) i WHERE i.shape = 'SINGLE'),
 	         (SELECT count(*) FROM bark_page_items(idx::text, b) i WHERE i.shape = 'SINGLE')
-	    FROM generate_series(1, pg_relation_size(idx) / 8192 - 1) b,
+	    FROM generate_series(1, pg_relation_size(idx) / current_setting('block_size')::int - 1) b,
 	         LATERAL bark_page_stats(idx::text, b) s
 	   WHERE s.type = 'leaf' $$;
 	-- the rows a cursor has left, and a cursor moved n rows on
@@ -136,7 +136,7 @@ step s1_check
 	       l1.n AS p1_entries
 	  FROM exp, leaves('tl_k') l1, leaves('tl_k') l2 WHERE l1.blk = p1 AND l2.blk = p2;
 	SELECT count(*) AS lowered_downlinks
-	  FROM exp, generate_series(1, pg_relation_size('tl_k') / 8192 - 1) b,
+	  FROM exp, generate_series(1, pg_relation_size('tl_k') / current_setting('block_size')::int - 1) b,
 	       LATERAL bark_page_stats('tl_k', b) s, LATERAL bark_page_items('tl_k', b) i
 	 WHERE s.bark_level = 1 AND i.downlink = p2 AND i.tag IS NULL AND i.htid IS NOT NULL;
 	SELECT bark_index_parent_check('tl_k', true);
