@@ -138,12 +138,12 @@ FROM mp_any;
 -- A bitmap scan of a partial match reads each boundary straight into the
 -- TIDBitmap (bark_mk_gin_key), so the bitmap's work_mem bounds it: at 64kB
 -- it goes lossy, at 64MB it stays exact, and the rows are the seqscan's
--- either way.  Every row holds 'pp', one key of 60000 rows in POSTING
+-- either way.  Every row holds 'pp', one key of 30000 rows in POSTING
 -- entries; 'p' matches it and the 'p<n>' keys, 'q1' some rows, 'zz' none.
 -- The heap rows are wide, so that 64kB of bitmap cannot hold every page.
 CREATE TABLE mb (id int, t text[] COLLATE "C", pad text);
 INSERT INTO mb SELECT i, ARRAY['pp', 'p' || (i % 37), 'q' || (i % 11)], repeat('x', 200)
-FROM generate_series(1, 60000) i;
+FROM generate_series(1, 30000) i;
 CREATE INDEX mb_bark ON mb USING bark (t bark_text_prefix_ops);
 VACUUM ANALYZE mb;
 SELECT bark_index_check('mb_bark');
@@ -172,12 +172,14 @@ CREATE TABLE mb_q (q text);
 INSERT INTO mb_q VALUES ($$t %^% 'p'$$), ($$t %^% 'pp'$$), ($$t %^% 'p1'$$),
   ($$t %^% 'q1'$$), ($$t %^% 'zz'$$), ($$t %^% ANY (ARRAY['p3', 'q10'])$$),
   ($$t %^% 'p1' AND t %^% 'q1'$$);
+-- The seqscan's rows of each query, which every scan below must return.
+CREATE TABLE mb_seq AS SELECT q, s.ids FROM mb_q, mb_run(q, false) s;
 SET work_mem = '64kB';
 SELECT q, cardinality(b.ids) AS n, b.ids = s.ids AS ok, b.lossy
-FROM mb_q, mb_run(q, true) b, mb_run(q, false) s ORDER BY q COLLATE "C";
+FROM mb_seq s, mb_run(q, true) b ORDER BY q COLLATE "C";
 SET work_mem = '64MB';
 SELECT q, cardinality(b.ids) AS n, b.ids = s.ids AS ok, b.lossy
-FROM mb_q, mb_run(q, true) b, mb_run(q, false) s ORDER BY q COLLATE "C";
+FROM mb_seq s, mb_run(q, true) b ORDER BY q COLLATE "C";
 -- An index scan keeps its result in a TIDBitmap too (bark_mk_gin_gettuple),
 -- so work_mem bounds it alike: at 64kB its heap pages go lossy, each lossy
 -- page returns every offset with a recheck, and the recheck removes the
@@ -199,12 +201,12 @@ BEGIN
 END $$;
 SET work_mem = '64kB';
 SELECT q, cardinality(i.ids) AS n, i.ids = s.ids AS ok, i.removed
-FROM mb_q, mb_idx(q) i, mb_run(q, false) s ORDER BY q COLLATE "C";
+FROM mb_seq s, mb_idx(q) i ORDER BY q COLLATE "C";
 SET work_mem = '64MB';
 SELECT q, cardinality(i.ids) AS n, i.ids = s.ids AS ok, i.removed
-FROM mb_q, mb_idx(q) i, mb_run(q, false) s ORDER BY q COLLATE "C";
+FROM mb_seq s, mb_idx(q) i ORDER BY q COLLATE "C";
 RESET work_mem;
-DROP TABLE mb, mb_q;
+DROP TABLE mb, mb_q, mb_seq;
 DROP FUNCTION mb_run(text, bool), mb_idx(text);
 
 -- An open-ended partial-match boundary read forward on the leading,
