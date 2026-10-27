@@ -39,7 +39,6 @@
 #include "access/barkxlog.h"
 #include "access/genam.h"
 #include "access/itup.h"
-#include "access/nbtree.h"
 #include "access/tableam.h"
 #include "access/xloginsert.h"
 #include "miscadmin.h"
@@ -48,6 +47,8 @@
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
 #include "utils/injection_point.h"
+#include "utils/lsyscache.h"
+#include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 
@@ -108,14 +109,21 @@ bark_leaf_free_space(Page page)
  * page: the first entry that sorts after (key, scantid).  When scantid lies
  * inside an equal-key entry's TID range, that entry is the one just before the
  * offset returned (see bark_coalesce_list).
+ *
+ * The search starts at offset `low` when every entry before it is known to
+ * sort before (key, scantid), as the insert offset of the previous, smaller
+ * key of the same row does; InvalidOffsetNumber searches the whole page.
  */
 static OffsetNumber
-bark_leaf_insert_off(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
-					 ItemPointer scantid, Page page)
+bark_leaf_insert_off_from(Relation index, BarkKeyInfo *keyinfo,
+						  IndexTuple key, ItemPointer scantid, Page page,
+						  OffsetNumber low)
 {
 	BarkPageOpaque opaque = BarkPageGetOpaque(page);
-	OffsetNumber low = BarkPageFirstDataKey(opaque);
 	OffsetNumber high = PageGetMaxOffsetNumber(page);
+
+	if (low < BarkPageFirstDataKey(opaque))
+		low = BarkPageFirstDataKey(opaque);
 
 	if (high < low)
 		return low;
@@ -133,6 +141,14 @@ bark_leaf_insert_off(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 			high = mid;
 	}
 	return low;
+}
+
+static OffsetNumber
+bark_leaf_insert_off(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
+					 ItemPointer scantid, Page page)
+{
+	return bark_leaf_insert_off_from(index, keyinfo, key, scantid, page,
+									 InvalidOffsetNumber);
 }
 
 /*
@@ -515,6 +531,86 @@ bark_insert_entry(Relation index, Buffer buf, IndexTuple itup,
 }
 
 /*
+ * Add the entries itups[0..n), n >= 2, of one row at offsets offs[0..n) of
+ * the write-locked leaf `buf`, in that order, and WAL-log them in one record
+ * (INSERT_MULTI), where bark_insert_entry would log one INSERT_LEAF each.
+ * bark_plan_multi chose them: each is a plain new entry, the page has room
+ * for all of them, and each offset counts the entries added before it.  As in
+ * bark_insert_entry, the entries are coded for the page before the critical
+ * section, and logged coded.
+ */
+static void
+bark_insert_multi(Relation index, Buffer buf, IndexTuple *itups, int n,
+				  const OffsetNumber *offs)
+{
+	Page		page = BufferGetPage(buf);
+	Size		len = 0;
+	char	   *data;
+	char	   *pos;
+	XLogRecPtr	recptr;
+
+	Assert(n >= 2);
+	for (int k = 0; k < n; k++)
+		len += bark_coded_size(page, itups[k]);
+	data = palloc(len);
+	pos = data;
+	for (int k = 0; k < n; k++)
+	{
+		IndexTuple	coded = bark_prefix_encode(page, itups[k]);
+		Size		itemsz = IndexTupleSize(coded);
+
+		Assert(itemsz == MAXALIGN(itemsz));
+		/* Strictly ascending entries, each placed after those before it. */
+		Assert(k == 0 || offs[k] > offs[k - 1]);
+		memcpy(pos, coded, itemsz);
+		pos += itemsz;
+		if (coded != itups[k])
+			pfree(coded);
+	}
+	Assert(pos == data + len);
+
+	/* No ereport(ERROR) until changes are logged */
+	START_CRIT_SECTION();
+
+	pos = data;
+	for (int k = 0; k < n; k++)
+	{
+		Size		itemsz = IndexTupleSize((IndexTuple) pos);
+
+		if (PageAddItem(page, pos, itemsz, offs[k], false, false) ==
+			InvalidOffsetNumber)
+			elog(PANIC, "failed to add entry to block %u in BARK index \"%s\"",
+				 BufferGetBlockNumber(buf), RelationGetRelationName(index));
+		pos += itemsz;
+	}
+
+	MarkBufferDirty(buf);
+
+	if (RelationNeedsWAL(index))
+	{
+		xl_bark_insert_multi xlrec;
+
+		xlrec.nentries = n;
+
+		XLogBeginInsert();
+		XLogRegisterData(&xlrec, SizeOfBarkInsertMulti);
+		XLogRegisterData(offs, n * sizeof(OffsetNumber));
+		XLogRegisterBuffer(0, buf, REGBUF_STANDARD);
+		XLogRegisterBufData(0, data, len);
+
+		recptr = XLogInsert(RM_BARK_ID, XLOG_BARK_INSERT_MULTI);
+	}
+	else
+		recptr = XLogGetFakeLSN(index);
+
+	PageSetLSN(page, recptr);
+
+	END_CRIT_SECTION();
+
+	pfree(data);
+}
+
+/*
  * Replace the leaf entry at `off` on the write-locked page `buf` with `itup`,
  * and WAL-log it (OVERWRITE).  PageIndexTupleOverwrite keeps the entry at its
  * offset and moves only the entries stored below it on the page, by the
@@ -618,17 +714,41 @@ bark_add_tid_entry(Relation index, Buffer buf, OffsetNumber off,
  * entry at `off` on the exclusive-locked leaf `buf` but does not fit in it,
  * by replacing the entry with `left` and adding `right` just after it, the
  * results of bark_entry_swap_tid on the entry, and log just the TID
- * (XLOG_BARK_INSERT_SWAP); replay repeats bark_entry_swap_tid.  The caller
- * has checked that both fit, at bark_coded_size.
+ * (XLOG_BARK_INSERT_SWAP); replay repeats bark_entry_swap_tid.  Returns
+ * false, changing nothing, when the two do not fit, and the caller splits.
  */
-static void
+static bool
 bark_swap_tid_entry(Relation index, Buffer buf, OffsetNumber off,
 					IndexTuple left, IndexTuple right, ItemPointer tid)
 {
 	Page		page = BufferGetPage(buf);
 	IndexTuple	lcoded = bark_prefix_encode(page, left);
 	IndexTuple	rcoded = bark_prefix_encode(page, right);
+	PageHeader	phdr = (PageHeader) page;
 	XLogRecPtr	recptr;
+
+	/*
+	 * The two parts and the right part's line pointer must fit in the old
+	 * entry's slot plus the page's free bytes, measured on the coded parts
+	 * that go on the page, before the critical section.  The line pointer
+	 * must be counted, not left to PageGetFreeSpace's hold-back: on a page
+	 * with no free bytes at all (pd_lower == pd_upper) PageGetFreeSpace
+	 * clamps to zero instead of holding one back, so two parts that fill
+	 * exactly the old entry's room would leave PageAddItem no line pointer --
+	 * a PANIC below (found at 100M DocumentDB documents, a full leaf of
+	 * POSTING entries).
+	 */
+	if (MAXALIGN(IndexTupleSize(lcoded)) + MAXALIGN(IndexTupleSize(rcoded)) +
+		sizeof(ItemIdData) >
+		MAXALIGN(ItemIdGetLength(PageGetItemId(page, off))) +
+		phdr->pd_upper - phdr->pd_lower)
+	{
+		if (lcoded != left)
+			pfree(lcoded);
+		if (rcoded != right)
+			pfree(rcoded);
+		return false;
+	}
 
 	/* No ereport(ERROR) until changes are logged */
 	START_CRIT_SECTION();
@@ -665,8 +785,11 @@ bark_swap_tid_entry(Relation index, Buffer buf, OffsetNumber off,
 		pfree(lcoded);
 	if (rcoded != right)
 		pfree(rcoded);
+	return true;
 }
 
+static void bark_stack_resolve_parent(Relation index, BarkKeyInfo *keyinfo,
+									  BarkStack stack, Page page);
 static void bark_insert_parent(Relation index, Relation heaprel,
 							   BarkKeyInfo *keyinfo, BarkStack stack,
 							   Buffer buf, IndexTuple downlink);
@@ -828,7 +951,7 @@ bark_split(Relation index, Relation heaprel, BarkKeyInfo *keyinfo,
 	bool		lwhole;
 	IndexTuple	lnewitem = NULL;
 	IndexTuple	lreplace = NULL;
-	BTCycleId	cycleid = 0;
+	BarkCycleId cycleid = 0;
 	uint16		leafflag = isleaf ? BARK_LEAF : 0;
 	XLogRecPtr	recptr;
 
@@ -925,7 +1048,7 @@ bark_split(Relation index, Relation heaprel, BarkKeyInfo *keyinfo,
 	 * complete.
 	 */
 	if (isleaf)
-		cycleid = _bt_vacuum_cycleid(index);
+		cycleid = bark_vacuum_cycleid(index);
 
 	/*
 	 * Build both halves in temporary pages, so that a failure leaves the
@@ -1356,6 +1479,10 @@ bark_getstackbuf(Relation index, BarkKeyInfo *keyinfo, BarkStack stack,
 
 		if ((opaque->bark_flags & BARK_INCOMPLETE_SPLIT) != 0)
 		{
+			/*
+			 * A frame from the level-1 entry cache has no parent; with NULL,
+			 * bark_insert_parent finds it from the leftmost page above.
+			 */
 			bark_finish_split(index, keyinfo, buf, stack->bark_parent);
 			continue;
 		}
@@ -1469,6 +1596,7 @@ bark_insert_parent(Relation index, Relation heaprel, BarkKeyInfo *keyinfo,
 		fakestack.bark_blkno = bark_get_leftmost_at_level(index, level + 1);
 		fakestack.bark_offset = InvalidOffsetNumber;
 		fakestack.bark_parent = NULL;
+		fakestack.bark_cached = false;
 		stack = &fakestack;
 	}
 
@@ -1491,10 +1619,49 @@ bark_insert_parent(Relation index, Relation heaprel, BarkKeyInfo *keyinfo,
 		bark_insert_entry(index, pbuf, downlink, off, buf);
 		UnlockReleaseBuffer(buf);
 		UnlockReleaseBuffer(pbuf);
+		return;
 	}
+
+	/* The parent splits too, and its split needs the path above it. */
+	bark_stack_resolve_parent(index, keyinfo, stack, ppage);
+	bark_split(index, heaprel, keyinfo, stack->bark_parent, pbuf, off,
+			   downlink, buf, InvalidOffsetNumber, NULL);
+}
+
+/*
+ * Give `stack`, the frame of the page `page` (which the caller holds
+ * exclusive-locked), the path above it when it has none although the page
+ * is not the root: a descent that started at the page from the level-1
+ * entry cache recorded nothing above it (bark_cached).  The page is about to
+ * split, and its split puts a downlink into its parent.
+ *
+ * The path comes from a share-locked descent from the root with the page's
+ * high key, which stops above the page's level (bark_find_upper_path): it
+ * locks only pages above the ones the caller holds, top down, one at a time,
+ * so it cannot deadlock with them.  A rightmost page has no high key; the
+ * rightmost page of the level above is its parent, which the page's last
+ * downlink reaches as well as any key would.  This runs once per split that
+ * reaches past the cached level, not per insert.  The new frames hang off
+ * the caller's stack, which frees them.
+ */
+static void
+bark_stack_resolve_parent(Relation index, BarkKeyInfo *keyinfo,
+						  BarkStack stack, Page page)
+{
+	BarkPageOpaque opaque = BarkPageGetOpaque(page);
+	BarkItemBuf ibuf;
+	IndexTuple	key;
+
+	if (stack->bark_parent != NULL || !stack->bark_cached)
+		return;
+
+	if (BarkPageRightmost(opaque))
+		key = BarkPageGetItem(page, PageGetMaxOffsetNumber(page), &ibuf);
 	else
-		bark_split(index, heaprel, keyinfo, stack->bark_parent, pbuf, off,
-				   downlink, buf, InvalidOffsetNumber, NULL);
+		key = (IndexTuple) PageGetItem(page, PageGetItemId(page, BARK_P_HIKEY));
+	stack->bark_parent = bark_find_upper_path(index, keyinfo, key,
+											  opaque->bark_level);
+	stack->bark_cached = false;
 }
 
 /*
@@ -1560,7 +1727,11 @@ bark_finish_split(Relation index, BarkKeyInfo *keyinfo, Buffer lbuf,
  *    kills, not when its whole xact ends) rather than on the xact.
  *  - UNIQUE_CHECK_PARTIAL never errors: on any conflict it sets *is_unique to
  *    false and returns, letting a deferred constraint recheck decide later.
- *  - Otherwise a live conflict raises ERRCODE_UNIQUE_VIOLATION.
+ *  - Otherwise a live conflict raises ERRCODE_UNIQUE_VIOLATION.  Its detail
+ *    describes the row as the caller received it (values, isnull), never
+ *    itup: an extracted column's key is of the storage type, which the
+ *    column's output function cannot print.  For such a column the detail
+ *    adds the shared key, printed with the storage type's output function.
  *
  * Returns InvalidTransactionId when no wait is needed (unique, or already
  * errored); *speculativeToken is set to zero unless a speculative conflict was
@@ -1579,6 +1750,7 @@ bark_finish_split(Relation index, BarkKeyInfo *keyinfo, Buffer lbuf,
 static TransactionId
 bark_check_unique(Relation index, BarkKeyInfo *keyinfo, IndexTuple itup,
 				  Buffer buf, Relation heapRel, IndexUniqueCheck checkUnique,
+				  const Datum *values, const bool *isnull,
 				  bool *is_unique, uint32 *speculativeToken,
 				  OffsetNumber *insertoff)
 {
@@ -1592,14 +1764,16 @@ bark_check_unique(Relation index, BarkKeyInfo *keyinfo, IndexTuple itup,
 	InitDirtySnapshot(SnapshotDirty);
 
 	/*
-	 * `buf` is the first leaf that can hold itup's key: bark_insert descends
-	 * for a unique check on the key alone (no heap TID) with nextkey=false,
-	 * which follows the last downlink strictly less than the key and stops
-	 * moving right at a high key equal to it.  Entries of equal keys are in
-	 * heap TID order, so the live entry of the key, if there is one, can be
-	 * anywhere in its run, which starts on this leaf at or after the first
-	 * entry >= the key; scanning right from there while keys stay equal sees
-	 * the whole run, across leaves.  As in nbtree's _bt_check_unique.
+	 * `buf` is the first leaf that can hold itup's key: bark_insert_entries
+	 * descends for a unique check on the key alone (no heap TID) with
+	 * nextkey=false, which follows the last downlink strictly less than the
+	 * key and stops moving right at a high key equal to it, or, for a later
+	 * key of a row, reaches it from the leaf of the row's previous key by the
+	 * same move-right test.  Entries of equal keys are in heap TID order, so
+	 * the live entry of the key, if there is one, can be anywhere in its run,
+	 * which starts on this leaf at or after the first entry >= the key;
+	 * scanning right from there while keys stay equal sees the whole run,
+	 * across leaves.  As in nbtree's _bt_check_unique.
 	 */
 	for (;;)
 	{
@@ -1649,8 +1823,23 @@ bark_check_unique(Relation index, BarkKeyInfo *keyinfo, IndexTuple itup,
 			 * each with exactly one locator.  An OVERSIZED entry keeps the
 			 * locator in its ref, not in t_tid (which holds the overflow
 			 * block), so read it the uniform way rather than from t_tid
-			 * directly.
+			 * directly.  Any other shape is corruption (or an index whose
+			 * indisunique was changed after it coalesced), and copying its
+			 * locators into htid would overrun it.
 			 */
+			if (BarkEntryGetShape(curitup) != BARK_SHAPE_SINGLE &&
+				BarkEntryGetShape(curitup) != BARK_SHAPE_OVERSIZED)
+			{
+				BlockNumber cblk = BufferGetBlockNumber(curbuf);
+
+				if (ownbuf)
+					UnlockReleaseBuffer(curbuf);
+				ereport(ERROR,
+						(errcode(ERRCODE_INDEX_CORRUPTED),
+						 errmsg("unique BARK index \"%s\" has an entry with several heap TIDs on page %u at offset %u",
+								RelationGetRelationName(index), cblk, off),
+						 errhint("REINDEX the index.")));
+			}
 			bark_entry_get_tids(curitup, &htid, 1);
 
 			/* The tuple we are checking is itself, not a conflict. */
@@ -1690,16 +1879,35 @@ bark_check_unique(Relation index, BarkKeyInfo *keyinfo, IndexTuple itup,
 
 				/* A committed, visible duplicate: raise the constraint error. */
 				{
-					Datum		values[INDEX_MAX_KEYS];
-					bool		isnull[INDEX_MAX_KEYS];
+					int			attno = bark_index_extracted_column(index);
 					char	   *key_desc;
 
 					if (ownbuf)
 						UnlockReleaseBuffer(curbuf);
 
-					index_deform_tuple(itup, RelationGetDescr(index),
-									   values, isnull);
 					key_desc = BuildIndexValueDescription(index, values, isnull);
+					if (key_desc != NULL && attno > 0)
+					{
+						TupleDesc	tupdesc = RelationGetDescr(index);
+						Oid			typoutput;
+						bool		typisvarlena;
+						bool		knull;
+						Datum		key = index_getattr(itup, attno, tupdesc,
+														&knull);
+
+						Assert(!knull);
+						getTypeOutputInfo(TupleDescAttr(tupdesc, attno - 1)->atttypid,
+										  &typoutput, &typisvarlena);
+						ereport(ERROR,
+								(errcode(ERRCODE_UNIQUE_VIOLATION),
+								 errmsg("duplicate key value violates unique constraint \"%s\"",
+										RelationGetRelationName(index)),
+								 errdetail("Key %s shares key %s with an existing row.",
+										   key_desc,
+										   OidOutputFunctionCall(typoutput, key)),
+								 errtableconstraint(heapRel,
+													RelationGetRelationName(index))));
+					}
 					ereport(ERROR,
 							(errcode(ERRCODE_UNIQUE_VIOLATION),
 							 errmsg("duplicate key value violates unique constraint \"%s\"",
@@ -1824,8 +2032,11 @@ bark_coalesce_list(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 	iid = PageGetItemId(page, eqoff);
 	cur = BarkPageGetItem(page, eqoff, &ibuf);
 
-	/* Only coalesce with a leaf-data entry whose key equals the new key. */
-	if (!BarkEntryIsLeafData(cur) ||
+	/*
+	 * Only coalesce with a leaf-data entry whose key equals the new key, and
+	 * never with a marker, which names no row.
+	 */
+	if (!BarkEntryIsLeafData(cur) || BarkEntryIsMarker(cur) ||
 		bark_compare_itups(keyinfo, index, key, cur) != 0)
 		return BARK_COALESCE_NONE;
 
@@ -1897,6 +2108,7 @@ bark_coalesce_list(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 		int			nold = bark_entry_count_tids(cur);
 		ItemPointer all = palloc_array(ItemPointerData, nold + 1);
 		int			ins;
+		IndexTuple	curkey;
 		IndexTuple	posting;
 
 		nold = bark_entry_get_tids(cur, all, nold);
@@ -1905,14 +2117,22 @@ bark_coalesce_list(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 		memmove(&all[ins + 1], &all[ins], (nold - ins) * sizeof(ItemPointerData));
 		all[ins] = *newtid;
 
-		posting = bark_form_posting(RelationGetDescr(index), key, all, nold + 1);
+		/*
+		 * The key is the existing entry's, not the inserted tuple's: they
+		 * compare equal, but on a GIN-interface column their images may
+		 * differ (bark_index_may_coalesce), and the entry keeps the first.
+		 */
+		curkey = bark_single_from_list(index, cur, NULL);
+		posting = bark_form_posting(RelationGetDescr(index), curkey, all,
+									nold + 1);
 		if (posting != NULL)
 			newentry = posting;
 		else if (nold + 1 <= BARK_LIST_MAX_COUNT)
-			newentry = bark_form_list(RelationGetDescr(index), key, all,
-									  nold + 1);
+			newentry = bark_form_list_best(RelationGetDescr(index), curkey, all,
+										   nold + 1);
 		else
 			newentry = NULL;
+		pfree(curkey);
 		pfree(all);
 	}
 	if (newentry != NULL &&
@@ -1932,13 +2152,12 @@ swap:
 
 	/*
 	 * newtid falls inside the entry, which cannot take it: divide the entry
-	 * around it.  In place when both parts fit (the line pointer
-	 * PageGetFreeSpace holds back is the new part's), else in a split.
+	 * around it.  In place when both parts and the new part's line pointer
+	 * fit (bark_swap_tid_entry decides, on the coded parts), else in a split.
 	 */
 	bark_entry_swap_tid(cur, newtid, &left, &right);
-	if (bark_coded_size(page, left) + bark_coded_size(page, right) <= room)
+	if (bark_swap_tid_entry(index, buf, eqoff, left, right, newtid))
 	{
-		bark_swap_tid_entry(index, buf, eqoff, left, right, newtid);
 		pfree(left);
 		pfree(right);
 		return BARK_COALESCE_DONE;
@@ -1946,6 +2165,65 @@ swap:
 	*replace = left;
 	*newitem = right;
 	return BARK_COALESCE_SPLIT;
+}
+
+/*
+ * Lock the right sibling of the write-locked leaf `buf` exclusive and return
+ * it, with `buf` still locked: locks go left to right, as every BARK writer
+ * takes them.  Deleted and half-dead pages are stepped over, and an
+ * incomplete split met on the way is finished (`stack` is the descent's path
+ * to a page left of it, which bark_getstackbuf moves right from).  `buf`
+ * must not be the rightmost leaf.
+ */
+static Buffer
+bark_lock_right(Relation index, BarkKeyInfo *keyinfo, Buffer buf,
+				BarkStack stack)
+{
+	BlockNumber rblkno = BarkPageGetOpaque(BufferGetPage(buf))->bark_next;
+
+	for (;;)
+	{
+		Buffer		rbuf = ReadBuffer(index, rblkno);
+		BarkPageOpaque ropaque;
+
+		LockBuffer(rbuf, BUFFER_LOCK_EXCLUSIVE);
+		ropaque = BarkPageGetOpaque(BufferGetPage(rbuf));
+		if ((ropaque->bark_flags & BARK_INCOMPLETE_SPLIT) != 0)
+		{
+			bark_finish_split(index, keyinfo, rbuf, stack); /* releases */
+			continue;
+		}
+		if (!BarkPageIgnore(ropaque))
+			return rbuf;
+		if (BarkPageRightmost(ropaque))
+			elog(ERROR, "fell off the end of BARK index \"%s\"",
+				 RelationGetRelationName(index));
+		rblkno = ropaque->bark_next;
+		UnlockReleaseBuffer(rbuf);
+	}
+}
+
+/*
+ * Does (itup's key, scantid) belong on the write-locked leaf `buf`, given
+ * that it sorts at or above the leaf's low bound?  It does when the leaf is
+ * rightmost or it sorts before the high key; a heap TID equal to the high
+ * key's belongs right.  With scantid NULL, for a unique check, the test is
+ * bark_moveright's for a descent on the key alone: a key equal to the high
+ * key stays, since entries of it may be on this leaf, and the leaf is then
+ * the first that can hold the key.
+ */
+static bool
+bark_belongs_on_leaf(Relation index, BarkKeyInfo *keyinfo, IndexTuple itup,
+					 ItemPointer scantid, Buffer buf)
+{
+	Page		page = BufferGetPage(buf);
+	IndexTuple	hikey;
+
+	if (BarkPageRightmost(BarkPageGetOpaque(page)))
+		return true;
+	hikey = (IndexTuple) PageGetItem(page, PageGetItemId(page, BARK_P_HIKEY));
+	return bark_compare_itups_tid(keyinfo, index, itup, scantid, hikey) <
+		(scantid != NULL ? 0 : 1);
 }
 
 /*
@@ -1963,46 +2241,14 @@ static Buffer
 bark_insert_stepright(Relation index, BarkKeyInfo *keyinfo, IndexTuple itup,
 					  Buffer buf, BarkStack stack)
 {
-	for (;;)
+	while (!bark_belongs_on_leaf(index, keyinfo, itup, &itup->t_tid, buf))
 	{
-		Page		page = BufferGetPage(buf);
-		BarkPageOpaque opaque = BarkPageGetOpaque(page);
-		IndexTuple	hikey;
-		BlockNumber rblkno;
-		Buffer		rbuf;
+		Buffer		rbuf = bark_lock_right(index, keyinfo, buf, stack);
 
-		/* A heap TID equal to the high key's belongs right. */
-		if (BarkPageRightmost(opaque))
-			return buf;
-		hikey = (IndexTuple) PageGetItem(page, PageGetItemId(page, BARK_P_HIKEY));
-		if (bark_compare_itups_tid(keyinfo, index, itup, &itup->t_tid,
-								   hikey) < 0)
-			return buf;
-
-		rblkno = opaque->bark_next;
-		for (;;)
-		{
-			BarkPageOpaque ropaque;
-
-			rbuf = ReadBuffer(index, rblkno);
-			LockBuffer(rbuf, BUFFER_LOCK_EXCLUSIVE);
-			ropaque = BarkPageGetOpaque(BufferGetPage(rbuf));
-			if ((ropaque->bark_flags & BARK_INCOMPLETE_SPLIT) != 0)
-			{
-				bark_finish_split(index, keyinfo, rbuf, stack); /* releases */
-				continue;
-			}
-			if (!BarkPageIgnore(ropaque))
-				break;
-			if (BarkPageRightmost(ropaque))
-				elog(ERROR, "fell off the end of BARK index \"%s\"",
-					 RelationGetRelationName(index));
-			rblkno = ropaque->bark_next;
-			UnlockReleaseBuffer(rbuf);
-		}
 		UnlockReleaseBuffer(buf);
 		buf = rbuf;
 	}
+	return buf;
 }
 
 /*
@@ -2079,14 +2325,16 @@ bark_fastpath_leaf(Relation index, BarkKeyInfo *keyinfo, IndexTuple itup,
  * What every insert of one statement into the index would otherwise rebuild:
  * the comparison state, and whether equal keys coalesce, which takes a
  * catalog lookup and a support-function call per key column
- * (bark_allequalimage).  Kept in indexInfo->ii_AmCache, in ii_Context, for the
+ * (bark_index_may_coalesce).  Kept in indexInfo->ii_AmCache, in ii_Context, for the
  * life of the IndexInfo, as GIN keeps its GinState (nbtree reads its
  * allequalimage from the cached meta page instead).
  */
 typedef struct BarkInsertState
 {
 	BarkKeyInfo *keyinfo;
-	bool		coalesce;		/* non-unique and bark_allequalimage */
+	bool		coalesce;		/* non-unique and bark_index_may_coalesce */
+	int			extracted;		/* bark_index_extracted_column, or 0 */
+	MemoryContext rowcxt;		/* one row's keys and entries, reset per row */
 } BarkInsertState;
 
 static BarkInsertState *
@@ -2100,72 +2348,404 @@ bark_insert_state(Relation index, IndexInfo *indexInfo)
 
 		state = palloc_object(BarkInsertState);
 		state->keyinfo = bark_build_keyinfo(index);
-		state->coalesce = !indexInfo->ii_Unique && bark_allequalimage(index);
+		state->coalesce = !indexInfo->ii_Unique &&
+			bark_index_may_coalesce(index);
+		state->extracted = bark_index_extracted_column(index);
+		state->rowcxt = NULL;
+		if (state->extracted > 0)
+			state->rowcxt = AllocSetContextCreate(indexInfo->ii_Context,
+												  "BARK multikey row",
+												  ALLOCSET_DEFAULT_SIZES);
 		indexInfo->ii_AmCache = state;
 		MemoryContextSwitchTo(oldcxt);
 	}
 	return state;
 }
 
-bool
-bark_insert(Relation index, Datum *values, bool *isnull, ItemPointer ht_ctid,
-			Relation heapRel, IndexUniqueCheck checkUnique,
-			bool indexUnchanged, IndexInfo *indexInfo)
+/*
+ * Outcome of bark_insert_key.
+ */
+typedef enum BarkPlaceResult
 {
-	BarkInsertState *state = bark_insert_state(index, indexInfo);
-	BarkKeyInfo *keyinfo = state->keyinfo;
-	Size		fulllen;
-	IndexTuple	itup = bark_form_full_tuple(RelationGetDescr(index), values,
-											isnull, &fulllen);
+	BARK_PLACE_ONPAGE,			/* on the leaf, which is still locked */
+	BARK_PLACE_SPLIT,			/* by a split, which released the leaf */
+	BARK_PLACE_RETRY,			/* not placed; the leaf is released */
+} BarkPlaceResult;
+
+/*
+ * Place one entry, itup (the full in-memory key tuple with its heap TID in
+ * t_tid, fulllen bytes formed), on the write-locked leaf `buf`, where it
+ * belongs at offset *offp: coalesce it into an equal-key entry, or insert it
+ * as a SINGLE (an OVERSIZED entry with its own overflow chain when the key
+ * is oversized), making room first by bottom-up deletion or by merging the
+ * page's equal-key entries, else by a split, the single-value cut when the
+ * page holds one key.  This is the code every key of a row goes through,
+ * whether the row has one key or several.
+ *
+ * coalesce says the index's equal keys may share an entry (non-unique and
+ * bark_index_may_coalesce).  `stack` is the descent's path to `buf`, for a
+ * split; a leaf the fast path found (fastpath) has none, so an entry that
+ * could only be placed by a split is not placed: the leaf is released and
+ * BARK_PLACE_RETRY returned, for the caller to descend.  After a split,
+ * *target is the new right page; otherwise it is left alone.  When the
+ * entry is placed on the leaf, *offp is where it went (or, coalesced, the
+ * offset after the entry that took it): every entry before *offp sorts
+ * before the next, larger key of the row.
+ */
+static BarkPlaceResult
+bark_insert_key(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
+				bool coalesce, IndexTuple itup, Size fulllen,
+				bool indexUnchanged, BarkStack stack, Buffer buf,
+				OffsetNumber *offp, bool fastpath, BlockNumber *target)
+{
+	Page		page = BufferGetPage(buf);
+	OffsetNumber off = *offp;
 	bool		oversized = bark_len_is_oversized(fulllen);
+	IndexTuple	replace = NULL;
+	IndexTuple	newitem = NULL;
+	BarkPlaceResult result = BARK_PLACE_ONPAGE;
+
+	/*
+	 * Non-unique index: coalesce the new locator into an existing equal-key
+	 * entry, forming or extending a LIST instead of adding another SINGLE. A
+	 * unique index never does this -- it would mean two live tuples with the
+	 * same key, which bark_insert's uniqueness check already rejected.  An
+	 * oversized key never coalesces: a LIST/POSTING of oversized keys could
+	 * not fit the item ceiling, and each oversized row keeps its own
+	 * OVERSIZED entry + overflow chain (duplicate oversized keys are not
+	 * deduplicated; a shared overflow chain for identical oversized values
+	 * would be a space optimization, not a correctness matter).  Nor do keys
+	 * whose equal values can have different stored images, or indexes with
+	 * INCLUDE columns: a shared entry would return one row's bytes for all of
+	 * them (see bark_index_may_coalesce).
+	 */
+	coalesce = coalesce && !oversized;
+	if (coalesce)
+	{
+		BarkCoalesceResult cr;
+
+		cr = bark_coalesce_list(index, keyinfo, itup, &itup->t_tid, buf, off,
+								&replace, &newitem);
+		if (cr == BARK_COALESCE_SPLIT && fastpath)
+		{
+			/*
+			 * The new TID falls inside an entry that cannot take it, which a
+			 * fast-path insert cannot divide without a split.  Rare (heap
+			 * TIDs mostly ascend), so give the page up and descend.
+			 */
+			pfree(replace);
+			pfree(newitem);
+			UnlockReleaseBuffer(buf);
+			return BARK_PLACE_RETRY;
+		}
+		if (cr == BARK_COALESCE_SPLIT)
+		{
+			/*
+			 * The entry the TID falls inside cannot take it, and the page
+			 * cannot hold the entry divided.  Merge the page's equal-key
+			 * entries first, as below for an entry that does not fit, and try
+			 * once more.  The merge moves entries, so the insert offset is
+			 * found again and the division recomputed, whether or not the
+			 * merge made enough room; if it did not, the page splits.
+			 */
+			Size		need = bark_coded_size(page, replace) +
+				bark_coded_size(page, newitem) -
+				MAXALIGN(ItemIdGetLength(PageGetItemId(page,
+													   OffsetNumberPrev(off))));
+
+			pfree(replace);
+			pfree(newitem);
+			bark_merge_page(index, keyinfo, buf, InvalidOffsetNumber, need);
+			off = bark_leaf_insert_off(index, keyinfo, itup, &itup->t_tid,
+									   page);
+			cr = bark_coalesce_list(index, keyinfo, itup, &itup->t_tid, buf,
+									off, &replace, &newitem);
+		}
+		switch (cr)
+		{
+			case BARK_COALESCE_NONE:
+				break;
+			case BARK_COALESCE_DONE:
+				*offp = off;
+				return BARK_PLACE_ONPAGE;
+			case BARK_COALESCE_SPLIT:
+
+				/*
+				 * The entry at off - 1 is divided; its upper part goes at
+				 * off.
+				 */
+				*target = bark_split(index, heapRel, keyinfo, stack, buf, off,
+									 newitem, InvalidBuffer,
+									 OffsetNumberPrev(off), replace);
+				pfree(replace);
+				pfree(newitem);
+				return BARK_PLACE_SPLIT;
+		}
+	}
+
+	{
+		/* The entry actually placed on the page (OVERSIZED when oversized). */
+		IndexTuple	entry = bark_leaf_page_entry(index, heapRel, itup,
+												 oversized, fulllen);
+
+		/* The page footprint: the entry coded for the page, if it codes. */
+		if (bark_leaf_free_space(page) >= bark_coded_size(page, entry))
+			bark_insert_entry(index, buf, entry, off, InvalidBuffer);
+		else if (fastpath)
+		{
+			/*
+			 * bark_fastpath_leaf found room for a row's first key; a later
+			 * key of the row may not fit, and with no stack the leaf cannot
+			 * split.  Descend for it.
+			 */
+			if (entry != itup)
+				pfree(entry);
+			UnlockReleaseBuffer(buf);
+			return BARK_PLACE_RETRY;
+		}
+		else
+		{
+			bool		roomnow = false;
+
+			/*
+			 * The entry is a new version of a row whose key here did not
+			 * change: before splitting, delete the entries of dead versions
+			 * (bottom-up deletion, barkdelete.c).  Deleting shifts offsets,
+			 * so find the entry's place again whether or not that made room.
+			 */
+			if (indexUnchanged && heapRel != NULL)
+			{
+				roomnow = bark_bottomup_delete(index, heapRel, keyinfo, buf,
+											   itup,
+											   bark_coded_size(page, entry));
+				off = bark_leaf_insert_off(index, keyinfo, itup, &itup->t_tid,
+										   page);
+			}
+			if (roomnow)
+				bark_insert_entry(index, buf, entry, off, InvalidBuffer);
+			else if (coalesce &&
+					 bark_singleval_cut(index, keyinfo, page, off, itup,
+										&replace, &newitem))
+			{
+				/*
+				 * The page is all one key and the last of its run: the entry
+				 * at off - 1 is cut, and its upper part, with the new TID,
+				 * goes at off, so the left page ends at its single-value fill
+				 * factor.
+				 */
+				*target = bark_split(index, heapRel, keyinfo, stack, buf, off,
+									 newitem, InvalidBuffer,
+									 OffsetNumberPrev(off), replace);
+				pfree(replace);
+				pfree(newitem);
+				result = BARK_PLACE_SPLIT;
+			}
+			else if (coalesce &&
+					 bark_merge_page(index, keyinfo, buf, off,
+									 bark_coded_size(page, entry)))
+			{
+				/*
+				 * Merging the page's equal-key entries made room, as nbtree's
+				 * deduplication pass does before a split.  Entries moved, so
+				 * find the entry's place again.
+				 */
+				off = bark_leaf_insert_off(index, keyinfo, itup, &itup->t_tid,
+										   page);
+				bark_insert_entry(index, buf, entry, off, InvalidBuffer);
+			}
+			else
+			{
+				/*
+				 * A leaf split: no child's incomplete split to finish.  A
+				 * merge that did not make room may still have moved entries.
+				 */
+				if (coalesce)
+					off = bark_leaf_insert_off(index, keyinfo, itup,
+											   &itup->t_tid, page);
+				*target = bark_split(index, heapRel, keyinfo, stack, buf, off,
+									 entry, InvalidBuffer, InvalidOffsetNumber,
+									 NULL);
+				result = BARK_PLACE_SPLIT;
+			}
+		}
+		if (entry != itup)
+			pfree(entry);
+	}
+	*offp = off;
+	return result;
+}
+
+/*
+ * Plan the insert of a row's entries itups[0..nitups), in ascending order,
+ * on the write-locked leaf `buf`, where itups[0] goes at offset `off`: return
+ * how many of them, from the first, bark_insert_key would add one after
+ * another as plain new entries, and set offs[k] to where entry k goes once
+ * the entries before it are in.  Such an entry is not oversized, needs no
+ * unique check (the first entry's, if any, is done), belongs on the leaf,
+ * finds no equal-key entry to coalesce into (with coalesce), and fits in
+ * the space the entries before it leave.  The first entry that fails a test
+ * ends the run; it, and anything after it, takes the per-entry path.
+ *
+ * The page is not changed while planning, so each entry's offset and its
+ * coalesce test are worked out on the page as it is.  Both are sound only
+ * because a row's keys are distinct and its entries, which share the heap
+ * TID, strictly ascend (asserted below).  Entry k's offset on the unchanged
+ * page counts the page's entries that sort before it; entries 0..k-1 of the
+ * run sort before it too, so once they are in it goes k places further up.
+ * Its search can start at entry k-1's offset, since every page entry before
+ * that sorts before entry k-1.  The coalesce test looks only at the page's
+ * entry before that offset, never at entry k-1, which would be just before
+ * entry k once added when no page entry falls between the two: entry k-1's
+ * key differs from entry k's, so the per-entry path would not coalesce into
+ * it either, and the page's entry, which then sorts before entry k-1, cannot
+ * have entry k's key.
+ */
+static int
+bark_plan_multi(Relation index, BarkKeyInfo *keyinfo, bool coalesce,
+				IndexTuple *itups, const Size *fulllens,
+				const bool *checkkeys, int nitups, Buffer buf,
+				OffsetNumber off, OffsetNumber *offs)
+{
+	Page		page = BufferGetPage(buf);
+	OffsetNumber firstdata = BarkPageFirstDataKey(BarkPageGetOpaque(page));
+	Size		room = bark_leaf_free_space(page);
+	Size		used = 0;
+	int			n;
+
+	for (n = 0; n < nitups; n++)
+	{
+		IndexTuple	itup = itups[n];
+		Size		itemsz;
+
+		if (bark_len_is_oversized(fulllens[n]))
+			break;
+		if (n > 0)
+		{
+			/* The offsets and the coalesce test rely on this; see above. */
+			Assert(bark_compare_itups_tid(keyinfo, index, itup, &itup->t_tid,
+										  itups[n - 1]) > 0);
+			if (checkkeys != NULL && checkkeys[n])
+				break;
+			if (!bark_belongs_on_leaf(index, keyinfo, itup, &itup->t_tid, buf))
+				break;
+			off = bark_leaf_insert_off_from(index, keyinfo, itup,
+											&itup->t_tid, page, off);
+		}
+		if (coalesce && off > firstdata)
+		{
+			BarkItemBuf ibuf;
+			IndexTuple	prev = BarkPageGetItem(page, OffsetNumberPrev(off),
+											   &ibuf);
+
+			if (BarkEntryIsLeafData(prev) && !BarkEntryIsMarker(prev) &&
+				bark_compare_itups(keyinfo, index, itup, prev) == 0)
+				break;
+		}
+
+		/* As bark_insert_key's test, on the page with the entries before. */
+		itemsz = bark_coded_size(page, itup);
+		if (used + itemsz > room)
+			break;
+		used += itemsz + sizeof(ItemIdData);
+		offs[n] = off + n;
+	}
+	return n;
+}
+
+/*
+ * Is the marker `marker` already the entry just before offset `off` of the
+ * leaf `page`, where an insert of it would go?  A marker's (key, TID) is
+ * unique, and a descent with its TID reaches the one leaf that holds it if
+ * it is in the index.
+ */
+static bool
+bark_marker_present(Relation index, BarkKeyInfo *keyinfo, IndexTuple marker,
+					Page page, OffsetNumber off)
+{
+	BarkItemBuf ibuf;
+	IndexTuple	cur;
+	ItemPointerData lo;
+	ItemPointerData hi;
+
+	if (off <= BarkPageFirstDataKey(BarkPageGetOpaque(page)))
+		return false;
+	cur = BarkPageGetItem(page, OffsetNumberPrev(off), &ibuf);
+	if (!BarkEntryIsLeafData(cur))
+		return false;
+	bark_entry_tid_range(cur, &lo, &hi);
+	return ItemPointerEquals(&hi, &marker->t_tid) &&
+		bark_compare_itups(keyinfo, index, marker, cur) == 0;
+}
+
+/*
+ * Insert one row's entries itups[0..nitups), full in-memory key tuples with
+ * their heap TIDs in t_tid, fulllens[i] bytes formed, in ascending (key,
+ * TID) order, sharing the descent between them ("One pass" in
+ * BARK-Design.mediawiki).  The first entry descends as any insert does, or
+ * takes the cached rightmost leaf (bark_fastpath_leaf).  After entry i is
+ * placed on leaf L, which is still write-locked, entry i + 1 goes on L when
+ * it belongs there (L is rightmost, or it sorts before L's high key),
+ * searched from where entry i went; else on L's right sibling, locked before
+ * L is released, when it belongs there; else by a new descent with no lock
+ * held.  An entry whose insert split its leaf (bark_split releases both
+ * halves) is followed by a new descent too.  The stack from the last descent
+ * is kept across steps right: a split finds its parent through
+ * bark_getstackbuf, which moves right from a stale stack entry.  Each entry
+ * goes through bark_insert_key and its own WAL record, except that a run of
+ * entries that go on the leaf as plain new entries, one after another, is
+ * added and logged together (bark_plan_multi, bark_insert_multi).
+ *
+ * A unique index checks each entry whose checkkeys[i] is set (NULL checks
+ * none), in this ascending order, under the exclusive lock of the first
+ * leaf that can hold the key, and inserts it before that lock is released,
+ * as nbtree's _bt_doinsert does for its one key ("When the check runs" in
+ * BARK-Design.mediawiki).  For such an entry the step from entry i's
+ * leaf L uses the move-right test for the key alone, and the entry then
+ * moves right to its heap TID's place (bark_insert_stepright): L is the
+ * first leaf that can hold it, since entry i is on L and sorts before it.
+ * A conflict with an in-progress transaction releases the leaf, waits, and
+ * descends again for that entry only; the entries before it stay in.  A
+ * committed conflict raises the unique violation, whose detail describes
+ * the row as values and isnull give it.  Under UNIQUE_CHECK_PARTIAL a
+ * conflict neither waits nor errors: the result becomes false and the
+ * remaining entries are inserted unchecked.  The result is false only
+ * then.  UNIQUE_CHECK_EXISTING checks each entry and inserts none.  When `markers`,
+ * the entries are marker keys: never coalesced, never the cause of a
+ * bottom-up deletion pass, and not inserted again when already present.
+ */
+static bool
+bark_insert_entries(Relation index, BarkInsertState *state,
+					IndexTuple *itups, Size *fulllens, int nitups,
+					Relation heapRel, IndexUniqueCheck checkUnique,
+					const bool *checkkeys, const Datum *values,
+					const bool *isnull, bool indexUnchanged, bool markers)
+{
+	BarkKeyInfo *keyinfo = state->keyinfo;
+	bool		coalesce = state->coalesce && !markers;
+	int			i = 0;
+	IndexTuple	itup;
 	Buffer		buf;
 	BarkStack	stack;
 	Page		page;
 	OffsetNumber off;
-	bool		checkingunique = false;
 	OffsetNumber insertoff = InvalidOffsetNumber;
-	bool		coalesce;
 	bool		fastpath;
 	bool		rightmost;
 	BlockNumber target;
-	IndexTuple	replace = NULL;
-	IndexTuple	newitem = NULL;
-	bool		result = false; /* significant only for UNIQUE_CHECK_PARTIAL */
+	bool		checking;		/* is itup's key checked? */
+	bool		result = true;
 
-	itup->t_tid = *ht_ctid;		/* SINGLE shape: locator in t_tid */
+	Assert(nitups >= 1);
 	keyinfo->heaprel = heapRel; /* for pages a split allocates */
-
-	/*
-	 * A uniqueness check is skipped when the caller doesn't want it, and when
-	 * the new key has any NULL attribute in an index whose NULLs are distinct
-	 * (the default: a NULL key then never conflicts), as in nbtree's
-	 * _bt_doinsert.  Under NULLS NOT DISTINCT a NULL key is checked like any
-	 * other: bark_compare_itups treats two NULLs in a column as equal and
-	 * sorts them together, so the check finds every entry of the key.
-	 */
-	if (checkUnique != UNIQUE_CHECK_NO)
-	{
-		checkingunique = true;
-		if (!indexInfo->ii_NullsNotDistinct)
-		{
-			for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index); i++)
-			{
-				if (isnull[i])
-				{
-					checkingunique = false;
-					result = true;	/* a NULL key is unique */
-					break;
-				}
-			}
-		}
-	}
+	if (markers)
+		indexUnchanged = false;
 
 	/*
 	 * `itup` is the full in-memory key tuple at any size; bark_compare_itups
 	 * compares it directly (index_getattr does not care about the 8191-byte
 	 * cap).  Only when the entry is actually placed on a page is an oversized
 	 * key written to an overflow chain and replaced by a small OVERSIZED
-	 * entry (done at the leaf-insert / coalesce / split sites below).
+	 * entry (bark_insert_key).
 	 *
 	 * Entries of equal keys are in heap TID order, so an insert normally
 	 * descends with its heap TID as well as its key, straight to the leaf the
@@ -2174,25 +2754,38 @@ bark_insert(Relation index, Datum *values, bool *isnull, ItemPointer ht_ctid,
 	 * _bt_doinsert, it descends on the key alone, checks from there, and only
 	 * then moves right to the leaf for the heap TID (bark_insert_stepright).
 	 *
-	 * Before descending, an insert tries the cached rightmost leaf
-	 * (bark_fastpath_leaf), testing a unique check's key alone, as it
-	 * descends.  An oversized key does not: the size of its entry is known
-	 * only once its overflow chain is written.  The fast path has no stack,
-	 * so it must never split; the leaf it returns has room for the entry, and
-	 * the one case in which the entry could still need a split, coalescing
-	 * into an entry that must be divided, goes back to a descent below.
+	 * Before descending for a row's first entry, an insert tries the cached
+	 * rightmost leaf (bark_fastpath_leaf), testing a unique check's key
+	 * alone, as it descends.  An oversized key does not: the size of its
+	 * entry is known only once its overflow chain is written.  The fast path
+	 * has no stack, so it must never split; the leaf it returns has room for
+	 * the first entry, and an entry that could still need a split (a later
+	 * key of the row, or coalescing into an entry that must be divided) goes
+	 * back to a descent (BARK_PLACE_RETRY).
 	 */
 retry:
+	itup = itups[i];
+	checking = checkkeys != NULL && checkkeys[i];
+	insertoff = InvalidOffsetNumber;
+
+	/*
+	 * Tests stop an insert here, between two entries of a row that descends
+	 * again for the second, holding no lock, to crash the server with only
+	 * some of the row's entries in the index.
+	 */
+	if (i > 0)
+		INJECTION_POINT("bark-insert-redescend", NULL);
+
 	buf = InvalidBuffer;
 	stack = NULL;
-	if (!oversized)
+	if (i == 0 && !markers && !bark_len_is_oversized(fulllens[i]))
 		buf = bark_fastpath_leaf(index, keyinfo, itup,
-								 checkingunique ? NULL : &itup->t_tid);
+								 checking ? NULL : &itup->t_tid);
 	fastpath = BufferIsValid(buf);
 	if (!fastpath)
 		buf = bark_search(index, keyinfo, itup,
-						  checkingunique ? NULL : &itup->t_tid, true,
-						  !checkingunique, &stack);
+						  checking ? NULL : &itup->t_tid, true,
+						  !checking, &stack);
 
 	if (buf == InvalidBuffer)
 	{
@@ -2224,10 +2817,11 @@ retry:
 	 * serializable transaction that read this leaf page.  BARK sets
 	 * ampredlocks, so this is our responsibility rather than the generic
 	 * index layer's.  Done while holding the write lock on the target leaf,
-	 * before the insert or split.  For a unique check this is the first leaf
-	 * that can hold the key rather than, rarely, a right sibling the entry
-	 * goes to; as in nbtree that is enough, since every scan that could see
-	 * the entry reads the first leaf too.
+	 * before the insert or split, once for each leaf a row's entries go on.
+	 * For a unique check this is the first leaf that can hold the key rather
+	 * than, rarely, a right sibling the entry goes to; as in nbtree that is
+	 * enough, since every scan that could see the entry reads the first leaf
+	 * too.
 	 */
 	CheckForSerializableConflictIn(index, NULL, BufferGetBlockNumber(buf));
 
@@ -2240,17 +2834,19 @@ retry:
 	 * wakes us the moment the speculative inserter confirms or kills its
 	 * tuple, so a losing speculative insert of the same key does not block to
 	 * end of xact.  This matches nbtree's _bt_doinsert speculative-wait path
-	 * exactly.
+	 * exactly. The insert descends again for the key it was checking, and a
+	 * later key of a row comes back here from the loop below.
 	 */
-	if (checkingunique)
+check:
+	if (checking)
 	{
 		TransactionId xwait;
 		uint32		speculativeToken;
 		bool		is_unique;
 
 		xwait = bark_check_unique(index, keyinfo, itup, buf, heapRel,
-								  checkUnique, &is_unique, &speculativeToken,
-								  &insertoff);
+								  checkUnique, values, isnull, &is_unique,
+								  &speculativeToken, &insertoff);
 		if (TransactionIdIsValid(xwait))
 		{
 			/* Conflict with an in-progress xact: wait and retry. */
@@ -2264,11 +2860,16 @@ retry:
 								  XLTW_InsertIndex);
 			goto retry;
 		}
-		result = is_unique;
+		if (!is_unique)
+		{
+			/* UNIQUE_CHECK_PARTIAL: the result cannot change any more. */
+			result = false;
+			checkkeys = NULL;
+		}
 	}
 
 	/*
-	 * UNIQUE_CHECK_EXISTING only verifies that the already-inserted tuple is
+	 * UNIQUE_CHECK_EXISTING only verifies that the already-inserted row is
 	 * unique; it must not add another index entry.
 	 */
 	if (checkUnique == UNIQUE_CHECK_EXISTING)
@@ -2276,11 +2877,12 @@ retry:
 		UnlockReleaseBuffer(buf);
 		if (stack)
 			bark_freestack(stack);
-		pfree(itup);
-		return result;
+		if (++i == nitups)
+			return result;
+		goto retry;
 	}
 
-	if (checkingunique)
+	if (checking)
 	{
 		Buffer		checked = buf;
 
@@ -2296,180 +2898,86 @@ retry:
 	Assert(off == bark_leaf_insert_off(index, keyinfo, itup, &itup->t_tid,
 									   page));
 
-	/*
-	 * The leaf the entry goes on, or after a split the new right page, which
-	 * becomes the insert target below when it is the rightmost leaf.  Being
-	 * rightmost cannot change while the leaf is locked.
-	 */
-	rightmost = BarkPageRightmost(BarkPageGetOpaque(page));
-	target = BufferGetBlockNumber(buf);
-
-	/*
-	 * Non-unique index: coalesce the new locator into an existing equal-key
-	 * entry, forming or extending a LIST instead of adding another SINGLE. A
-	 * unique index never does this -- it would mean two live tuples with the
-	 * same key, which the uniqueness check above already rejected.  An
-	 * oversized key never coalesces: a LIST/POSTING of oversized keys could
-	 * not fit the item ceiling, and each oversized row keeps its own
-	 * OVERSIZED entry + overflow chain (duplicate oversized keys are not
-	 * deduplicated; a shared overflow chain for identical oversized values
-	 * would be a space optimization, not a correctness matter).  Nor do keys
-	 * whose equal values can have different stored images, or indexes with
-	 * INCLUDE columns: a shared entry would return one row's bytes for all of
-	 * them (see bark_allequalimage).
-	 */
-	coalesce = state->coalesce && !oversized;
-	if (coalesce)
+	for (;;)
 	{
-		BarkCoalesceResult cr;
+		BarkPlaceResult placed;
+		OffsetNumber runoffs[MaxIndexTuplesPerPage];
+		int			nrun = 0;
 
-		cr = bark_coalesce_list(index, keyinfo, itup, &itup->t_tid, buf, off,
-								&replace, &newitem);
-		if (cr == BARK_COALESCE_SPLIT && fastpath)
+		/*
+		 * The leaf the entry goes on, or after a split the new right page,
+		 * which becomes the insert target below when it is the rightmost
+		 * leaf.  Being rightmost cannot change while the leaf is locked.
+		 */
+		rightmost = BarkPageRightmost(BarkPageGetOpaque(page));
+		target = BufferGetBlockNumber(buf);
+
+		if (!markers && i + 1 < nitups)
+			nrun = bark_plan_multi(index, keyinfo, coalesce, itups + i,
+								   fulllens + i,
+								   checkkeys ? checkkeys + i : NULL,
+								   nitups - i, buf, off, runoffs);
+		if (nrun > 1)
 		{
-			/*
-			 * The new TID falls inside an entry that cannot take it, which a
-			 * fast-path insert cannot divide without a split.  Rare (heap
-			 * TIDs mostly ascend), so give the page up and descend.
-			 */
-			pfree(replace);
-			pfree(newitem);
-			UnlockReleaseBuffer(buf);
+			/* The run's last entry is the one placed, for the code below. */
+			bark_insert_multi(index, buf, itups + i, nrun, runoffs);
+			i += nrun - 1;
+			off = runoffs[nrun - 1];
+			placed = BARK_PLACE_ONPAGE;
+		}
+		else if (markers && bark_marker_present(index, keyinfo, itup, page, off))
+			placed = BARK_PLACE_ONPAGE;
+		else
+			placed = bark_insert_key(index, heapRel, keyinfo, coalesce, itup,
+									 fulllens[i], indexUnchanged, stack, buf,
+									 &off, fastpath, &target);
+		if (placed == BARK_PLACE_RETRY)
+		{
+			Assert(fastpath && stack == NULL);
 			RelationSetTargetBlock(index, InvalidBlockNumber);
 			goto retry;
 		}
-		if (cr == BARK_COALESCE_SPLIT)
-		{
-			/*
-			 * The entry the TID falls inside cannot take it, and the page
-			 * cannot hold the entry divided.  Merge the page's equal-key
-			 * entries first, as below for an entry that does not fit, and try
-			 * once more.  The merge moves entries, so the insert offset is
-			 * found again and the division recomputed, whether or not the
-			 * merge made enough room; if it did not, the page splits.
-			 */
-			Size		need = bark_coded_size(page, replace) +
-				bark_coded_size(page, newitem) -
-				MAXALIGN(ItemIdGetLength(PageGetItemId(page,
-													   OffsetNumberPrev(off))));
 
-			pfree(replace);
-			pfree(newitem);
-			bark_merge_page(index, keyinfo, buf, InvalidOffsetNumber, need);
-			off = bark_leaf_insert_off(index, keyinfo, itup, &itup->t_tid,
-									   page);
-			cr = bark_coalesce_list(index, keyinfo, itup, &itup->t_tid, buf,
-									off, &replace, &newitem);
-		}
-		switch (cr)
+		if (++i == nitups)
 		{
-			case BARK_COALESCE_NONE:
-				break;
-			case BARK_COALESCE_DONE:
+			if (placed == BARK_PLACE_ONPAGE)
 				UnlockReleaseBuffer(buf);
-				buf = InvalidBuffer;
-				break;
-			case BARK_COALESCE_SPLIT:
-
-				/*
-				 * The entry at off - 1 is divided; its upper part goes at
-				 * off.
-				 */
-				target = bark_split(index, heapRel, keyinfo, stack, buf, off,
-									newitem, InvalidBuffer,
-									OffsetNumberPrev(off), replace);
-				buf = InvalidBuffer;	/* bark_split released it */
-				pfree(replace);
-				pfree(newitem);
-				break;
+			break;
 		}
-	}
 
-	if (BufferIsValid(buf))
-	{
-		/* The entry actually placed on the page (OVERSIZED when oversized). */
-		IndexTuple	entry = bark_leaf_page_entry(index, heapRel, itup,
-												 oversized, fulllen);
-
-		/* The page footprint: the entry coded for the page, if it codes. */
-		if (bark_leaf_free_space(page) >= bark_coded_size(page, entry))
+		itup = itups[i];
+		checking = checkkeys != NULL && checkkeys[i];
+		if (placed == BARK_PLACE_SPLIT)
 		{
-			bark_insert_entry(index, buf, entry, off, InvalidBuffer);
+			if (stack)
+				bark_freestack(stack);
+			goto retry;
+		}
+		if (!bark_belongs_on_leaf(index, keyinfo, itup,
+								  checking ? NULL : &itup->t_tid, buf))
+		{
+			Buffer		rbuf = bark_lock_right(index, keyinfo, buf, stack);
+
+			if (!bark_belongs_on_leaf(index, keyinfo, itup,
+									  checking ? NULL : &itup->t_tid, rbuf))
+			{
+				UnlockReleaseBuffer(rbuf);
+				UnlockReleaseBuffer(buf);
+				if (stack)
+					bark_freestack(stack);
+				goto retry;
+			}
 			UnlockReleaseBuffer(buf);
+			buf = rbuf;
+			page = BufferGetPage(buf);
+			CheckForSerializableConflictIn(index, NULL,
+										   BufferGetBlockNumber(buf));
+			off = InvalidOffsetNumber;
 		}
-		else
-		{
-			bool		roomnow = false;
-
-			Assert(!fastpath);
-
-			/*
-			 * The entry is a new version of a row whose key here did not
-			 * change: before splitting, delete the entries of dead versions
-			 * (bottom-up deletion, barkdelete.c).  Deleting shifts offsets,
-			 * so find the entry's place again whether or not that made room.
-			 */
-			if (indexUnchanged && heapRel != NULL)
-			{
-				roomnow = bark_bottomup_delete(index, heapRel, keyinfo, buf,
-											   itup,
-											   bark_coded_size(page, entry));
-				off = bark_leaf_insert_off(index, keyinfo, itup, &itup->t_tid,
-										   page);
-			}
-			if (roomnow)
-			{
-				bark_insert_entry(index, buf, entry, off, InvalidBuffer);
-				UnlockReleaseBuffer(buf);
-			}
-			else if (coalesce &&
-					 bark_singleval_cut(index, keyinfo, page, off, itup,
-										&replace, &newitem))
-			{
-				/*
-				 * The page is all one key and the last of its run: the entry
-				 * at off - 1 is cut, and its upper part, with the new TID,
-				 * goes at off, so the left page ends at its single-value fill
-				 * factor.
-				 */
-				target = bark_split(index, heapRel, keyinfo, stack, buf, off,
-									newitem, InvalidBuffer,
-									OffsetNumberPrev(off), replace);
-				buf = InvalidBuffer;	/* bark_split released it */
-				pfree(replace);
-				pfree(newitem);
-			}
-			else if (coalesce &&
-					 bark_merge_page(index, keyinfo, buf, off,
-									 bark_coded_size(page, entry)))
-			{
-				/*
-				 * Merging the page's equal-key entries made room, as nbtree's
-				 * deduplication pass does before a split.  Entries moved, so
-				 * find the entry's place again.
-				 */
-				off = bark_leaf_insert_off(index, keyinfo, itup, &itup->t_tid,
-										   page);
-				bark_insert_entry(index, buf, entry, off, InvalidBuffer);
-				UnlockReleaseBuffer(buf);
-			}
-			else
-			{
-				/*
-				 * A leaf split: no child's incomplete split to finish.  A
-				 * merge that did not make room may still have moved entries.
-				 */
-				if (coalesce)
-					off = bark_leaf_insert_off(index, keyinfo, itup,
-											   &itup->t_tid, page);
-				target = bark_split(index, heapRel, keyinfo, stack, buf, off,
-									entry, InvalidBuffer, InvalidOffsetNumber,
-									NULL);
-				buf = InvalidBuffer;	/* bark_split released it */
-			}
-		}
-		if (entry != itup)
-			pfree(entry);
+		if (checking)
+			goto check;
+		off = bark_leaf_insert_off_from(index, keyinfo, itup, &itup->t_tid,
+										page, off);
 	}
 
 	/*
@@ -2486,6 +2994,259 @@ retry:
 
 	if (stack)
 		bark_freestack(stack);
+	return result;
+}
+
+/*
+ * Insert those of the row's markers (rk) that this backend has not seen in
+ * the index, before the row's keys ("Markers" in BARK-Design.mediawiki).
+ * Each is a SINGLE entry of the marker key with the reserved heap TID
+ * (BarkSetMarkerTid), inserted by the normal path but never coalesced, and
+ * not inserted again when another backend already has: a marker's (key,
+ * TID) has one place in the index, which bark_insert_entries looks at under
+ * the leaf's exclusive lock.  Once in, each is cached, so a row whose
+ * markers are all cached costs nothing.
+ */
+static void
+bark_insert_markers(Relation index, BarkInsertState *state, BarkRowKeys *rk,
+					Relation heapRel)
+{
+	IndexTuple *itups;
+	Size	   *fulllens;
+	int			n = 0;
+
+	if (rk->nmarkers == 0)
+		return;
+
+	itups = palloc_array(IndexTuple, rk->nmarkers);
+	fulllens = palloc_array(Size, rk->nmarkers);
+	for (int i = 0; i < rk->nmarkers; i++)
+	{
+		if (bark_marker_cached(index, state->keyinfo, rk->markers[i]))
+			continue;
+		itups[n] = bark_form_marker(index, rk->markers[i], &fulllens[n]);
+		n++;
+	}
+	if (n == 0)
+		return;
+
+	(void) bark_insert_entries(index, state, itups, fulllens, n, heapRel,
+							   UNIQUE_CHECK_NO, NULL, NULL, NULL, false, true);
+	for (int i = 0; i < rk->nmarkers; i++)
+		bark_cache_marker(index, state->keyinfo, rk->markers[i]);
+}
+
+/*
+ * Is marker key `key` in `index`, an index with an extracted column?  One
+ * descent to (key, the reserved TID), unless this backend has seen the
+ * marker already.  For an operator class, a planner support function say,
+ * which can tell from a marker that a path has never held an array.
+ * Markers are outside MVCC: one inserted by a transaction that has not
+ * committed, or that aborted, is seen too, as the multikey flag is.
+ */
+bool
+bark_index_has_marker(Relation index, Datum key)
+{
+	BarkKeyInfo *keyinfo;
+	IndexTuple	marker;
+	Size		fulllen;
+	Buffer		buf;
+	bool		found = false;
+
+	if (!bark_relation_is_bark(index) ||
+		bark_index_extracted_column(index) == 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("\"%s\" is not a BARK index with a multikey operator class",
+						RelationGetRelationName(index))));
+
+	keyinfo = bark_build_keyinfo(index);
+	if (bark_marker_cached(index, keyinfo, key))
+		found = true;
+	else
+	{
+		marker = bark_form_marker(index, key, &fulllen);
+		buf = bark_search(index, keyinfo, marker, &marker->t_tid, false, true,
+						  NULL);
+		if (BufferIsValid(buf))
+		{
+			Page		page = BufferGetPage(buf);
+
+			found = bark_marker_present(index, keyinfo, marker, page,
+										bark_leaf_insert_off(index, keyinfo,
+															 marker,
+															 &marker->t_tid,
+															 page));
+			UnlockReleaseBuffer(buf);
+		}
+		if (found)
+			bark_cache_marker(index, keyinfo, key);
+		pfree(marker);
+	}
+	pfree(keyinfo);
+	return found;
+}
+
+/*
+ * Insert a row into an index with an extracted column: procedure 7's keys
+ * for the column's value, one entry per distinct key with the row's other
+ * columns and heap TID (bark_extract_row_keys).  The multikey flag is set
+ * before the first entry of a row with two or more keys, and the row's
+ * markers that this backend has not seen in the index are inserted before
+ * its keys; both happen with no page locked, and both are monotone, so a
+ * crash or error after them leaves nothing to undo.  Everything the row
+ * needs is allocated in state->rowcxt, which is reset at the end.
+ *
+ * A unique index (checkUnique other than UNIQUE_CHECK_NO) checks each key
+ * that has no NULL column.  A NULL fixed column puts a NULL in every key,
+ * so such a row is not checked at all; the NULL key is not checked, and
+ * the row's other keys are (NULLS NOT DISTINCT is refused on such an index,
+ * bark_check_multikey_index).  Returns bark_insert_entries's result.
+ *
+ * With oversizedonly, only the keys too large for CREATE INDEX's sort are
+ * inserted: the build's second pass (bark_insert_oversized_keys) does that
+ * for a row whose other keys the build loaded, after writing the flag and
+ * the markers itself.
+ */
+static bool
+bark_insert_row_keys(Relation index, BarkInsertState *state, Datum *values,
+					 bool *isnull, ItemPointer ht_ctid, Relation heapRel,
+					 IndexUniqueCheck checkUnique, bool indexUnchanged,
+					 bool oversizedonly)
+{
+	TupleDesc	tupdesc = RelationGetDescr(index);
+	int			attno = state->extracted;
+	MemoryContext oldcxt = MemoryContextSwitchTo(state->rowcxt);
+	Datum		kvalues[INDEX_MAX_KEYS];
+	bool		knulls[INDEX_MAX_KEYS];
+	BarkRowKeys rk;
+	IndexTuple *itups;
+	Size	   *fulllens;
+	bool	   *checkkeys = NULL;
+	bool		result = true;
+	int			n = 0;
+
+	bark_extract_row_keys(index, state->keyinfo, values[attno - 1],
+						  isnull[attno - 1], &rk);
+
+	if (checkUnique != UNIQUE_CHECK_NO)
+	{
+		checkkeys = palloc_array(bool, rk.nkeys);
+		for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index); i++)
+		{
+			if (i != attno - 1 && isnull[i])
+			{
+				checkkeys = NULL;
+				break;
+			}
+		}
+	}
+
+	if (!oversizedonly)
+	{
+		if (rk.nkeys > 1)
+			bark_set_multikey(index);
+		bark_insert_markers(index, state, &rk, heapRel);
+	}
+
+	memcpy(kvalues, values, tupdesc->natts * sizeof(Datum));
+	memcpy(knulls, isnull, tupdesc->natts * sizeof(bool));
+	itups = palloc_array(IndexTuple, rk.nkeys);
+	fulllens = palloc_array(Size, rk.nkeys);
+	for (int i = 0; i < rk.nkeys; i++)
+	{
+		kvalues[attno - 1] = rk.keys[i];
+		knulls[attno - 1] = rk.nulls[i];
+		itups[n] = bark_form_full_tuple(tupdesc, kvalues, knulls,
+										&fulllens[n]);
+		if (oversizedonly && !bark_len_is_oversized(fulllens[n]))
+			continue;
+		itups[n]->t_tid = *ht_ctid;
+		if (checkkeys != NULL)
+			checkkeys[n] = !rk.nulls[i];
+		n++;
+	}
+	if (n > 0)
+		result = bark_insert_entries(index, state, itups, fulllens, n,
+									 heapRel, checkUnique, checkkeys, values,
+									 isnull, indexUnchanged, false);
+
+	MemoryContextSwitchTo(oldcxt);
+	MemoryContextReset(state->rowcxt);
+	return result;
+}
+
+bool
+bark_insert(Relation index, Datum *values, bool *isnull, ItemPointer ht_ctid,
+			Relation heapRel, IndexUniqueCheck checkUnique,
+			bool indexUnchanged, IndexInfo *indexInfo)
+{
+	BarkInsertState *state = bark_insert_state(index, indexInfo);
+	Size		fulllen;
+	IndexTuple	itup;
+	bool		checkingunique = false;
+	bool		result = false; /* significant only for UNIQUE_CHECK_PARTIAL */
+
+	if (state->extracted > 0)
+		return bark_insert_row_keys(index, state, values, isnull, ht_ctid,
+									heapRel, checkUnique, indexUnchanged,
+									false);
+
+	/*
+	 * A uniqueness check is skipped when the caller doesn't want it, and when
+	 * the new key has any NULL attribute in an index whose NULLs are distinct
+	 * (the default: a NULL key then never conflicts), as in nbtree's
+	 * _bt_doinsert.  Under NULLS NOT DISTINCT a NULL key is checked like any
+	 * other: bark_compare_itups treats two NULLs in a column as equal and
+	 * sorts them together, so the check finds every entry of the key.
+	 */
+	if (checkUnique != UNIQUE_CHECK_NO)
+	{
+		checkingunique = true;
+		if (!indexInfo->ii_NullsNotDistinct)
+		{
+			for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index); i++)
+			{
+				if (isnull[i])
+				{
+					checkingunique = false;
+					result = true;	/* a NULL key is unique */
+					break;
+				}
+			}
+		}
+	}
+
+	itup = bark_form_full_tuple(RelationGetDescr(index), values, isnull,
+								&fulllen);
+	itup->t_tid = *ht_ctid;		/* SINGLE shape: locator in t_tid */
+	if (checkingunique)
+		result = bark_insert_entries(index, state, &itup, &fulllen, 1,
+									 heapRel, checkUnique, &checkingunique,
+									 values, isnull, indexUnchanged, false);
+	else
+		(void) bark_insert_entries(index, state, &itup, &fulllen, 1, heapRel,
+								   checkUnique, NULL, values, isnull,
+								   indexUnchanged, false);
 	pfree(itup);
 	return result;
+}
+
+/*
+ * CREATE INDEX's second pass over a row of an index with an extracted
+ * column: insert those of the row's keys that were too large for the sort.
+ * Procedure 7 is run again (it is immutable, so it returns the same keys).
+ * checkUnique is the caller's: UNIQUE_CHECK_YES for a live row of a unique
+ * index, else UNIQUE_CHECK_NO.
+ */
+void
+bark_insert_oversized_keys(Relation index, Datum *values, bool *isnull,
+						   ItemPointer ht_ctid, Relation heapRel,
+						   IndexUniqueCheck checkUnique, IndexInfo *indexInfo)
+{
+	BarkInsertState *state = bark_insert_state(index, indexInfo);
+
+	Assert(state->extracted > 0);
+	(void) bark_insert_row_keys(index, state, values, isnull, ht_ctid,
+								heapRel, checkUnique, false, true);
 }
