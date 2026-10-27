@@ -1035,11 +1035,6 @@ Not implemented:
 * Per-locator data (RUM's addInfo), closed as not needed: "Per-locator
   data (closed)" below.
 
-* '''BMP''' -- bounded memory and batched TIDs in bitmap and GIN-interface
-  scans. ''(part 1, batched <code>tbm_add_tuples</code>, done, branch
-  bark-bmp: every bitmap path adds single TIDs through a fixed 6 kB batch
-  per scan, one exact and one recheck array, as the "Batch B-tree TIDs when
-  building a bitmap" patch does for nbtree; LIST and POSTING members go in
   as the array they already are. README "Scans". Part 2, GIN-interface
   streams bounded by work_mem, done: "As built (BMP part 2, bounded
   streams)" under "Which interface first."; positioned streams and coded
