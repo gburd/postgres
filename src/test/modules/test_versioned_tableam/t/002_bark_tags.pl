@@ -341,10 +341,11 @@ $node->safe_psql(
 	              WHERE (d.htid, d.data) IS DISTINCT FROM (x.htid, x.data) GROUP BY d.blk),
 	       t AS (SELECT d.blk, count(*) AS n, sum((d.itemlen + 7) / 8 * 8 + 4) AS bytes
 	               FROM d LEFT JOIN c USING (blk)
-	              WHERE d.itemoffset > coalesce(c.off, 0) GROUP BY d.blk)
+	              WHERE d.itemoffset > coalesce(c.off, 0) GROUP BY d.blk),
+	       n AS (SELECT blk, count(*) AS n FROM d GROUP BY blk)
 	  SELECT l.blk, l.next, coalesce(l.flags, '{}'), h.tag, f.htid, f.data, f.tag, x.htid, x.data,
-	         t.n, t.bytes, (SELECT count(*) FROM d WHERE d.blk = l.blk)
-	    FROM l JOIN f USING (blk) JOIN x USING (blk) JOIN t USING (blk)
+	         t.n, t.bytes, n.n
+	    FROM l JOIN f USING (blk) JOIN x USING (blk) JOIN t USING (blk) JOIN n USING (blk)
 	    LEFT JOIN i h ON h.blk = l.blk AND h.itemoffset = 1 AND l.next <> 0 $$;
 	-- leaf boundaries inside a run, and those of them where the run's part
 	-- on the left leaf neither fills it nor takes over a quarter of a page
