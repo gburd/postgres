@@ -942,7 +942,7 @@ bark_flush_page(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *st,
 	/*
 	 * Do not cut a leaf inside a run of entries equal on key and heap TID
 	 * (one row's entries of different tags) when the page has another place
-	 * to cut, as bark_findsplitloc does not (R3.2): move the run's entries on
+	 * to cut, as bark_findsplitloc does not: move the run's entries on
 	 * this page to the next one with firstright.
 	 */
 	if (st->level == 0)
