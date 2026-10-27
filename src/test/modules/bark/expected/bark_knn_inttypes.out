@@ -1,0 +1,129 @@
+--
+-- KNN (ORDER BY col <~> const) scans over int2 and int8 columns.
+--
+-- The int4 distance operator is exercised in the main regression test; the
+-- int2 and int8 ordering operators (bark_int2_distance, bark_int8_distance)
+-- are only reachable through a BARK index on a smallint or bigint column.
+-- Each query's keys are checked against a brute-force distance sort of the
+-- same data (seqscan); at equal distance the KNN scan returns its forward
+-- side (keys >= the constant) first, so the reference sorts ties the same
+-- way.  The index is verified structurally at the end.
+--
+SET client_min_messages = warning;
+CREATE EXTENSION IF NOT EXISTS amcheck;
+RESET client_min_messages;
+-- A KNN scan and a seqscan distance sort must return the same keys in the
+-- same order.  bark_knn_eq returns true when they match, with a notice (and
+-- NULL) if the plan is not a KNN index scan with an Order By and no Sort.
+CREATE FUNCTION bark_knn_eq(tbl text, c text, lim int)
+RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE
+  q text := format('SELECT a::text FROM %I ORDER BY a <~> (%s) LIMIT %s',
+                   tbl, c, lim);
+  line text; plan text := ''; knn text[]; ref text[];
+BEGIN
+  SET LOCAL enable_seqscan = off;
+  SET LOCAL enable_sort = off;
+  FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+    plan := plan || line || E'\n';
+  END LOOP;
+  IF plan !~ 'Index (Only )?Scan' OR plan !~ 'Order By' OR plan ~ 'Sort' THEN
+    RAISE NOTICE 'not a KNN scan: %', plan;
+    RETURN NULL;
+  END IF;
+  EXECUTE format('SELECT array(%s)', q) INTO knn;
+  SET LOCAL enable_seqscan = on;
+  SET LOCAL enable_sort = on;
+  -- The KNN scan returns rows in nondecreasing distance; at an equal (float8)
+  -- distance -- which distinct int8 keys can share once the subtraction loses
+  -- low bits near the type's extremes -- the order within the tie is not
+  -- defined by the operator, so compare the bag of (distance, key) pairs, not
+  -- the positional order.  A wrong scan would drop, repeat or misplace a key
+  -- across distances and fail this.
+  EXECUTE format($f$
+    SELECT array(SELECT (a <~> (%s))::text || ':' || a::text
+                   FROM %I ORDER BY a <~> (%s), a LIMIT %s)$f$,
+                 c, tbl, c, lim) INTO ref;
+  EXECUTE format($f$
+    SELECT array(SELECT (a <~> (%s))::text || ':' || a::text
+                   FROM (SELECT a FROM %I ORDER BY a <~> (%s) LIMIT %s) s
+                  ORDER BY a <~> (%s), a)$f$,
+                 c, tbl, c, lim, c) INTO knn;
+  RETURN knn IS NOT DISTINCT FROM ref;
+END $$;
+-- smallint: keys spread across the whole int2 range, including the extremes
+-- so the float8 subtraction in bark_int2_distance is exercised at the ends.
+CREATE TABLE bark_knn_i2 (a int2);
+INSERT INTO bark_knn_i2
+  SELECT g::int2 FROM generate_series(-32768, 32767, 7) g;
+CREATE INDEX bark_knn_i2_idx ON bark_knn_i2 USING bark (a);
+ANALYZE bark_knn_i2;
+SET enable_seqscan = off;
+-- The plan produces the ordering from the index, with no Sort node.
+EXPLAIN (COSTS OFF)
+  SELECT a FROM bark_knn_i2 ORDER BY a <~> 0::int2 LIMIT 10;
+                         QUERY PLAN                         
+------------------------------------------------------------
+ Limit
+   ->  Index Only Scan using bark_knn_i2_idx on bark_knn_i2
+         Order By: (a <~> '0'::smallint)
+(3 rows)
+
+-- Nearest to the middle, to each extreme end (where the float8 subtraction
+-- avoids int2 overflow), and the whole index.
+SELECT bark_knn_eq('bark_knn_i2', '0::int2', 10) AS mid,
+       bark_knn_eq('bark_knn_i2', '(-32768)::int2', 20) AS lo,
+       bark_knn_eq('bark_knn_i2', '32767::int2', 20) AS hi,
+       bark_knn_eq('bark_knn_i2', '100::int2', 100000) AS all;
+ mid | lo | hi | all 
+-----+----+----+-----
+ t   | t  | t  | t
+(1 row)
+
+-- bigint: a sparse set that spans the extremes of the int8 range, so the
+-- float8 subtraction in bark_int8_distance runs at values where an integer
+-- subtraction would overflow (a key near INT64_MIN vs a const near INT64_MAX).
+CREATE TABLE bark_knn_i8 (a int8);
+INSERT INTO bark_knn_i8 VALUES
+  (-9223372036854775808), (-9223372036854775807), (-1000000000000),
+  (-5), (0), (5), (42), (1000000000000),
+  (9223372036854775806), (9223372036854775807);
+INSERT INTO bark_knn_i8 SELECT g * 1000000 FROM generate_series(1, 200) g;
+CREATE INDEX bark_knn_i8_idx ON bark_knn_i8 USING bark (a);
+ANALYZE bark_knn_i8;
+EXPLAIN (COSTS OFF)
+  SELECT a FROM bark_knn_i8 ORDER BY a <~> 0::int8 LIMIT 10;
+                         QUERY PLAN                         
+------------------------------------------------------------
+ Limit
+   ->  Index Only Scan using bark_knn_i8_idx on bark_knn_i8
+         Order By: (a <~> '0'::bigint)
+(3 rows)
+
+-- Nearest to the middle, and to a constant at each extreme of the int8 range,
+-- where an integer subtraction would overflow but the float8 one does not.
+SELECT bark_knn_eq('bark_knn_i8', '0::int8', 8) AS mid,
+       bark_knn_eq('bark_knn_i8', '9223372036854775807::int8', 4) AS hi,
+       bark_knn_eq('bark_knn_i8', '(-9223372036854775808)::int8', 4) AS lo,
+       bark_knn_eq('bark_knn_i8', '42::int8', 100000) AS all;
+ mid | hi | lo | all 
+-----+----+----+-----
+ t   | t  | t  | t
+(1 row)
+
+RESET enable_seqscan;
+-- Both indexes are structurally sound.
+SELECT bark_index_check('bark_knn_i2_idx'::regclass, true);
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+SELECT bark_index_check('bark_knn_i8_idx'::regclass, true);
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+DROP TABLE bark_knn_i2, bark_knn_i8;
+DROP FUNCTION bark_knn_eq(text, text, int);

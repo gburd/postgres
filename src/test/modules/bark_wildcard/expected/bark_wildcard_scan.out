@@ -1,0 +1,1145 @@
+-- Scans of wildcard indexes.  Every query is answered by a sequential scan
+-- and by each wildcard index through an index scan and a bitmap scan; the
+-- count, the number of distinct rows and an md5 of the sorted ids must all
+-- agree, so a row returned twice, a missing row or a wrong row shows.
+-- bark_wildcard.sql left the extensions installed.
+-- A value of one of twelve shapes: null, numbers (integers, negatives,
+-- quarters, so 1.0 equals 1), strings, booleans, arrays of scalars, arrays
+-- holding nested arrays, empty arrays and objects, mixed arrays.
+CREATE FUNCTION wc_val(g int) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
+  SELECT CASE g % 12
+    WHEN 0 THEN 'null'::jsonb
+    WHEN 1 THEN to_jsonb(g % 23)
+    WHEN 2 THEN to_jsonb('s' || g % 17)
+    WHEN 3 THEN to_jsonb(g % 3 = 0)
+    WHEN 4 THEN jsonb_build_array(g % 23, g * 7 % 23, 's' || g % 5)
+    WHEN 5 THEN jsonb_build_array(jsonb_build_array(g % 5, g % 7), g % 11, NULL)
+    WHEN 6 THEN '[]'
+    WHEN 7 THEN '{}'
+    WHEN 8 THEN to_jsonb((g % 40) / 4.0)
+    WHEN 9 THEN jsonb_build_array(true, NULL, g % 23, '{}'::jsonb, '[]'::jsonb)
+    WHEN 10 THEN jsonb_build_array('s' || g % 17, 's' || g % 13)
+    ELSE to_jsonb(-(g % 23))
+  END $$;
+-- Documents: path a of every shape, or missing; path b an object, an array
+-- of objects (b.c and b.d), a value, or missing; a member name with a dot;
+-- scalar and array documents (path ""), and NULL documents.
+CREATE FUNCTION wc_doc(g int) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
+  SELECT CASE
+    WHEN g % 211 = 0 THEN NULL
+    WHEN g % 101 = 0 THEN wc_val(g / 101)
+    WHEN g % 103 = 0 THEN jsonb_build_array(wc_val(g), jsonb_build_object('a', wc_val(g + 1)))
+    ELSE CASE WHEN g % 5 <> 0 THEN jsonb_build_object('a', wc_val(g)) ELSE '{}' END ||
+         CASE g % 4
+           WHEN 0 THEN jsonb_build_object('b', jsonb_build_object('c', wc_val(g / 3)))
+           WHEN 1 THEN jsonb_build_object('b', jsonb_build_array(
+                         jsonb_build_object('c', wc_val(g / 5)),
+                         jsonb_build_object('c', wc_val(g / 7), 'd', g % 9)))
+           WHEN 2 THEN jsonb_build_object('b', wc_val(g / 11))
+           ELSE '{}' END ||
+         jsonb_build_object('n', g % 31) ||
+         CASE WHEN g % 9 = 0 THEN jsonb_build_object('x.y', g % 4) ELSE '{}' END
+  END $$;
+-- The same rows in one table per index, so each query can be forced onto
+-- one index: no projection, an include list, an exclude list, and a
+-- compound (id, doc) index created before the rows were inserted.
+CREATE TABLE wc_seq AS SELECT g AS id, wc_doc(g) AS doc FROM generate_series(1, 4000) g;
+CREATE TABLE wc_plain AS SELECT * FROM wc_seq;
+CREATE INDEX wc_plain_doc ON wc_plain USING bark (doc bark_jsonb_wildcard_ops);
+CREATE TABLE wc_inc AS SELECT * FROM wc_seq;
+CREATE INDEX wc_inc_doc ON wc_inc USING bark (doc bark_jsonb_wildcard_ops (include = 'a,b.c'));
+CREATE TABLE wc_exc AS SELECT * FROM wc_seq;
+CREATE INDEX wc_exc_doc ON wc_exc USING bark (doc bark_jsonb_wildcard_ops (exclude = 'b'));
+CREATE TABLE wc_tid (id int, doc jsonb);
+CREATE INDEX wc_tid_doc ON wc_tid USING bark (id, doc bark_jsonb_wildcard_ops);
+INSERT INTO wc_tid SELECT * FROM wc_seq;
+ANALYZE wc_seq, wc_plain, wc_inc, wc_exc, wc_tid;
+-- wc_run(table, index, qual, mode): count, distinct ids and md5 of the ids
+-- of table's rows that satisfy qual, read by a sequential scan ('seq'), an
+-- index scan or a bitmap scan of index; 'wrong plan' when the plan does not
+-- read that way.
+CREATE FUNCTION wc_run(tbl text, idx text, qual text, mode text) RETURNS text
+LANGUAGE plpgsql AS $$
+DECLARE
+  sql text := format('SELECT count(*) || '':'' || count(DISTINCT id) || '':'' ||
+                        coalesce(md5(string_agg(id::text, '','' ORDER BY id)), ''-'')
+                      FROM (SELECT id FROM %I WHERE %s) s', tbl, qual);
+  plan text;
+  r text;
+BEGIN
+  PERFORM set_config('enable_seqscan', (mode = 'seq')::text, true);
+  PERFORM set_config('enable_indexscan', (mode = 'index')::text, true);
+  PERFORM set_config('enable_indexonlyscan', 'off', true);
+  PERFORM set_config('enable_bitmapscan', (mode = 'bitmap')::text, true);
+  FOR plan IN EXECUTE 'EXPLAIN (COSTS OFF) ' || sql LOOP
+    IF (mode = 'seq' AND plan LIKE '%Seq Scan on ' || tbl || '%') OR
+       (mode = 'index' AND plan LIKE '%Index Scan using ' || idx || ' on ' || tbl || '%') OR
+       (mode = 'bitmap' AND plan LIKE '%Bitmap Index Scan on ' || idx || '%') THEN
+      EXECUTE sql INTO r;
+      RETURN r;
+    END IF;
+  END LOOP;
+  RETURN 'wrong plan';
+END $$;
+-- wc_compare(qual, oracle): the sequential scan's answer; every index or
+-- bitmap answer that differs from it (NULL when none does); and, given an
+-- oracle (the same question as a jsonpath in lax mode), 'same' or the
+-- oracle's differing answer.
+CREATE FUNCTION wc_compare(qual text, oracle text, OUT seq text,
+                           OUT mismatches text, OUT jsonpath text)
+LANGUAGE plpgsql AS $$
+DECLARE
+  t text[];
+  m text;
+  r text;
+BEGIN
+  seq := wc_run('wc_seq', NULL, qual, 'seq');
+  FOREACH t SLICE 1 IN ARRAY ARRAY[['wc_plain', 'wc_plain_doc'], ['wc_inc', 'wc_inc_doc'],
+                                   ['wc_exc', 'wc_exc_doc'], ['wc_tid', 'wc_tid_doc']] LOOP
+    FOREACH m IN ARRAY ARRAY['index', 'bitmap'] LOOP
+      r := wc_run(t[1], t[2], qual, m);
+      IF r IS DISTINCT FROM seq THEN
+        mismatches := concat_ws(' ', mismatches, t[1] || '/' || m || '=' || r);
+      END IF;
+    END LOOP;
+  END LOOP;
+  IF oracle IS NOT NULL THEN
+    r := wc_run('wc_seq', NULL, oracle, 'seq');
+    jsonpath := CASE WHEN r = seq THEN 'same' ELSE r END;
+  END IF;
+END $$;
+-- The jsonpath of a dotted path without escapes: $."b"."c".
+CREATE FUNCTION wc_jpath(p text) RETURNS text LANGUAGE sql IMMUTABLE AS $$
+  SELECT '$' || coalesce(string_agg('."' || c || '"', '' ORDER BY i), '')
+    FROM unnest(string_to_array(nullif(p, ''), '.')) WITH ORDINALITY u(c, i)
+$$;
+-- Every comparison operator against a value of every type, on a path of
+-- documents (a), on one below arrays of objects (b.c, which wc_exc's
+-- projection drops), and on scalar documents (""); #? on every path, on a
+-- missing one, and on paths wc_inc drops (b, b.d, n, x\.y).  Scalar
+-- comparisons carry the jsonpath oracle: in lax mode, $.a ? (@ == 5) also
+-- looks into an array at a, and compares only values of one type, as the
+-- class does.  Lax mode also unwraps an array nested in that array, which
+-- the class indexes as a value, so the oracle skips array items
+-- (@.type() != "array"); the difference itself is shown below.  jsonpath
+-- cannot compare arrays or objects, so those have no oracle.
+CREATE TABLE wc_quals (n serial, q text, oracle text);
+INSERT INTO wc_quals (q, oracle)
+SELECT format('doc %s %L', op, jsonb_build_array(p, v)),
+       CASE WHEN jsonb_typeof(v) NOT IN ('array', 'object') THEN
+         format('doc @? %L', format('%s ? (@.type() != "array" && @ %s %s)',
+                                    wc_jpath(p), jop, v)) END
+  FROM (VALUES (1, 'a'), (2, 'b.c'), (3, '')) p(po, p),
+       (VALUES (1, 'null'::jsonb), (2, '"s5"'), (3, '5'), (4, '2.5'), (5, '-3'),
+               (6, 'true'), (7, 'false'), (8, '[1, 3]'), (9, '[]'), (10, '{}')) v(vo, v),
+       (VALUES (1, '#<', '<'), (2, '#<=', '<='), (3, '#=', '=='), (4, '#>=', '>='),
+               (5, '#>', '>')) o(oo, op, jop)
+ WHERE p <> '' OR vo IN (1, 2, 3, 6, 9, 10)
+ ORDER BY po, vo, oo;
+INSERT INTO wc_quals (q, oracle) VALUES
+  ('doc #= ''["b.d", 3]''', 'doc @? ''$."b"."d" ? (@.type() != "array" && @ == 3)'''),
+  ('doc #< ''["n", 5]''', 'doc @? ''$."n" ? (@.type() != "array" && @ < 5)'''),
+  ('doc #= ''["x\\.y", 2]''', 'doc @? ''$."x.y" ? (@.type() != "array" && @ == 2)'''),
+  ('doc #= ''["a", 1.00]''', 'doc @? ''$."a" ? (@.type() != "array" && @ == 1)'''),
+  ('doc #= ''["zz", 1]''', NULL),
+  ('doc #> ''["a", 3]'' AND doc #< ''["a", 7]''', NULL),
+  ('doc #= ANY (ARRAY[''["a", 5]'', ''["a", "s3"]'', ''["b.c", true]'']::jsonb[])', NULL),
+  ('id < 1500 AND doc #= ''["a", 5]''', NULL),
+  ('id = 404 AND doc #? ''''', NULL),
+  ('id IN (5, 10, 15, 20, 101) AND doc #? ''a''', NULL),
+  ('id BETWEEN 100 AND 300 AND doc #> ''["b.c", 3]''', NULL),
+  ('doc IS NULL', NULL);
+INSERT INTO wc_quals (q)
+SELECT format('doc #? %L', p)
+  FROM unnest(ARRAY['a', 'b', 'b.c', 'b.d', '', 'n', 'x\.y', 'zz', 'a.b']) p;
+SELECT n, q, c.* FROM wc_quals, wc_compare(q, oracle) c ORDER BY n;
+  n  |                                    q                                    |                    seq                     | mismatches | jsonpath 
+-----+-------------------------------------------------------------------------+--------------------------------------------+------------+----------
+   1 | doc #< '["a", null]'                                                    | 0:0:-                                      |            | same
+   2 | doc #<= '["a", null]'                                                   | 790:790:7b3f73c2958e038644c30bfcac563dd0   |            | same
+   3 | doc #= '["a", null]'                                                    | 790:790:7b3f73c2958e038644c30bfcac563dd0   |            | same
+   4 | doc #>= '["a", null]'                                                   | 790:790:7b3f73c2958e038644c30bfcac563dd0   |            | same
+   5 | doc #> '["a", null]'                                                    | 0:0:-                                      |            | same
+   6 | doc #< '["a", "s5"]'                                                    | 678:678:f1460cf7a17352474111006350f49b64   |            | same
+   7 | doc #<= '["a", "s5"]'                                                   | 705:705:c2b94523cab6073778119c625b03f3d8   |            | same
+   8 | doc #= '["a", "s5"]'                                                    | 47:47:f4db0e47d7c8937e56a0d5d07c3be487     |            | same
+   9 | doc #>= '["a", "s5"]'                                                   | 225:225:c9de5a30c9a58ff58d11001fc8d0faa4   |            | same
+  10 | doc #> '["a", "s5"]'                                                    | 188:188:5f8f97578e23c4211437807187c46ca5   |            | same
+  11 | doc #< '["a", 5]'                                                       | 731:731:4bfd6bcc3975896bd1b254ec06840a52   |            | same
+  12 | doc #<= '["a", 5]'                                                      | 789:789:8bba78b084770090bafe7d25585a929a   |            | same
+  13 | doc #= '["a", 5]'                                                       | 70:70:848eeb37af587e4582264f3f5e478c4e     |            | same
+  14 | doc #>= '["a", 5]'                                                      | 943:943:c161d5a12a5064ef140880cbad78a09a   |            | same
+  15 | doc #> '["a", 5]'                                                       | 885:885:4dd4b7efe2c122c3dd61d5aefde87dda   |            | same
+  16 | doc #< '["a", 2.5]'                                                     | 524:524:fdc6fbf233f010e427eeea9a6a586b62   |            | same
+  17 | doc #<= '["a", 2.5]'                                                    | 524:524:fdc6fbf233f010e427eeea9a6a586b62   |            | same
+  18 | doc #= '["a", 2.5]'                                                     | 0:0:-                                      |            | same
+  19 | doc #>= '["a", 2.5]'                                                    | 1103:1103:cf5a2f5d89258d8f890e446e888c25b1 |            | same
+  20 | doc #> '["a", 2.5]'                                                     | 1103:1103:cf5a2f5d89258d8f890e446e888c25b1 |            | same
+  21 | doc #< '["a", -3]'                                                      | 217:217:e5a675658f805a8c2c3698d25bb06906   |            | same
+  22 | doc #<= '["a", -3]'                                                     | 227:227:0cc825fa06a142cbef8ea5f9d5ef0222   |            | same
+  23 | doc #= '["a", -3]'                                                      | 10:10:b93977d6f94c08ed22caf46f1756a9e6     |            | same
+  24 | doc #>= '["a", -3]'                                                     | 1364:1364:5003345159a90954e938a664ae9703f4 |            | same
+  25 | doc #> '["a", -3]'                                                      | 1354:1354:9f96e6db7bdfeb0e145a8ba122bc231e |            | same
+  26 | doc #< '["a", true]'                                                    | 0:0:-                                      |            | same
+  27 | doc #<= '["a", true]'                                                   | 528:528:ed18be662b294c5b2e3f90f39aaefeb8   |            | same
+  28 | doc #= '["a", true]'                                                    | 528:528:ed18be662b294c5b2e3f90f39aaefeb8   |            | same
+  29 | doc #>= '["a", true]'                                                   | 528:528:ed18be662b294c5b2e3f90f39aaefeb8   |            | same
+  30 | doc #> '["a", true]'                                                    | 0:0:-                                      |            | same
+  31 | doc #< '["a", false]'                                                   | 0:0:-                                      |            | same
+  32 | doc #<= '["a", false]'                                                  | 0:0:-                                      |            | same
+  33 | doc #= '["a", false]'                                                   | 0:0:-                                      |            | same
+  34 | doc #>= '["a", false]'                                                  | 528:528:ed18be662b294c5b2e3f90f39aaefeb8   |            | same
+  35 | doc #> '["a", false]'                                                   | 528:528:ed18be662b294c5b2e3f90f39aaefeb8   |            | same
+  36 | doc #< '["a", [1, 3]]'                                                  | 556:556:4dbca90e3af303072f41da2de0e7a240   |            | 
+  37 | doc #<= '["a", [1, 3]]'                                                 | 565:565:83c615dc77567b449310c5ca76915f3a   |            | 
+  38 | doc #= '["a", [1, 3]]'                                                  | 9:9:cc0db08fcc7bfa62bf03751dd08d08fe       |            | 
+  39 | doc #>= '["a", [1, 3]]'                                                 | 234:234:05b3cfe804fec0c4040b744637bf95b2   |            | 
+  40 | doc #> '["a", [1, 3]]'                                                  | 225:225:a98d6b52fd558803422ca3093fa082c6   |            | 
+  41 | doc #< '["a", []]'                                                      | 0:0:-                                      |            | 
+  42 | doc #<= '["a", []]'                                                     | 527:527:2777e83faf7ba43e2d1be1c9fd38d3a6   |            | 
+  43 | doc #= '["a", []]'                                                      | 527:527:2777e83faf7ba43e2d1be1c9fd38d3a6   |            | 
+  44 | doc #>= '["a", []]'                                                     | 790:790:8210a00cc55c9e7c20d49762c11acd3f   |            | 
+  45 | doc #> '["a", []]'                                                      | 263:263:64ac622a1d8b100a95a873bbd8b1a751   |            | 
+  46 | doc #< '["a", {}]'                                                      | 0:0:-                                      |            | 
+  47 | doc #<= '["a", {}]'                                                     | 527:527:9b4729147817ccdf35bb8cd80f454d29   |            | 
+  48 | doc #= '["a", {}]'                                                      | 527:527:9b4729147817ccdf35bb8cd80f454d29   |            | 
+  49 | doc #>= '["a", {}]'                                                     | 527:527:9b4729147817ccdf35bb8cd80f454d29   |            | 
+  50 | doc #> '["a", {}]'                                                      | 0:0:-                                      |            | 
+  51 | doc #< '["b.c", null]'                                                  | 0:0:-                                      |            | same
+  52 | doc #<= '["b.c", null]'                                                 | 834:834:a79797d4f4ea4f94d1b34c9c842d56d7   |            | same
+  53 | doc #= '["b.c", null]'                                                  | 834:834:a79797d4f4ea4f94d1b34c9c842d56d7   |            | same
+  54 | doc #>= '["b.c", null]'                                                 | 834:834:a79797d4f4ea4f94d1b34c9c842d56d7   |            | same
+  55 | doc #> '["b.c", null]'                                                  | 0:0:-                                      |            | same
+  56 | doc #< '["b.c", "s5"]'                                                  | 584:584:b5882ac028bba4c882ae7a9f89f6c041   |            | same
+  57 | doc #<= '["b.c", "s5"]'                                                 | 606:606:dfd7293566d5d6cf55c50c252dc8e4df   |            | same
+  58 | doc #= '["b.c", "s5"]'                                                  | 40:40:e2e98d95cc61b4fdca49f1d12b523e85     |            | same
+  59 | doc #>= '["b.c", "s5"]'                                                 | 183:183:02f689214b542de9c8477c471deb5164   |            | same
+  60 | doc #> '["b.c", "s5"]'                                                  | 154:154:2db5b63e1ee7014485a8c7ac3459e967   |            | same
+  61 | doc #< '["b.c", 5]'                                                     | 621:621:baf44b400d450aee3f160e75283e668a   |            | same
+  62 | doc #<= '["b.c", 5]'                                                    | 703:703:8da95e13fa69493893ef93ec3cc39669   |            | same
+  63 | doc #= '["b.c", 5]'                                                     | 110:110:f033999cd138672ad50185197cbd853f   |            | same
+  64 | doc #>= '["b.c", 5]'                                                    | 954:954:faaa1aefc4c9f28c1647372ab6775f90   |            | same
+  65 | doc #> '["b.c", 5]'                                                     | 877:877:474ccd7c2dbb56e0c8c31b07a753cd96   |            | same
+  66 | doc #< '["b.c", 2.5]'                                                   | 434:434:ec87d6b699a1178cbb8eb4068d324804   |            | same
+  67 | doc #<= '["b.c", 2.5]'                                                  | 434:434:ec87d6b699a1178cbb8eb4068d324804   |            | same
+  68 | doc #= '["b.c", 2.5]'                                                   | 0:0:-                                      |            | same
+  69 | doc #>= '["b.c", 2.5]'                                                  | 1082:1082:6d11f3380d2d3482a53264aa18e8bd2b |            | same
+  70 | doc #> '["b.c", 2.5]'                                                   | 1082:1082:6d11f3380d2d3482a53264aa18e8bd2b |            | same
+  71 | doc #< '["b.c", -3]'                                                    | 123:123:3da3215122ba8e80351eb56d09021f71   |            | same
+  72 | doc #<= '["b.c", -3]'                                                   | 130:130:d2c96b3f8783c384c29f2be6da514805   |            | same
+  73 | doc #= '["b.c", -3]'                                                    | 7:7:0345c6d778a49a363d3122c3289c9a06       |            | same
+  74 | doc #>= '["b.c", -3]'                                                   | 1290:1290:e33597a03470d5b2e6ab514e2d4b6f39 |            | same
+  75 | doc #> '["b.c", -3]'                                                    | 1288:1288:a99c10373933975e1cc593316405b033 |            | same
+  76 | doc #< '["b.c", true]'                                                  | 0:0:-                                      |            | same
+  77 | doc #<= '["b.c", true]'                                                 | 452:452:d3ac4f47270de0973d8a2b57d3bd55b3   |            | same
+  78 | doc #= '["b.c", true]'                                                  | 452:452:d3ac4f47270de0973d8a2b57d3bd55b3   |            | same
+  79 | doc #>= '["b.c", true]'                                                 | 452:452:d3ac4f47270de0973d8a2b57d3bd55b3   |            | same
+  80 | doc #> '["b.c", true]'                                                  | 0:0:-                                      |            | same
+  81 | doc #< '["b.c", false]'                                                 | 0:0:-                                      |            | same
+  82 | doc #<= '["b.c", false]'                                                | 0:0:-                                      |            | same
+  83 | doc #= '["b.c", false]'                                                 | 0:0:-                                      |            | same
+  84 | doc #>= '["b.c", false]'                                                | 452:452:d3ac4f47270de0973d8a2b57d3bd55b3   |            | same
+  85 | doc #> '["b.c", false]'                                                 | 452:452:d3ac4f47270de0973d8a2b57d3bd55b3   |            | same
+  86 | doc #< '["b.c", [1, 3]]'                                                | 599:599:1b6e141e8906a147bc53afc76c02f5e2   |            | 
+  87 | doc #<= '["b.c", [1, 3]]'                                               | 607:607:8f08ef8f43c6e09bed0d5e682d366ef3   |            | 
+  88 | doc #= '["b.c", [1, 3]]'                                                | 10:10:94e462de2bcdbc41c5c7db969bdf1982     |            | 
+  89 | doc #>= '["b.c", [1, 3]]'                                               | 224:224:af3c1ecf8083d4e0bdc48c4c914fbfb9   |            | 
+  90 | doc #> '["b.c", [1, 3]]'                                                | 214:214:9e1e16ca1768561d49b0de1db6d14461   |            | 
+  91 | doc #< '["b.c", []]'                                                    | 0:0:-                                      |            | 
+  92 | doc #<= '["b.c", []]'                                                   | 513:513:1c335762f9d762bfa5ebbecb558d454a   |            | 
+  93 | doc #= '["b.c", []]'                                                    | 513:513:1c335762f9d762bfa5ebbecb558d454a   |            | 
+  94 | doc #>= '["b.c", []]'                                                   | 807:807:b10f5dcf6acfac9eefe6d3bd996e41b2   |            | 
+  95 | doc #> '["b.c", []]'                                                    | 313:313:3fc8096577894df45010afc2da127df6   |            | 
+  96 | doc #< '["b.c", {}]'                                                    | 0:0:-                                      |            | 
+  97 | doc #<= '["b.c", {}]'                                                   | 457:457:e233f788bcf3586f75358927f2e7649a   |            | 
+  98 | doc #= '["b.c", {}]'                                                    | 457:457:e233f788bcf3586f75358927f2e7649a   |            | 
+  99 | doc #>= '["b.c", {}]'                                                   | 457:457:e233f788bcf3586f75358927f2e7649a   |            | 
+ 100 | doc #> '["b.c", {}]'                                                    | 0:0:-                                      |            | 
+ 101 | doc #< '["", null]'                                                     | 0:0:-                                      |            | same
+ 102 | doc #<= '["", null]'                                                    | 12:12:2f9ea05ca104cb776e0fc1fdfd78f6f0     |            | same
+ 103 | doc #= '["", null]'                                                     | 12:12:2f9ea05ca104cb776e0fc1fdfd78f6f0     |            | same
+ 104 | doc #>= '["", null]'                                                    | 12:12:2f9ea05ca104cb776e0fc1fdfd78f6f0     |            | same
+ 105 | doc #> '["", null]'                                                     | 0:0:-                                      |            | same
+ 106 | doc #< '["", "s5"]'                                                     | 11:11:d2dff7c11b8b2727adcb5d343fa3ab50     |            | same
+ 107 | doc #<= '["", "s5"]'                                                    | 12:12:cde9e42c69bf7e5ccc8e0b1ae549ff65     |            | same
+ 108 | doc #= '["", "s5"]'                                                     | 1:1:934b535800b1cba8f96a5d72f72f1611       |            | same
+ 109 | doc #>= '["", "s5"]'                                                    | 4:4:8b8b1cb416dc2852c41556238c20b19f       |            | same
+ 110 | doc #> '["", "s5"]'                                                     | 4:4:8b8b1cb416dc2852c41556238c20b19f       |            | same
+ 111 | doc #< '["", 5]'                                                        | 12:12:fc189c38b55af8564659224e231e284f     |            | same
+ 112 | doc #<= '["", 5]'                                                       | 16:16:b119e59b30a1013900be22dd0e7ab61c     |            | same
+ 113 | doc #= '["", 5]'                                                        | 5:5:501f6ca906ae6a913160ed054694798d       |            | same
+ 114 | doc #>= '["", 5]'                                                       | 17:17:21328edd5332f54a7942fffd4626613a     |            | same
+ 115 | doc #> '["", 5]'                                                        | 13:13:5a6502bccc080c01fbba742b220c69ef     |            | same
+ 116 | doc #< '["", true]'                                                     | 0:0:-                                      |            | same
+ 117 | doc #<= '["", true]'                                                    | 10:10:7d60b1e369efac452c008b12761039c0     |            | same
+ 118 | doc #= '["", true]'                                                     | 10:10:7d60b1e369efac452c008b12761039c0     |            | same
+ 119 | doc #>= '["", true]'                                                    | 10:10:7d60b1e369efac452c008b12761039c0     |            | same
+ 120 | doc #> '["", true]'                                                     | 0:0:-                                      |            | same
+ 121 | doc #< '["", []]'                                                       | 0:0:-                                      |            | 
+ 122 | doc #<= '["", []]'                                                      | 9:9:20529358ed4adfec71a85c2f774faaee       |            | 
+ 123 | doc #= '["", []]'                                                       | 9:9:20529358ed4adfec71a85c2f774faaee       |            | 
+ 124 | doc #>= '["", []]'                                                      | 24:24:e18f401533f0bf33a12301277f6a0ca1     |            | 
+ 125 | doc #> '["", []]'                                                       | 15:15:ec8f87d0b828d9bd14c4e9f2433ffddd     |            | 
+ 126 | doc #< '["", {}]'                                                       | 0:0:-                                      |            | 
+ 127 | doc #<= '["", {}]'                                                      | 10:10:f110b9aae351d678d40925da38b8112c     |            | 
+ 128 | doc #= '["", {}]'                                                       | 10:10:f110b9aae351d678d40925da38b8112c     |            | 
+ 129 | doc #>= '["", {}]'                                                      | 10:10:f110b9aae351d678d40925da38b8112c     |            | 
+ 130 | doc #> '["", {}]'                                                       | 0:0:-                                      |            | 
+ 131 | doc #= '["b.d", 3]'                                                     | 108:108:3294b96067f84528e7c224b1b580c731   |            | same
+ 132 | doc #< '["n", 5]'                                                       | 631:631:24e858ea989a7e62485a099bba83cbb9   |            | same
+ 133 | doc #= '["x\\.y", 2]'                                                   | 108:108:f65ae602d327323bf46de9efb0d96cec   |            | same
+ 134 | doc #= '["a", 1.00]'                                                    | 102:102:4b59abef6c9c431b4e07c8cb5923c019   |            | same
+ 135 | doc #= '["zz", 1]'                                                      | 0:0:-                                      |            | 
+ 136 | doc #> '["a", 3]' AND doc #< '["a", 7]'                                 | 334:334:9daf0fabce4b40a04f0dc49e1720ce54   |            | 
+ 137 | doc #= ANY (ARRAY['["a", 5]', '["a", "s3"]', '["b.c", true]']::jsonb[]) | 587:587:e25ea11ced934d322ef6917f6abbe5a7   |            | 
+ 138 | id < 1500 AND doc #= '["a", 5]'                                         | 28:28:74b1938d51929aae2a518780e818ab9b     |            | 
+ 139 | id = 404 AND doc #? ''                                                  | 1:1:4f4adcbf8c6f66dcfc8a3282ac2bf10a       |            | 
+ 140 | id IN (5, 10, 15, 20, 101) AND doc #? 'a'                               | 0:0:-                                      |            | 
+ 141 | id BETWEEN 100 AND 300 AND doc #> '["b.c", 3]'                          | 50:50:dd8b33938f8f95bf33a2ded1d39c1bed     |            | 
+ 142 | doc IS NULL                                                             | 18:18:0e0ac07b09ec388ca8176e527458fdf2     |            | 
+ 143 | doc #? 'a'                                                              | 3160:3160:7628e1029744c1a75861c7c9a5f86a4e |            | 
+ 144 | doc #? 'b'                                                              | 975:975:2a65ab598635d5eb097f7f75977774d7   |            | 
+ 145 | doc #? 'b.c'                                                            | 1955:1955:277eca79005a6edf186afb2b17e432f0 |            | 
+ 146 | doc #? 'b.d'                                                            | 977:977:ca1d73c3892d6fbde46e3de2084c325e   |            | 
+ 147 | doc #? ''                                                               | 77:77:b5f6899cec0cef5e4fb4407fc86d4113     |            | 
+ 148 | doc #? 'n'                                                              | 3905:3905:c922e96a8dcb8f96893fbbcde012f512 |            | 
+ 149 | doc #? E'x\\.y'                                                         | 434:434:55d4b9583d29820371b2a88d1f119a01   |            | 
+ 150 | doc #? 'zz'                                                             | 0:0:-                                      |            | 
+ 151 | doc #? 'a.b'                                                            | 0:0:-                                      |            | 
+(151 rows)
+
+-- The plans wc_run accepted, two of them in full: the projected-out path
+-- b.c on wc_exc (every row the scan reads is rechecked), and the compound
+-- index with a range on its first column.
+SET enable_seqscan = off;
+EXPLAIN (COSTS OFF) SELECT id FROM wc_exc WHERE doc #= '["b.c", 5]';
+                    QUERY PLAN                    
+--------------------------------------------------
+ Bitmap Heap Scan on wc_exc
+   Recheck Cond: (doc #= '["b.c", 5]'::jsonb)
+   ->  Bitmap Index Scan on wc_exc_doc
+         Index Cond: (doc #= '["b.c", 5]'::jsonb)
+(4 rows)
+
+SET enable_bitmapscan = off;
+EXPLAIN (COSTS OFF) SELECT id FROM wc_tid WHERE id < 1500 AND doc #= '["a", 5]';
+                         QUERY PLAN                         
+------------------------------------------------------------
+ Index Scan using wc_tid_doc on wc_tid
+   Index Cond: ((id < 1500) AND (doc #= '["a", 5]'::jsonb))
+(2 rows)
+
+RESET enable_bitmapscan;
+RESET enable_seqscan;
+-- Where jsonpath and the class differ: #? says a path holds a value the
+-- class indexes, so a path holding only a non-empty object has none, while
+-- $.a exists; and an empty array at a is the value [], which a lax-mode
+-- filter unwraps to nothing.  Arrays and objects compare in the class (by
+-- jsonb_cmp) but not in jsonpath.
+SELECT d, d #? 'a' AS "#?", d @? '$.a' AS "@? $.a",
+       d @? '$.a ? (@.type() != "object")' AS "@? filtered"
+  FROM (VALUES ('{"a": {"b": 1}}'::jsonb), ('{"a": []}'), ('{"a": [[1, 3]]}')) v(d);
+        d        | #? | @? $.a | @? filtered 
+-----------------+----+--------+-------------
+ {"a": {"b": 1}} | f  | t      | f
+ {"a": []}       | t  | t      | f
+ {"a": [[1, 3]]} | t  | t      | t
+(3 rows)
+
+SELECT '{"a": [[1, 3]]}'::jsonb #= '["a", 1]' AS "#= 1",
+       '{"a": [[1, 3]]}'::jsonb @? '$.a ? (@ == 1)' AS "@? == 1",
+       '{"a": [[1, 3]]}'::jsonb #= '["a", [1, 3]]' AS "#= [1, 3]";
+ #= 1 | @? == 1 | #= [1, 3] 
+------+---------+-----------
+ f    | t       | t
+(1 row)
+
+-- The rows where the unguarded oracle differs, for one query.
+SELECT count(*) FILTER (WHERE doc #= '["a", 3]') AS "#=",
+       count(*) FILTER (WHERE doc @? '$.a ? (@ == 3)') AS "@?",
+       count(*) FILTER (WHERE doc @? '$.a ? (@ == 3)' AND NOT doc #= '["a", 3]') AS "@? only"
+  FROM wc_seq;
+ #=  | @?  | @? only 
+-----+-----+---------
+ 106 | 190 |      84
+(1 row)
+
+-- The indexes are sound, and each holds exactly the (key, heap TID) members
+-- bark_wildcard_keys gives the heap's rows under its projection (a row with
+-- no kept key, or a NULL document, has a NULL entry), compared both ways,
+-- and the markers of the paths that hold an array.  amcheck's
+-- heapallindexed checks the heap-to-index direction, through procedure 7.
+SELECT bark_index_check('wc_plain_doc'), bark_index_check('wc_inc_doc'),
+       bark_index_check('wc_exc_doc'), bark_index_check('wc_tid_doc');
+ bark_index_check | bark_index_check | bark_index_check | bark_index_check 
+------------------+------------------+------------------+------------------
+                  |                  |                  | 
+(1 row)
+
+SELECT bark_index_check('wc_plain_doc', true);
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+CREATE FUNCTION wc_heap_keys(tbl regclass, include text, exclude text,
+                             OUT key jsonb, OUT tid tid, OUT marker bool)
+RETURNS SETOF record LANGUAGE plpgsql AS $$
+BEGIN
+  RETURN QUERY EXECUTE format($q$
+    SELECT k, ctid, false FROM %1$s, bark_wildcard_keys(doc, $1, $2) k
+     WHERE jsonb_array_length(k) = 2
+    UNION ALL
+    SELECT NULL, ctid, false FROM %1$s
+     WHERE doc IS NULL OR NOT EXISTS (SELECT FROM bark_wildcard_keys(doc, $1, $2) k
+                                       WHERE jsonb_array_length(k) = 2)
+    UNION
+    SELECT k, NULL, true FROM %1$s, bark_wildcard_keys(doc, $1, $2) k
+     WHERE jsonb_array_length(k) = 1$q$, tbl) USING include, exclude;
+END $$;
+CREATE FUNCTION wc_index_keys(idx regclass, OUT key jsonb, OUT tid tid,
+                              OUT marker bool)
+RETURNS SETOF record LANGUAGE sql AS $$
+  SELECT key, CASE WHEN NOT marker THEN tid END, marker
+    FROM bark_wildcard_entries(idx)
+$$;
+SELECT i, (SELECT count(*) FROM wc_index_keys(i::regclass)) AS entries,
+       (SELECT count(*) FROM (SELECT * FROM wc_index_keys(i::regclass)
+                              EXCEPT ALL SELECT * FROM wc_heap_keys(t::regclass, inc, exc)) x) AS index_only,
+       (SELECT count(*) FROM (SELECT * FROM wc_heap_keys(t::regclass, inc, exc)
+                              EXCEPT ALL SELECT * FROM wc_index_keys(i::regclass)) x) AS heap_only
+  FROM (VALUES ('wc_plain_doc', 'wc_plain', NULL, NULL), ('wc_inc_doc', 'wc_inc', 'a,b.c', NULL),
+               ('wc_exc_doc', 'wc_exc', NULL, 'b'), ('wc_tid_doc', 'wc_tid', NULL, NULL)) v(i, t, inc, exc)
+ ORDER BY i;
+      i       | entries | index_only | heap_only 
+--------------+---------+------------+-----------
+ wc_exc_doc   |    9965 |          0 |         0
+ wc_inc_doc   |   11371 |          0 |         0
+ wc_plain_doc |   17939 |          0 |         0
+ wc_tid_doc   |   17939 |          0 |         0
+(4 rows)
+
+-- A member named "" at the root adds no path segment, so its values are at
+-- the paths below it: {"": {"s": 5}} has 5 at s.  Every operator must agree
+-- with the index there.  Each query's ids by seqscan and by forced index and
+-- bitmap scans, which must be equal.
+CREATE TABLE wc_empty (id int, doc jsonb);
+INSERT INTO wc_empty VALUES (1, '{"": {"s": 5}}'), (2, '{"s": 5}'),
+  (3, '{"": {"s": 6}, "s": 5}'), (4, '{"": 5}'), (5, '{"a": {"": 5}}'),
+  (6, '{"a.": 5}'), (7, '5'), (8, '{"": [5, 6]}'), (9, '{"": {"": {"s": 7}}}');
+CREATE INDEX wc_empty_doc ON wc_empty USING bark (doc bark_jsonb_wildcard_ops);
+CREATE TABLE wc_empty_q AS
+  SELECT q FROM unnest(ARRAY['doc #= ''["s", 5]''', 'doc #< ''["s", 7]''',
+                             'doc #>= ''["s", 6]''', 'doc #= ''["", 5]''',
+                             'doc #= ''["a.", 5]''', 'doc #? ''s''',
+                             'doc #? ''''']) q;
+SELECT q, wc_run('wc_empty', NULL, q, 'seq') AS seq,
+       wc_run('wc_empty', 'wc_empty_doc', q, 'index') AS index,
+       wc_run('wc_empty', 'wc_empty_doc', q, 'bitmap') AS bitmap
+  FROM wc_empty_q ORDER BY q;
+         q          |                 seq                  |                index                 |                bitmap                
+--------------------+--------------------------------------+--------------------------------------+--------------------------------------
+ doc #< '["s", 7]'  | 3:3:55b84a9d317184fe61224bfb4a060fb0 | 3:3:55b84a9d317184fe61224bfb4a060fb0 | 3:3:55b84a9d317184fe61224bfb4a060fb0
+ doc #= '["", 5]'   | 3:3:26fc36d968a4e9544fced8f3d3b9d53c | 3:3:26fc36d968a4e9544fced8f3d3b9d53c | 3:3:26fc36d968a4e9544fced8f3d3b9d53c
+ doc #= '["a.", 5]' | 1:1:e4da3b7fbbce2345d7772b0674a318d5 | 1:1:e4da3b7fbbce2345d7772b0674a318d5 | 1:1:e4da3b7fbbce2345d7772b0674a318d5
+ doc #= '["s", 5]'  | 3:3:55b84a9d317184fe61224bfb4a060fb0 | 3:3:55b84a9d317184fe61224bfb4a060fb0 | 3:3:55b84a9d317184fe61224bfb4a060fb0
+ doc #>= '["s", 6]' | 2:2:34603290df6940de02cb8a0ea9988614 | 2:2:34603290df6940de02cb8a0ea9988614 | 2:2:34603290df6940de02cb8a0ea9988614
+ doc #? ''          | 3:3:26fc36d968a4e9544fced8f3d3b9d53c | 3:3:26fc36d968a4e9544fced8f3d3b9d53c | 3:3:26fc36d968a4e9544fced8f3d3b9d53c
+ doc #? 's'         | 4:4:b43d88706c1e3f8fd4836e71061e9f08 | 4:4:b43d88706c1e3f8fd4836e71061e9f08 | 4:4:b43d88706c1e3f8fd4836e71061e9f08
+(7 rows)
+
+SELECT q, (SELECT array_agg(id ORDER BY id) FROM wc_empty e
+            WHERE CASE q WHEN 's=5' THEN doc #= '["s", 5]'
+                         WHEN 's?' THEN doc #? 's' END) AS ids
+  FROM unnest('{s=5,s?}'::text[]) q;
+  q  |    ids    
+-----+-----------
+ s=5 | {1,2,3}
+ s?  | {1,2,3,9}
+(2 rows)
+
+DROP TABLE wc_empty, wc_empty_q;
+-- A row matches a boundary of one path through at most one entry unless
+-- the path, or a path above it, has held an array: procedure 8 then sets
+-- BarkQueryFlags.oneentry and the scan keeps no seen set.  Every document
+-- here has a scalar at s, x\.y and t.u, an array at arr, and b.c below an
+-- array of objects in a third of them; include = 'b.c,s,arr' keeps the
+-- marker [b] above b.c, and drops t.u and x\.y, whose scans read every key.
+-- One point needs no set anyway; = ANY never takes the flag.  Each answer
+-- is compared with a sequential scan's by count, distinct ids and md5.
+CREATE FUNCTION wc1_doc(g int) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
+  SELECT jsonb_build_object('s', g % 23, 't', jsonb_build_object('u', 's' || g % 7),
+                            'x.y', g % 5, 'arr', jsonb_build_array(g % 11, g % 13, g % 3)) ||
+         CASE WHEN g % 3 = 0
+           THEN jsonb_build_object('b', jsonb_build_array(jsonb_build_object('c', g % 4),
+                                                          jsonb_build_object('c', g % 6)))
+           ELSE jsonb_build_object('b', jsonb_build_object('c', g % 5)) END $$;
+CREATE TABLE wc1_seq AS SELECT g AS id, wc1_doc(g) AS doc FROM generate_series(1, 3000) g;
+CREATE TABLE wc1_plain AS SELECT * FROM wc1_seq;
+CREATE INDEX wc1_plain_doc ON wc1_plain USING bark (doc bark_jsonb_wildcard_ops);
+CREATE TABLE wc1_inc AS SELECT * FROM wc1_seq;
+CREATE INDEX wc1_inc_doc ON wc1_inc USING bark (doc bark_jsonb_wildcard_ops (include = 'b.c,s,arr'));
+CREATE TABLE wc1_tid (id int, doc jsonb);
+CREATE INDEX wc1_tid_doc ON wc1_tid USING bark (id, doc bark_jsonb_wildcard_ops);
+INSERT INTO wc1_tid SELECT * FROM wc1_seq;
+ANALYZE wc1_seq, wc1_plain, wc1_inc, wc1_tid;
+CREATE TABLE wc1_quals (n int, q text);
+INSERT INTO wc1_quals VALUES
+  (1, 'doc #>= ''["s", 10]'''), (2, 'doc #? ''t.u'''), (3, 'doc #< ''["x\\.y", 3]'''),
+  (4, 'doc #>= ''["arr", 5]'''), (5, 'doc #>= ''["b.c", 2]'''), (6, 'doc #= ''["s", 1]'''),
+  (7, 'doc #= ANY (ARRAY[''["s", 1]'', ''["s", 2]'']::jsonb[])'),
+  (8, 'id > 100 AND doc #> ''["s", 3]''');
+SELECT n, q, wc_run('wc1_seq', NULL, q, 'seq') AS seq FROM wc1_quals ORDER BY n;
+ n |                          q                          |                    seq                     
+---+-----------------------------------------------------+--------------------------------------------
+ 1 | doc #>= '["s", 10]'                                 | 1691:1691:7c33e4dfb6f6d6ba2b869d08108ed5f5
+ 2 | doc #? 't.u'                                        | 3000:3000:9d30717c4fee76c66e1d471fa993c08b
+ 3 | doc #< '["x\\.y", 3]'                               | 1800:1800:634d9f2d2b5c2e1efd8e2d92a6033928
+ 4 | doc #>= '["arr", 5]'                                | 2476:2476:d597f727073b64d74f4b1056ef9ae6ac
+ 5 | doc #>= '["b.c", 2]'                                | 1950:1950:b9b5fe8976a1363d0587deb7cc60f66e
+ 6 | doc #= '["s", 1]'                                   | 131:131:c31a9fa00f8a68c3ad0352696d3b7af7
+ 7 | doc #= ANY (ARRAY['["s", 1]', '["s", 2]']::jsonb[]) | 262:262:b46587811f134178bdc9d20a0edeb2ca
+ 8 | id > 100 AND doc #> '["s", 3]'                      | 2396:2396:eb4483a8236faa430a40d91bef693308
+(8 rows)
+
+SET client_min_messages = debug1;
+SELECT n, t, wc_run(t, i, q, 'index') = wc_run('wc1_seq', NULL, q, 'seq') AS same
+  FROM wc1_quals,
+       (VALUES (1, 'wc1_plain', 'wc1_plain_doc'), (2, 'wc1_inc', 'wc1_inc_doc'),
+               (3, 'wc1_tid', 'wc1_tid_doc')) v(o, t, i)
+ WHERE n < 8 OR t = 'wc1_tid'
+ ORDER BY n, o;
+DEBUG:  BARK index "wc1_plain_doc": scan needs no seen set
+DEBUG:  BARK index "wc1_inc_doc": scan needs no seen set
+DEBUG:  BARK index "wc1_tid_doc": scan needs no seen set
+DEBUG:  BARK index "wc1_plain_doc": scan needs no seen set
+DEBUG:  BARK index "wc1_inc_doc": scan uses a seen set
+DEBUG:  BARK index "wc1_tid_doc": scan needs no seen set
+DEBUG:  BARK index "wc1_plain_doc": scan needs no seen set
+DEBUG:  BARK index "wc1_inc_doc": scan uses a seen set
+DEBUG:  BARK index "wc1_tid_doc": scan needs no seen set
+DEBUG:  BARK index "wc1_plain_doc": scan uses a seen set
+DEBUG:  BARK index "wc1_inc_doc": scan uses a seen set
+DEBUG:  BARK index "wc1_tid_doc": scan uses a seen set
+DEBUG:  BARK index "wc1_plain_doc": scan uses a seen set
+DEBUG:  BARK index "wc1_inc_doc": scan uses a seen set
+DEBUG:  BARK index "wc1_tid_doc": scan uses a seen set
+DEBUG:  BARK index "wc1_plain_doc": scan needs no seen set
+DEBUG:  BARK index "wc1_inc_doc": scan needs no seen set
+DEBUG:  BARK index "wc1_tid_doc": scan needs no seen set
+DEBUG:  BARK index "wc1_plain_doc": scan uses a seen set
+DEBUG:  BARK index "wc1_inc_doc": scan uses a seen set
+DEBUG:  BARK index "wc1_tid_doc": scan uses a seen set
+DEBUG:  BARK index "wc1_tid_doc": scan needs no seen set
+ n |     t     | same 
+---+-----------+------
+ 1 | wc1_plain | t
+ 1 | wc1_inc   | t
+ 1 | wc1_tid   | t
+ 2 | wc1_plain | t
+ 2 | wc1_inc   | t
+ 2 | wc1_tid   | t
+ 3 | wc1_plain | t
+ 3 | wc1_inc   | t
+ 3 | wc1_tid   | t
+ 4 | wc1_plain | t
+ 4 | wc1_inc   | t
+ 4 | wc1_tid   | t
+ 5 | wc1_plain | t
+ 5 | wc1_inc   | t
+ 5 | wc1_tid   | t
+ 6 | wc1_plain | t
+ 6 | wc1_inc   | t
+ 6 | wc1_tid   | t
+ 7 | wc1_plain | t
+ 7 | wc1_inc   | t
+ 7 | wc1_tid   | t
+ 8 | wc1_tid   | t
+(22 rows)
+
+RESET client_min_messages;
+SELECT n, t, wc_run(t, i, q, 'bitmap') = wc_run('wc1_seq', NULL, q, 'seq') AS same
+  FROM wc1_quals,
+       (VALUES (1, 'wc1_plain', 'wc1_plain_doc'), (2, 'wc1_inc', 'wc1_inc_doc'),
+               (3, 'wc1_tid', 'wc1_tid_doc')) v(o, t, i)
+ WHERE n < 8 OR t = 'wc1_tid'
+ ORDER BY n, o;
+ n |     t     | same 
+---+-----------+------
+ 1 | wc1_plain | t
+ 1 | wc1_inc   | t
+ 1 | wc1_tid   | t
+ 2 | wc1_plain | t
+ 2 | wc1_inc   | t
+ 2 | wc1_tid   | t
+ 3 | wc1_plain | t
+ 3 | wc1_inc   | t
+ 3 | wc1_tid   | t
+ 4 | wc1_plain | t
+ 4 | wc1_inc   | t
+ 4 | wc1_tid   | t
+ 5 | wc1_plain | t
+ 5 | wc1_inc   | t
+ 5 | wc1_tid   | t
+ 6 | wc1_plain | t
+ 6 | wc1_inc   | t
+ 6 | wc1_tid   | t
+ 7 | wc1_plain | t
+ 7 | wc1_inc   | t
+ 7 | wc1_tid   | t
+ 8 | wc1_tid   | t
+(22 rows)
+
+-- An ordered scan on the fixed leading column of the compound index.
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SET enable_sort = off;
+EXPLAIN (COSTS OFF)
+SELECT id FROM wc1_tid WHERE doc #>= '["s", 10]' ORDER BY id <~> 1500;
+                 QUERY PLAN                 
+--------------------------------------------
+ Index Scan using wc1_tid_doc on wc1_tid
+   Index Cond: (doc #>= '["s", 10]'::jsonb)
+   Order By: (id <~> 1500)
+(3 rows)
+
+SET client_min_messages = debug1;
+SELECT count(*), count(DISTINCT id), md5(string_agg(id::text, ',' ORDER BY id))
+  FROM (SELECT id FROM wc1_tid WHERE doc #>= '["s", 10]' ORDER BY id <~> 1500) s;
+ count | count |               md5                
+-------+-------+----------------------------------
+  1691 |  1691 | 7c33e4dfb6f6d6ba2b869d08108ed5f5
+(1 row)
+
+RESET client_min_messages;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+RESET enable_sort;
+SELECT wc_run('wc1_seq', NULL, 'doc #>= ''["s", 10]''', 'seq');
+                   wc_run                   
+--------------------------------------------
+ 1691:1691:7c33e4dfb6f6d6ba2b869d08108ed5f5
+(1 row)
+
+-- The member "" of the document has the document's own path, so its
+-- members repeat the document's paths: {"": {"s": 5}, "s": 6} has two
+-- values at s.  It marks [""], above every path.
+INSERT INTO wc1_plain VALUES (0, '{"": {"s": 5}, "s": 6}');
+INSERT INTO wc1_seq VALUES (0, '{"": {"s": 5}, "s": 6}');
+SELECT k FROM bark_wildcard_keys('{"": {"s": 5}, "s": 6}') k ORDER BY k;
+    k     
+----------
+ [""]
+ ["s", 5]
+ ["s", 6]
+(3 rows)
+
+SET client_min_messages = debug1;
+SELECT wc_run('wc1_plain', 'wc1_plain_doc', 'doc #>= ''["s", 5]''', 'index') =
+       wc_run('wc1_seq', NULL, 'doc #>= ''["s", 5]''', 'seq') AS same;
+DEBUG:  BARK index "wc1_plain_doc": scan uses a seen set
+ same 
+------
+ t
+(1 row)
+
+RESET client_min_messages;
+-- The flag is decided at every rescan, never at plan time: a generic plan
+-- made while q held no array, run again after a document puts one there,
+-- uses the set, and so does each rescan of one scan for a path with one.
+CREATE TABLE wc_gen (id int, doc jsonb);
+CREATE INDEX wc_gen_doc ON wc_gen USING bark (doc bark_jsonb_wildcard_ops);
+INSERT INTO wc_gen SELECT g, jsonb_build_object('q', g % 10, 'r', jsonb_build_array(g % 3, g % 3 + 1))
+  FROM generate_series(1, 2000) g;
+ANALYZE wc_gen;
+SET plan_cache_mode = force_generic_plan;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+PREPARE wc_q(jsonb) AS
+  SELECT count(*), count(DISTINCT id), md5(string_agg(id::text, ',' ORDER BY id))
+    FROM wc_gen WHERE doc #>= $1;
+EXPLAIN (COSTS OFF) EXECUTE wc_q('["q", 3]');
+                    QUERY PLAN                     
+---------------------------------------------------
+ Aggregate
+   ->  Sort
+         Sort Key: id
+         ->  Index Scan using wc_gen_doc on wc_gen
+               Index Cond: (doc #>= $1)
+(5 rows)
+
+SET client_min_messages = debug1;
+EXECUTE wc_q('["q", 3]');
+DEBUG:  BARK index "wc_gen_doc": scan needs no seen set
+ count | count |               md5                
+-------+-------+----------------------------------
+  1400 |  1400 | f787fc384e61586647df355911334aec
+(1 row)
+
+RESET client_min_messages;
+INSERT INTO wc_gen SELECT g, jsonb_build_object('q', jsonb_build_array(g % 10, g % 10 + 1, g % 10 + 2))
+  FROM generate_series(2001, 2100) g;
+SET client_min_messages = debug1;
+EXECUTE wc_q('["q", 3]');
+DEBUG:  BARK index "wc_gen_doc": scan uses a seen set
+ count | count |               md5                
+-------+-------+----------------------------------
+  1490 |  1490 | 9569b4141d4b86fe4df649d560dc81a2
+(1 row)
+
+RESET client_min_messages;
+SET enable_seqscan = on;
+SET enable_indexscan = off;
+EXECUTE wc_q('["q", 3]');
+ count | count |               md5                
+-------+-------+----------------------------------
+  1490 |  1490 | 9569b4141d4b86fe4df649d560dc81a2
+(1 row)
+
+RESET enable_indexscan;
+SET enable_seqscan = off;
+SET enable_hashjoin = off;
+SET enable_mergejoin = off;
+SET enable_material = off;
+PREPARE wc_q2 AS
+  SELECT x, count(*), count(DISTINCT id), md5(string_agg(id::text, ',' ORDER BY id))
+    FROM (VALUES ('["r", 1]'::jsonb), ('["q", 7]'), ('["s", 0]')) v(x)
+         JOIN wc_gen ON doc #>= x
+   GROUP BY x ORDER BY x;
+EXPLAIN (COSTS OFF) EXECUTE wc_q2;
+                          QUERY PLAN                          
+--------------------------------------------------------------
+ GroupAggregate
+   Group Key: "*VALUES*".column1
+   ->  Sort
+         Sort Key: "*VALUES*".column1, wc_gen.id
+         ->  Nested Loop
+               ->  Values Scan on "*VALUES*"
+               ->  Index Scan using wc_gen_doc on wc_gen
+                     Index Cond: (doc #>= "*VALUES*".column1)
+(8 rows)
+
+SET client_min_messages = debug1;
+EXECUTE wc_q2;
+DEBUG:  BARK index "wc_gen_doc": scan uses a seen set
+DEBUG:  BARK index "wc_gen_doc": scan uses a seen set
+DEBUG:  BARK index "wc_gen_doc": scan needs no seen set
+    x     | count | count |               md5                
+----------+-------+-------+----------------------------------
+ ["q", 7] |   650 |   650 | 197f22f8925ef64bc736b56b864e8c26
+ ["r", 1] |  2000 |  2000 | 109fd1dcec14f5b08e0edc9de1560a53
+(2 rows)
+
+RESET client_min_messages;
+INSERT INTO wc_gen VALUES (3000, '{"s": [0, 1]}');
+SET client_min_messages = debug1;
+EXECUTE wc_q2;
+DEBUG:  BARK index "wc_gen_doc": scan uses a seen set
+DEBUG:  BARK index "wc_gen_doc": scan uses a seen set
+DEBUG:  BARK index "wc_gen_doc": scan uses a seen set
+    x     | count | count |               md5                
+----------+-------+-------+----------------------------------
+ ["q", 7] |   650 |   650 | 197f22f8925ef64bc736b56b864e8c26
+ ["r", 1] |  2000 |  2000 | 109fd1dcec14f5b08e0edc9de1560a53
+ ["s", 0] |     1 |     1 | e93028bdc1aacdfb3687181f2031765d
+(3 rows)
+
+RESET client_min_messages;
+SET enable_seqscan = on;
+SET enable_indexscan = off;
+EXECUTE wc_q2;
+    x     | count | count |               md5                
+----------+-------+-------+----------------------------------
+ ["q", 7] |   650 |   650 | 197f22f8925ef64bc736b56b864e8c26
+ ["r", 1] |  2000 |  2000 | 109fd1dcec14f5b08e0edc9de1560a53
+ ["s", 0] |     1 |     1 | e93028bdc1aacdfb3687181f2031765d
+(3 rows)
+
+DEALLOCATE wc_q;
+DEALLOCATE wc_q2;
+RESET plan_cache_mode;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+RESET enable_indexscan;
+RESET enable_hashjoin;
+RESET enable_mergejoin;
+RESET enable_material;
+SELECT bark_index_check('wc_gen_doc'), bark_index_check('wc1_plain_doc'),
+       bark_index_check('wc1_inc_doc'), bark_index_check('wc1_tid_doc');
+ bark_index_check | bark_index_check | bark_index_check | bark_index_check 
+------------------+------------------+------------------+------------------
+                  |                  |                  | 
+(1 row)
+
+DROP TABLE wc1_seq, wc1_plain, wc1_inc, wc1_tid, wc1_quals, wc_gen;
+DROP FUNCTION wc1_doc;
+-- Sorting by a path: doc |<| 'a' is the smallest key [a, value] (MongoDB's
+-- array sort rule, across types in jsonb_cmp order), NULL without one.
+-- The index serves it without a Sort: the path's range, then the rest of
+-- the column (orderrest) for the documents without the path, which come
+-- back last.  Every result is compared, row by row, with the key that
+-- bark_wildcard_keys gives under a sequential scan: each row once, the
+-- order value exact, nondecreasing, NULLs last; with a filter (rechecked,
+-- not positioning), a LIMIT, a NULLS FIRST index and nested-loop rescans.
+CREATE TABLE wo (id int, doc jsonb);
+INSERT INTO wo SELECT g,
+  CASE g % 9
+    WHEN 0 THEN jsonb_build_object('a', g % 37)
+    WHEN 1 THEN jsonb_build_object('a', jsonb_build_array(g % 41, (g * 7) % 41, 's' || g % 5))
+    WHEN 2 THEN jsonb_build_object('b', g)
+    WHEN 3 THEN jsonb_build_object('a', 'str' || g % 13)
+    WHEN 4 THEN jsonb_build_object('a', (g % 2 = 0))
+    WHEN 5 THEN jsonb_build_object('a', jsonb_build_array(jsonb_build_array(g % 3, 1), g % 50))
+    WHEN 6 THEN jsonb_build_object('a', NULL::int)
+    WHEN 7 THEN jsonb_build_object('a', '[]'::jsonb, 'c', g)
+    ELSE CASE WHEN g % 2 = 0 THEN NULL ELSE to_jsonb(g) END END
+  FROM generate_series(1, 3000) g;
+CREATE INDEX wo_doc ON wo USING bark (doc bark_jsonb_wildcard_ops);
+ANALYZE wo;
+SELECT bark_wildcard_boundaries('a'::text, 7::int2);
+                      bark_wildcard_boundaries                      
+--------------------------------------------------------------------
+ (>= ["a", null], <= ["a", {}]) recheck=f searchnulls=f orderrest=t
+(1 row)
+
+CREATE TABLE wo_want AS SELECT id, doc,
+  (SELECT k FROM bark_wildcard_keys(doc) k
+    WHERE jsonb_array_length(k) = 2 AND k->>0 = 'a' ORDER BY k LIMIT 1) AS k
+  FROM wo;
+SELECT count(*) FILTER (WHERE k IS NULL) AS without_a, count(*) FROM wo_want;
+ without_a | count 
+-----------+-------
+       667 |  3000
+(1 row)
+
+-- wo_check(q): q's rows (id, k) in its order, compared with wo_want.
+CREATE FUNCTION wo_check(q text, OUT n bigint, OUT ids bigint,
+                         OUT wrong_value bigint, OUT out_of_order bigint,
+                         OUT nulls bigint)
+LANGUAGE plpgsql AS $$
+BEGIN
+  EXECUTE format($f$
+    WITH got AS (SELECT row_number() OVER () AS rn, id, k FROM (%s) s),
+         lagged AS (SELECT rn, k, lag(k) OVER (ORDER BY rn) AS pk FROM got)
+    SELECT (SELECT count(*) FROM got), (SELECT count(DISTINCT id) FROM got),
+           (SELECT count(*) FROM got JOIN wo_want w USING (id)
+             WHERE got.k IS DISTINCT FROM w.k),
+           (SELECT count(*) FROM lagged
+             WHERE (pk IS NULL AND k IS NOT NULL AND rn > 1) OR k < pk),
+           (SELECT count(*) FROM got WHERE k IS NULL)$f$, q)
+    INTO n, ids, wrong_value, out_of_order, nulls;
+END $$;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SET enable_sort = off;
+EXPLAIN (COSTS OFF) SELECT id FROM wo ORDER BY doc |<| 'a';
+           QUERY PLAN            
+---------------------------------
+ Index Scan using wo_doc on wo
+   Order By: (doc |<| 'a'::text)
+(2 rows)
+
+SELECT * FROM wo_check('SELECT id, doc |<| ''a'' AS k FROM wo ORDER BY doc |<| ''a''');
+  n   | ids  | wrong_value | out_of_order | nulls 
+------+------+-------------+--------------+-------
+ 3000 | 3000 |           0 |            0 |   667
+(1 row)
+
+EXPLAIN (COSTS OFF)
+SELECT id FROM wo WHERE doc #? 'b' OR doc #= '["a", 3]' ORDER BY doc |<| 'a';
+                          QUERY PLAN                          
+--------------------------------------------------------------
+ Index Scan using wo_doc on wo
+   Order By: (doc |<| 'a'::text)
+   Filter: ((doc #? 'b'::text) OR (doc #= '["a", 3]'::jsonb))
+(3 rows)
+
+SELECT * FROM wo_check('SELECT id, doc |<| ''a'' AS k FROM wo
+                        WHERE doc #? ''b'' OR doc #= ''["a", 3]'' ORDER BY doc |<| ''a''');
+  n  | ids | wrong_value | out_of_order | nulls 
+-----+-----+-------------+--------------+-------
+ 366 | 366 |           0 |            0 |   334
+(1 row)
+
+SELECT count(*) FROM wo_want WHERE doc #? 'b' OR doc #= '["a", 3]';
+ count 
+-------
+   366
+(1 row)
+
+SELECT * FROM wo_check('SELECT id, doc |<| ''a'' AS k FROM wo ORDER BY doc |<| ''a'' LIMIT 500');
+  n  | ids | wrong_value | out_of_order | nulls 
+-----+-----+-------------+--------------+-------
+ 500 | 500 |           0 |            0 |     0
+(1 row)
+
+SELECT (SELECT array_agg(k) FROM (SELECT doc |<| 'a' AS k FROM wo ORDER BY doc |<| 'a' LIMIT 500) s) =
+       (SELECT array_agg(k) FROM (SELECT k FROM wo_want ORDER BY k NULLS LAST LIMIT 500) x)
+       AS limit_is_the_500_smallest;
+ limit_is_the_500_smallest 
+---------------------------
+ t
+(1 row)
+
+SET enable_hashjoin = off;
+SET enable_mergejoin = off;
+SET enable_material = off;
+SELECT p, count(*), count(DISTINCT id)
+  FROM (VALUES ('a'), ('b'), ('zz')) v(p),
+       LATERAL (SELECT id FROM wo ORDER BY doc |<| p LIMIT 2900) s
+ GROUP BY p ORDER BY p;
+ p  | count | count 
+----+-------+-------
+ a  |  2900 |  2900
+ b  |  2900 |  2900
+ zz |  2900 |  2900
+(3 rows)
+
+RESET enable_hashjoin;
+RESET enable_mergejoin;
+RESET enable_material;
+CREATE INDEX wo_doc_nf ON wo USING bark (doc bark_jsonb_wildcard_ops NULLS FIRST);
+DROP INDEX wo_doc;
+SELECT * FROM wo_check('SELECT id, doc |<| ''a'' AS k FROM wo ORDER BY doc |<| ''a''');
+  n   | ids  | wrong_value | out_of_order | nulls 
+------+------+-------------+--------------+-------
+ 3000 | 3000 |           0 |            0 |   667
+(1 row)
+
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+RESET enable_sort;
+SELECT bark_index_check('wo_doc_nf');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+-- A path the projection drops has no keys to sort by.
+CREATE INDEX wo_inc ON wo USING bark (doc bark_jsonb_wildcard_ops (include = 'b'));
+DROP INDEX wo_doc_nf;
+SET enable_seqscan = off;
+SET enable_sort = off;
+SELECT id FROM wo ORDER BY doc |<| 'a' LIMIT 1;
+ERROR:  cannot sort by path "a", which the wildcard index's projection does not keep
+RESET enable_seqscan;
+RESET enable_sort;
+DROP TABLE wo, wo_want;
+DROP FUNCTION wo_check;
+-- Numbers are written in one form, their scale trimmed, so keys that
+-- compare equal have equal bytes and coalesce (the class's equalimage):
+-- 1, 1.0 and 1.00 at one path are one key, inside an inner array too, and
+-- |<| reports that key.  wc_num's index takes its rows by insert; wc_numb's
+-- is built over them, with prefix compression.  Every query agrees with a
+-- sequential scan, each index holds exactly the heap's keys (compared as
+-- text, so as bytes), and their equal keys share LIST or POSTING entries.
+CREATE TABLE wc_num (id int, doc jsonb);
+CREATE INDEX wc_num_doc ON wc_num USING bark (doc bark_jsonb_wildcard_ops);
+INSERT INTO wc_num SELECT g, jsonb_build_object('a',
+    (ARRAY['1', '1.0', '1.00', '2.50', '2.5', '[1.0, 1, 3]',
+           '[[1.0], [1], [1.00, 0.0]]'])[1 + g % 7]::jsonb)
+  FROM generate_series(1, 1400) g;
+CREATE TABLE wc_numb AS SELECT * FROM wc_num;
+CREATE INDEX wc_numb_doc ON wc_numb USING bark (doc bark_jsonb_wildcard_ops)
+  WITH (prefix_compression = on);
+SELECT DISTINCT k::text FROM wc_num, bark_wildcard_keys(doc) k ORDER BY 1;
+       k       
+---------------
+ ["a", 1]
+ ["a", 2.5]
+ ["a", 3]
+ ["a", [1, 0]]
+ ["a", [1]]
+ ["a"]
+(6 rows)
+
+SELECT DISTINCT (doc |<| 'a')::text AS least FROM wc_num ORDER BY 1;
+   least    
+------------
+ ["a", 1]
+ ["a", 2.5]
+ ["a", [1]]
+(3 rows)
+
+SELECT q, wc_run('wc_num', NULL, q, 'seq') AS seq,
+       wc_run('wc_num', 'wc_num_doc', q, 'index') = wc_run('wc_num', NULL, q, 'seq') AND
+       wc_run('wc_num', 'wc_num_doc', q, 'bitmap') = wc_run('wc_num', NULL, q, 'seq') AND
+       wc_run('wc_numb', 'wc_numb_doc', q, 'index') = wc_run('wc_num', NULL, q, 'seq') AND
+       wc_run('wc_numb', 'wc_numb_doc', q, 'bitmap') = wc_run('wc_num', NULL, q, 'seq') AS same
+  FROM unnest(ARRAY['doc #= ''["a", 1]''', 'doc #= ''["a", 1.00]''', 'doc #< ''["a", 2.500]''',
+                    'doc #>= ''["a", 2.5]''', 'doc #= ''["a", [1]]''',
+                    'doc #= ''["a", [1.0, 0]]''', 'doc #? ''a''']) q;
+            q             |                    seq                     | same 
+--------------------------+--------------------------------------------+------
+ doc #= '["a", 1]'        | 800:800:5ead69ff166e0355a0aaa2d44d986051   | t
+ doc #= '["a", 1.00]'     | 800:800:5ead69ff166e0355a0aaa2d44d986051   | t
+ doc #< '["a", 2.500]'    | 800:800:5ead69ff166e0355a0aaa2d44d986051   | t
+ doc #>= '["a", 2.5]'     | 600:600:3c2f7877390590d84c06a4836e88f7aa   | t
+ doc #= '["a", [1]]'      | 200:200:1daf316121708a14a5e0f31a4e255b5d   | t
+ doc #= '["a", [1.0, 0]]' | 200:200:1daf316121708a14a5e0f31a4e255b5d   | t
+ doc #? 'a'               | 1400:1400:a1bdaf4e4a99b8ea29c0f6bbf2e48f0d | t
+(7 rows)
+
+SELECT i, (SELECT count(*) FROM (SELECT key::text, tid, marker FROM wc_index_keys(i::regclass)
+                                 EXCEPT ALL
+                                 SELECT key::text, tid, marker FROM wc_heap_keys(t::regclass, NULL, NULL)) x) AS index_only,
+       (SELECT count(*) FROM (SELECT key::text, tid, marker FROM wc_heap_keys(t::regclass, NULL, NULL)
+                              EXCEPT ALL
+                              SELECT key::text, tid, marker FROM wc_index_keys(i::regclass)) x) AS heap_only
+  FROM (VALUES ('wc_num_doc', 'wc_num'), ('wc_numb_doc', 'wc_numb')) v(i, t) ORDER BY i;
+      i      | index_only | heap_only 
+-------------+------------+-----------
+ wc_num_doc  |          0 |         0
+ wc_numb_doc |          0 |         0
+(2 rows)
+
+-- (Where a built run of equal keys turns from LIST to POSTING depends on
+-- the platform's alignment, so the two count together.)
+SELECT i, CASE WHEN shape IN ('LIST', 'POSTING') THEN 'LIST or POSTING' ELSE shape END AS shape,
+       count(*) AS entries, sum(ntids) AS tids
+  FROM unnest(ARRAY['wc_num_doc', 'wc_numb_doc']) i, bark_page_items(i, 1)
+ GROUP BY 1, 2 ORDER BY 1, 2;
+      i      |      shape      | entries | tids 
+-------------+-----------------+---------+------
+ wc_num_doc  | LIST or POSTING |       5 | 1800
+ wc_num_doc  | SINGLE          |       1 |    1
+ wc_numb_doc | LIST or POSTING |      10 | 1800
+ wc_numb_doc | PREFIX          |       1 |     
+ wc_numb_doc | SINGLE          |       1 |    1
+(5 rows)
+
+-- An ordered scan reads each row once, nondecreasing, with |<|'s value.
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SET enable_sort = off;
+EXPLAIN (COSTS OFF) SELECT id FROM wc_num ORDER BY doc |<| 'a';
+              QUERY PLAN               
+---------------------------------------
+ Index Scan using wc_num_doc on wc_num
+   Order By: (doc |<| 'a'::text)
+(2 rows)
+
+SELECT count(*), count(DISTINCT id), count(*) FILTER (WHERE k < pk) AS out_of_order,
+       count(*) FILTER (WHERE k::text IS DISTINCT FROM want::text) AS wrong_value
+  FROM (SELECT id, k, lag(k) OVER (ORDER BY rn) AS pk,
+               (SELECT kk FROM wc_num w, bark_wildcard_keys(w.doc) kk
+                 WHERE w.id = s.id AND jsonb_array_length(kk) = 2 ORDER BY kk LIMIT 1) AS want
+          FROM (SELECT row_number() OVER () AS rn, id, k
+                  FROM (SELECT id, doc |<| 'a' AS k FROM wc_num ORDER BY doc |<| 'a') o) s) x;
+ count | count | out_of_order | wrong_value 
+-------+-------+--------------+-------------
+  1400 |  1400 |            0 |           0
+(1 row)
+
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+RESET enable_sort;
+SELECT bark_index_check('wc_num_doc'), bark_index_check('wc_numb_doc');
+ bark_index_check | bark_index_check 
+------------------+------------------
+                  | 
+(1 row)
+
+-- WSEL: the wildcard operators estimate without scanning the stats sample, so
+-- their row estimate does not change with default_statistics_target, and the
+-- plan the planner picks is the same shape as before (index/bitmap for the
+-- selective operators).  (COSTS OFF hides the row count; we read it from the
+-- planner directly and check it is identical at target 100 and 1000.)
+ANALYZE wc_num;
+SET enable_seqscan = off;
+EXPLAIN (COSTS OFF) SELECT id FROM wc_num WHERE doc #= '["a", 1]';
+                   QUERY PLAN                   
+------------------------------------------------
+ Bitmap Heap Scan on wc_num
+   Recheck Cond: (doc #= '["a", 1]'::jsonb)
+   ->  Bitmap Index Scan on wc_num_doc
+         Index Cond: (doc #= '["a", 1]'::jsonb)
+(4 rows)
+
+EXPLAIN (COSTS OFF) SELECT id FROM wc_num WHERE doc #< '["a", 5]';
+                   QUERY PLAN                   
+------------------------------------------------
+ Bitmap Heap Scan on wc_num
+   Recheck Cond: (doc #< '["a", 5]'::jsonb)
+   ->  Bitmap Index Scan on wc_num_doc
+         Index Cond: (doc #< '["a", 5]'::jsonb)
+(4 rows)
+
+EXPLAIN (COSTS OFF) SELECT id FROM wc_num WHERE doc #? 'a';
+               QUERY PLAN               
+----------------------------------------
+ Bitmap Heap Scan on wc_num
+   Recheck Cond: (doc #? 'a'::text)
+   ->  Bitmap Index Scan on wc_num_doc
+         Index Cond: (doc #? 'a'::text)
+(4 rows)
+
+RESET enable_seqscan;
+CREATE FUNCTION wc_rows(q text) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE p jsonb; r bigint;
+BEGIN
+  EXECUTE 'EXPLAIN (FORMAT json) SELECT id FROM wc_num WHERE ' || q INTO p;
+  r := (p -> 0 -> 'Plan' ->> 'Plan Rows')::bigint;
+  RETURN r;
+END$$;
+SET default_statistics_target = 100;
+ANALYZE wc_num;
+SELECT wc_rows('doc #= ''["a", 1]''') AS eq100,
+       wc_rows('doc #< ''["a", 5]''') AS lt100,
+       wc_rows('doc #? ''a''') AS ex100 INTO TEMP wc_est100;
+SET default_statistics_target = 1000;
+ANALYZE wc_num;
+-- Identical estimates prove the estimator never touched the (now 10x larger)
+-- sample; a sample-scanning estimator would move with the target.
+SELECT wc_rows('doc #= ''["a", 1]''') = eq100 AS eq_stable,
+       wc_rows('doc #< ''["a", 5]''') = lt100 AS lt_stable,
+       wc_rows('doc #? ''a''') = ex100 AS ex_stable
+  FROM wc_est100;
+ eq_stable | lt_stable | ex_stable 
+-----------+-----------+-----------
+ t         | t         | t
+(1 row)
+
+RESET default_statistics_target;
+DROP FUNCTION wc_rows;
+DROP TABLE wc_num, wc_numb;
+-- The level-1 entry cache shares its chunk with the markers this backend
+-- has seen, after them.  A new marker grows the chunk and moves the table
+-- up past it; the table survives.  Wide keys give a tree with many level-1
+-- pages; lookups warm the table, then each insert brings a path with a new
+-- array (a new marker), and every lookup after it must still match a
+-- sequential scan, by an index scan that starts below the root.
+CREATE TABLE wc_l1 (id int, doc jsonb);
+INSERT INTO wc_l1 SELECT g, jsonb_build_object('k', lpad(g::text, 6, '0') || repeat('x', 300))
+  FROM generate_series(1, 6000) g;
+CREATE INDEX wc_l1_doc ON wc_l1 USING bark (doc bark_jsonb_wildcard_ops);
+SET enable_seqscan = off; SET enable_bitmapscan = off;
+SELECT count(*) FROM generate_series(1, 6000, 9) g, LATERAL
+  (SELECT id FROM wc_l1 WHERE doc #= jsonb_build_array('k', lpad(g::text, 6, '0') || repeat('x', 300))) s;
+ count 
+-------
+   667
+(1 row)
+
+RESET enable_seqscan; RESET enable_bitmapscan;
+DO $$
+BEGIN
+  FOR i IN 1..12 LOOP
+    INSERT INTO wc_l1 VALUES (10000 + i, jsonb_build_object('arr' || i, jsonb_build_array(i, i + 1)));
+  END LOOP;
+END $$;
+SELECT count(*) FILTER (WHERE seq <> idx) AS mismatches, count(*) AS checks
+  FROM (SELECT wc_run('wc_l1', NULL, q, 'seq') AS seq, wc_run('wc_l1', 'wc_l1_doc', q, 'index') AS idx
+          FROM (SELECT format('doc #= %L', jsonb_build_array('k', lpad(g::text, 6, '0') || repeat('x', 300))) AS q
+                  FROM generate_series(1, 6000, 37) g
+                UNION ALL
+                SELECT format('doc #? %L', 'arr' || i) FROM generate_series(1, 12) i) qs) r;
+ mismatches | checks 
+------------+--------
+          0 |    175
+(1 row)
+
+DROP TABLE wc_l1;
+DROP TABLE wc_seq, wc_plain, wc_inc, wc_exc, wc_tid, wc_quals;
+DROP FUNCTION wc_run, wc_compare, wc_jpath, wc_doc, wc_val, wc_heap_keys, wc_index_keys;
+DROP EXTENSION bark_wildcard;
