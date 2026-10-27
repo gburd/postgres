@@ -1035,8 +1035,6 @@ Not implemented:
 * Per-locator data (RUM's addInfo), closed as not needed: "Per-locator
   data (closed)" below.
 
-  as the array they already are. README "Scans". Part 2, GIN-interface
-  streams bounded by work_mem, done: "As built (BMP part 2, bounded
   streams)" under "Which interface first."; positioned streams and coded
   member reads are the next step, README "Bounded streams, next step".)''
 === Ideas taken from RethinkDB ===
@@ -1466,7 +1464,7 @@ column compares as before. Tests (bark_multikey_gin.sql): nine prefix
 queries over an ascending, a DESC and a two-column index, NULL and empty
 arrays among the rows, bitmap and index scan each equal to a seqscan.
 
-'''As built (BMP part 2, bounded streams).''' The streams of P1 were exact
+'''As built, bounded streams.''' The merged streams were exact
 arrays of (TID, recheck) items, allocated huge and doubled: 134 MB for one
 stream over 10M rows, and two keys on the column merged their results into
 two more such arrays. A partial match over a whole path could hold every
@@ -1478,7 +1476,7 @@ entries MAYBE, and goes in lossy when that can match; consistent without
 triConsistent gets ginlogic.c's shim. Several keys are intersected with
 tbm_intersect. A ScalarArrayOp's elements, and every element of a
 direct-union key, fill one bitmap. The required/additional division, its
-rarest-first order (by TIDs read) and the consistent logic are P1's. The
+rarest-first order (by TIDs read) and the consistent logic are as before. The
 scan allocates nothing above 8 kB that it did not before apart from core's
 TIDBitmaps, and no stream keeps a leaf position, so there is no new pin or
 lock rule. Measured (c7i.4xlarge, release, work_mem 256MB, 24 runs per
