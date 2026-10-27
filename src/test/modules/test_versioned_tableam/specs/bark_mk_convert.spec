@@ -14,6 +14,12 @@
 # scan that keeps one row per locator (rule D's R) returns v0 = {1,2}
 # through (2,L,0), whose recheck fails, and drops the entries that lead to
 # v1, so s2 commits a duplicate.
+#
+# s4's VACUUM, after the conversion has begun, runs the conversion barrier
+# (V2-DESIGN 12.1 item 4): it waits for s1, whose update began before the
+# conversion and kept the locator, and sets BARK_META_SETTLED (16) only once
+# s1 has ended.  The injection point before the wait shows that it got
+# there; pg_locks shows what it waits on.
 
 setup
 {
@@ -21,6 +27,7 @@ setup
 	CREATE EXTENSION bark_multikey;
 	CREATE EXTENSION injection_points;
 	CREATE EXTENSION amcheck;
+	CREATE EXTENSION pageinspect;
 }
 
 setup
@@ -43,6 +50,7 @@ teardown
 {
 	DROP TABLE tmx;
 	DROP FUNCTION tmx_pause();
+	DROP EXTENSION pageinspect;
 	DROP EXTENSION amcheck;
 	DROP EXTENSION injection_points;
 	DROP EXTENSION bark_multikey;
@@ -73,12 +81,30 @@ step s3_convert
 	  WHERE indexrelid = 'tmx_doc'::regclass;
 }
 step s3_wakeup		{ SELECT injection_points_wakeup('tmx-update-done'); }
+step s3_waiting
+{
+	SELECT locktype, mode, granted FROM pg_locks
+	 WHERE pid = (SELECT pid FROM pg_stat_activity WHERE query LIKE 'VACUUM tmx%')
+	   AND NOT granted;
+	SELECT flags & 30 AS mktags_converting FROM bark_metap('tmx_doc');
+}
 step s3_check
 {
+	SELECT flags & 30 AS mktags_converting_settled FROM bark_metap('tmx_doc');
 	SELECT id, doc FROM tmx ORDER BY id;
 	SELECT n AS kept FROM test_versioned_counts() WHERE counter = 'update_kept';
 	SELECT bark_index_check('tmx_doc');
 }
 
+session s4
+setup
+{
+	SELECT injection_points_set_local();
+	SELECT injection_points_attach('bark-convert-barrier-wait', 'notice');
+}
+step s4_vacuum		{ VACUUM tmx; }
+teardown	{ SELECT injection_points_detach('bark-convert-barrier-wait'); }
+
 permutation s1_begin s1_update s3_convert s2_insert s3_wakeup s1_commit s3_check
 permutation s1_begin s1_update s3_convert s2_insert s3_wakeup s1_rollback s3_check
+permutation s1_begin s1_update s3_convert s3_wakeup s4_vacuum(s1_update) s3_waiting s1_commit s3_check

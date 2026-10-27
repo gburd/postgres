@@ -1,6 +1,11 @@
-Parsed test spec with 3 sessions
+Parsed test spec with 4 sessions
 
 starting permutation: s1_begin s1_update s3_convert s2_insert s3_wakeup s1_commit s3_check
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
 step s1_begin: BEGIN;
 step s1_update: UPDATE tmx SET doc = ARRAY[2,3] WHERE id = 1; <waiting ...>
 step s3_convert: 
@@ -25,9 +30,15 @@ step s1_commit: COMMIT;
 step s2_insert: <... completed>
 ERROR:  conflicting key value violates exclusion constraint "tmx_doc"
 step s3_check: 
+	SELECT flags & 30 AS mktags_converting_settled FROM bark_metap('tmx_doc');
 	SELECT id, doc FROM tmx ORDER BY id;
 	SELECT n AS kept FROM test_versioned_counts() WHERE counter = 'update_kept';
 	SELECT bark_index_check('tmx_doc');
+
+mktags_converting_settled
+-------------------------
+                       14
+(1 row)
 
 id|doc    
 --+-------
@@ -50,8 +61,18 @@ injection_points_detach
                        
 (1 row)
 
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
 
 starting permutation: s1_begin s1_update s3_convert s2_insert s3_wakeup s1_rollback s3_check
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
 step s1_begin: BEGIN;
 step s1_update: UPDATE tmx SET doc = ARRAY[2,3] WHERE id = 1; <waiting ...>
 step s3_convert: 
@@ -75,9 +96,15 @@ step s1_update: <... completed>
 step s1_rollback: ROLLBACK;
 step s2_insert: <... completed>
 step s3_check: 
+	SELECT flags & 30 AS mktags_converting_settled FROM bark_metap('tmx_doc');
 	SELECT id, doc FROM tmx ORDER BY id;
 	SELECT n AS kept FROM test_versioned_counts() WHERE counter = 'update_kept';
 	SELECT bark_index_check('tmx_doc');
+
+mktags_converting_settled
+-------------------------
+                       14
+(1 row)
 
 id|doc    
 --+-------
@@ -94,6 +121,95 @@ kept
 bark_index_check
 ----------------
                 
+(1 row)
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+
+starting permutation: s1_begin s1_update s3_convert s3_wakeup s4_vacuum s3_waiting s1_commit s3_check
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+step s1_begin: BEGIN;
+step s1_update: UPDATE tmx SET doc = ARRAY[2,3] WHERE id = 1; <waiting ...>
+step s3_convert: 
+	SELECT test_versioned_add_exclusion('tmx_doc', '=(anyarray,anyarray)');
+	UPDATE pg_catalog.pg_index SET indisexclusion = true
+	  WHERE indexrelid = 'tmx_doc'::regclass;
+
+test_versioned_add_exclusion
+----------------------------
+                            
+(1 row)
+
+step s3_wakeup: SELECT injection_points_wakeup('tmx-update-done');
+injection_points_wakeup
+-----------------------
+                       
+(1 row)
+
+step s1_update: <... completed>
+s4: NOTICE:  notice triggered for injection point bark-convert-barrier-wait
+step s4_vacuum: VACUUM tmx; <waiting ...>
+step s3_waiting: 
+	SELECT locktype, mode, granted FROM pg_locks
+	 WHERE pid = (SELECT pid FROM pg_stat_activity WHERE query LIKE 'VACUUM tmx%')
+	   AND NOT granted;
+	SELECT flags & 30 AS mktags_converting FROM bark_metap('tmx_doc');
+
+locktype  |mode     |granted
+----------+---------+-------
+virtualxid|ShareLock|f      
+(1 row)
+
+mktags_converting
+-----------------
+               14
+(1 row)
+
+step s1_commit: COMMIT;
+s4: NOTICE:  notice triggered for injection point bark-convert-barrier-wait
+step s4_vacuum: <... completed>
+step s3_check: 
+	SELECT flags & 30 AS mktags_converting_settled FROM bark_metap('tmx_doc');
+	SELECT id, doc FROM tmx ORDER BY id;
+	SELECT n AS kept FROM test_versioned_counts() WHERE counter = 'update_kept';
+	SELECT bark_index_check('tmx_doc');
+
+mktags_converting_settled
+-------------------------
+                       30
+(1 row)
+
+id|doc    
+--+-------
+ 1|{2,3}  
+ 2|{20,21}
+(2 rows)
+
+kept
+----
+   1
+(1 row)
+
+bark_index_check
+----------------
+                
+(1 row)
+
+injection_points_detach
+-----------------------
+                       
 (1 row)
 
 injection_points_detach

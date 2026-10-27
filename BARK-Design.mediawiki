@@ -427,8 +427,30 @@ build).'' The design is section 12.1 of the V2 design report; README
   entries. amcheck and the validator (primary and redo) report CONVERTING
   without MKTAGS and SETTLED without CONVERTING (T12f in
   <code>008_bark_mktags.pl</code>).
-* Items 4 (the VACUUM barrier), 6 (per-leaf conversion) and 7 (completion,
-  clearing MKTAGS): open.
+* Items 4 and 7, done (this commit), with the amendment approved by the
+  lead (2026-10-27): after SETTLED, BARK stores new entries of the index
+  untagged (every writer then moves rows, and a new locator has no
+  history), and a barrier that sets SETTLED waits once more, as does every
+  later VACUUM before it counts, so that a writer that read the meta page
+  before SETTLED was set is outwaited too. The item as written ("no tag
+  added after SETTLED") did not hold: <code>amindexcanversion</code> stays
+  MKTAGS, and the executor tags every entry of such an index, moved row or
+  not. The barrier: <code>WaitForLockers</code>(table, ShareLock) in
+  bulkdelete, or in cleanup when no bulkdelete of this transaction tried
+  it; a parallel worker skips it; autovacuum uses
+  <code>GetLockConflicts</code> and does not wait. The false answer of
+  CONVERTING is read again in every transaction (the bit sends no
+  invalidation). Completion: a pass after the barrier counts the tagged
+  leaf entries it leaves (exactly: a deleting pass, cycle IDs); zero clears
+  MKTAGS, CONVERTING and SETTLED and invalidates the relcache entry. Tagged
+  pivots may remain and are accepted (a pivot tag needs only
+  <code>BARK_META_VERSIONED</code>). Item 5's rule ends at SETTLED. Tests:
+  T12a (<code>bark_mk_versioned</code>), T12b's VACUUM permutation,
+  T12e (<code>009_bark_convert.pl</code>, wal_consistency_checking and a
+  standby). Limits: an entry kept tagged (its page's lower bound, or a row
+  the table AM never untags) keeps the conversion open; a table that always
+  has a writer settles only under a manual VACUUM.
+* Item 6 (per-leaf conversion): open.
 
 === C-MVCC: visibility, SSI, and the index-only / recheck path ===
 

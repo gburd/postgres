@@ -2581,9 +2581,8 @@ hold the key that reached it.  A check of a row other than the last
 inserted (a deferred exclusion recheck, or the check after a HOT or
 kept-locator update, which inserted nothing) can then meet its own row
 twice and raise that error: a refused statement, not a wrong answer.  The
-rule is read from rd_index, so it holds until the index is reindexed;
-waiting out the old writers once, after which it is no longer needed, is
-the conversion barrier, left to a later change.
+rule holds until VACUUM's barrier has passed (BARK_META_SETTLED, below),
+read from the meta page at each rescan.
 
 The meta page records the conversion in two bits beside MKTAGS.
 BARK_META_CONVERTING says the conversion has begun: the first BARK call
@@ -2606,6 +2605,72 @@ CONVERTING without MKTAGS, and SETTLED without CONVERTING, are corruption,
 which amcheck and the page validator report (bark_verify_meta; the
 injection points bark-verify-fault-converting and -settled plant them, on
 the primary and in redo).
+
+A false answer of bark_index_converting is read again in each transaction
+(BarkAmCache.convlxid), never kept longer: the bit is set outside any
+catalog change, so no invalidation tells other backends.  That is enough
+for the barrier.  A transaction that read the bit clear may keep locators
+until it ends, but it took its lock on the table first, and the bit was
+set after; a later transaction reads it set.  A backend that set the bit
+for a catalog change that then aborted leaves it set: the conversion runs
+to its end anyway, as after a constraint dropped mid-way.
+
+The barrier (bark_convert_barrier) runs in VACUUM: in bulkdelete, and in
+cleanup when this transaction has not tried it (no bulkdelete ran, or a
+parallel worker ran it; workers do not run it, since they would wait for
+the leader's own lock).  It waits out every transaction holding a lock on
+the table that conflicts with ShareLock, WaitForLockers as CREATE INDEX
+CONCURRENTLY waits out writers (bark_convert_wait; the injection point
+bark-convert-barrier-wait is before the wait).  Every update that may keep
+a locator under the old rd_index holds RowExclusiveLock until its
+transaction ends; VACUUM's own ShareUpdateExclusiveLock is not counted
+(GetLockConflicts skips the caller).  An autovacuum worker does not wait,
+since an idle-in-transaction writer could hold it indefinitely: it asks
+GetLockConflicts and passes only when the answer is empty
+(bark-convert-autovac-busy marks the other case); the next VACUUM tries
+again.  A barrier that passes for the first time sets SETTLED, then waits
+once more: an insert stores entries untagged only once it has read
+SETTLED (BarkInsertState.untag, read once per statement), so a statement
+that read the meta page just before may still add a tagged one, and the
+second wait outlasts it.  Every later VACUUM waits again before it counts.
+The barrier runs once per index and transaction, which a VACUUM of one
+table is.
+
+From SETTLED on, inserts store their entries untagged, even when the table
+AM hands a tag: every update moves the rows it changes (CONVERTING), and a
+new locator has no history, so an untagged entry is valid for it.  This
+replaces the design's "no tagged entry can be added after SETTLED", which
+did not hold: canversion stays MKTAGS, and the executor tags every entry
+of an index that can store tags, moved row or not.
+
+Completion (bark_convert_complete).  A VACUUM pass that passed the
+barrier counts the tagged leaf entries it leaves (BarkVacState.ntagged:
+those it neither deleted nor untagged, and minus those bark_lower_bound
+then untagged).  The pass deletes (cleanup locks, splits followed by cycle
+ID), so the count is exact; a cleanup with nothing to delete uses a
+callback that keeps every entry, with the table AM's version callback if
+it gave one.  With none left it clears MKTAGS, CONVERTING and SETTLED in
+one meta page write, and invalidates the index's relcache entry, since
+every backend caches MKTAGS.  The index is then one that stores no tags:
+amindexcanversion answers false, the executor moves rows, and amcheck
+expects no tagged leaf entry.  Tagged pivots may remain, where
+bark_lower_bound could not lower a parent's first child's bound; they
+still separate the entries below them correctly, so amcheck and the
+validator accept a pivot tag in any index with BARK_META_VERSIONED.  An
+entry kept tagged because its page's lower bound has a tag, or because the
+table AM keeps answering LIVE for it (a row with history the table AM
+cannot drop), keeps the conversion open; until it ends the index works
+as a converting one, item 5's rule included until SETTLED, and rule D
+after.
+
+Tests: bark_mk_versioned (T12a: CONVERTING, SETTLED, untagged inserts,
+completion, the constraint after it; the bits through each caller of
+bark_note_conversion); isolation bark_mk_convert (T12b: VACUUM waits for
+the in-place update, then SETTLED); t/009_bark_convert.pl (autovacuum
+does not wait, a manual VACUUM waits twice, a row the table AM will not
+untag holds the conversion open, completion, and a standby that sees each
+bit and returns the same rows, under wal_consistency_checking);
+t/008_bark_mktags.pl (T12f).
 
 Updates.  An update that keeps the locator inserts, into each index it
 affects, the new version's entries, tagged.  For a multikey index that is

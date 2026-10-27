@@ -1068,8 +1068,17 @@ bark_mk_rescan(IndexScanDesc scan)
 	mk->unsettled = mk->ruled && !IsMVCCSnapshot(scan->xs_snapshot) &&
 		(scan->indexRelation->rd_index->indisunique ||
 		 scan->indexRelation->rd_index->indisexclusion);
-	if (mk->unsettled)
-		bark_note_conversion(scan->indexRelation);
+
+	/*
+	 * The scan begins the conversion if no one has yet.  Once VACUUM's
+	 * barrier has passed (BARK_META_SETTLED, or the conversion is over), no
+	 * update that keeps a locator can be in progress, so R by locator is
+	 * right again.
+	 */
+	if (mk->unsettled &&
+		(bark_note_conversion(scan->indexRelation) &
+		 (BARK_META_MKTAGS | BARK_META_SETTLED)) != BARK_META_MKTAGS)
+		mk->unsettled = false;
 	mk->havegroup = false;
 	MemoryContextReset(mk->groupCxt);
 	bark_mk_clear_seen(mk);

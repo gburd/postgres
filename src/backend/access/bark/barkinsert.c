@@ -2558,6 +2558,7 @@ typedef struct BarkInsertState
 								 * not equalimage: GIN's key rule */
 	int			extracted;		/* bark_index_extracted_column, or 0 */
 	MemoryContext rowcxt;		/* one row's keys and entries, reset per row */
+	bool		untag;			/* store entries untagged: conversion settled */
 } BarkInsertState;
 
 static BarkInsertState *
@@ -2583,9 +2584,18 @@ bark_insert_state(Relation index, IndexInfo *indexInfo)
 		indexInfo->ii_AmCache = state;
 		MemoryContextSwitchTo(oldcxt);
 
-		/* A constraint added since the build begins the conversion. */
-		if (state->keyinfo->mktags)
-			bark_note_conversion(index);
+		/*
+		 * A constraint added since the build begins the conversion.  Once
+		 * VACUUM's barrier has passed (BARK_META_SETTLED), every update moves
+		 * the rows it changes, and a new locator has no history, so the
+		 * statement stores its entries untagged, even those the table AM
+		 * tags; so does one after the conversion is over, whose relcache
+		 * entry may still say MKTAGS.  No tagged entry is added after the
+		 * barrier, which is what lets VACUUM's count of them reach zero.
+		 */
+		state->untag = state->keyinfo->mktags &&
+			(bark_note_conversion(index) &
+			 (BARK_META_MKTAGS | BARK_META_SETTLED)) != BARK_META_MKTAGS;
 	}
 	return state;
 }
@@ -3603,6 +3613,8 @@ bark_insert(Relation index, Datum *values, bool *isnull, ItemPointer ht_ctid,
 
 	bark_check_tid_offset(index, ht_ctid, state->keyinfo->tidstride);
 	bark_check_can_tag(index, state->keyinfo, tag);
+	if (state->untag)
+		tag = InvalidIndexVersionTag;
 	if (state->extracted > 0)
 	{
 		last_insert_index = RelationGetRelid(index);

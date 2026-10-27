@@ -462,7 +462,9 @@ bark_verify_tag(BarkVerify *v, OffsetNumber off, IndexTuple itup)
  * Validate a pivot's version tag: a pivot keeps one only when it separates
  * two entries equal on every key attribute and on heap TID, so only a pivot
  * with every key attribute and a heap TID has one, and only in an index
- * that stores tags.  Its tag is never 0.
+ * built for tags (BARK_META_VERSIONED).  A finished conversion leaves such
+ * an index without tags on its leaves but may leave tagged pivots, which
+ * still separate its entries.  Its tag is never 0.
  */
 static void
 bark_verify_pivot_tag(BarkVerify *v, OffsetNumber off, IndexTuple itup)
@@ -499,7 +501,7 @@ bark_verify_pivot_tag(BarkVerify *v, OffsetNumber off, IndexTuple itup)
 	if (tag == InvalidIndexVersionTag)
 		bark_verify_fail(v, "BARK index \"%s\" has a pivot with version tag 0 on page %u at offset %u",
 						 v->relname, v->blkno, off);
-	if (v->keyinfo != NULL && !v->keyinfo->canversion)
+	if (v->keyinfo != NULL && !v->keyinfo->versioned)
 		bark_verify_fail(v, "BARK index \"%s\" has a pivot with a version tag on page %u at offset %u but does not store tags",
 						 v->relname, v->blkno, off);
 }

@@ -385,7 +385,8 @@ SELECT bark_index_check('tmq_doc');
 DROP TABLE tmq;
 
 -- VACUUM notices a conversion too, and nothing sets CONVERTING on an
--- index without MKTAGS (a multikey index on heap made unique by hand)
+-- index without MKTAGS (a multikey index on heap made unique by hand).
+-- tmz's index has no tagged entry, so that VACUUM also completes it (T12a).
 CREATE TABLE tmz (id int, doc int4[]) USING heap_versioned
   WITH (autovacuum_enabled = off);
 INSERT INTO tmz VALUES (1, '{1,2}'), (2, '{3,4}');
@@ -403,6 +404,67 @@ SELECT flags & 30 AS mktags_converting FROM bark_metap('tmz_doc');
 SELECT flags & 30 AS mktags_converting FROM bark_metap('tmzh_doc');
 SELECT bark_index_check('tmz_doc'), bark_index_check('tmzh_doc');
 DROP TABLE tmz, tmzh;
+
+-- T12a: the whole conversion.  A tagged multikey index (the build tags
+-- every row) is made an exclusion constraint's; an insert begins the
+-- conversion (CONVERTING, 8); MVCC results do not change; a VACUUM whose
+-- table AM untags nothing (untag_tag names no entry's tag) passes the
+-- barrier (SETTLED, 16) and keeps the tagged entries; an update after
+-- SETTLED stores its entries untagged though the table AM tags them; the
+-- next VACUUM untags the rest and completes the conversion, clearing
+-- MKTAGS (4) with both bits.  amcheck is clean throughout.
+CREATE TABLE tmk (id int, doc int4[]) USING heap_versioned
+  WITH (autovacuum_enabled = off);
+INSERT INTO tmk SELECT g, ARRAY[10 * g, 10 * g + 1] FROM generate_series(1, 40) g;
+CREATE INDEX tmk_doc ON tmk USING bark (doc bark_int4_array_ops);
+CREATE FUNCTION tmk_state(OUT flags int8, OUT tagged int8, OUT entries int8)
+  LANGUAGE sql AS $$
+  SELECT (SELECT m.flags & 30 FROM bark_metap('tmk_doc') m),
+         count(i.tag), count(*)
+    FROM generate_series(1, pg_relation_size('tmk_doc') / 8192 - 1) b,
+         LATERAL bark_page_items('tmk_doc', b) i
+   WHERE i.shape IN ('SINGLE', 'LIST', 'POSTING') $$;
+SELECT * FROM tmk_state();
+SELECT test_versioned_add_exclusion('tmk_doc', '&&(anyarray,anyarray)');
+UPDATE pg_catalog.pg_index SET indisexclusion = true
+  WHERE indexrelid = 'tmk_doc'::regclass;
+SELECT * FROM tmk_state();
+INSERT INTO tmk VALUES (41, '{410,411}');
+SELECT * FROM tmk_state();
+SELECT id FROM tmk WHERE doc && '{10,200,411}' ORDER BY id;
+SELECT bark_index_check('tmk_doc');
+SET test_versioned_tableam.untag_tag = 1;
+VACUUM tmk;
+RESET test_versioned_tableam.untag_tag;
+SELECT * FROM tmk_state();
+SELECT id FROM tmk WHERE doc && '{10,200,411}' ORDER BY id;
+SELECT bark_index_check('tmk_doc');
+SET test_versioned_tableam.keep_locator = pretend;
+SELECT test_versioned_reset();
+UPDATE tmk SET doc = '{20,21,22}' WHERE id = 2;
+SELECT n AS kept FROM test_versioned_counts() WHERE counter = 'update_kept';
+RESET test_versioned_tableam.keep_locator;
+SELECT count(i.tag) AS tagged, count(*) AS entries
+  FROM tmk t, bark_page_items('tmk_doc', 1) i WHERE t.id = 2 AND i.htid = t.ctid;
+SELECT * FROM tmk_state();
+VACUUM tmk;
+SELECT * FROM tmk_state();
+SELECT id FROM tmk WHERE doc && '{10,22,200,411}' ORDER BY id;
+SET enable_indexscan = off;
+SET enable_bitmapscan = on;
+SELECT id FROM tmk WHERE doc && '{10,22,200,411}' ORDER BY id;
+RESET enable_indexscan;
+SET enable_bitmapscan = off;
+-- the index now stores no tags (the executor tags no entry of it), and
+-- the constraint still holds
+UPDATE tmk SET doc = '{30,31,33}' WHERE id = 3;
+SELECT count(i.tag) AS tagged, count(*) AS entries
+  FROM tmk t, bark_page_items('tmk_doc', 1) i WHERE t.id = 3 AND i.htid = t.ctid;
+INSERT INTO tmk VALUES (42, '{22}');
+INSERT INTO tmk VALUES (42, '{420}');
+SELECT bark_index_check('tmk_doc');
+DROP TABLE tmk;
+DROP FUNCTION tmk_state();
 
 -- keep_locator = inplace: an update of the column keeps the row's locator L
 -- for real (heap's HOT chain at L holds the row's versions) and inserts the

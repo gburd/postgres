@@ -1232,7 +1232,15 @@ CREATE INDEX orders_customer_idx ON orders (customer);
    find; a check of a row other than the one the statement inserted last
    (a deferred exclusion check, or the check after an update that inserted
    no entries) can then fail with <quote>found self tuple multiple
-   times</quote> until the index is rebuilt.  An index built by a
+   times</quote>.  The next <command>VACUUM</command> of the table waits
+   for the transactions that were writing it when the conversion began,
+   as <command>CREATE INDEX CONCURRENTLY</command> waits for writers (an
+   autovacuum worker does not wait: it tries again next time); from then
+   on the index stores new entries untagged, and constraint checks work as
+   before.  A <command>VACUUM</command> that finds no tagged entry left
+   completes the conversion: the index then stores no tags, as if rebuilt.
+   <xref linkend="pageinspect"/>'s <function>bark_metap</function> shows
+   each step in the meta page's flags.  An index built by a
    version of BARK without version tags stores none until it is rebuilt.
   </para>
 

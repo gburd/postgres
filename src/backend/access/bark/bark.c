@@ -27,6 +27,7 @@
 #include "access/gin.h"
 #include "access/barkxlog.h"
 #include "access/genam.h"
+#include "access/parallel.h"
 #include "access/reloptions.h"
 #include "access/xloginsert.h"
 #include "catalog/pg_am_d.h"
@@ -39,10 +40,12 @@
 #include "storage/ipc.h"
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
+#include "storage/proc.h"
 #include "storage/procarray.h"
 #include "storage/read_stream.h"
 #include "utils/fmgrprotos.h"
 #include "utils/injection_point.h"
+#include "utils/inval.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/selfuncs.h"
@@ -1000,6 +1003,7 @@ typedef struct BarkVacState
 	BlockNumber *emptyleaves;	/* empty interior leaves to delete */
 	int			nempty;
 	int			emptyalloc;
+	int64		ntagged;		/* tagged leaf entries left, for completion */
 } BarkVacState;
 
 /*
@@ -1441,7 +1445,19 @@ bark_vacuum_page(BarkVacState *vstate, Buffer buf)
 		 * TIDs for itself.
 		 */
 		if (deleting)
+		{
 			stats->num_index_tuples += nlivetids;
+
+			/* What a conversion's completion must find zero of. */
+			for (OffsetNumber off = BarkPageFirstDataKey(opaque);
+				 off <= PageGetMaxOffsetNumber(page); off = OffsetNumberNext(off))
+			{
+				BarkItemBuf ibuf;
+
+				if (BarkEntryHasTag(BarkPageGetItem(page, off, &ibuf)))
+					vstate->ntagged++;
+			}
+		}
 		else
 		{
 			for (OffsetNumber off = BarkPageFirstDataKey(opaque);
@@ -1615,6 +1631,7 @@ bark_vacuum_lower_bounds(BarkVacState *vstate)
 		if (nmoved > 0)
 			bark_delitems_vacuum(index, buf, NULL, 0, NULL, NULL, 0,
 								 from, to, items, nmoved);
+		vstate->ntagged -= nmoved;
 		for (int j = 0; j < nmoved; j++)
 			pfree(items[j]);
 		UnlockReleaseBuffer(buf);
@@ -1699,8 +1716,12 @@ bark_pendingfsm_finalize(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
  * one backend at a time, so nothing here is shared with another backend
  * beyond what serial VACUUM already shares (the cycle-ID registry, buffer
  * locks, WAL and the FSM).
+ *
+ * Returns the number of tagged leaf entries the scan left, exact when it
+ * deleted (cleanup locks, and splits followed by cycle ID), which a
+ * conversion's completion reads (bark_convert_complete).
  */
-static void
+static int64
 bark_vacuum_scan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 				 IndexBulkDeleteCallback callback, void *callback_state,
 				 IndexBulkDeleteVersionCallback version_callback)
@@ -1730,6 +1751,7 @@ bark_vacuum_scan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	vstate.emptyalloc = 64;
 	vstate.nempty = 0;
 	vstate.emptyleaves = palloc_array(BlockNumber, vstate.emptyalloc);
+	vstate.ntagged = 0;
 
 	/*
 	 * The counts are recomputed by every scan; tuples_removed and
@@ -1872,18 +1894,183 @@ bark_vacuum_scan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	/* Make the FSM entries recorded this cycle durable and searchable. */
 	if (stats->pages_free > 0)
 		IndexFreeSpaceMapVacuum(index);
+
+	return vstate.ntagged;
+}
+
+/*
+ * The conversion barrier ("Conversion" in the README): wait out every
+ * transaction that may still be running an update that began before the
+ * index started converting, and so may still keep a row's locator and add
+ * tagged entries.  Such an update holds RowExclusiveLock on the table until
+ * its transaction ends, so the wait is WaitForLockers on the table with
+ * ShareLock, as CREATE INDEX CONCURRENTLY waits out writers; VACUUM's own
+ * ShareUpdateExclusiveLock does not conflict with them, and GetLockConflicts
+ * skips this backend's own locks.  A writer whose statement opened the index
+ * after the conversion began cannot keep a locator in it (it sees
+ * BARK_META_CONVERTING, or a catalog that refuses), so the wait ends.
+ *
+ * Under autovacuum the barrier does not block, since an idle-in-transaction
+ * writer could hold the worker indefinitely: it passes only when
+ * GetLockConflicts finds no such transaction, and otherwise the next VACUUM
+ * tries again.  Returns whether it passed.
+ */
+static bool
+bark_convert_wait(Relation heap)
+{
+	LOCKTAG		heaplocktag;
+
+	SET_LOCKTAG_RELATION(heaplocktag, MyDatabaseId, RelationGetRelid(heap));
+	if (AmAutoVacuumWorkerProcess())
+	{
+		VirtualTransactionId *vxids = GetLockConflicts(&heaplocktag, ShareLock,
+													   NULL);
+		bool		busy = VirtualTransactionIdIsValid(vxids[0]);
+
+		if (busy)
+			INJECTION_POINT("bark-convert-autovac-busy", NULL);
+		return !busy;
+	}
+	INJECTION_POINT("bark-convert-barrier-wait", NULL);
+	WaitForLockers(heaplocktag, ShareLock, false);
+	return true;
+}
+
+/*
+ * The indexes whose conversion barrier this backend's transaction has tried
+ * (barktried) and passed (barkpassed), in TopTransactionContext: VACUUM of a
+ * table is one transaction, which may call bulkdelete several times.
+ */
+static LocalTransactionId barkconv_lxid = InvalidLocalTransactionId;
+static List *barkconv_tried = NIL;
+static List *barkconv_passed = NIL;
+
+/* Forget the lists of an earlier transaction, whose memory is gone. */
+static void
+bark_convert_memo_reset(void)
+{
+	if (barkconv_lxid != MyProc->vxid.lxid)
+	{
+		barkconv_lxid = MyProc->vxid.lxid;
+		barkconv_tried = NIL;
+		barkconv_passed = NIL;
+	}
+}
+
+/*
+ * Run the conversion barrier for VACUUM's pass over the index, if the index
+ * is converting; return whether the pass may complete the conversion.  The
+ * first barrier that passes sets BARK_META_SETTLED.  A writer that read the
+ * meta page before that may still store a tagged entry (inserts store
+ * entries untagged only once they see SETTLED), so the barrier waits once
+ * more after setting it, and every later VACUUM waits again: only a wait
+ * that began after SETTLED was set lets a count of zero tagged entries be
+ * final.  It runs once per index and transaction, and not in a parallel
+ * worker, which would wait for the leader's own lock on the table: after a
+ * bulkdelete in a worker the leader runs the cleanup, which makes the pass
+ * (barkvacuumcleanup); a cleanup-only pass in a worker leaves the barrier to
+ * the next VACUUM.
+ */
+static bool
+bark_convert_barrier(IndexVacuumInfo *info)
+{
+	Relation	index = info->index;
+	Oid			indexoid = RelationGetRelid(index);
+	uint32		flags;
+	MemoryContext oldcxt;
+	bool		passed;
+
+	if (IsParallelWorker())
+		return false;
+	bark_convert_memo_reset();
+	if (list_member_oid(barkconv_tried, indexoid))
+		return list_member_oid(barkconv_passed, indexoid);
+
+	flags = bark_note_conversion(index);
+	passed = (flags & BARK_META_CONVERTING) != 0 &&
+		bark_convert_wait(info->heaprel);
+	if (passed && (flags & BARK_META_SETTLED) == 0)
+	{
+		(void) bark_change_conversion_flags(index, BARK_META_CONVERTING,
+											BARK_META_SETTLED, 0);
+		passed = bark_convert_wait(info->heaprel);
+	}
+
+	oldcxt = MemoryContextSwitchTo(TopTransactionContext);
+	barkconv_tried = lappend_oid(barkconv_tried, indexoid);
+	if (passed)
+		barkconv_passed = lappend_oid(barkconv_passed, indexoid);
+	MemoryContextSwitchTo(oldcxt);
+	return passed;
+}
+
+/* Has this backend's transaction tried the index's barrier yet? */
+static bool
+bark_convert_tried(Relation index)
+{
+	bark_convert_memo_reset();
+	return list_member_oid(barkconv_tried, RelationGetRelid(index));
+}
+
+/*
+ * Complete a conversion whose barrier this VACUUM passed, after a pass that
+ * left `ntagged` tagged leaf entries: with none left, the index is what a
+ * REINDEX would build (no tagged entry, no MKTAGS), so clear
+ * BARK_META_MKTAGS, BARK_META_CONVERTING and BARK_META_SETTLED in one meta
+ * page write.  Tagged pivots may remain where VACUUM could not lower a
+ * bound; they still separate entries correctly, and the index keeps its
+ * 16-byte pivot reserve (BARK_META_VERSIONED).  The relcache entry is
+ * invalidated, since every backend caches MKTAGS.
+ */
+static void
+bark_convert_complete(Relation index, int64 ntagged)
+{
+	if ((bark_index_conversion_flags(index) & BARK_META_CONVERTING) == 0)
+		return;					/* an earlier pass of this VACUUM did */
+	if (ntagged > 0)
+	{
+		ereport(DEBUG2,
+				(errmsg("index \"%s\": conversion kept open by %lld tagged entries",
+						RelationGetRelationName(index), (long long) ntagged)));
+		return;
+	}
+	(void) bark_change_conversion_flags(index,
+										BARK_META_MKTAGS | BARK_META_CONVERTING |
+										BARK_META_SETTLED, 0,
+										BARK_META_MKTAGS | BARK_META_CONVERTING |
+										BARK_META_SETTLED);
+	CacheInvalidateRelcache(index);
+	ereport(DEBUG1,
+			(errmsg("index \"%s\": conversion complete",
+					RelationGetRelationName(index))));
+}
+
+/*
+ * The callback of a conversion's pass over an index when VACUUM has no
+ * heap TID to delete: keep every entry.  Only a table AM's version callback
+ * deletes or untags tagged entries.
+ */
+static bool
+bark_keep_all(ItemPointer itemptr, void *state)
+{
+	return false;
 }
 
 static IndexBulkDeleteResult *
 barkbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 			   IndexBulkDeleteCallback callback, void *callback_state)
 {
+	bool		converting;
+	int64		ntagged;
+
 	if (stats == NULL)
 		stats = palloc0_object(IndexBulkDeleteResult);
 
-	bark_note_conversion(info->index);
-	bark_vacuum_scan(info, stats, callback, callback_state,
-					 info->version_callback);
+	converting = bark_convert_barrier(info);
+	ntagged = bark_vacuum_scan(info, stats, callback, callback_state,
+							   info->version_callback);
+	if (converting)
+		bark_convert_complete(info->index, ntagged);
 	return stats;
 }
 
@@ -1908,11 +2095,26 @@ barkvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 
 	Assert(info->heaprel != NULL);
 
-	if (stats == NULL)
+	/*
+	 * A converting index whose barrier this transaction has not tried (no
+	 * bulkdelete ran, or a parallel worker ran it) gets a deleting pass even
+	 * with nothing to delete, so that it counts its tagged entries exactly,
+	 * and the table AM's version callback, if it gave one, removes the
+	 * stale ones.  Its counts replace bulkdelete's.
+	 */
+	if (!IsParallelWorker() && !bark_convert_tried(info->index) &&
+		bark_convert_barrier(info))
 	{
-		bark_note_conversion(info->index);
+		if (stats == NULL)
+			stats = palloc0_object(IndexBulkDeleteResult);
+		bark_convert_complete(info->index,
+							  bark_vacuum_scan(info, stats, bark_keep_all,
+											   NULL, info->version_callback));
+	}
+	else if (stats == NULL)
+	{
 		stats = palloc0_object(IndexBulkDeleteResult);
-		bark_vacuum_scan(info, stats, NULL, NULL, NULL);
+		(void) bark_vacuum_scan(info, stats, NULL, NULL, NULL);
 		stats->estimated_count = true;
 	}
 
