@@ -2452,7 +2452,7 @@ pivot's heap TID and tag (6 + 4, MAXALIGNed); every other
 index keeps the 8-byte reserve, so an index of a heap table is laid out
 byte for byte as before tags existed.  The design text had the reserve grow
 to 16 for every index; per index keeps heap's indexes unchanged, which a
-page-dump comparison of every block of the R3.1 workload confirms (only the
+page-dump comparison of every block of a test workload confirms (only the
 meta pages differ, in their version word).
 
 Shapes.  t = 0 is never stored: every untagged entry is byte-identical to
