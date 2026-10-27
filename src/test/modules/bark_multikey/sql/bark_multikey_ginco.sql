@@ -40,7 +40,7 @@ END $$;
 CREATE FUNCTION gn_items(idx text) RETURNS TABLE (shape text, ntids int, data text)
 LANGUAGE sql AS $$
   SELECT i.shape, i.ntids, i.data
-  FROM generate_series(1, pg_relation_size(idx::regclass) / 8192 - 1) b,
+  FROM generate_series(1, pg_relation_size(idx::regclass) / current_setting('block_size')::int - 1) b,
        bark_page_items(idx, b) i
   WHERE i.shape IN ('SINGLE', 'LIST', 'POSTING')
 $$;
