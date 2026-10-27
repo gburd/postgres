@@ -426,8 +426,18 @@ sub waldump_count
 		[
 			'pg_waldump', '--rmgr=Bark',
 			'--path=' . $node_primary->data_dir . '/pg_wal',
-			"--start=$start", "--end=$end"
+			"--start=$start", "--end=$end",
+			# name the segments: given only a directory, pg_waldump learns the
+			# segment size from the first file it lists, which can be a
+			# preallocated segment of zeros
+			$node_primary->safe_psql('postgres',
+				"SELECT pg_walfile_name('$start'::pg_lsn + 1)"),
+			$node_primary->safe_psql('postgres', "SELECT pg_walfile_name('$end')")
 		]);
+	# a start LSN on a page boundary makes pg_waldump report skipping the
+	# page header; anything else on stderr is an error, not "no records"
+	$stderr =~ s/^pg_waldump: first record is after .*(\n|$)//m;
+	die "pg_waldump failed: $stderr" if $stderr ne '';
 	my @matches = ($stdout =~ /desc: $type /g);
 	return scalar(@matches);
 }
