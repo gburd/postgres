@@ -3068,7 +3068,7 @@ bark_marker_present(Relation index, BarkKeyInfo *keyinfo, IndexTuple marker,
  * none), in this ascending order, under the exclusive lock of the first
  * leaf that can hold the key, and inserts it before that lock is released,
  * as nbtree's _bt_doinsert does for its one key ("When the check runs" in
- * M4 of BARK-Design.mediawiki).  For such an entry the step from entry i's
+ * BARK-Design.mediawiki).  For such an entry the step from entry i's
  * leaf L uses the move-right test for the key alone, and the entry then
  * moves right to its heap TID's place (bark_insert_stepright): L is the
  * first leaf that can hold it, since entry i is on L and sorts before it.

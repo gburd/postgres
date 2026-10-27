@@ -1230,8 +1230,8 @@ place of an inverted AM, without changing the scalar design above.
   case and are not started)''
 * '''Unique indexes over multikey keys''' with document-store
   semantics: unique across rows, while one row may repeat a key. Design:
-  ''(in progress. M4a, the insert, build and planner sides, is built:
-  "As built (M4a)" under [[#M4: unique indexes over multikey keys|M4]]
+  [[#Unique indexes over multikey keys|Unique indexes over multikey keys]]
+  below.
   below; M4b, procedure 15, ON CONFLICT and the foreign-key, REFRESH
   MATERIALIZED VIEW CONCURRENTLY and REPLICA IDENTITY guards, is built:
   "As built (M4b)"; M4c, amcheck's checkunique (amcheck 1.8), is built:
@@ -2564,7 +2564,7 @@ still refused where the column coalesces keys of different images (a
 GIN-interface class without equalimage, bark_index_may_coalesce): a row's
 own key image may then be in no entry.
 
-==== As built (M4a) ====
+==== As built: insert, build and planner ====
 
 bark_check_multikey_index accepts a unique index on an extracted column
 and refuses NULLS NOT DISTINCT there. bark_insert_row_keys marks the keys

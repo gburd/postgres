@@ -690,7 +690,8 @@ between two entries of a row leaves entries of an uncommitted row, which
 VACUUM removes.
 
 A unique index with an extracted column is unique over its entries' key
-columns ("M4" in BARK-Design.mediawiki): two rows conflict when they share
+columns ("Unique indexes over multikey keys" in BARK-Design.mediawiki):
+two rows conflict when they share
 a key under equal fixed columns.  bark_insert_row_keys marks each key to
 check in checkkeys: none when a fixed column is NULL, and never the NULL
 key.  bark_insert_entries checks each marked key, in the row's ascending
