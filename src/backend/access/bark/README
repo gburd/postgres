@@ -1307,8 +1307,8 @@ The blocks come from a read stream over [1, length), as btvacuumscan's do
 since nbtree's c5c239e26e3: bark_vacuum_scan re-arms it for the blocks added
 since each pass, and bark_vacuum_page gets each block's buffer from it.  A
 page reached by backtracking (below) is off the stream's order and is read
-directly.  Measured cold (BARK-Design.mediawiki, "As built (RethinkDB
-review)"), it cut VACUUM's read calls sevenfold and left its time as it
+directly.  Measured cold (BARK-Design.mediawiki, "Ideas taken from
+RethinkDB"), it cut VACUUM's read calls sevenfold and left its time as it
 was.
 
 A leaf split during the scan can move entries from a page the scan has not

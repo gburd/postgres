@@ -1038,12 +1038,6 @@ Not implemented:
 * Per-locator data (RUM's addInfo), closed as not needed: "Per-locator
   data (closed)" below.
 
-* '''RT''' -- three recommendations of the RethinkDB review
-  (<code>/scratch/postgres-idxam/scratch-rethink/RETHINKDB-REVIEW.md</code>,
-  R3.1, R1 and R5), done before phase 5b of the versioned-entry design:
-  one pivot-suffix reserve, a page validator after every page change in
-  cassert builds, and a read stream in VACUUM's scan. ''(done, branch
-  bark-rethink: see "As built (RethinkDB review)" below)''
 * '''BMP''' -- bounded memory and batched TIDs in bitmap and GIN-interface
   scans. ''(part 1, batched <code>tbm_add_tuples</code>, done, branch
   bark-bmp: every bitmap path adds single TIDs through a fixed 6 kB batch
@@ -1053,9 +1047,10 @@ Not implemented:
   streams bounded by work_mem, done: "As built (BMP part 2, bounded
   streams)" under "Which interface first."; positioned streams and coded
   member reads are the next step, README "Bounded streams, next step".)''
+=== Ideas taken from RethinkDB ===
 
-'''As built (RethinkDB review).'''
-* ''R3.1, one pivot-suffix reserve.'' <code>BarkPivotSuffixReserve</code>
+RethinkDB's B-tree influenced four pieces of BARK.
+* ''One pivot-suffix reserve.'' <code>BarkPivotSuffixReserve</code>
   in bark.h replaces six hand-written <code>MAXALIGN(sizeof(ItemPointerData))</code>
   reserves (leaf free space, the pivot itself, the split's and the build's
   high-key estimate, the merge's target, the inline limit); the version tag
@@ -1063,7 +1058,7 @@ Not implemented:
   <code>leaf_node.cc</code> documents the bug it avoids: an optional field
   counted in one size calculation and not another. A deterministic
   workload's 3495 pages were byte-identical before and after.
-* ''R1, the page validator.'' amcheck's checks of one page moved to
+* ''The page validator.'' amcheck's checks of one page moved to
   <code>barkverify.c</code> (<code>bark_page_verify</code>), grouped SHAPES
   (no catalog, no comparator), ORDER, CONTENTS and COMPLETE; amcheck calls
   it, its messages unchanged. In cassert builds every function that ends a
@@ -1072,8 +1067,7 @@ Not implemented:
   SHAPES on each page it replays. A failure is an ERROR in a backend (the
   change is logged, so a PANIC would only replay it again) and a PANIC in
   redo. From RethinkDB's <code>leaf::validate</code>, run after every node
-  mutation in its debug builds; sqlxtc's port caught a planted one-byte
-  fault its own test oracle missed. The developer option
+  mutation in its debug builds. The developer option
   <code>bark_verify_pages</code> (cassert builds only, on by default) turns
   it off. A change of one or a few adjacent entries checks those entries
   (and their order against the entry on each side), and every 32nd such
@@ -1089,7 +1083,7 @@ Not implemented:
   workload with every page checked whole, 1.9x bounded, 1.5x with the
   shapes of the touched entries only; 1.17x on the BARK suites (README,
   "Page validator").
-* ''R5, VACUUM's read stream.'' nbtree's c5c239e26e3 ported to
+* ''VACUUM's read stream.'' nbtree's c5c239e26e3 ported to
   <code>bark_vacuum_scan</code>: a <code>block_range_read_stream_cb</code>
   stream over the data blocks, re-armed for blocks added during the scan;
   backtracking keeps <code>ReadBufferExtended</code>. Measured on
