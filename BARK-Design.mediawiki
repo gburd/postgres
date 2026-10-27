@@ -1,4 +1,4 @@
-= BARK: a successor to the nbtree index access method =
+= BARK: a B-tree index access method beside nbtree =
 
 ''Status:'' a working access method under development, at parity with nbtree
 on most of its scalar workload (see [[#Where BARK stands|Where BARK
@@ -12,7 +12,7 @@ this document drift.
 == What BARK is ==
 
 BARK is a new index access method (<code>CREATE INDEX ... USING bark</code>),
-intended over time to be a drop-in successor to <code>nbtree</code>: it keeps
+intended over time to be a drop-in alternative to <code>nbtree</code>: it keeps
 every nbtree capability (ordered scans, uniqueness, multicolumn keys, INCLUDE
 columns, deduplication, index-only scans, parallel build and scan, the
 amcheck contract) and adds capabilities the B-tree shape cannot express
@@ -132,7 +132,7 @@ hot spot in the profile, and keys too large for btree, which cost BARK a
 decompression per comparison. The full tables, profiles and caveats are in
 the benchmark report.
 
-=== Relationship to the sbm ADT (commits 0001-ADT / 0002) ===
+=== Relationship to the sbm ADT ===
 
 The posting-list ("value is a set of locators") paradigm rests on a compact,
 sorted, mergeable integer-set representation. That is the '''sbm''' ADT
@@ -163,16 +163,13 @@ nbtree is not "just an AM": twenty-odd places in the backend assume the only
 ordered index is a B-tree and the only row identifier is a heap TID. Before
 BARK can be a peer of nbtree, those assumptions have to be named as contracts
 that either side can declare and the dependent code can test. Five of the six
-contracts already exist as landed work in sibling worktrees and are
-cherry-picked in; the sixth is the sweep that removes the hardcodes. KNN
+contracts come from other patch sets; the sixth is the sweep that removes the hardcodes. KNN
 (<code>amcanorderbyop</code>) is reserved in the API from day one and
-implemented late (phase P07).
+implemented later.
 
 === C-LOCATOR: what an index entry points at ===
 
-''Source: <code>tepid</code>, the locator-contract commits
-<code>b0bf1a93644</code> .. <code>f277ea640c2</code>
-(<code>src/include/access/amlocator.h</code>).''
+''Interface: <code>src/include/access/amlocator.h</code>.''
 
 An index entry stores a '''locator''': the value it hands the table AM to
 identify a row. Today every table AM hands out an <code>ItemPointerData</code>
@@ -474,7 +471,7 @@ BARK entries obey the same visibility rules as nbtree. Four obligations:
   <code>ORDER BY</code> (it yields the tuple at the stale key's sort
   position). The correct general mechanism is comparing the '''stored leaf
   key''': BARK must retain enough of the leaf key to do this.
-* '''The recheck-hint bit.''' ''Source: <code>tepid</code> @
+* '''The recheck-hint bit.''' A proposed change to
   <code>236cff2f</code> (<code>src/include/storage/itemptr.h</code>).'' The
   tepid branch reserves bit 14 of a TID's offset for a locator whose match is
   not exact, and <code>tbm_add_tuples</code> turns such a TID's page lossy.
@@ -487,7 +484,7 @@ BARK entries obey the same visibility rules as nbtree. Four obligations:
   <code>tbm_add_tuples</code>.
 === C-DELETE: delete-marking via UNDO ===
 
-''Source: undo branch v11 (<code>src/include/access/amapi.h</code>,
+''Source: the UNDO patch set (<code>src/include/access/amapi.h</code>,
 <code>access/nbtree.h</code>, <code>access/tableam.h</code>).''
 
 An AM over an UNDO-backed table participates in index delete-marking rather
@@ -507,7 +504,7 @@ than leaving dead entries for VACUUM:
 
 '''BARK obligation:''' reserve a delete-marked entry subtype in the on-disk
 format from the start, and implement <code>amdeletemark</code>/<code>amundomark</code>
-when the UNDO integration phase lands (not in the first functional AM).
+when UNDO integration lands (not in the first functional AM).
 ''Status:'' none of the undo branch's interface is in this tree (no
 <code>amdeletemark</code>, <code>am_supports_undo</code>,
 <code>BT_IS_DELETE_MARKED</code> or <code>index_delete_mark</code>).
@@ -994,21 +991,65 @@ phase P07 (965b1f9590a); <code>indxpath.c</code> gives an index that is both
 ordered and <code>amcanorderbyop</code> at most one ordering operator, on its
 leading column (2c59e5d829d).
 
-== Roadmap ==
+== Status ==
 
-Reconstructed phase plan. Each entry is one or a few bisectable commits; every
-commit builds under <code>-Werror --enable-cassert</code> and passes
-<code>make check</code> on its own (regenerate the initdb template --
-<code>trash tmp_install testrun; meson test --suite setup</code> -- before the
-regress step so a stale template cannot produce a false diff). Contracts above
-are cited by name in each phase's commit messages.
+Implemented:
+
+* The sbm ADT and its test module, <code>test_sbm</code>.
+* nbtree's tree and algorithms, as listed under "Where BARK stands":
+  descent and move-right with lock coupling, incomplete splits, split points
+  by bytes and fillfactor, suffix truncation, heap TID order, uniqueness,
+  speculative insertion and NULLS NOT DISTINCT, page-at-a-time scans with
+  nbtree's pin rule, mark/restore, cross-type keys, row comparisons,
+  required array keys, forward skip scan over one column, per-page
+  satisfied keys, the rightmost-leaf fast path, VACUUM in one physical pass
+  with cycle IDs and cleanup locks, parallel build, scan and VACUUM, page
+  deletion with safe recycling, bottom-up deletion, dead-entry hints from
+  scans and simple deletion before a split, the merge of a leaf's equal-key
+  entries before a split, btcostestimate's cost model and an operator class
+  for every btree class.
+* Keys of any size (OVERSIZED entries and overflow chains), LIST, coded
+  LIST and POSTING entries at CREATE INDEX and on insert, leaf prefix
+  compression, KNN ordering on the leading column (not in parallel), and a
+  per-backend cache of level-1 pages that lets read descents start below
+  the root.
+* BARK's own WAL resource manager with hot-standby conflict handling; BARK
+  writes no generic WAL.
+* amcheck (heapallindexed, the parent check, checkunique and the overflow
+  chain checks), pg_amcheck, pageinspect and pgstattuple, and in cassert
+  builds a page validator after every page change and in redo.
+* Version tags for a versioned table AM ("Versioned locators" above),
+  including the conversion of a tagged multikey index made unique or
+  exclusion after its build, except per-leaf conversion.
+* Multikey keys, GIN's and pg_extended_btree's query interfaces, RUM's
+  addon ordering, unique indexes over multikey keys, and, in test modules,
+  an array similarity class (<code>bark_multikey</code>) and a wildcard
+  class (<code>bark_wildcard</code>); see "Document indexes" below.
+* The user manual (<code>doc/src/sgml/bark.sgml</code>) and the README.
+
+Not implemented:
+
+* PRIMARY KEY and UNIQUE constraints on a BARK index, and with them
+  deferrable uniqueness.
+* IS NULL and IS NOT NULL position and stop scans as nbtree's do; in BARK
+  they only filter.
+* <code>amgetbatch</code> (CF 4351), and the features waiting on it:
+  backward skip scan and skipping over several leading columns.
+* CLUSTER and REPACK sorts and the RI trigger fast path for a BARK index
+  ("The capability sweep").
+* C-DELETE delete-marking, which needs an UNDO-backed table AM whose
+  interface is not in this tree.
+* Term containment at scale ("Containment queries" under C-KEYSHAPE).
+* Reclaiming overflow pages orphaned by a crash; only REINDEX does.
+* Scalar operator classes in a BARK operator family, which no use case
+  has needed.
+* Per-locator data (RUM's addInfo), closed as not needed: "Per-locator
+  data (closed)" below.
 
 Each entry is marked ''done'' with its commits on <code>idxam</code>,
 ''in progress'', ''held'' (designed, not started, by decision) or
 ''blocked'' (with what it waits for). The commit hashes are those of
 <code>git log --oneline</code> on <code>idxam</code> as of ac12fa1e140.
-
-'''Done'''
 
 * '''0001''' -- this design document (the contract of record). ''(done:
   643b5e704bf)''
@@ -1016,66 +1057,33 @@ Each entry is marked ''done'' with its commits on <code>idxam</code>,
   ''(done: b437ccaf775)''
 * '''test_sbm''' -- the sbm regression + differential-test module, plus the
   sbm-vs-Bitmapset-vs-TIDBitmap benchmark. ''(done: 5b02c573b5c)''
-
-'''F-series -- foundations (make a BARK peer of nbtree structurally)'''
-
-* '''F01''' -- vendor the substrate. ''(done as the sbm ADT above.)''
-* '''F02''' -- cherry-pick the C-LOCATOR contract from <code>tepid</code>
-  (<code>LocatorDesc</code>, <code>relation_locator</code>,
-  <code>amcanvarlocator</code>, the <code>index_check_locator()</code> check).
   ''(done: tepid's eight contract commits at the base of the series; they
   replace this tree's earlier <code>LocatorCapability</code> enum and
   <code>amcanlocators</code> bitmask.)''
-* '''F03''' -- cherry-pick the recheck-hint bit
-  (<code>ItemPointerRecheckHintFlag</code>) from <code>tepid</code>.
   ''(done, then dropped 2026-10-15: nothing in this tree sets it; see
   C-MVCC.)''
-* '''F04''' -- the capability sweep, group 2: make ordered-''sort'' path
-  generation, <code>tuplesort</code> variants, <code>repack</code>, and the RI
-  trigger ask an AM capability instead of comparing to
-  <code>BTREE_AM_OID</code>. No BARK code yet; nbtree still answers "yes" to
   every capability, so this is behavior-preserving. ''(done for the planner:
   b02ddd944a8, <code>ambtreeopfamilies</code>; 6d73daac716 lets such an AM
   share btree's operator families. Not done: <code>tuplesort</code>'s
   cluster sort and <code>repack</code>, and the RI fast path, which stay
   btree-only; see "The capability sweep".)''
-* '''F05''' -- register the empty <code>bark</code> AM: catalog rows,
-  <code>IndexAmRoutine</code> skeleton (all capability flags declared,
-  including reserved <code>amcanorderbyop</code>), <code>amvalidate</code>,
-  build/scan hooks that error "not implemented". <code>CREATE INDEX USING
-  bark</code> is accepted and validated but cannot yet be built.
   ''(done: 92f1c3c696a)''
-* '''F06''' -- the on-disk page format: meta/root/leaf/internal page layout,
-  the C-KEYSHAPE entry encoding (single / sorted-list / posting-set), and the
-  reserved delete-marked subtype for C-DELETE. Documented as a companion
   <code>README</code> under the AM directory. ''(done: e8ecfa2a997; page ID
   distinct from nbtree's, 41c820caf25)''
-
-'''A-series -- the working access method'''
-
-* '''A01-A03''' -- insert and split (single-locator shape first): leaf insert,
-  page split, high-key / right-link maintenance in the Lehman & Yao tradition
   nbtree uses. ''(done: 03950777ddc build, 6a3c6088b95 insert and split,
   965c12ad4f7 interrupted splits; nbtree's locking: c875cdc8170 child before
   parent, c920f0aa9ed write descents finish incomplete splits; f48c923c5d5
   split points by bytes and fillfactor; 7c16246fae1 suffix truncation)''
-* '''A04-A06''' -- search and ordered scan; the C-MVCC leaf-key recheck and
-  index-only-scan support; SSI predicate locking at nbtree granularity.
   ''(done: f1c10b62f62, 099fec68d16, d40c3e51622, 9d9c86555f8 backward;
   page-at-a-time scans 6eac5be00a8, mark/restore 86dc81669eb, cross-type
   keys 12f7157b115, row comparisons af421f48a59, ScalarArrayOp
   860b5787393 and 9a2d18ea58e, skip scan 4384f134bc0 and abb8869ca9e)''
-* '''A07-A09''' -- uniqueness, multicolumn keys, INCLUDE columns.
   ''(done: 40f59eae200, 3d3e340450b, 761c298af97; speculative insertion
   6fa04f5e1af)''
-* '''A10-A12''' -- the sorted-duplicates and posting-set shapes (C-KEYSHAPE),
-  sbm-backed for clustered value sets; BitmapAnd/BitmapOr via sbm set-algebra.
   ''(done: 4b96254199e LIST, 1cd5c7a61c2 POSTING, 04534607eb4 BitmapAnd and
   BitmapOr, through the executor's TIDBitmaps rather than sbm set algebra;
   6e3a262afa9 coalesce only equal images; e9803c87051 POSTING removal
   reserve; d7fae7124b1 LIST and POSTING at CREATE INDEX)''
-* '''A13-A15''' -- deletion, VACUUM, page recycling; then C-DELETE
-  delete-marking (<code>amdeletemark</code>/<code>amundomark</code>) once the
   table is UNDO-backed. Page recycling follows nbtree: a deleted page keeps
   its sibling links and records a safexid, and is reused only once
   <code>GlobalVisCheckRemovableFullXid</code> says no snapshot can still hold
@@ -1089,22 +1097,13 @@ Each entry is marked ''done'' with its commits on <code>idxam</code>,
   d7e21783d59 parallel VACUUM, 7b651b29179 bottom-up deletion. C-DELETE
   delete-marking: blocked on the UNDO work, whose interface is not in this
   tree.)''
-* '''A16-A18''' -- parallel build, parallel scan, and the amcheck contract for
   BARK. ''(done: d65a886d783, bf2e930db15, 06ae9a70ead)''
-
-'''P-series -- parity and beyond'''
-
-* '''P01-P03''' -- performance parity with nbtree on the scalar workload
-  (build throughput, scan latency, space) using the benchmark harness pattern
   from test_sbm; A/B against <code>master</code>'s nbtree. ''(done as the
   Z1 and Z2 benchmarks and the cards they produced, below; see "Where BARK
   stands". Inserts are still 1.05-1.12x btree's time.)''
-* '''P04-P06''' -- arbitrary-size keys/values beyond the nbtree page cap; the
   C-STATS cost model tuned to the new shapes. ''(done: d13b4ea40fb,
   761c298af97, d365b638713, e381e4c52e9; cost model 24e449dfa22, replaced
   by C3 9dd712a3fc8)''
-* '''P07''' -- KNN / <code>amcanorderbyop</code>: implement ordered-''operator''
-  scans and extend the capability sweep to ordered-operator path generation.
   ''(done: 965b1f9590a, 627d94fcf06, 2c59e5d829d; no parallel KNN, by
   design, 37aa0402e67)''
 * '''Leaf prefix compression''' -- the <code>prefix_compression</code>
