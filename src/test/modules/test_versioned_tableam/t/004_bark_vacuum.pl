@@ -310,8 +310,18 @@ is($node->safe_psql('postgres', $dead), '0', 'LP_DEAD: none yet');
 $node->safe_psql('postgres',
 	q{SET enable_seqscan = off; SET enable_bitmapscan = off; SELECT * FROM t5 WHERE k = 50});
 is($node->safe_psql('postgres', $dead), '2', 'LP_DEAD: both tagged entries of the row are marked');
-# simple deletion then removes both before the page would split
-$node->safe_psql('postgres', q{INSERT INTO t5 SELECT g, g FROM generate_series(101, 400) g});
+# simple deletion then removes both before the page would split: insert
+# until it has split, however many entries a page holds on this platform
+$node->safe_psql(
+	'postgres', q{
+	DO $$
+	DECLARE g int := 100;
+	BEGIN
+	  WHILE pg_relation_size('t5_k') / 8192 < 3 AND g < 5000 LOOP
+	    INSERT INTO t5 SELECT n, n FROM generate_series(g + 1, g + 10) n;
+	    g := g + 10;
+	  END LOOP;
+	END $$});
 is( $node->safe_psql(
 		'postgres', q{
 		SELECT count(*) FROM generate_series(1, pg_relation_size('t5_k') / 8192 - 1) b,
@@ -336,10 +346,19 @@ $node->safe_psql(
 is($node->safe_psql('postgres', q{SELECT count(*) FROM leaves('t6_k')}),
 	'1', 'pre-split: one leaf');
 is($node->safe_psql('postgres', q{SELECT tagged('t6_k')}), '160', 'pre-split: 160 stale entries');
+# Inserts fill the leaf until it would split (the number depends on the
+# platform's entry size), which deletes the stale entries instead.
 $node->safe_psql(
 	'postgres', q{
 	SELECT test_versioned_reset();
-	INSERT INTO t6 SELECT g, g FROM generate_series(101, 150) g;
+	DO $$
+	DECLARE g int := 100;
+	BEGIN
+	  WHILE tagged('t6_k') > 0 AND g < 5000 LOOP
+	    INSERT INTO t6 SELECT n, n FROM generate_series(g + 1, g + 10) n;
+	    g := g + 10;
+	  END LOOP;
+	END $$;
 });
 is($node->safe_psql('postgres', q{SELECT count(*) FROM leaves('t6_k')}),
 	'1', 'pre-split: still one leaf');
@@ -351,7 +370,8 @@ is( $node->safe_psql(
 		'postgres', q{
 		SET enable_seqscan = off; SET enable_bitmapscan = off;
 		SELECT count(*), sum(id) FROM t6 WHERE k > 0}),
-	'150|11325', 'pre-split: index scan');
+	$node->safe_psql('postgres', q{SELECT count(*), sum(id) FROM t6 WHERE k > 0}),
+	'pre-split: index scan');
 check_index('t6_k', 'pre-split');
 
 # (7) An entry whose untagged position (K, L, 0) is in another entry: the
