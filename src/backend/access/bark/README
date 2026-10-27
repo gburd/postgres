@@ -1,9 +1,9 @@
 BARK Indexing
 =============
 
-BARK is an index access method modeled on nbtree and meant as its
-successor; BARK-Design.mediawiki at the top of the tree records its
-contracts, decisions and roadmap, and doc/src/sgml/bark.sgml is the user
+BARK is an index access method modeled on nbtree and meant to stand
+beside it; BARK-Design.mediawiki at the top of the tree records its
+contracts, decisions and status, and doc/src/sgml/bark.sgml is the user
 manual.  It is a Lehman and Yao B-tree over btree operator classes, with
 nbtree's suffix truncation, heap TID order among equal keys, bottom-up
 deletion and deduplication-before-split, and it adds what nbtree cannot
@@ -1197,7 +1197,7 @@ family's exempts btree's families.
 The distance functions are bark_int2/4/8_distance in barkutils.c.
 
 A multikey class lives in an operator family whose opfmethod is bark
-("Multikey keys"; "M1: multikey keys" in the design document).  For BARK's
+("Multikey keys", here and in the design document).  For BARK's
 own families the handler declares amstrategies 0 (any strategy number),
 amsupport 15 (BARK_MULTIKEY_NPROCS) and amstorage true, so the core code
 accepts any strategy, support functions up to 15 and a STORAGE clause.
