@@ -1194,6 +1194,15 @@ BENCHMARK-2026-10b.md, at 5d4e2883b10)
   one pivot-suffix reserve, a page validator after every page change in
   cassert builds, and a read stream in VACUUM's scan. ''(done, branch
   bark-rethink: see "As built (RethinkDB review)" below)''
+* '''BMP''' -- bounded memory and batched TIDs in bitmap and GIN-interface
+  scans. ''(part 1, batched <code>tbm_add_tuples</code>, done, branch
+  bark-bmp: every bitmap path adds single TIDs through a fixed 6 kB batch
+  per scan, one exact and one recheck array, as the "Batch B-tree TIDs when
+  building a bitmap" patch does for nbtree; LIST and POSTING members go in
+  as the array they already are. README "Scans". Part 2, GIN-interface
+  streams bounded by work_mem, done: "As built (BMP part 2, bounded
+  streams)" under "Which interface first."; positioned streams and coded
+  member reads are the next step, README "Bounded streams, next step".)''
 
 '''As built (RethinkDB review).'''
 * ''R3.1, one pivot-suffix reserve.'' <code>BarkPivotSuffixReserve</code>
@@ -1649,6 +1658,60 @@ alone decides each entry and the range's end. A later column or a DESC
 column compares as before. Tests (bark_multikey_gin.sql): nine prefix
 queries over an ascending, a DESC and a two-column index, NULL and empty
 arrays among the rows, bitmap and index scan each equal to a seqscan.
+
+'''As built (BMP part 2, bounded streams).''' The streams of P1 were exact
+arrays of (TID, recheck) items, allocated huge and doubled: 134 MB for one
+stream over 10M rows, and two keys on the column merged their results into
+two more such arrays. A partial match over a whole path could hold every
+TID of the column. Each boundary is now read into a TIDBitmap of its own
+(work_mem, lossy beyond), as ginget.c's collectMatchBitmap reads a partial
+match. The streams merge a heap page at a time, with keyGetItem's lossy
+rule: a page that a stream holds lossy is first tried whole with the lossy
+entries MAYBE, and goes in lossy when that can match; consistent without
+triConsistent gets ginlogic.c's shim. Several keys are intersected with
+tbm_intersect. A ScalarArrayOp's elements, and every element of a
+direct-union key, fill one bitmap. The required/additional division, its
+rarest-first order (by TIDs read) and the consistent logic are P1's. The
+scan allocates nothing above 8 kB that it did not before apart from core's
+TIDBitmaps, and no stream keeps a leaf position, so there is no new pin or
+lock rule. Measured (c7i.4xlarge, release, work_mem 256MB, 24 runs per
+arm, ABBA with an A/A arm, Bitmap Index Scan node time): two keys
+<code>a @&gt; '{2}' AND a @&gt; '{2000007}'</code> on 10M rows 198.3 to
+47.1 ms. A partial match over a path ANDed with a point (2M rows) 416.6
+to 33.4 ms. <code>@&gt;</code> with a frequent and a rare element 62.2 to
+57.5 ms (10M) and 6.16 to 5.57 ms (1M). Two frequent elements 66.2 to
+62.2 ms. A partial match over a path read straight into the bitmap
+(direct) is unchanged at 24.2 ms. GIN stays far ahead on the rare-key
+AND (0.10 ms): every boundary is still read to its end. The largest BARK
+allocation per query fell from 134,217,728 bytes to 166,144: the tuple
+workspace for a POSTING body, which P1 already had. A first version made
+every stream a TIDBitmap; at 17k rows per key that made a 2-key AND of
+points 41% slower than P1 (two more core pagetables per query: 573 tps
+against 967 at 16 clients, 1,600 page faults per query against 876), so
+a point on the leading column, which comes in TID order (H1), keeps an
+exact stream of 7.9 kB chunks reused from a free list, and only the other
+boundaries get a TIDBitmap. On that workload (4M rows, 235 values, about
+17k rows on 14.3k heap pages per key, work_mem 4MB, 16 clients, pgbench
+-t, ABBA) the chunked streams give 986-993 tps and 743-745 faults per
+query with glibc against P1's 952-963 and 874-877, and 1,004-1,007 tps
+and 805-806 faults with MALLOC_MMAP_THRESHOLD_ and MALLOC_TRIM_THRESHOLD_
+at 128 kB (musl-like) against 962-971 and 956-957. What is left is the
+executor's TIDBitmap and the page read's member decoding (three 32 kB
+allocations; README, "Bounded streams, next step"). Tests
+(bark_multikey_ginbound.sql): 27 queries on 40,000 rows over 1,600 heap
+pages, as bitmap and index scans of a class with and without
+triConsistent, at work_mem 64kB (lossy, and checked to be) and 64MB
+(exact), equal to a seqscan and to GIN. The queries cover a key whose
+rows span many leaves, rare and frequent AND, OR, two keys, NULL and
+empty arrays, IS NULL, partial match over many keys and its
+ScalarArrayOp, an index with a column before, and one with a key column
+after, where each point's exact stream turns into a bitmap partway. A
+class without triConsistent on that last shape, at 64kB, takes the shim
+on lossy pages with two, three and five MAYBE entries (five identical
+streams). They run again after DELETE, INSERT and VACUUM. bark_multikey_gin_concurrent.spec stops a scan between two
+boundary reads while another session splits leaves, deletes and
+vacuums; the bitmap and index scans equal a seqscan in the scan's
+snapshot.
 
 '''Strategies.''' An operator in a BARK family has whatever strategy number
 its class gives it, as in GIN; the number is only passed to procedures 8 and
