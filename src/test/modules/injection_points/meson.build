@@ -34,6 +34,7 @@ injection_points_isolation = [
   'repack_commit_race',
   'repack_decode',
   'repack_dropped',
+  'repack_hot_exclusion',
   'repack_missingval',
   'repack_temporal',
   'repack_temporal_multirange',
