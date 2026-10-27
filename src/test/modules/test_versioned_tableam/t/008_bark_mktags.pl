@@ -1,7 +1,7 @@
 
 # Copyright (c) 2026, PostgreSQL Global Development Group
 
-# Versioned multikey BARK indexes (V2): BARK_META_MKTAGS and its build rule,
+# Versioned multikey BARK indexes: BARK_META_MKTAGS and its build rule,
 # tagged key entries, untagged markers, and the checks of the meta page,
 # with the conversion bits BARK_META_CONVERTING and BARK_META_SETTLED.
 # A multikey index built on a versioned table that is neither GIN-interface,
