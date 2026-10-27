@@ -22,6 +22,9 @@ $node->init(no_data_checksums => 1);
 $node->append_conf('postgresql.conf', 'autovacuum=off');
 $node->start;
 my $blksz = int($node->safe_psql('postgres', 'SHOW block_size'));
+# Blocks per relation file (--with-segsize-blocks can make it small).
+my $segblks = int($node->safe_psql('postgres',
+	"SELECT setting FROM pg_settings WHERE name = 'segment_size'"));
 
 $node->safe_psql(
 	'postgres', q(
@@ -175,12 +178,35 @@ ok(defined $info{i_mk_list}{off_LIST}, 'i_mk_list has a LIST entry');
 
 $node->stop;
 
+# The file of a relation's block, and the block's offset in it.
+sub seg
+{
+	my ($path, $blk) = @_;
+	my $segno = int($blk / $segblks);
+	return ($segno ? "$path.$segno" : $path, ($blk % $segblks) * $blksz);
+}
+
+# The relation's size in blocks, over all its files.
+sub nblocks
+{
+	my ($path) = @_;
+	my $n = 0;
+	for (my $segno = 0;; $segno++)
+	{
+		my $f = $segno ? "$path.$segno" : $path;
+		last unless -e $f;
+		$n += (-s $f) / $blksz;
+	}
+	return $n;
+}
+
 sub rd
 {
 	my ($path, $blk) = @_;
-	open(my $fh, '<:raw', $path) or die "open $path: $!";
-	seek($fh, $blk * $blksz, 0) or die "seek: $!";
-	read($fh, my $p, $blksz) == $blksz or die "short read of $path";
+	my ($file, $off) = seg($path, $blk);
+	open(my $fh, '<:raw', $file) or die "open $file: $!";
+	seek($fh, $off, 0) or die "seek: $!";
+	read($fh, my $p, $blksz) == $blksz or die "short read of $file";
 	close $fh;
 	return $p;
 }
@@ -188,13 +214,29 @@ sub rd
 sub patch
 {
 	my ($i, $blk, $f) = @_;
-	my $path = $info{$i}{path};
-	my $p = rd($path, $blk);
+	my $p = rd($info{$i}{path}, $blk);
 	$f->(\$p);
-	open(my $fh, '+<:raw', $path) or die "open $path: $!";
-	seek($fh, $blk * $blksz, 0) or die "seek: $!";
+	my ($file, $off) = seg($info{$i}{path}, $blk);
+	open(my $fh, '+<:raw', $file) or die "open $file: $!";
+	seek($fh, $off, 0) or die "seek: $!";
 	print $fh $p;
 	close $fh;
+}
+
+# Append pages to a relation, in whichever of its files they fall; returns
+# the first new block number.
+sub append_to
+{
+	my ($path, @pages) = @_;
+	my $n = nblocks($path);
+	for my $k (0 .. $#pages)
+	{
+		my ($file) = seg($path, $n + $k);
+		open(my $fh, '>>:raw', $file) or die "open $file: $!";
+		print $fh $pages[$k];
+		close $fh;
+	}
+	return $n;
 }
 sub g16 { unpack('S', substr(${ $_[0] }, $_[1], 2)) }
 sub s16 { substr(${ $_[0] }, $_[1], 2) = pack('S', $_[2]) }
@@ -325,11 +367,7 @@ for my $i (qw(i_del_ok i_del_left))
 }
 # The root given a right sibling that is a new page, appended to the index.
 {
-	my $path = $info{i_rootnext}{path};
-	my $nblocks = (-s $path) / $blksz;
-	open(my $fh, '>>:raw', $path) or die "open: $!";
-	print $fh "\0" x $blksz;
-	close $fh;
+	my $nblocks = append_to($info{i_rootnext}{path}, "\0" x $blksz);
 	patch('i_rootnext', $info{i_rootnext}{root}, sub { s32($_[0], opq($_[0], 4), $nblocks) });
 }
 # An index with no root and no tree pages, the meta page naming none and
@@ -341,10 +379,7 @@ for my $i (qw(i_empty i_empty_u))
 }
 # A copy of the only leaf appended to the index: live, but in no tree.
 {
-	my $p = rd($info{i_orphan}{path}, $info{i_orphan}{root});
-	open(my $fh, '>>:raw', $info{i_orphan}{path}) or die "open: $!";
-	print $fh $p;
-	close $fh;
+	append_to($info{i_orphan}{path}, rd($info{i_orphan}{path}, $info{i_orphan}{root}));
 }
 
 # Three levels.  The root's second downlink made a SINGLE entry (alt-TID bit
@@ -372,11 +407,7 @@ patch('i_deep_lastempty', $info{i_deep_lastempty}{lastkid}, sub { set_lower($_[0
 sub append_pages
 {
 	my ($i, @pages) = @_;
-	my $n = (-s $info{$i}{path}) / $blksz;
-	open(my $fh, '>>:raw', $info{$i}{path}) or die "open: $!";
-	print $fh @pages;
-	close $fh;
-	return $n;
+	return append_to($info{$i}{path}, @pages);
 }
 {
 	my %c = map { $_ => $info{$_} } qw(i_ovf_long i_ovf_loop i_ovf_leaf i_ovf_past i_ovf_hkblk i_ovf_orphloop);
@@ -395,7 +426,7 @@ sub append_pages
 	# Copies of a whole chain appended, linked n -> n + 1 -> n + 2 -> n:
 	# three orphaned pages, each linked to by another.
 	my $g = $c{i_ovf_orphloop};
-	my $n = (-s $g->{path}) / $blksz;
+	my $n = nblocks($g->{path});
 	my @pages = map { rd($g->{path}, $_) } @{ $g->{chain} };
 	s32(\$pages[$_], opq(\$pages[$_], 4), $n + ($_ + 1) % 3) for 0 .. 2;
 	append_pages('i_ovf_orphloop', @pages);
