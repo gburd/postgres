@@ -304,9 +304,11 @@ The insertion algorithm is rather similar:
 	release lock but not pin, read/exclusive-lock
      next page; repeat as needed
 	>> see below if no space in any page of bucket
-	if we added an overflow page, or too many tuples are pending, take buffer
-	 content lock in exclusive mode on metapage
-	else try to take it without waiting
+	if this backend has done 1024 inserts into the index, has since seen the
+	 metapage lock taken, this is not its 32nd insert since, and we did not
+	 add an overflow page, don't touch the metapage
+	else pin the metapage and try to take the lock without waiting; if that
+	 fails and 255 tuples are pending, wait for it
 	insert tuple at appropriate place in page
 	mark current page dirty
 	if we got the metapage lock
@@ -320,7 +322,7 @@ The insertion algorithm is rather similar:
 	release buffer content lock on current page
 	if current page is not a bucket page, release the pin on bucket page
 	if split is needed, enter Split algorithm below
-	release the pin on metapage
+	release the pin on metapage, if we hold one
 
 To speed searches, the index entries within any individual index page are
 kept sorted by hash code; the insertion code must take care to insert new
@@ -338,18 +340,25 @@ The tuple count in the metapage (hashm_ntuples) only decides when to split
 a bucket.  Taking the metapage lock on every insert just to bump it
 serializes concurrent inserters on that one buffer, so an inserter that
 finds the lock taken does not wait for it.  It leaves its tuple uncounted,
-as a per-backend pending count for that index, and the next of its inserts
-that gets the lock adds the pending tuples to the count.  An insert that
-had to add an overflow page always waits for the lock, because a full
-bucket is the sign that a split may be due, and so does an insert that
-would leave more than a few dozen tuples pending.  Without concurrent
-inserters the lock is always free, and the count is exact.
+as a per-backend pending count for that index.  Even a failed attempt to
+take the lock, or a pin, writes to the buffer header, and with many
+inserters that cache line moves between CPUs on every insert.  So once a
+backend has done 1024 inserts into the index and then found the lock
+taken, it only looks at the metapage on every 32nd insert: it tries the
+lock, and if it gets it adds the pending tuples to the count.  Shorter
+sessions try the lock on every insert, because tuples still pending when a
+backend exits are never counted, and batching would leave a large share of
+a short session's tuples uncounted.  An insert that had to add an overflow
+page tries the lock too, because a full bucket is the sign that a split
+may be due.  The backend waits for the lock if 256 tuples would otherwise
+be pending.  Without concurrent inserters the lock is always free, and the
+count is exact.
 
 Tuples still pending when a backend exits are never counted.  That costs
-at most a slightly late split, since a backend leaves at most 32 tuples
-per index uncounted, and only tuples that found the lock taken.  A VACUUM
-that removes tuples recounts them (see below), and the code that subtracts
-from the count does not let it go negative.
+at most a slightly late split, since a backend leaves fewer than 256
+tuples per index uncounted.  A VACUUM that removes tuples recounts them
+(see below), and the code that subtracts from the count does not let it go
+negative.
 
 When an inserter cannot find space in any existing page of a bucket, it
 must obtain an overflow page and add that page to the bucket's chain.

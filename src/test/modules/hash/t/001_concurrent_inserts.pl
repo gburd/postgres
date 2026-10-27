@@ -67,9 +67,11 @@ my ($ntuples, $maxbucket) =
   split /\|/, $primary->safe_psql('postgres', $meta);
 cmp_ok($maxbucket, '>', $maxbucket0, 'index split');
 cmp_ok($ntuples, '<=', $nrows, 'tuple count not too high');
-# A session leaves fewer than 32 tuples uncounted, and a single-insert session
-# at most one
-cmp_ok($ntuples, '>=', $nrows - (8 * 32 + 8 * 200),
+# A session leaves fewer than 256 tuples uncounted, and a single-insert
+# session at most one
+cmp_ok(
+	$ntuples, '>=',
+	$nrows - (8 * 256 + 8 * 200),
 	'tuple count not too low');
 
 $primary->wait_for_replay_catchup($standby);
