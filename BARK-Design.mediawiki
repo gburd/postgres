@@ -1928,7 +1928,7 @@ the rows the other columns' quals pass, since the column's own quals are
 only rechecked, so a LIMIT makes it win over a sort and a filter on the
 column alone does not.
 
-'''As built (M1d step 3), the ordering operator on the extracted column.'''
+'''As built, the ordering operator on the extracted column.'''
 match_pathkeys_to_index already offered it (the leading column of an
 ordered AM), and the scan now serves it rather than refusing. Procedure 8
 runs on the ordering key; its boundaries become the one required key and
