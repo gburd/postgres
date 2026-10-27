@@ -152,7 +152,7 @@ SELECT * FROM lpd_page('lpd_a', 1);
   219 |    0 | f
 (1 row)
 
-SELECT pg_relation_size('lpd_a') / 8192 AS pages;
+SELECT pg_relation_size('lpd_a') / current_setting('block_size')::int AS pages;
  pages 
 -------
      2

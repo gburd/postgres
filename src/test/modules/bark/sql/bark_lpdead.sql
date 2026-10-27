@@ -97,7 +97,7 @@ SELECT bark_index_parent_check('lpd_a', true);
 -- Bark/DELETE record is tested in t/014_lpdead_standby.pl.
 INSERT INTO lpd SELECT g, g FROM generate_series(401, 420) g;
 SELECT * FROM lpd_page('lpd_a', 1);
-SELECT pg_relation_size('lpd_a') / 8192 AS pages;
+SELECT pg_relation_size('lpd_a') / current_setting('block_size')::int AS pages;
 SELECT * FROM lpd_count('SELECT * FROM lpd WHERE a > 0');
 SELECT bark_index_check('lpd_a', true);
 -- A new row whose key was a marked entry's goes in as a live entry; the

@@ -81,7 +81,7 @@ is( $node_primary->safe_psql(
 		"SELECT count(DISTINCT (ctid::text::point)[0]) = count(*) FROM lpd"),
 	't',
 	'each heap page holds one row');
-is($node_primary->safe_psql($db, "SELECT pg_relation_size('lpd_a') / 8192"),
+is($node_primary->safe_psql($db, "SELECT pg_relation_size('lpd_a') / current_setting('block_size')::int"),
 	'2', 'the index is the meta page and one leaf');
 
 # The leaf's LP_DEAD entries, on a node.
@@ -206,7 +206,7 @@ $node_primary->safe_psql($db,
 	"INSERT INTO lpd SELECT g, 'y' FROM generate_series(1001, 1020) g");
 $lsn1 = lsn();
 is(ndead($node_primary), '0', "$sect: the marked entries are deleted");
-is($node_primary->safe_psql($db, "SELECT pg_relation_size('lpd_a') / 8192"),
+is($node_primary->safe_psql($db, "SELECT pg_relation_size('lpd_a') / current_setting('block_size')::int"),
 	'2', "$sect: the leaf did not split");
 is(waldump_count($lsn0, $lsn1, 'Bark', 'DELETE snapshotConflictHorizon: [1-9]\d*, ndeleted: 70,'),
 	1, "$sect: one Bark/DELETE record deletes them, with a conflict horizon");
