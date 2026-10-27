@@ -9,7 +9,7 @@
  * 1..5 (<, <=, =, >=, >), the KNN ordering strategy 6, and btree's support
  * functions 1..6, of which BARK requires only the comparator.  A multikey
  * class lives in an operator family of BARK's own and extracts several keys
- * from one value (see "M1: multikey keys" in BARK-Design.mediawiki); its
+ * from one value (see "Multikey keys" in BARK-Design.mediawiki); its
  * operators may have any strategy number, and its support functions are
  * btree's over the class's storage type plus procedures 7..15.
  *

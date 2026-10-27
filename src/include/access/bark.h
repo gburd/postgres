@@ -557,7 +557,7 @@ typedef struct BarkOptions
 #define BARK_SKIPSUPPORT_PROC 6 /* support function 6: skipsupport */
 
 /*
- * Multikey operator classes ("M1: multikey keys" in BARK-Design.mediawiki).
+ * Multikey operator classes ("Multikey keys" in BARK-Design.mediawiki).
  * A class in an operator family of BARK's own (opfmethod = bark, never a
  * btree family) that has procedure 7 extracts several keys of its storage
  * type from one column value; such a column is an extracted column.

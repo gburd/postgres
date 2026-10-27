@@ -1484,8 +1484,8 @@ column of every BARK index, scalar ones included.
   btree's meanings, over the key type. Equalimage (4) is what lets the
   column's keys coalesce into LIST and POSTING entries
   (bark_allequalimage). Options (5) become BARK's
-  <code>amoptsprocnum</code> (it was 0), for per-column options such as M5's
-  projection. In_range (3) is not allowed on an extracted column.
+  <code>amoptsprocnum</code> (it was 0), for per-column options such as a wildcard
+  class's projection. In_range (3) is not allowed on an extracted column.
 * '''7''' extract-value, <code>internal (value, internal nkeys, internal
   nullFlags, internal markers, internal nmarkers)</code>, required; returns
   the key array. Two to five arguments: pg_extended_btree's procedure 101
@@ -1956,7 +1956,7 @@ family of its sort type, as DocumentDB's <code>|&lt;&gt;</code> and
 <code>&lt;&gt;|</code> are). BARK serves it on the leading column only, as
 it serves KNN (match_pathkeys_to_index). For the ordering key, procedure 8
 returns the boundaries to walk (all of the column, or one path's range under
-M5) and sets <code>backward</code> in its seventh argument to walk them
+a wildcard class) and sets <code>backward</code> in its seventh argument to walk them
 backward. An ordered scan with no filter on the column must return every
 row, and a row whose value has no keys has only its NULL entry, so the
 ordering key also sets <code>searchnulls</code>: the scan reads the NULL
