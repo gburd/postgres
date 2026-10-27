@@ -700,7 +700,7 @@ CREATE INDEX dd_off ON dd (a)
 CREATE FUNCTION shapes(idx regclass) RETURNS TABLE (shape text, n bigint, tids bigint)
 LANGUAGE sql AS $$
   SELECT i.shape, count(*), sum(i.ntids)
-  FROM generate_series(1, pg_relation_size(idx) / 8192 - 1) b,
+  FROM generate_series(1, pg_relation_size(idx) / current_setting('block_size')::int - 1) b,
        bark_page_items(idx::text, b) i
   WHERE i.shape <> 'PIVOT' GROUP BY 1 ORDER BY 1
 $$;
