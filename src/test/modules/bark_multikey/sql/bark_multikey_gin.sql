@@ -149,7 +149,7 @@ VACUUM ANALYZE mb;
 SELECT bark_index_check('mb_bark');
 CREATE EXTENSION pageinspect;
 SELECT count(*) FILTER (WHERE shape = 'POSTING') > 0 AS has_posting
-FROM generate_series(1, pg_relation_size('mb_bark') / 8192 - 1) b,
+FROM generate_series(1, pg_relation_size('mb_bark') / current_setting('block_size')::int - 1) b,
      bark_page_items('mb_bark', b);
 DROP EXTENSION pageinspect;
 -- The rows of q through a bitmap scan (bitmap) or a seqscan, and whether
