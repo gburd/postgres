@@ -1694,7 +1694,7 @@ bark_test_tid_mappings(PG_FUNCTION_ARGS)
 			if (bounds[j] > stride)
 				continue;
 			ItemPointerSet(&t, 8, bounds[j]);
-			ext = bark_entry_add_tid(list, &t, BLCKSZ, stride);
+			ext = bark_entry_add_tid(list, &t, INDEX_SIZE_MASK, stride);
 			ok = ext != NULL && bark_entry_has_tid(ext, &t, stride) &&
 				bark_entry_count_tids(ext) == bark_entry_count_tids(list) + 1;
 			if (ext != NULL)
@@ -1703,7 +1703,7 @@ bark_test_tid_mappings(PG_FUNCTION_ARGS)
 				list = ext;
 			}
 			ItemPointerSet(&t, 10, bounds[j]);
-			ext = bark_entry_add_tid(posting, &t, BLCKSZ, stride);
+			ext = bark_entry_add_tid(posting, &t, INDEX_SIZE_MASK, stride);
 			ok = ok && ext != NULL && bark_entry_has_tid(ext, &t, stride) &&
 				bark_entry_count_tids(ext) == bark_entry_count_tids(posting) + 1;
 			if (ext != NULL)
@@ -1766,7 +1766,7 @@ bark_test_tid_mappings(PG_FUNCTION_ARGS)
 
 			while (ins > 0 && ItemPointerCompare(&set[ins - 1], &probes[i]) > 0)
 				ins--;
-			ext = bark_entry_add_tid(cur, &probes[i], BLCKSZ, stride);
+			ext = bark_entry_add_tid(cur, &probes[i], INDEX_SIZE_MASK, stride);
 			n++;
 			if (ins > 0 && ItemPointerEquals(&set[ins - 1], &probes[i]))
 			{
@@ -1810,7 +1810,7 @@ bark_test_tid_mappings(PG_FUNCTION_ARGS)
 				ItemPointerSet(&set[11], MaxBlockNumber, 1);
 			else
 				ItemPointerSet(&set[11], (9 << 20) + 8, 2);
-			ext = bark_entry_add_tid(cur, &set[11], BLCKSZ, stride);
+			ext = bark_entry_add_tid(cur, &set[11], INDEX_SIZE_MASK, stride);
 			want = bark_form_list_best(desc, key, set, 12, stride);
 			ok = ok && ext != NULL && BarkListIsCoded(ext) == !wide &&
 				IndexTupleSize(ext) == IndexTupleSize(want) &&
@@ -1824,13 +1824,13 @@ bark_test_tid_mappings(PG_FUNCTION_ARGS)
 			for (int off = 1; off <= stride && nset < BARK_LIST_MAX_COUNT; off++)
 				ItemPointerSet(&set[nset++], b, off);
 		cur = bark_form_list_best(desc, key, set, nset - 1, stride);
-		ext = bark_entry_add_tid(cur, &set[nset - 1], BLCKSZ, stride);
+		ext = bark_entry_add_tid(cur, &set[nset - 1], INDEX_SIZE_MASK, stride);
 		want = bark_form_list_best(desc, key, set, nset, stride);
 		ok = ok && BarkListIsCoded(cur) && ext != NULL && BarkListIsCoded(ext) &&
 			IndexTupleSize(ext) == IndexTupleSize(want) &&
 			memcmp(ext, want, IndexTupleSize(want)) == 0;
 		ItemPointerSet(&probes[0], 10000, 1);
-		ok = ok && bark_entry_add_tid(ext, &probes[0], BLCKSZ, stride) == NULL;
+		ok = ok && bark_entry_add_tid(ext, &probes[0], INDEX_SIZE_MASK, stride) == NULL;
 		n += 2;
 		mapping_result(rsinfo, "coded_add", ok, n);
 	}
