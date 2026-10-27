@@ -1483,6 +1483,34 @@ bark_multikey_prefix_consistent(PG_FUNCTION_ARGS)
 }
 
 /*
+ * t %^% p: some element of t starts with p, as starts_with() decides under
+ * the operator's collation.  In C for the sequential scans that check the
+ * class's answers, which call it once a row.
+ */
+PG_FUNCTION_INFO_V1(bark_multikey_any_prefix);
+
+Datum
+bark_multikey_any_prefix(PG_FUNCTION_ARGS)
+{
+	Datum		prefix = PG_GETARG_DATUM(1);
+	Datum	   *elems;
+	bool	   *nulls;
+	int			nelems;
+
+	deconstruct_array_builtin(PG_GETARG_ARRAYTYPE_P(0), TEXTOID, &elems,
+							  &nulls, &nelems);
+	for (int i = 0; i < nelems; i++)
+	{
+		if (!nulls[i] &&
+			DatumGetBool(DirectFunctionCall2Coll(text_starts_with,
+												 PG_GET_COLLATION(),
+												 elems[i], prefix)))
+			PG_RETURN_BOOL(true);
+	}
+	PG_RETURN_BOOL(false);
+}
+
+/*
  * An array similarity class over int4[], after RUM's rum_anyarray_ops:
  * a % b when the similarity of their sets of non-NULL elements,
  * |a & b| / sqrt(|a| |b|), is at least 0.5, and a <=> b is 1 minus it.  An

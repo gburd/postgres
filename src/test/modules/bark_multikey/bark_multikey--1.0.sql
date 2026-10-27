@@ -344,8 +344,7 @@ CREATE FUNCTION bark_multikey_prefix_consistent(internal, int2, text, int4,
                                                 internal)
 RETURNS bool AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT;
 CREATE FUNCTION bark_multikey_any_prefix(text[], text) RETURNS bool
-  AS 'SELECT EXISTS (SELECT 1 FROM unnest($1) e WHERE starts_with(e, $2))'
-  LANGUAGE sql IMMUTABLE STRICT;
+  AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT COST 100;
 CREATE OPERATOR %^% (LEFTARG = text[], RIGHTARG = text,
                      FUNCTION = bark_multikey_any_prefix);
 CREATE OPERATOR FAMILY bark_text_prefix_ops USING bark;
