@@ -1,5 +1,5 @@
-# T12b: a tagged multikey BARK index made an exclusion constraint's while
-# an in-place update of its column is in progress (V2-DESIGN 5.2, 12.1).
+# A tagged multikey BARK index made an exclusion constraint's while an
+# in-place update of its column is in progress ("Conversion" in the README).
 #
 # Row 1 is {1,2}.  s1 updates it in place to {2,3} (keep_locator =
 # inplace: heap's HOT chain at the row's locator L holds both versions)
