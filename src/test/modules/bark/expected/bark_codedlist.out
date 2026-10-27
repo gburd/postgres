@@ -388,7 +388,7 @@ CREATE FUNCTION v6o_entries(key int) RETURNS TABLE (ntids int, coded bool, small
   LANGUAGE sql AS $$
   SELECT i.ntids, i.shape = 'LIST' AND i.itemlen < v6_plain_len(i.ntids),
          i.itemlen <= v6_plain_len(i.ntids)
-    FROM generate_series(1, pg_relation_size('v6o_k') / 8192 - 1) b,
+    FROM generate_series(1, pg_relation_size('v6o_k') / current_setting('block_size')::int - 1) b,
          bark_page_items('v6o_k', b) i
    WHERE i.shape IN ('SINGLE', 'LIST', 'POSTING')
      AND i.tids <@ (SELECT array_agg(ctid) FROM v6o WHERE k = key)
