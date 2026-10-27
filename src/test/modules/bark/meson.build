@@ -12,6 +12,13 @@ tests += {
     'sql': [
       'bark_incomplete_splits',
       'bark_split_moveright',
+      'bark_walinspect',
+      'bark_validate',
+      'bark_bottomup',
+      'bark_alias_am',
+      'bark_knn_inttypes',
+      'bark_codedlist',
+      'bark_l1_cache',
     ],
     'regress_args': ['--temp-config', files('../injection_points/extra.conf')],
     # The injection points are run in the same backend, so disable
@@ -24,6 +31,12 @@ tests += {
       'bark_vacuum_split',
       'bark_deleted_page',
       'bark_nnd_upsert',
+      'bark_recently_dead',
+      'bark_broken_hot_chain',
+      'bark_lock_right',
+      'bark_root_split_race',
+      'bark_l1_concurrent',
+      'bark_walk_left',
     ],
     'regress_args': ['--temp-config', files('../injection_points/extra.conf')],
     # Injection points are cluster-wide.
@@ -33,6 +46,16 @@ tests += {
     'tests': [
       't/001_empty_index_race.pl',
       't/002_standby.pl',
+      't/003_split_recovery.pl',
+      't/004_insert_fpi_recovery.pl',
+      't/005_insert_done_recovery.pl',
+      't/006_split_fpi_recovery.pl',
+      't/007_split_done_recovery.pl',
+      't/008_redo_dropped_index.pl',
+      't/009_validate_single_user.pl',
+      't/010_bottomup_wal_level.pl',
+      't/011_insert_multi_recovery.pl',
+      't/012_codedlist_recovery.pl',
     ],
   },
 }

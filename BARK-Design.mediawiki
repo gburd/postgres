@@ -1,9 +1,13 @@
 = BARK: a successor to the nbtree index access method =
 
-''Status:'' design, in progress. This document is commit 0001 of the BARK
-patch series and is the contract every later commit refers to. Update it in
-the same commit that changes a contract; do not let code and this document
-drift.
+''Status:'' a working access method under development, at parity with nbtree
+on most of its scalar workload (see [[#Where BARK stands|Where BARK
+stands]]); the multikey (M) series is being built. This document is the
+contract every commit refers to: the contracts, the decisions and the
+roadmap. How the code works is in <code>src/backend/access/bark/README</code>,
+and the user manual is <code>doc/src/sgml/bark.sgml</code>. Update this
+document in the same commit that changes a contract; do not let code and
+this document drift.
 
 == What BARK is ==
 
@@ -26,13 +30,107 @@ cheaply:
   paradigm brought under one AM (it is what OrioleDB's and DocumentDB's
   inverted indexes need), rather than a separate AM per shape.
 * '''Multithread-readiness.''' No process-global mutable state on the read or
-  write path; every long-lived pointer is annotated for the multithreaded
-  PostgreSQL work (see the <code>xtc</code> worktree's
-  <code>utils/global_lifetime.h</code>).
+  write path (BARK's C files have no file-scope variables; per-index state
+  lives in the relcache's <code>rd_amcache</code> and per-statement state in
+  <code>ii_AmCache</code>). The annotations of the multithreaded PostgreSQL
+  work (the <code>xtc</code> worktree's <code>utils/global_lifetime.h</code>)
+  are not in this tree.
 
 BARK is '''not''' a replacement for the catalog and TOAST indexes. Those stay
 on nbtree by deliberate policy (see [[#The capability sweep|the capability
 sweep]]); BARK targets user indexes.
+
+=== Where BARK stands ===
+
+'''Parity with nbtree.''' BARK has nbtree's tree and its algorithms: Lehman
+and Yao descent and move-right with lock coupling across splits, incomplete
+splits finished by later writers, split points chosen by bytes and
+fillfactor, suffix truncation, heap TID order among equal keys (nbtree's
+heapkeyspace), bottom-up deletion, a merge of a leaf's equal-key entries
+before a split (nbtree's deduplication pass), VACUUM in one physical pass
+with cycle IDs and cleanup locks, page deletion with safe recycling, its own
+WAL resource manager with hot-standby conflict handling, the rightmost-leaf
+fast path, page-at-a-time scans with nbtree's pin rule, mark/restore,
+parallel builds, scans and VACUUM, required array keys, skip scan, per-page
+satisfied keys, row-comparison positioning, cross-type keys, NULLS NOT
+DISTINCT, speculative insertion, btcostestimate's cost model, an operator
+class for every btree class, and nbtree's tools (amcheck with
+heapallindexed and the parent check, pg_amcheck, pageinspect, pgstattuple).
+Beyond nbtree it has keys of any size, LIST and POSTING entries, leaf prefix
+compression and KNN ordering.
+
+'''Not yet at parity.''' No PRIMARY KEY or UNIQUE constraint can use a BARK
+index, so there is no deferrable uniqueness (U1, held). IS NULL and IS NOT
+NULL only filter (N2, held). There are no dead-tuple hints from scans and no
+simple deletion before a split (K2), and skip scan runs forward only and
+over one column; both wait on <code>amgetbatch</code> (cf/4351, G1). CLUSTER
+and REPACK read through a BARK index rather than sorting
+(<code>tuplesort_begin_cluster</code> asserts btree). The RI trigger fast
+path is btree-only. A multikey index cannot be scanned backward after a
+forward start, in parallel when it needs a seen set, or in the order of an
+operator on its extracted column, until M1d.
+
+'''Performance.''' From the Z2 benchmark (BENCHMARK-2026-10b.md): idxam at
+5d4e2883b10, release build (<code>-O3</code>, no assertions), EC2
+c7i.4xlarge (16 vCPU), Debian 12, shared_buffers 4GB, autovacuum off; 5
+runs, the first dropped, median of the other four; pgbench <code>-M
+prepared</code> 30 s. The ratio is BARK's median over btree's: below 1 is
+better for BARK for times and sizes, above 1 for tps. The report marks a
+row within noise when the two ranges overlap.
+
+{| class="wikitable"
+|+ BARK against nbtree, Z2 (5d4e2883b10) and later fixes
+! workload !! measure !! bark/btree
+|-
+| CREATE INDEX: 10M int4 unique / 10M int4, 1000 distinct / 10M md5 text / 5M URL text || build time || 1.01 / 1.01 / 1.03 / 0.96
+|-
+| Point lookups (int, duplicate, md5; plain and index-only; 1 and 8 clients) || tps || 0.97-1.01
+|-
+| Range scan on 10M unique int4, 1% and 10% of rows, index-only || time || 0.86 / 0.86
+|-
+| Range scan, 10% of rows, index / bitmap || time || 0.94 / 0.96
+|-
+| Insert of 2M rows into an empty indexed table: random unique / ascending / random over 100 keys || statement time || 1.08 / 1.05 / 1.12
+|-
+| same || WAL || 1.00 / 1.00 / 0.95
+|-
+| Update churn, 1M rows, 1 / 8 clients || tps || 0.96 / 0.98
+|-
+| Delete / VACUUM / reinsert churn, 2M rows over 100 values, retail-built / CREATE INDEX-built || index growth || 0.02 / 0.23
+|-
+| Skip scan on (a, b), 10M rows, 100 and 10000 values of a (second run, quiet host) || time || 0.96-1.03
+|-
+| Keyset pagination (a, b) > (x, y) LIMIT 20, 2-column index || tps / latency || 0.97-1.03
+|-
+| KNN: 10 nearest on 10M int4, <code>a &lt;~&gt; c</code> against btree's UNION ALL, 1 client / 8 clients || latency / tps || 0.76 / 1.30
+|-
+| VACUUM after deleting 30% of 10M rows, 4 indexes, serial / PARALLEL 4 || time || 1.04 / 1.02
+|-
+| Duplicate-key lookups, 10M rows over 1000 values, LIMIT 1 and all rows || tps || 0.96-1.01
+|-
+| Index size: 10M int4 over 1000 values / 5M URLs with prefix_compression on || pages || 0.90 / 0.44
+|-
+| 20 kB keys, against btree on md5(t) (btree cannot index the key): CREATE INDEX / lookup, 1 client || time / tps || 4.95 / 0.35
+|-
+| (a, b, c), 10M rows: a = X AND b = Y / a = X AND b &lt; Y / a = X AND b BETWEEN || tps, 1 client || 1.02 / 1.00 / 1.02
+|-
+| a IN (3 values) AND b = Y / a = X AND b IN (3 values), in Z2 || tps, 1 client || 0.02 / 0.03
+|-
+| same after A2 (5ef4c024135; release build, 3 rounds of 6 s alternating, medians) || tps, 1 client || 1.02 / 0.99
+|-
+| (a, b) &gt; (X, Y) LIMIT 20 on (a, b, c), in Z2 || tps, 1 client || 0.93
+|-
+| same after Q3 (f50e3cee0d8; perf stat over 20000 prepared executions) || user-mode instructions per query || 1.02 (163824 vs 160972)
+|}
+
+The (a, b, c) point and range rows read 100 to 391 index pages before
+f0b25ae677f made a later column's bound end the scan under leading
+equalities, which Z2 already includes (a = 42 AND b = 751 went from 1752 to
+15376 tps at 1 client, btree 16574; release build, 10M rows). Still behind:
+inserts, at 1.05-1.12x btree's statement time with equal WAL and no single
+hot spot in the profile, and keys too large for btree, which cost BARK a
+decompression per comparison. The full tables, profiles and caveats are in
+the benchmark report.
 
 === Relationship to the sbm ADT (commits 0001-ADT / 0002) ===
 
@@ -118,15 +216,35 @@ fixed-width and no wider than 6 bytes.
 '''BARK obligation:''' leave <code>amcanvarlocator</code> false unless the
 format can store a wider locator; refuse, at build, a table whose descriptor
 promises more than BARK's entry shapes can encode; never assume more of the
-locator than the descriptor states.
+locator than the descriptor states. ''Status:'' BARK leaves
+<code>amcanvarlocator</code> false, because its format stores a fixed 6-byte
+<code>ItemPointerData</code>: SINGLE entries keep the locator in
+<code>t_tid</code>, LIST entries are arrays of it (a coded LIST packs the
+offset into 11 bits), and POSTING entries map a TID to the 64-bit key
+<code>block * MaxHeapTuplesPerPage + offset - 1</code>.
+<code>index_check_locator()</code> therefore admits a BARK index only on a
+table whose locator is fixed-width and fits in 6 bytes, and
+<code>bark_build()</code> refuses a table whose <code>max_offset</code>
+exceeds <code>MaxHeapTuplesPerPage</code>, the bound the POSTING key
+needs (the coded LIST's 2047 is looser); <code>ginbuild()</code> refuses
+such a table too.
+The other fields ask nothing of an index AM: <code>stable</code> and
+<code>old_version_retained</code> are the executor's, and the bitmap
+callbacks are the table AM's. A wider locator would need a format change;
+none is planned.
 
 === C-MVCC: visibility, SSI, and the index-only / recheck path ===
 
-BARK entries obey the same visibility rules as nbtree. Three obligations:
+BARK entries obey the same visibility rules as nbtree. Four obligations:
 
 * '''Snapshot visibility and SSI.''' Scans acquire the same predicate locks
   and honor the same snapshot semantics as nbtree; a serialization-relevant
   read takes a predicate lock at the granularity nbtree would.
+* '''A build serves snapshots older than itself.''' CREATE INDEX and REINDEX
+  index every row the table AM passes, including those it marks not alive
+  (RECENTLY_DEAD), which are kept only out of the uniqueness check, as
+  nbtree's spool2 keeps them; nothing on the page records the fact
+  (README "CREATE INDEX"; tested by <code>bark_recently_dead.spec</code>).
 * '''Index-only scans need a leaf-key recheck that deduplicates.''' Re-running
   <code>indexqualorig</code> against the live tuple drops false positives but
   '''cannot''' dedup two index entries that chain-walk to the same live tuple
@@ -135,14 +253,16 @@ BARK entries obey the same visibility rules as nbtree. Three obligations:
   position). The correct general mechanism is comparing the '''stored leaf
   key''': BARK must retain enough of the leaf key to do this.
 * '''The recheck-hint bit.''' ''Source: <code>tepid</code> @
-  <code>236cff2f</code> (<code>src/include/storage/itemptr.h</code>).'' A
-  locator whose match is not exact carries
-  <code>ItemPointerRecheckHintFlag</code> (bit 14 of the offset;
-  <code>ItemPointerHasRecheckHint</code> / <code>ItemPointerSetRecheckHint</code>,
-  masked off by <code>ItemPointerOffsetNumberMask</code>). BARK sets it on any
-  entry that requires a heap recheck, and <code>tbm_add_tuples</code> already
-  consumes it to force a page lossy.
-
+  <code>236cff2f</code> (<code>src/include/storage/itemptr.h</code>).'' The
+  tepid branch reserves bit 14 of a TID's offset for a locator whose match is
+  not exact, and <code>tbm_add_tuples</code> turns such a TID's page lossy.
+  ''Status:'' not in this tree.  Every BARK entry is exact, so BARK would
+  never set the bit, and carrying it cost a mask in
+  <code>ItemPointerCompare</code> and <code>ItemPointerGetOffsetNumber</code>
+  for every caller; it was dropped from the series (2026-10-15) and stays on
+  the tepid branch for the table AM that needs it.  BARK's rechecks go
+  through <code>xs_recheck</code> and the recheck argument of
+  <code>tbm_add_tuples</code>.
 === C-DELETE: delete-marking via UNDO ===
 
 ''Source: undo branch v11 (<code>src/include/access/amapi.h</code>,
@@ -156,15 +276,21 @@ than leaving dead entries for VACUUM:
   is the per-relation switch.
 * <code>IndexAmRoutine.amdeletemark</code> / <code>amundomark</code> (both may
   be NULL for an AM that opts out) mark and un-mark an entry.
-* nbtree's encoding, which BARK mirrors: an alternate-TID subtype with
-  <code>BT_IS_DELETE_MARKED = 0x4000</code> set (and <code>BT_IS_POSTING</code>
-  clear) in the entry's <code>t_tid</code> offset. <code>genam.h</code>'s
-  <code>index_delete_mark</code> / <code>index_undo_mark</code> dispatch to the
-  AM hooks; the UNDO rmgr replays them.
+* nbtree's encoding on the undo branch, which BARK mirrors: an alternate-TID
+  subtype with <code>BT_IS_DELETE_MARKED = 0x4000</code> set (and
+  <code>BT_IS_POSTING</code> clear) in the entry's <code>t_tid</code> offset.
+  <code>genam.h</code>'s <code>index_delete_mark</code> /
+  <code>index_undo_mark</code> dispatch to the AM hooks; the UNDO rmgr replays
+  them.
 
 '''BARK obligation:''' reserve a delete-marked entry subtype in the on-disk
 format from the start, and implement <code>amdeletemark</code>/<code>amundomark</code>
 when the UNDO integration phase lands (not in the first functional AM).
+''Status:'' none of the undo branch's interface is in this tree (no
+<code>amdeletemark</code>, <code>am_supports_undo</code>,
+<code>BT_IS_DELETE_MARKED</code> or <code>index_delete_mark</code>).
+<code>BARK_IS_DELETE_MARKED</code> (0x4000) is reserved in bark.h and
+nothing sets or tests it; blocked on the UNDO work.
 
 === C-KEYSHAPE: the key/value shape and the inverted paradigm ===
 
@@ -175,13 +301,19 @@ the entry as a (key, value-set) pair where:
 * the value side is one of: a single locator (the nbtree shape), a sorted
   list of locators (sorted duplicates, the libdb shape), or a locator '''set'''
   encoded as a posting list (the inverted shape, sbm-backed when clustered);
-* the opclass declares which shapes it supports, so a plain scalar index and
-  an inverted index share one AM and one on-disk framework.
+* a plain scalar index and an inverted index share one AM and one on-disk
+  framework. No operator class declares shapes: an index uses LIST and
+  POSTING entries when it is not unique, has no INCLUDE columns and every
+  key column's equalimage procedure says yes
+  (<code>bark_allequalimage</code>, nbtree's deduplication rule), and only
+  SINGLE (and OVERSIZED) entries otherwise.
 
 This is the contract that lets a future OrioleDB- or DocumentDB-style inverted
 index be a BARK opclass instead of a separate AM. The encoding decision
-(single / list / posting-set) is per entry and driven by cardinality, using
-sbm only where its density envelope wins.
+(single / list / posting-set) is per entry and driven by size: one locator is
+a SINGLE, more are a POSTING when that is smaller than the LIST, reserve
+included (<code>bark_form_entry</code>), so sbm is used only where its
+density envelope wins.
 
 Removing locators must never make an entry grow, because VACUUM rewrites an
 entry in place under the page's one WAL record (as nbtree shrinks a posting
@@ -253,9 +385,11 @@ none of this has a per-locator cost (run 2: an index-only scan spends 90 ns
 per locator on a key spread over 31 entries, and 94 ns on keys of one entry
 each). GIN needs a separate tree only because
 its entry tree holds each key once. The one thing a per-key tree would add is
-locator order within a key. Insert coalesces into the entry just before the
-insert point, which is the last entry of the key's run, so the entries of a
-key are in arrival order and their locator ranges can overlap.
+locator order within a key. When this note was written (0a621f81692), insert
+coalesced into the last entry of the key's run, so the entries of a key were
+in arrival order and their locator ranges could overlap. Since H1
+(82694a0d540) they are in heap TID order with disjoint ranges, which gives
+that order without a second tree (option (b) below).
 
 '''Measurements.''' All on a release build (<code>-Dcassert=false</code>),
 one session, 8-CPU laptop, <code>shared_buffers=2GB</code>,
@@ -426,6 +560,9 @@ No measured cost scales with how many entries a key has.
   already follows. A run merged into a POSTING is sized for its removal
   bound, as today. Like nbtree's pass, it keeps a run as several entries
   when one entry would exceed <code>BarkMaxItemSize</code>.
+: ''Status:'' the pass was built as <code>bark_merge_page</code> in
+  <code>barkdelete.c</code> (7a80942793b), beside the per-insert coalesce
+  rather than in place of it; see recommendation 4.
 
 ; (d) A GIN-fastupdate-style pending list.
 : Unsorted pending pages hang off the metapage and are merged into the tree
@@ -454,6 +591,8 @@ No measured cost scales with how many entries a key has.
   <code>GenericXLogStart</code> site (13 in <code>bark.c</code>,
   <code>barkinsert.c</code> and <code>barkutils.c</code>). Each of those sites
   is being changed right now by the concurrency, VACUUM and split work.
+: ''Status:'' done (92c15cee8a5, 03fb7f146bb, ab351f6ea3f, ec2a4ef1ac4,
+  a45e6d67a7c); BARK writes no generic WAL. See recommendation 5.
 
 ; (f) Build LIST and POSTING entries at CREATE INDEX.
 : <code>bark_load</code> receives tuples sorted by key and then heap TID
@@ -586,12 +725,13 @@ count is an estimate that leaves <code>reltuples</code> alone.
 
 === The capability sweep ===
 
-There are currently '''30''' <code>BTREE_AM_OID</code> references in the tree.
-They fall into three groups; only the middle group is BARK work.
+There were '''30''' <code>BTREE_AM_OID</code> references in the tree when this
+was written; at ac12fa1e140 there are 33 in <code>.c</code> and <code>.h</code>
+files outside the catalog headers. They fall into three groups; only the
+middle group is BARK work.
 
 # '''Must stay nbtree (policy).''' Catalog and TOAST index creation
-  (<code>catalog/toasting.c</code>), <code>pg_amcheck</code>
-  (<code>src/bin/pg_amcheck</code>), and the opclass/opfamily lookup helpers
+  (<code>catalog/toasting.c</code>), and the opclass/opfamily lookup helpers
   that answer "what is the btree opclass for this type"
   (<code>typcache.c</code>, <code>lsyscache.c</code>, <code>typecmds.c</code>,
   <code>opclasscmds.c</code>, <code>amvalidate.c</code>,
@@ -608,14 +748,26 @@ They fall into three groups; only the middle group is BARK work.
   are rewritten to ask an AM capability ("can produce ordered scans",
   "supports this sort") rather than to compare against
   <code>BTREE_AM_OID</code>. This is the largest mechanical part of the series.
+  ''Status:'' the planner sites are done by the
+  <code>ambtreeopfamilies</code> capability (b02ddd944a8:
+  <code>plancat.c</code>'s sort-family fast path,
+  <code>match_rowcompare_to_indexcol</code>,
+  <code>ec_member_matches_indexcol</code>). Still btree-only:
+  <code>tuplesort_begin_cluster</code> (its Assert), so
+  <code>repack.c</code> never sorts for a BARK index; the RI fast path in
+  <code>ri_triggers.c</code>, which falls back to SPI for other AMs; and
+  <code>tablecmds.c</code>'s partition opclass choice, which is a btree
+  opclass lookup and stays. <code>pg_amcheck</code> now checks BARK indexes
+  too (c2ecf2d23ba).
 # '''Ambiguous, decided case by case''' (<code>access/index/amapi.c</code>'s
   index-AM validation): keep the btree-specific validation for btree, add
   BARK's own.
 
-KNN ordering (<code>amcanorderbyop</code>) is a reserved field in BARK's
-<code>IndexAmRoutine</code> from the first commit but is not implemented until
-phase P07, so the sweep only has to make ordered ''sort'' paths capability-
-driven now, not ordered ''operator'' paths.
+KNN ordering (<code>amcanorderbyop</code>) was a reserved field in BARK's
+<code>IndexAmRoutine</code> from the first commit and was implemented in
+phase P07 (965b1f9590a); <code>indxpath.c</code> gives an index that is both
+ordered and <code>amcanorderbyop</code> at most one ordering operator, on its
+leading column (2c59e5d829d).
 
 == Roadmap ==
 
@@ -626,13 +778,19 @@ commit builds under <code>-Werror --enable-cassert</code> and passes
 regress step so a stale template cannot produce a false diff). Contracts above
 are cited by name in each phase's commit messages.
 
+Each entry is marked ''done'' with its commits on <code>idxam</code>,
+''in progress'', ''held'' (designed, not started, by decision) or
+''blocked'' (with what it waits for). The commit hashes are those of
+<code>git log --oneline</code> on <code>idxam</code> as of ac12fa1e140.
+
 '''Done'''
 
-* '''0001''' -- this design document (the contract of record).
+* '''0001''' -- this design document (the contract of record). ''(done:
+  643b5e704bf)''
 * '''sbm ADT''' -- vendored sparse bitmap set, PG-native, standalone-tested.
-  ''(committed)''
+  ''(done: b437ccaf775)''
 * '''test_sbm''' -- the sbm regression + differential-test module, plus the
-  sbm-vs-Bitmapset-vs-TIDBitmap benchmark. ''(committed)''
+  sbm-vs-Bitmapset-vs-TIDBitmap benchmark. ''(done: 5b02c573b5c)''
 
 '''F-series -- foundations (make a BARK peer of nbtree structurally)'''
 
@@ -640,33 +798,57 @@ are cited by name in each phase's commit messages.
 * '''F02''' -- cherry-pick the C-LOCATOR contract from <code>tepid</code>
   (<code>LocatorDesc</code>, <code>relation_locator</code>,
   <code>amcanvarlocator</code>, the <code>index_check_locator()</code> check).
+  ''(done: tepid's eight contract commits at the base of the series; they
+  replace this tree's earlier <code>LocatorCapability</code> enum and
+  <code>amcanlocators</code> bitmask.)''
 * '''F03''' -- cherry-pick the recheck-hint bit
   (<code>ItemPointerRecheckHintFlag</code>) from <code>tepid</code>.
+  ''(done, then dropped 2026-10-15: nothing in this tree sets it; see
+  C-MVCC.)''
 * '''F04''' -- the capability sweep, group 2: make ordered-''sort'' path
   generation, <code>tuplesort</code> variants, <code>repack</code>, and the RI
   trigger ask an AM capability instead of comparing to
   <code>BTREE_AM_OID</code>. No BARK code yet; nbtree still answers "yes" to
-  every capability, so this is behavior-preserving.
+  every capability, so this is behavior-preserving. ''(done for the planner:
+  b02ddd944a8, <code>ambtreeopfamilies</code>; 6d73daac716 lets such an AM
+  share btree's operator families. Not done: <code>tuplesort</code>'s
+  cluster sort and <code>repack</code>, and the RI fast path, which stay
+  btree-only; see "The capability sweep".)''
 * '''F05''' -- register the empty <code>bark</code> AM: catalog rows,
   <code>IndexAmRoutine</code> skeleton (all capability flags declared,
   including reserved <code>amcanorderbyop</code>), <code>amvalidate</code>,
   build/scan hooks that error "not implemented". <code>CREATE INDEX USING
   bark</code> is accepted and validated but cannot yet be built.
+  ''(done: 92f1c3c696a)''
 * '''F06''' -- the on-disk page format: meta/root/leaf/internal page layout,
   the C-KEYSHAPE entry encoding (single / sorted-list / posting-set), and the
   reserved delete-marked subtype for C-DELETE. Documented as a companion
-  <code>README</code> under the AM directory.
+  <code>README</code> under the AM directory. ''(done: e8ecfa2a997; page ID
+  distinct from nbtree's, 41c820caf25)''
 
 '''A-series -- the working access method'''
 
 * '''A01-A03''' -- insert and split (single-locator shape first): leaf insert,
   page split, high-key / right-link maintenance in the Lehman & Yao tradition
-  nbtree uses.
+  nbtree uses. ''(done: 03950777ddc build, 6a3c6088b95 insert and split,
+  965c12ad4f7 interrupted splits; nbtree's locking: c875cdc8170 child before
+  parent, c920f0aa9ed write descents finish incomplete splits; f48c923c5d5
+  split points by bytes and fillfactor; 7c16246fae1 suffix truncation)''
 * '''A04-A06''' -- search and ordered scan; the C-MVCC leaf-key recheck and
   index-only-scan support; SSI predicate locking at nbtree granularity.
+  ''(done: f1c10b62f62, 099fec68d16, d40c3e51622, 9d9c86555f8 backward;
+  page-at-a-time scans 6eac5be00a8, mark/restore 86dc81669eb, cross-type
+  keys 12f7157b115, row comparisons af421f48a59, ScalarArrayOp
+  860b5787393 and 9a2d18ea58e, skip scan 4384f134bc0 and abb8869ca9e)''
 * '''A07-A09''' -- uniqueness, multicolumn keys, INCLUDE columns.
+  ''(done: 40f59eae200, 3d3e340450b, 761c298af97; speculative insertion
+  6fa04f5e1af)''
 * '''A10-A12''' -- the sorted-duplicates and posting-set shapes (C-KEYSHAPE),
   sbm-backed for clustered value sets; BitmapAnd/BitmapOr via sbm set-algebra.
+  ''(done: 4b96254199e LIST, 1cd5c7a61c2 POSTING, 04534607eb4 BitmapAnd and
+  BitmapOr, through the executor's TIDBitmaps rather than sbm set algebra;
+  6e3a262afa9 coalesce only equal images; e9803c87051 POSTING removal
+  reserve; d7fae7124b1 LIST and POSTING at CREATE INDEX)''
 * '''A13-A15''' -- deletion, VACUUM, page recycling; then C-DELETE
   delete-marking (<code>amdeletemark</code>/<code>amundomark</code>) once the
   table is UNDO-backed. Page recycling follows nbtree: a deleted page keeps
@@ -676,19 +858,30 @@ are cited by name in each phase's commit messages.
   deletion, as nbtree's: an <code>indexUnchanged</code> insert that would
   split a leaf first asks the table AM which of the leaf's versions are dead
   and deletes their entries (<code>XLOG_BARK_DELETE</code>; the README's
-  "Bottom-up deletion").
+  "Bottom-up deletion"). ''(done: 030fe7e8025 VACUUM, 9588dc33517 FSM,
+  864c14a22be cycle IDs and cleanup locks, cb480247c5b safe recycling,
+  14346b8273c key space to the right sibling, 047a54523f4 one pass,
+  d7e21783d59 parallel VACUUM, 7b651b29179 bottom-up deletion. C-DELETE
+  delete-marking: blocked on the UNDO work, whose interface is not in this
+  tree.)''
 * '''A16-A18''' -- parallel build, parallel scan, and the amcheck contract for
-  BARK.
+  BARK. ''(done: d65a886d783, bf2e930db15, 06ae9a70ead)''
 
 '''P-series -- parity and beyond'''
 
 * '''P01-P03''' -- performance parity with nbtree on the scalar workload
   (build throughput, scan latency, space) using the benchmark harness pattern
-  from test_sbm; A/B against <code>master</code>'s nbtree.
+  from test_sbm; A/B against <code>master</code>'s nbtree. ''(done as the
+  Z1 and Z2 benchmarks and the cards they produced, below; see "Where BARK
+  stands". Inserts are still 1.05-1.12x btree's time.)''
 * '''P04-P06''' -- arbitrary-size keys/values beyond the nbtree page cap; the
-  C-STATS cost model tuned to the new shapes.
+  C-STATS cost model tuned to the new shapes. ''(done: d13b4ea40fb,
+  761c298af97, d365b638713, e381e4c52e9; cost model 24e449dfa22, replaced
+  by C3 9dd712a3fc8)''
 * '''P07''' -- KNN / <code>amcanorderbyop</code>: implement ordered-''operator''
   scans and extend the capability sweep to ordered-operator path generation.
+  ''(done: 965b1f9590a, 627d94fcf06, 2c59e5d829d; no parallel KNN, by
+  design, 37aa0402e67)''
 * '''Leaf prefix compression''' -- the <code>prefix_compression</code>
   reloption: a leaf flagged <code>BARK_PREFIX</code> holds a PREFIX item, and
   its entries store the first key column front-coded against it (a shared
@@ -696,20 +889,114 @@ are cited by name in each phase's commit messages.
   chosen only when a leaf is written whole (CREATE INDEX, either half of a
   split) and never forces a rewrite. <code>BarkPageGetItem</code> decodes;
   coding is catalog-free, so ADD_TID redo repeats it. Format in the README's
-  "Leaf prefix compression". nbtree has nothing comparable. ''(done)''
+  "Leaf prefix compression". nbtree has nothing comparable. ''(done:
+  a27685f01d8, f358effd8bb)''
+* '''W-series, the WAL resource manager''' (option (e) under "Value sets
+  that outgrow one entry"). ''(done: 92c15cee8a5 VACUUM, page deletion and
+  reuse; 03fb7f146bb inserts; ab351f6ea3f ADD_TID; ec2a4ef1ac4 splits and
+  new roots; a45e6d67a7c overflow chains)''
 
 '''H/D-series -- nbtree parity that remains'''
 
 * '''H1''' -- order duplicates by heap TID (nbtree's heapkeyspace): pivots
   keep a heap TID when both sides are equal on every key column, inserts
   descend by (key, TID), an insert inside a full LIST or POSTING swaps with
-  its highest TID. Requires REINDEX of indexes built before it.
+  its highest TID. Requires REINDEX of indexes built before it. ''(done:
+  82694a0d540. An insert inside a full entry divides it in the middle
+  rather than swapping its highest TID; see "Heap TID order" in the
+  README.)''
 * '''D1''' -- bottom-up index deletion on the executor's
   <code>indexUnchanged</code> hint, with its own WAL record and
-  recovery-conflict resolution.
+  recovery-conflict resolution. ''(done: 7b651b29179)''
+* '''F1''' -- cut the last entry of a single-value split so the left page
+  reaches its fill factor (nbtree's <code>_bt_singleval_fillfactor</code>).
+  ''(done: 5205a1e693a)''
+* '''F2''' -- merge a leaf's equal-key entries before splitting it (nbtree's
+  deduplication pass). ''(done: 7a80942793b)''
+* '''P3''' -- a lower bound sorts after an equal pivot with no heap TID
+  (nbtree's <code>_bt_compare</code> forward optimization). ''(done:
+  80e5ab22ec1)''
 * '''K2''' -- dead-tuple hints from scans and simple deletion before a split.
   After <code>amgetbatch</code> (CF 4351) is in core and BARK adopts it, since
-  the hint goes through <code>amkillitemsbatch</code>.
+  the hint goes through <code>amkillitemsbatch</code>. ''(blocked on
+  cf/4351 and G1)''
+* '''G1''' -- adopt <code>amgetbatch</code>: <code>bark_readpage</code> fills
+  an <code>IndexScanBatch</code>, and the scan position, mark/restore, the
+  pin rule and parallel seize/release move to the batch layer; KNN keeps
+  <code>amgettuple</code>. ''(blocked on cf/4351)''
+* '''Backward skip scan''', and skipping over several leading columns, as
+  nbtree's skip arrays do. ''(blocked on cf/4351 and G1, so that the scan
+  position work is done once)''
+
+'''Work since the Z1 benchmark''' (BENCHMARK-2026-10.md at 76d2f802ab2; Z2,
+BENCHMARK-2026-10b.md, at 5d4e2883b10)
+
+* '''Q2''' -- skip the scan keys every entry of a leaf satisfies (nbtree's
+  <code>_bt_set_startikey</code>). ''(done: f87bc3d7411)''
+* '''W5''' -- log only the right half of a split, as nbtree does.
+  ''(done: 72fb06e7bdf)''
+* '''B11''' -- form each row's index tuple once in CREATE INDEX.
+  ''(done: e86f99da3ab)''
+* '''Q1''' -- insert ascending keys on the cached rightmost leaf
+  (<code>_bt_search_insert</code>'s fast path). ''(done: 3340c4d7819)''
+* '''Required keys''' -- end a scan on a later column's bound under leading
+  equalities (<code>_bt_check_compare</code>'s required keys).
+  ''(done: f0b25ae677f)''
+* '''V5''' -- decide a POSTING entry's shape before building its sbm, which
+  brought serial VACUUM to parity. ''(done: 54b9ed6c092)''
+* '''V6''' -- delta+varbyte coded LIST entries, GIN's posting-list coding.
+  ''As built: a coded LIST is the 0x1000 status bit on a LIST (free on leaf
+  entries), a header with the stream length and the last TID, the first TID
+  raw, then varbyte deltas of block << 11 | offset; the entry takes the
+  smallest of POSTING, coded LIST and plain LIST, and bark_form_posting
+  compares against the coded LIST so every caller (build, insert, VACUUM,
+  split) agrees.  No format break: plain LISTs are untouched.  VACUUM keeps a
+  coded LIST coded, since a plain subset can exceed the coded slot (found in
+  testing: "failed to shrink BARK leaf entry").  Index pages (BENCHMARK-P1.md
+  "V6"): Z1 (d) 1610 -> 621 (btree 1789), clustered runs of 20 1082 -> 819
+  (btree 1896), a DocumentDB-like int4[] GIN-interface index 253 -> 92 (GIN
+  133), 1M rows of 10-element arrays 8040 -> 3429 (GIN 5026).  A cost: denser
+  leaves fill later, so bottom-up deletion runs less often between VACUUMs.''
+* '''K3''' -- a descent as cheap as nbtree's, and a cheaper skip-scan group.
+  ''(done: bd501974823)''
+* '''R1''' -- root contention on many-core machines.  Every descent pins and
+  share-locks the root, so its buffer header (pin count and content lock in
+  one state word) is written by every lookup; measured on m7i.metal-48xl
+  (2 sockets) it tops the <code>perf c2c</code> table and throughput falls
+  past one socket.  Re-pinning it through <code>ReadRecentBuffer</code> made
+  that worse (0.89-0.94x).  ''As built (L1CACHE):'' a per-backend table of
+  level-1 pages and their low keys, filled from level-2 downlinks as
+  descents pass, lets a read descent start below the root.  Safe because an
+  internal page is never deleted and its low key never changes, so moving
+  right from a cached page reaches the page the root would have chosen.
+  Write descents keep starting at the root (they need the parent path).
+* '''I2''' -- per-insert overhead: the unique-index fast path and the insert
+  state cached in <code>ii_AmCache</code>. ''(done: 5d4e2883b10)''
+* '''N1''' -- honor <code>UNIQUE ... NULLS NOT DISTINCT</code>.
+  ''(done: f8b597a5ccf)''
+* '''C3''' -- btcostestimate's correlation and descent costs.
+  ''(done: 9dd712a3fc8)''
+* '''A2''' -- equality arrays on any column position the scan (nbtree's
+  required array keys). ''(done: 5ef4c024135)''
+* '''O1''' -- an operator class for every btree operator class.
+  ''(done: a1deb45c0fc)''
+* '''T2''' -- nbtree's tools for BARK. ''(done: 0c08ff0ec74 pageinspect,
+  9700b2d3a2e pgstattuple, c2ecf2d23ba amcheck heapallindexed and parent
+  check, and pg_amcheck)''
+* '''Q3''' -- start a scan past a strict bound (nbtree's nextkey), and let
+  the per-page test satisfy row comparisons and arrays. ''(done:
+  f50e3cee0d8)''
+* '''D2''' -- the user manual (<code>doc/src/sgml/bark.sgml</code>), the
+  README as built, and this roadmap. ''(in progress, branch bark-docs)''
+* '''U1''' -- PRIMARY KEY and UNIQUE constraints on a BARK index (the SQL
+  surface, pg_dump, and every place that assumes a constraint's index is
+  btree), which also makes deferrable uniqueness possible. ''(held: card
+  written, not started)''
+* '''V6''' -- code LIST entries as varbyte deltas, as GIN's posting lists
+  are, to halve scattered duplicate-heavy indexes. ''(held: card written,
+  not started)''
+* '''N2''' -- IS NULL and IS NOT NULL position and stop scans, as nbtree's
+  do. ''(held: card written, not started)''
 
 '''M-series -- documents (multikey)'''
 
@@ -722,19 +1009,27 @@ place of an inverted AM, without changing the scalar design above.
   that matches through several keys once. The meta page records whether the
   index has multikey rows. Needs H1, so that (key, TID) names exactly one
   entry member. Design: [[#M1: multikey keys|M1: multikey keys]] below.
+  ''(done: design 76d2f802ab2; M1a catalog interface 36e18a3ca93; M1b
+  insert and build ac12fa1e140; M1c scans 181eb9d700d; M1d planner
+  3d965d5537d (no parallel or backward plans, amproperty), 60c38f44e86
+  (ordering operators on the multikey column) and 90fc2758f2f (costing).
+  See "As built" under "Scans")''
 * '''M2''' -- operator classes on RUM's model. BARK takes GIN's support
   functions for extracted keys (extract a value's keys; extract a query's
-  keys, with partial match; consistent) and RUM's ordering and per-locator
-  data functions (config, which declares the per-locator type; ordering and
-  outer ordering; the join of per-locator values), so a RUM or GIN operator
-  class ports to BARK with little change. The per-locator functions need M3.
+  keys, with partial match; consistent) and RUM's ordering functions
+  (ordering and outer ordering), so a RUM or GIN operator class ports to
+  BARK with little change. RUM's per-locator data functions (config, which
+  declares the per-locator type, and the join of per-locator values) are
+  not taken: M3 is closed, and a class that attaches a column to its keys
+  becomes a composite key, the column after the extracted one, ordered by
+  M2's KNN scan inside a key's run ("M3: per-locator data" below).
   Plus classes matching RUM's for arrays (containment, overlap, equality,
   similarity ordering) and for scalar types with RUM's distance operators,
   which BARK's KNN scan already serves on a leading column. The new
   procedures are numbered after btree's, since BARK's scalar classes live in
   btree's operator families; <code>barkvalidate</code> checks them. RUM's
   tsvector classes are out of scope: their ranking needs per-occurrence
-  positions (M3) and belongs to a text-search index (see "Containment
+  positions and belongs to a text-search index (see "Containment
   queries").
   BARK also takes the query interface of DocumentDB's pg_extended_btree,
   which suits an ordered index better than GIN's: an extract-value function
@@ -747,14 +1042,36 @@ place of an inverted AM, without changing the scalar design above.
   heap recheck). A scan walks the ranges in order, as BARK's array scan
   walks an IN-list, re-descending only where the next range starts past the
   page. An operator class may provide either interface; one written for
-  pg_extended_btree ports to BARK unchanged.
-* '''M3''' -- extra data per locator (RUM's addInfo): a LIST or POSTING
-  variant whose members carry a small value beside each TID and are ordered
-  by it, so "key X ordered by a value" keeps one entry per key. A composite
-  key (key, value) already does this when entries need not share; a design
-  note decides whether M3 is needed.
+  pg_extended_btree ports to BARK unchanged. ''(the pg_extended_btree
+  interface, procedures 7-9, is built and used by M1c's scans and M5a's
+  wildcard class; M2a, GIN's query interface (procedures 10-13, partial
+  match included) in bitmap scans, is built: "As built (M2a)" under
+  "Which interface first.", P1, merging its TID streams with required
+  keys, "As built (P1)" there, P2, coalescing its keys by GIN's rule,
+  "As built (P2)", and M2c, index scans of such a column, "As built (M2c)"
+  there. M2b part 1, RUM's addon ordering (an
+  ordering operator on the column after the extracted one, inside a
+  point's run), is built: "As built (M2b part 1)" under "M3: per-locator
+  data". M2b part 2, an array similarity class after rum_anyarray_ops, is
+  built for its % operator, "As built (M2b part 2)" there, with the <=>
+  ordering operator left to the executor's Sort for the reasons given.
+  M2 is done. The scalar classes in a BARK family (a class whose operators
+  are not btree's but whose keys are scalar) are not needed by any M or M5
+  case and are not started)''
+* '''M3''' -- extra data per locator (RUM's addInfo). ''Closed, not
+  needed'': a composite key (key, value) holds the same members in the same
+  order, and every use case found is served by one. What both would need,
+  an ordering operator on the column after the extracted one inside a
+  key's run, is M2's. Design note:
+  [[#M3: per-locator data (closed)|M3: per-locator data]] below.
 * '''M4''' -- unique indexes over multikey keys with document-store
   semantics: unique across rows, while one row may repeat a key.
+  ''(in progress. M4a, the insert, build and planner sides, is built:
+  "As built (M4a)" under [[#M4: unique indexes over multikey keys|M4]]
+  below; M4b, procedure 15, ON CONFLICT and the foreign-key, REFRESH
+  MATERIALIZED VIEW CONCURRENTLY and REPLICA IDENTITY guards, is built:
+  "As built (M4b)"; M4c, amcheck's checkunique (amcheck 1.8), is built:
+  "As built (M4c)". M4 is done)''
 * '''M5''' -- wildcard indexes, as MongoDB's: a test-module operator class
   over <code>jsonb</code> whose extract-value procedure (7) emits one key
   (path, value) for every path that the column's projection keeps, and one
@@ -768,9 +1085,32 @@ place of an inverted AM, without changing the scalar design above.
   wildcard column) keeps (fixed columns, path, value). Needs M1 and M2's
   procedures 7-9; unique wildcard indexes need M4. Nothing in it changes
   the on-disk format; "Wildcard indexes as the check" under M1 is its
-  design.
+  design. ''(in progress. M5a, the test module bark_wildcard, is built:
+  procedure 7 emits [path, value] keys, one per array element, with
+  markers [path] for paths that hold an array and member names escaped;
+  procedure 5 takes include or exclude; the operators #&lt; #&lt;= #= #&gt;=
+  #&gt; compare a path's indexed values with a value of the same jsonb
+  type, and #? tests that a path holds one; procedure 8 makes one
+  boundary per qual inside the path's range, bracketed by the value's type
+  in jsonb_cmp order (a string's range ends below [p, -Infinity], and
+  [p, {}] is a path's last key), with procedure 9 only for a path the
+  projection drops. Two of MongoDB's rules are not followed: a missing
+  path does not equal null, and a non-empty object or a whole non-empty
+  array is not a value to compare with. The scan tests compare forced
+  index and bitmap scans of plain, include, exclude and compound indexes
+  with a sequential scan on 151 quals over 4000 documents, and a lax
+  jsonpath oracle where the semantics coincide; the index's (key, TID)
+  members are compared both ways with the keys of the heap's rows, which
+  heapallindexed now also checks one way (2026-10-15). M5b part 1, the per-path
+  no-seen-set extension (BarkQueryFlags.oneentry and .index), and part 2,
+  sorting by a path (BarkQueryFlags.orderrest), are built. W6: procedure 7
+  writes every number with its scale trimmed, so keys that jsonb_cmp finds
+  equal are equal bytes, and the class declares equalimage (btequalimage):
+  its equal keys coalesce into LIST and POSTING entries. Not yet: a
+  comparison with GIN's jsonb_path_ops)''
 * '''T1''' -- term containment at scale; see "Containment queries" under
-  C-KEYSHAPE.
+  C-KEYSHAPE. ''(not started; the TID filter for an ordered scan is blocked
+  on cf/4351)''
 
 === M1: multikey keys ===
 
@@ -796,6 +1136,19 @@ classes); an extracted column's keys are ordered, its values are not. A
 column is extracted exactly when its class's family belongs to BARK and has
 support procedure 7. Fixed columns use btree families, as every BARK column
 does today.
+
+'''Aliases.''' "Belongs to BARK" means any access method whose handler is
+barkhandler, not only the one named bark: an extension may run BARK under a
+name of its own (<code>CREATE ACCESS METHOD documentdb_bark TYPE INDEX
+HANDLER barkhandler</code>, which DocumentDB's alternate index AM hook
+needs, since it creates indexes <code>USING documentdb_<am_name></code>). So
+BARK tests a family for not being btree's (bark_opfamily_is_own; with
+ambtreeopfamilies those are the only foreign families a BARK class can name)
+and a relation for its handler (bark_relation_is_bark). Testing for
+BARK_AM_OID, as M1 first did, read an alias's multikey family as a btree
+family: its strategies taken for btree's, its keys never extracted, and an
+assertion failure in an assert build. amcheck compares handlers too;
+pg_amcheck still selects indexes by access method OID.
 
 '''Support procedures.''' Numbered after btree's 1-6, so the scalar classes
 keep btree's numbering. <code>amsupport</code> becomes 14, not 103 as in
@@ -836,8 +1189,12 @@ column of every BARK index, scalar ones included.
   which asks the scan to read the NULL entries too (a NULL value, an empty
   value or a NULL element), at the position the column's NULLS option gives
   them, and to return those rows with <code>xs_recheck</code> set, as
-  GIN's INCLUDE_EMPTY search mode does. Fields are only appended (M5 adds
-  "this scan needs no seen set"). It turns an operator's strategy and argument into
+  GIN's INCLUDE_EMPTY search mode does. Fields are only appended. M5b
+  appends <code>oneentry</code>, which procedure 8 sets to say that a row
+  matches these boundaries through at most one entry, so the scan needs no
+  seen set, and <code>index</code>, which BARK sets (NULL when no index is
+  open) so procedure 8 can read the index's markers with
+  <code>bark_index_has_marker</code>. It turns an operator's strategy and argument into
   boundaries, each a lower and an upper search element (an argument of the
   key type and a strategy 1-5; either may be absent, meaning unbounded; a
   point has = in both). BARK sorts the boundaries and raises an error if two
@@ -851,11 +1208,11 @@ column of every BARK index, scalar ones included.
   with <code>xs_recheck</code> set.
 * '''10-13''' GIN's extractQuery, consistent, comparePartial and
   triConsistent (GIN's 3, 4, 5, 6), with GIN's signatures. barkvalidate
-  accepts them from M1, so catalogs need not change; scans use them from M2.
-* '''14''' fetch, <code>value (key)</code>, optional: GiST's fetch in
-  purpose, not in signature (GiST's is <code>internal (internal)</code>).
-  It rebuilds the column value from a key, for index-only scans (see
-  "Scans").
+  accepts them from M1, so catalogs need not change; bitmap scans use them
+  from M2a.
+* '''14''' fetch, <code>value (key)</code>, optional and reserved:
+  barkvalidate accepts it, BARK does not call it (see "Index-only scans"
+  under "Scans": a key cannot be turned back into its row's value).
 
 '''Which interface first.''' BARK implements pg_extended_btree's (7-9) in
 M1. Its queries are key ranges in key order, which BARK's scan already walks:
@@ -871,6 +1228,156 @@ GIN classes get no ordered scans. GIN's INCLUDE_EMPTY and ALL search modes
 read the NULL entries (see "Insert and build"). A class provides 8 and 9,
 or 10 and 11 or 13, or both; one written for pg_extended_btree ports by
 renumbering 101-103 as 7-9.
+
+'''As built (M2a).''' A column whose class has procedure 10 and not 8
+(bark_index_gin_query) is read by bitmap scans only (M2c, below, adds index
+scans when the column leads the index): bark_property answers
+<code>index_scan</code> false, get_relation_info asks amproperty for
+AMPROP_INDEX_SCAN and clears <code>amhasgettuple</code>, so the planner
+builds no index scan path, and bark_gettuple refuses a direct caller. The
+bitmap scan calls extractQuery (GIN's signature, with nullFlags and
+searchMode), makes each key a point boundary, a NULL key the NULL
+entries, and a partial-match key a range from the key upward filtered by
+comparePartial (which also ends the range when the column leads the index
+in ascending order); GIN_SEARCH_MODE_INCLUDE_EMPTY reads the NULL entries
+and ALL every entry. Each boundary's TIDs are read through the ordinary
+descent code into one array sorted by TID, and for each TID
+triConsistent (MAYBE is a recheck), or consistent (whose recheck flag is
+set first, as GIN does), decides on the per-key presence vector. Several
+keys on the column are intersected (P1 below replaced the sort with a
+merge).
+barkcostestimate counts extractQuery's keys (plus one for INCLUDE_EMPTY,
+two for ALL) as descents and charges no seen set. Tests
+(bark_multikey_gin.sql): the core GIN array support functions unchanged
+(ginarrayextract is procedure 7's three-argument form), with and without
+triConsistent, on 40 queries over && @&gt; &lt;@ = against empty, NULL,
+absent and many-element arrays, IS NULL and two keys on the column, each
+compared with a seqscan and with a GIN index, before and after DELETE,
+INSERT and VACUUM; a prefix-match class on <code>text[]</code> with core's
+gin_cmp_prefix as comparePartial, compared with LIKE.
+
+'''As built (P1).''' The boundaries' TIDs are merged as ginget.c merges
+posting lists, not collected and sorted together. Each boundary is read into
+a stream of distinct, ascending TIDs: a point boundary of a column that leads
+the index already comes out in TID order (H1; LIST and POSTING members
+ascend), and any other (a partial-match range, every key, a column after
+another key column) is sorted and made distinct once. A binary heap on the
+streams' next TIDs visits each TID once with its presence vector. With
+triConsistent, the streams are taken rarest first (their sizes are exact,
+where GIN predicts them) until a vector with those FALSE and the rest MAYBE
+gives FALSE, as startScanKey divides required from additional entries; only
+the required streams feed the heap, and an additional stream is searched
+forward (exponential, then binary search) at each candidate TID. Without
+triConsistent, and with the hidden streams of INCLUDE_EMPTY and ALL, every
+stream is required. The presence vectors are allocated once per scan key.
+Limit: a stream is its boundary read to the end, since the scan has one
+leaf position, so the skip saves the merge and the consistent calls but not
+the frequent key's leaf pages: @&gt; with a rare and a common element went
+from 33 times GIN's time to 3.6 times (15.8 ms to 1.7 ms, GIN 0.47 ms, on
+200k rows of int4[]), and @&gt; on two common elements from 4 times to 1.1.
+Skipping those pages needs a re-descent by (key, TID) per candidate, or a
+leaf position per stream. Tests (bark_multikey_ginmerge.sql): 39 queries
+over skewed int4[] with POSTING entries (&amp;&amp; @&gt; &lt;@ = with one
+rare and several common elements, 21 and 41 elements, a repeated element,
+an absent one, NULL), through the classes with and without triConsistent
+and an index with the column second, each compared with a seqscan and GIN,
+before and after DELETE, INSERT (LIST entries) and VACUUM; core's tsvector
+support functions as a BARK class, mixing point and prefix (partial-match)
+keys, NOT and phrase queries, compared with a seqscan and GIN.
+
+'''As built (P2).''' A GIN-interface column coalesces equal keys whatever
+equalimage says (bark_index_may_coalesce), the GIN key rule: keys that
+procedure 1 finds equal are one key, stored in the first row's image.
+DocumentDB's index terms have no equalimage and cannot have one (int32 1,
+int64 1 and double 1.0 compare equal), so before P2 every (term, row) was a
+SINGLE entry: 520 MB of BARK indexes against RUM's 211 MB on a million
+documents. bark_coalesce_list keeps the existing entry's image when it
+turns a SINGLE into a LIST; the build already kept a run's first. A point
+boundary is now compared once per entry, against its start (bark_mk_cmp),
+where it was compared with both ends, for every multikey scan. Measured on
+100k rows of three int4[] keys, about 1000 rows per key, through a class
+without procedure 4 (release build): the index 825 -> 134 pages (300000
+SINGLE entries -> 800 LIST and 600 POSTING; GIN 80), compares per entry
+read 2.02 -> 0.02, and @> '{7,107}' 7970 -> 12960 tps (GIN 14598), @>
+'{7,207}' 8047 -> 9423 (GIN 14625), @> '{7}' 2407 -> 2411 (GIN 2724; heap
+bound). Tests (bark_multikey_ginco.sql): a numeric[] class without
+procedure 4 on 1, 1.0 and 1.00, by insert and by CREATE INDEX: one LIST of
+three holding the first row's image, kept after that row is deleted and
+vacuumed; allequalimage still false; an index with a numeric column before
+the array, or with INCLUDE, keeps SINGLE entries; 47 queries equal to a
+seqscan and a GIN index on three indexes before and after DELETE, INSERT,
+VACUUM and bottom-up deletion; amcheck's checks pass.
+
+'''As built (M2c).''' A GIN-interface column that leads its index has
+index scans too. bark_mk_gin_items, factored out of the bitmap scan,
+computes the scan's rows (TID order, with recheck flags) as before; the
+bitmap scan adds them to its bitmap, and bark_mk_gin_gettuple keeps them in
+a per-scan context, computed on the first call after a rescan, and returns
+one per call, forward or backward (a scan that reverses continues from its
+place, one that ran off an end restarts from it), with mark and restore as
+a place in the array. Found by the DocumentDB A/B: DocumentDB updates and
+deletes by a filter with <code>SELECT ... LIMIT 1 FOR UPDATE</code>, which
+with bitmap scans only planned a seqscan (9 against RUM's 490 updates a
+second on 1M documents). The TIDs are collected with no leaf pinned, so the
+scan requires an MVCC snapshot (nbtree's dropPin argument) and errors
+otherwise; no SQL reaches that today, since exclusion constraints are
+refused for multikey classes. The seen set is off for these scans (a TID in
+several boundaries' streams is merged into one row already), and
+kill_prior_tuple is ignored (no leaf position, no LP_DEAD hints).
+bark_property keeps <code>index_scan</code> false when the column is not
+the first: rows come back in TID order, and the planner would take the
+scan to return the columns before it in order (pathkeys, merge joins, KNN).
+barkcostestimate makes all of the index cost startup cost, so a LIMIT does
+not make the scan look cheaper than it is. Tests
+(bark_multikey_ginscan.sql): every query of bark_multikey_gin (40) and
+bark_multikey_ginmerge (39 array, 13 tsvector) through both array classes
+as an Index Scan, whole, LIMIT 1 and LIMIT 7, equal to a seqscan, before
+and after DELETE, INSERT and VACUUM; a NO SCROLL cursor read in pieces
+(726 rows); LIMIT 1 FOR UPDATE; a nested loop with the index scan as its
+parameterized inner side, NULL and empty keys among the outer rows; a
+direct caller reading forward and backward (bark_multikey_walk); mark and
+restore at four places; and the leading-column rule (gm_bark_g stays
+bitmap-only).
+
+'''As built (RXSIZE, bitmap partial match).''' A bitmap scan of a
+GIN-interface key whose rows are the union of its boundaries' reads each
+boundary straight into the TIDBitmap (bark_mk_gin_union decides: consistent
+accepts every non-empty presence vector of at most four query keys; a key
+whose rows need a recheck, alone or in a vector none of whose other keys
+has one, goes in with one). No stream is built, sorted or merged, and the
+bitmap's work_mem bound replaces the exact, unbounded stream that
+6854f021dd8 allocated huge: past work_mem the bitmap goes lossy and the
+heap recheck decides, as for a GIN partial match. Several keys on the
+column, and keys consistent does not reduce to a union (AND, NOT, phrase),
+merge through the streams as before; index scans keep the streams (M2c).
+Tests (bark_multikey_gin.sql): a prefix class on 60000 rows with a
+POSTING key, seven queries (prefix, POSTING key, no match, = ANY, two keys)
+equal to a seqscan at work_mem 64kB (lossy) and 64MB (exact);
+bark_multikey_ginmerge adds weighted tsqueries (recheck per vector).
+
+'''As built (2026-10-15, index scan bound).''' An index scan of a
+GIN-interface column (M2c) kept its whole result as an array of
+(TID, recheck) items, exact and unbounded. It now builds the same TIDBitmap
+a bitmap scan does, bounded by work_mem, in its own context, and walks it
+with a private iterator: the place is (page in iteration order, offset), a
+lossy page returns every offset a TIDBitmap can hold with a recheck (an
+empty offset or a heap-only tuple fetches nothing), and a backward step
+across a page or a restore starts a new iteration and walks to the page
+(O(pages), only for a direct caller of the AM or a merge join's restore).
+Tests (bark_multikey_gin.sql): the 60000-row prefix table's seven queries
+by index scan at work_mem 64kB (recheck removes rows) and 64MB (none),
+equal to a seqscan.
+
+'''As built (RXSIZE, start latch).''' A read of an open-ended
+partial-match boundary on the leading, ascending column stops comparing
+each key with the boundary's start once one key is inside it (startlatch
+and instart in BarkMkScanState, set by bark_mk_gin_first, honoured by
+bark_mk_cmp): the keys only grow from there, so the column comparator's
+two calls per entry (filter and required-key advance) go, and procedure 12
+alone decides each entry and the range's end. A later column or a DESC
+column compares as before. Tests (bark_multikey_gin.sql): nine prefix
+queries over an ascending, a DESC and a two-column index, NULL and empty
+arrays among the rows, bitmap and index scan each equal to a seqscan.
 
 '''Strategies.''' An operator in a BARK family has whatever strategy number
 its class gives it, as in GIN; the number is only passed to procedures 8 and
@@ -946,7 +1453,9 @@ block reference per key, where one record per leaf would do. A record that
 carries several keys for one leaf can be added later (rmgr opcodes 0xE0 and
 0xF0 are free), if measurements of documents with many neighboring keys
 show it matters; it would need a redo that applies a sequence of per-key
-changes.
+changes. Done (W6 part 3): a run of a row's keys that go on one leaf as
+plain new entries is one INSERT_MULTI record (0xF0); other keys keep their
+per-key records.
 
 '''Uniqueness hooks.''' M1 refuses UNIQUE indexes, exclusion constraints
 and ON CONFLICT arbiters on an index with an extracted column; M4 allows
@@ -1010,7 +1519,9 @@ not passed to procedure 9; its rows are returned with
 a row at its first entry in scan order and drops its later entries. It does
 this whenever a row can match through two keys: always, unless the meta
 page says the index has never held a multikey row ("Multikey metadata"
-below), or the extracted column has exactly one boundary and it is a point.
+below), or the extracted column has exactly one boundary and it is a point,
+or procedure 8 set <code>oneentry</code> for the column's first key (not a
+ScalarArrayOp: two of its elements may each match one entry of a row).
 A bitmap scan never does: TIDBitmap absorbs repeats.
 
 The returned rows are kept in a ''seen set'' per scan: a radix tree
@@ -1046,8 +1557,12 @@ the last clear. A <code>LIMIT</code> bounds it. Its budget is
 <code>get_hash_memory_limit()</code> (work_mem times hash_mem_multiplier),
 since it is a hash-like table. barkcostestimate keeps plans inside it: an
 amgettuple path that needs the set and whose estimated rows per group,
-times 16 bytes, exceed the budget gets <code>disable_cost</code> added, so
-the planner takes a bitmap scan and a Sort. At run time the set grows past
+times 16 bytes, exceed the budget is marked disabled
+(<code>disabled_nodes</code>), so the planner takes a bitmap scan and a Sort.
+Not <code>disable_cost</code>: cost_bitmap_tree_node reuses the IndexPath's
+<code>indextotalcost</code> for the bitmap path, so that would rule out the
+bitmap scan as well, while the bitmap path does not inherit
+<code>disabled_nodes</code>. At run time the set grows past
 the budget rather than return a row twice, as a hashed RecursiveUnion's table
 does. Spilling would not help, since every entry must be tested in order.
 
@@ -1120,12 +1635,98 @@ Parallel CREATE INDEX is unaffected.
 '''Index-only scans.''' The entry holds a key, not the column's value, and
 its type is the class's storage type, so an index-only scan cannot return
 the extracted column. bark_canreturn, which the planner calls per column
-(index_can_return in plancat), answers false for it unless the class has
-procedure 14. Then the scan returns <code>fetch(key)</code> of the row's
-first entry. Procedure 14 is for classes whose single key determines the
-value (a scalar value under a class that also extracts arrays, say); a
-class that cannot rebuild the value from one key does not provide it. Fixed
-columns are returned as now, with the seen set.
+(index_can_return in plancat), answers false for it. A key does not
+determine its row's value: a row with several keys has an entry per key,
+and the NULL key stands for a NULL value, an empty value and a NULL
+element alike, so a value rebuilt from one entry could be a wrong value,
+which BARK never returns. (The design once let procedure 14 rebuild the
+value; M1c found the NULL key ambiguous, and the lead dropped it: MongoDB
+does not cover queries on a multikey path either.) Fixed columns are
+returned as now, with the seen set.
+
+'''As built (M1c).''' The scan follows this section, with these choices the
+section left open or that differ from it:
+
+* The keys on the extracted column are moved after the scan's other keys at
+  rescan, so the btree-style key code (bounds, skip scan, the page-satisfied
+  test) never reads them; only the boundaries do.
+* Boundaries are kept in index order: on a DESC column procedure 8's upper
+  element is a boundary's start. A procedure 8 declared with six arguments
+  is called with six, so <code>PG_NARGS()</code> tells a C function shared
+  by both declarations whether it has the flags.
+* <code>IS NULL</code> on the extracted column reads the NULL entries, and
+  <code>IS NOT NULL</code> every key and the NULL entries, both with
+  <code>xs_recheck</code>: a NULL entry may stand for an empty value.
+* Procedure 9 runs before the seen set, so a rejected entry never enters
+  it. A scan with no procedure 9 whose procedure 8 asks for a recheck is
+  an error, as is a key on the column of a class without procedure 8.
+* The boundaries are the last required key of A2's odometer
+  (<code>BarkArrayKeyState.mk</code>), so they position, re-descend and end
+  the scan with the code that walks equality arrays; no third cursor kind.
+* The seen set is filled as a page is read, so a page's copied items are
+  free of repeats; a mark on that page restores to them unchanged, and the
+  undo list covers the pages read after a mark. While a mark is set, the
+  set is not emptied for a new group of the fixed columns (a merge join
+  re-reads across groups), so it can then hold more than one group's rows.
+* The single-point shortcut applies under an MVCC snapshot only; any other
+  snapshot always uses the set, as the card for M1c asked.
+* Until M1d gives the planner per-index answers, the scan refuses rather
+  than answers wrong: a change of direction with the set in use, a
+  parallel scan that needs the set, and an ordering key on the extracted
+  column raise errors. bark_canreturn answers false for the extracted
+  column (an index-only scan would otherwise return keys as values).
+
+'''As built (M1d, in progress).''' Done: plancat sets
+<code>amcanparallel</code> false for an index with an extracted column (the
+same test that puts InvalidOid in its <code>sortopfamily</code>), so the
+planner never makes a parallel scan that needs the seen set; IndexSupportsBackwardScan asks
+<code>amproperty</code> (AMPROP_BACKWARD_SCAN, attno 0) and falls back to
+<code>amcanbackward</code> when the AM has none or does not answer, and
+bark_property answers backward_scan from the operator classes (it opens
+the index for bark_index_extracted_column), orderable, asc, desc,
+nulls_first and nulls_last false for the extracted column and every key
+column after it (they form no pathkeys; the generic code answers for the
+others and for INCLUDE columns), and distance_orderable for the leading
+column as SP-GiST does (an ordering operator whose result its sort family
+can sort). A cursor not declared SCROLL is not made scrollable over such
+an index, as over GIN. The scan's errors for a direction change and for a
+parallel scan with the set in use stay, for callers of the AM that do not
+ask the planner's questions. The costing is done: barkcostestimate as
+described under "Costing" below, with the work_mem penalty of "Memory" as
+<code>disabled_nodes</code>, because cost_bitmap_tree_node reuses
+<code>indextotalcost</code> and <code>disable_cost</code> would also rule out
+the bitmap scan. Tested by the "Costing" block of bark_multikey_scan.sql: at
+the default work_mem an index scan of one tenant wins, at work_mem 64kB the
+planner takes a sequential or bitmap scan, a single point and a
+ScalarArrayOp on the extracted column keep their index scans, and every plan
+matches a sequential scan. An ordered scan on the extracted column (step 3,
+below) takes the KNN rule, which counts every entry; its heap fetches are
+the rows the other columns' quals pass, since the column's own quals are
+only rechecked, so a LIMIT makes it win over a sort and a filter on the
+column alone does not.
+
+'''As built (M1d step 3), the ordering operator on the extracted column.'''
+match_pathkeys_to_index already offered it (the leading column of an
+ordered AM), and the scan now serves it rather than refusing. Procedure 8
+runs on the ordering key; its boundaries become the one required key and
+the scan walks them, with the seen set, in the direction that gives the
+operator's order: <code>backward</code> asks for descending key order, and
+a DESC column reverses the index direction. Each row comes back at its
+first entry with that entry's key as <code>xs_orderbyvals</code> (exact,
+so the operator must return the class's storage type: bark_property's
+distance_orderable and the scan both require it). The NULL result sorts
+last, as match_pathkeys_to_index requires (no NULLS FIRST pathkey); when
+the column's NULLS option puts the NULL entries first in the walk they are
+read after the keys by a second positioning on the NULL boundary alone. A
+strict operator with a NULL argument walks every entry and reports NULL.
+Search keys on the column neither position nor filter the walk; every row
+comes back with <code>xs_recheck</code>. A descending order needs an
+operator whose sort family orders its type descending, since an ordering
+pathkey is always ascending in its family (the test module's
+<code>|&gt;&gt;|</code> sorts in a family whose less-than is int4's
+<code>&gt;</code>, as <code>ORDER BY a |&gt;&gt;| 0 USING &gt;&gt;&gt;</code>).
+* A DEBUG1 message at scan start says whether the scan uses a seen set, for
+  tests.
 
 ==== Multikey metadata ====
 
@@ -1169,7 +1770,11 @@ Before inserting a row's keys, BARK inserts each of its markers that is
 not in the index yet, never coalesced, by the normal path. Markers are
 never removed, so a backend caches the markers it has seen present in
 <code>rd_amcache</code>, and a row whose markers are all cached costs
-nothing. CREATE INDEX writes each distinct marker once. Every reader skips
+nothing. CREATE INDEX writes each distinct marker once (tuplesort refuses two
+tuples with one heap TID, so parallel participants spool their copies with
+TIDs of their own on block InvalidBlockNumber, and the load writes the
+reserved one). A marker is a SINGLE entry, so a marker key too large for a
+page is refused. Every reader skips
 an entry with the reserved TID: bark_readpage before matching, barkbulkdelete
 before its callback, bottom-up deletion before offering TIDs to the table
 AM, the later K2 kill hints, and amcheck, which accepts the reserved TID
@@ -1205,8 +1810,8 @@ are not touched.
 '''Statistics.''' The cost model needs keys per row, ''K''. The meta page
 gains <code>uint64 bark_nkeys</code>, the number of (key, TID) members
 without markers. CREATE INDEX stores the count it inserted, and VACUUM, which
-already visits every member, stores the count it leaves (logged like the
-flag, once per VACUUM). barkcostestimate reads the meta page, as
+already visits every member (its cleanup-only scan too), stores the count
+it leaves (logged like the flag, once per VACUUM). barkcostestimate reads the meta page, as
 gincostestimate does, but only for an index with an extracted column, and
 takes ''K'' as <code>bark_nkeys</code> over the heap's reltuples, or 1 if the
 flag is clear. Between VACUUMs, ''K'' is as old as the last one.
@@ -1221,12 +1826,17 @@ over keys, rather than values, are not part of M1.
 
 '''Costing.''' barkcostestimate counts the entries a scan visits as the
 qual's selectivity times reltuples times ''K'', capped at the index's
-entries, with one descent per boundary that is not on the page before it,
-as the array scan is costed. It adds <code>cpu_operator_cost</code> per
-entry for the seen set and for procedure 9 when the boundaries ask for a
-recheck. It adds the work_mem penalty above, and for an ordered scan with a
-filter on the extracted column, the whole ordering range and a heap fetch
-per row. The index correlation is 0 when the extracted column is first. The
+entries. ''K'' is the meta page's member count over reltuples, as of the
+last CREATE INDEX or VACUUM, and 1 while the multikey flag is clear. The
+extracted column's first qual positions the scan, with one descent per
+boundary procedure 8 makes of its constant (run at plan time, as
+gincost_pattern runs extractQuery) or per element of a ScalarArrayOp; its
+other quals filter. It adds <code>cpu_operator_cost</code> per entry for
+the seen set (unless the flag is clear or the boundaries are one point) and
+for procedure 9 when the boundaries ask for a recheck. It adds the work_mem
+penalty above. An ordered scan with a filter on the extracted column, which
+would add the whole ordering range and a heap fetch per row, waits for the
+ordering operator on that column. The index correlation is 0 when the extracted column is first. The
 rows the scan returns are the qual's selectivity times reltuples, without
 ''K'': the scan returns each row once.
 
@@ -1254,14 +1864,53 @@ What that needs from M1, and where M1 provides it:
   array"). A query on a path without its marker is known to match each row
   at most once, and a class can then plan an index-only scan or an ordered
   scan with no Sort. Telling the AM "this scan needs no seen set" is an M5
-  extension of procedure 8. M1 stores, caches and reads the markers.
+  extension of procedure 8. M1 stores, caches and reads the markers. M5b's
+  extension: procedure 8 cannot see the index from its arguments, so BARK
+  passes the open index in <code>BarkQueryFlags.index</code> rather than
+  checking a class's markers itself (only the class knows which marker
+  belongs to a query), and the class answers in
+  <code>BarkQueryFlags.oneentry</code>. Procedure 8 runs at every rescan,
+  after the scan's snapshot, so the answer is never the plan's: a path that
+  gains its first array after a generic plan was made gets the seen set at
+  the next execution (markers go in before the row's entries, as the
+  multikey flag does). The planner runs procedure 8 with the index too, for
+  the cost only. The wildcard class sets the flag when no prefix of the
+  path, the document's root included, has a marker; an include projection
+  keeps the markers of the paths above its paths, and a member named
+  <code>""</code> of the root marks the root, since its members' paths are
+  the root's members' paths.
 * '''Write volume.''' A document with ''N'' projected paths is ''N''
   entries, inserted in one pass. Adjacent paths of one document usually
   land on one leaf, which is where a per-leaf WAL record would pay; M1
   leaves that to measurement.
 * '''Sorting by a path''' is an ordering operator whose procedure 8 returns
   the path's range, so MongoDB's array sort rule holds per path, the filter
-  rule as above.
+  rule as above. The range misses the documents without the path, which
+  have neither a key there nor a NULL entry, so <code>searchnulls</code>
+  cannot bring them back: procedure 8 sets
+  <code>BarkQueryFlags.orderrest</code>, and after the range the scan
+  reads the rest of the column (every key and the NULL entries) by a second
+  positioning, returning the rows it has not returned yet with a NULL
+  order value, last, with the seen set. ''As built (M5b part 2): the test
+  module's <code>doc |&lt;| 'path'</code> returns the smallest key
+  [path, value], FOR ORDER BY jsonb_ops; a path the projection drops is
+  refused at scan start. The range's entries are read twice.''
+* '''Qual selectivity.''' ''As built (WSEL): the test module's wildcard
+  operators (<code>#= #&lt; #&lt;= #&gt; #&gt;= #?</code>) estimate their
+  selectivity with <code>bark_wildcard_sel</code>, not the generic
+  <code>matchingsel</code>. <code>matchingsel</code> runs the operator over
+  every row of the column's statistics sample; a jsonb column's MCV and
+  histogram describe whole documents, not the per-path values these
+  operators test, so the sample buys no accuracy, only cost -- planning a
+  <code>#=</code> cost 0.25 to 0.68 ms against GIN's 0.04 to 0.08
+  (BENCHMARK-M5b.md), almost all of it the per-sample-row call, and it grew
+  with <code>default_statistics_target</code>. <code>bark_wildcard_sel</code>
+  returns a fixed selectivity per strategy -- equality the planner's
+  <code>DEFAULT_EQ_SEL</code>, a range <code>DEFAULT_INEQ_SEL</code>, path
+  existence <code>DEFAULT_MATCHING_SEL</code>, each scaled by the column's
+  NULL fraction -- without touching the sample. The estimate is coarse but
+  drives the index-vs-seqscan choice the same way, and planning no longer
+  scales with the statistics target.''
 
 Nothing in this list changes the on-disk format.
 
@@ -1270,12 +1919,13 @@ Nothing in this list changes the on-disk format.
 * Unique indexes, exclusion constraints and ON CONFLICT on an extracted
   column (M4). M1 refuses them.
 * GIN's query interface in scans (procedures 10-13; M2). M1 validates them.
-* Per-locator data (RUM's addInfo; M3).
+* Per-locator data (RUM's addInfo). M3 is closed: a composite key serves
+  it.
 * Wildcard and path-projection operator classes (M5). M1 provides markers,
   boundaries and compound keys for them.
 * More than one extracted column in one index.
-* An index-only scan of the extracted column without procedure 14; a
-  backward or scroll scan, or a parallel amgettuple scan, on such an index.
+* An index-only scan of the extracted column; a backward or scroll scan, or
+  a parallel amgettuple scan, on such an index.
 * A WAL record for several keys of a row on one leaf.
 * Clearing the multikey flag or a marker without REINDEX.
 * Key statistics in ANALYZE, and any operator class semantics: type order,
@@ -1285,6 +1935,685 @@ Nothing in this list changes the on-disk format.
   <code>@&gt;</code> and an element-order operator) and compare its results
   with GIN's <code>array_ops</code> and with a sequential scan on the same
   data.
+
+=== M4: unique indexes over multikey keys ===
+
+The design of record for M4; the implementation card follows from it. It
+builds on M1's terms (extracted column, fixed column, NULL key, marker) and
+on its "Uniqueness hooks".
+
+==== What is unique ====
+
+A unique index with an extracted column is unique over its entries' key
+columns: no two rows have an entry with equal key columns, that is, equal
+fixed columns and an equal key. Every row's keys are de-duplicated ("Keys of
+a row"), so a row may repeat a key in its value, and two rows conflict when
+they share one key under equal fixed columns. This is MongoDB's documented
+rule for unique multikey indexes: the constraint applies across separate
+documents, and one document's array may repeat a value. A compound index
+<code>bark(tenant, tags) UNIQUE</code> says that no two rows of one tenant
+share a tag; MongoDB's compound unique index over a scalar field and an
+array field means the same.
+
+'''NULLs.''' NULLs are distinct, as PostgreSQL's default for unique indexes
+has them, but per key: a key with a NULL in any key column is never checked
+and never conflicts. A NULL fixed column puts a NULL in every key of the
+row, so such a row is not checked at all, as today. A NULL value, an empty
+value or a NULL element is the NULL key, so it never conflicts, while the
+same row's other keys are still checked. So a unique index with an
+extracted column does not make the column's values unique: any number of
+rows may hold an empty array.
+
+'''NULLS NOT DISTINCT is refused''' on an index with an extracted column
+(bark_check_multikey_index). The NULL key stands for three things ("Keys
+of a row"), so under it a row with an empty array would conflict with a row
+with a NULL value or with <code>'{7,NULL}'</code>, which no user means. The
+executor's pre-check ("ON CONFLICT and the executor's pre-check" below) also
+could not find such a conflict: it scans with the column's conflict
+operator, and no operator over two values says "both have the NULL key".
+An insert that the pre-check passes and the index rejects is retried by
+ExecInsert without end. NULLS NOT DISTINCT over the fixed columns alone
+would be well defined. It is left out because PostgreSQL has a single
+per-index option.
+
+'''MongoDB's null and missing rules are the operator class's.''' MongoDB
+indexes a missing field and an explicit null as the key null, so a unique
+index accepts only one document that lacks the field. A null array element
+also indexes as null. An empty array indexes as undefined, so two documents
+with <code>a: []</code> conflict too; that is this note's reading of the
+documentation, not checked on a server. A sparse unique index skips
+the documents that lack the field, and a partial one skips those its filter
+rejects. DocumentDB's class emits those keys as ordinary, non-NULL BSON
+values (BSON null, undefined), so they conflict under BARK's default NULL
+rule, and BARK's NULL key never arises from a document. That is where
+pg_extended_btree's issue #17 puts the work too: "uniqueness constraints,
+specifically handling MongoDB's approach to null and missing fields", in the
+comparison and term logic of the class. MongoDB's sparse and partial unique
+indexes are partial indexes (<code>WHERE</code>), which BARK has. If
+DocumentDB expresses sparse in its term generation instead, by emitting no
+term for a missing path, that is a class matter as well; this note has not
+checked which it does.
+
+==== When the check runs ====
+
+'''Each key is checked as it is inserted.''' bark_insert_entries checks a
+row's keys one at a time, in the row's ascending key order, each under the
+exclusive lock of the leaf where the key's run starts, and inserts the key
+before releasing that lock. That is nbtree's protocol for one key
+(_bt_doinsert, _bt_check_unique, _bt_findinsertloc) applied N times: the
+check and the insert of a key are atomic with respect to every other
+inserter of that key, which must check from the same leaf. When key
+''k'' conflicts with a committed row the insert raises the unique violation
+as today. Keys 0..''k''-1 are already in the index, and the error aborts
+the transaction (or subtransaction) that inserted the heap tuple, so they
+are entries of a dead tuple, which VACUUM removes. A row that fails on its
+second unique index today leaves its first index's entry the same way.
+
+The alternative, checking all N keys before inserting any, is rejected.
+Without keeping every leaf locked from check to insert, another backend can
+insert a key between the two, so each key has to be checked again when it
+is inserted, and the first pass only makes the failing case cheaper: 2N
+leaf visits for every row that succeeds, to spare VACUUM ''k'' entries of
+one that fails. Keeping the leaves locked instead would hold up to N
+exclusive leaf locks at once, blocking every reader of those leaves for the
+whole row, and a document with a few hundred keys would exceed the
+per-backend limit on held LWLocks (MAX_SIMUL_LWLOCKS, 200, in lwlock.c).
+
+'''Cost.''' A row of N keys costs what M1's one pass costs, plus the
+per-key check: a search for the start of the key's run on the leaf the key
+goes on, and a heap fetch under SnapshotDirty for each entry of the key
+that is there (in a unique index, usually none, or the dead versions of
+one row). The descent is still shared. The one-pass rule changes in one
+place: a unique check must start on the first leaf that can hold the key,
+so, for a unique index, key ''i''+1 stays on L, or steps to R, by
+bark_search's move-right test for a unique check (the key alone, no heap
+TID), and then moves right to its heap TID's position with
+bark_insert_stepright as a single-key insert does. L is then the first
+leaf that can hold key ''i''+1, since key ''i'' is on L and sorts before
+it. M1's <code>Assert(nitups == 1 || !checkingunique)</code> in
+bark_insert_entries goes, and so does the Assert in bark_insert that a row
+with an extracted column has no unique check. A unique index never
+coalesces (bark_insert_state), with or without an extracted column, so
+every entry in it is SINGLE or OVERSIZED, as bark_check_unique expects.
+
+'''Waits.''' When key ''k'' conflicts with a row whose inserter or deleter
+is in progress, bark_insert_entries releases its leaf, waits
+(XactLockTableWait, or SpeculativeInsertionWait for a speculative
+inserter), and descends again for key ''k'', as M1's "Uniqueness hooks"
+require; keys 0..''k''-1 stay inserted. It waits holding no buffer lock,
+but with its own earlier keys in the index, where other inserters may
+wait on them. Waits on inserters cannot form a cycle between two rows. Say
+T1 waits on T2's entry of key ''a'' while T2 waits on T1's entry of key
+''b''. T1 inserted ''b'' before reaching ''a'', so ''b'' &lt; ''a''; T2
+inserted ''a'' before reaching ''b'', so ''a'' &lt; ''b''. Both rows insert
+in ascending key order under one opclass comparator, so this cannot hold.
+Waits on an in-progress deleter can form a cycle, as they can in nbtree
+with one key per row today (two UPDATEs that swap their keys). Multikey
+adds one shape: T1 waits on T2's delete of an old row that has key ''a'',
+while T2's new row waits on T1's entry of key ''b'', which T1 inserted
+first. T1's row and T2's new row share ''b'', so one of them was bound to
+fail; the deadlock detector aborts one, which is the outcome
+execIndexing.c's header accepts for exclusion constraints. A transaction
+that inserts two rows can deadlock with another as it can in nbtree.
+
+'''UNIQUE_CHECK_PARTIAL''' (ON CONFLICT's speculative insertion, and
+logical replication's conflict detection, which ExecInsertIndexTuples
+gives EIIT_NO_DUPE_ERROR) never waits and never errors: bark_check_unique
+returns at the first conflict, as _bt_check_unique does. The row's result
+is false if any key conflicted. Every key is still inserted, as nbtree
+inserts the entry, and once one key has conflicted the remaining keys are
+inserted without a check, since the result cannot change. The executor
+then kills the speculative tuple (table_tuple_complete_speculative), which
+makes all N entries dead, and retries from its pre-check, which is where
+an ON CONFLICT insert waits (next section). The AM never waits under
+PARTIAL, so the speculative path adds no wait between rows at all.
+
+==== ON CONFLICT and the executor's pre-check ====
+
+The executor finds conflicts without the AM as well. ExecInsert's
+pre-check, and logical replication's FindConflictTuple, call
+ExecCheckIndexConstraints, which scans the index under a dirty snapshot
+with one key per index column (check_exclusion_or_unique_constraint). The
+operators come from BuildSpeculativeIndexInfo (index.c), which asks the AM
+for each column's COMPARE_EQ strategy and errors when there is none.
+ExecOpenIndices calls it for ''every'' unique index of a table that an
+INSERT ... ON CONFLICT targets, arbiter or not, so today an ON CONFLICT
+insert into any table with a unique multikey index would fail there.
+
+'''The conflict operator.''' Two rows conflict on an extracted column when
+their values share a key: that is overlap, not equality. M4 adds
+procedure '''15''', translate-cmptype, <code>int2 (int4)</code>: GiST's
+procedure 12 in purpose and signature. For a BARK family,
+bark_translate_cmptype passes only COMPARE_OVERLAP to it and returns its
+strategy; every other compare type stays InvalidStrategy, and
+bark_translate_strategy stays COMPARE_INVALID, so the planner still reads no
+equality into a multikey operator, and a foreign key or a merge join still
+finds none. BuildSpeculativeIndexInfo, when a column has no COMPARE_EQ
+strategy, asks for COMPARE_OVERLAP before it errors. That is the only core
+change the pre-check needs. The operator is looked up with
+<code>get_opfamily_member(opfamily, opcintype, opcintype, strategy)</code>,
+as the equality is, so the class registers it under its input type.
+Core's <code>&amp;&amp;</code> is declared over <code>anyarray</code>, so
+the test class adds an overlap operator over <code>int4[]</code> under a
+name of its own. A new name keeps core's operator resolving as before, so
+the GIN comparisons in the test still plan. <code>amsupport</code> becomes
+15; barkvalidate checks the signature, barkadjustmembers makes it a soft
+dependency as gistadjustmembers does GiST's 12, and refuses it in a btree
+family as it refuses 7-14. bark_check_multikey_index refuses a unique index
+on an extracted column whose class does not translate COMPARE_OVERLAP.
+The strategy must be one that the class's procedure 8 accepts.
+
+'''The operator must agree with the keys.''' The class's overlap operator
+must be true exactly when the two values share a key that is not NULL. If
+it says false where the AM finds a conflict, ExecInsert retries without end:
+the pre-check passes, the index reports a speculative conflict, and the
+retry repeats both. If it says true where the AM finds none, ON CONFLICT
+fires for a row that could have been inserted. For arrays,
+<code>&amp;&amp;</code> qualifies: it ignores NULL elements, and an empty
+array overlaps nothing.
+
+'''The pre-check scan''' is an ordinary BARK scan: equality keys on the
+fixed columns and the overlap key on the extracted column, whose procedure
+8 gives one point boundary per key of the new value. It runs under a dirty
+snapshot, so it keeps a seen set ("Multikey metadata"), and returns each
+row once. That matters here: with a valid tupleid,
+check_exclusion_or_unique_constraint raises "found self tuple multiple
+times" for a row it sees twice. When the scan sets <code>xs_recheck</code>,
+index_recheck_constraint calls the overlap operator on the two values,
+which is exact. NULLs agree with the AM: under NULLS DISTINCT the pre-check
+passes a row with any NULL column, and such a row has only NULL keys or
+NULL fixed columns.
+
+'''One row may conflict with several.''' A new row <code>{1,2}</code>
+conflicts with a row <code>{1}</code> and a row <code>{2}</code>. The
+pre-check returns the first conflicting row it meets, which is the one
+holding the new value's smallest shared key. ON CONFLICT DO UPDATE updates
+that row only, and DO NOTHING inserts nothing. A single btree arbiter
+cannot produce this case, but PostgreSQL already accepts it for several
+arbiter indexes: one row per proposed row is affected. Logical
+replication reports such a row as one insert_exists conflict.
+
+==== Deferred checks, and UPDATE ====
+
+'''UNIQUE_CHECK_EXISTING''' is what unique_key_recheck (constraint.c)
+passes to recheck a deferred constraint. Only a constraint can be
+<code>DEFERRABLE</code>, and no constraint can use a BARK index until U1
+(parse_utilcmd.c refuses one "not a btree"), so it is unreachable in M4, as
+it is for scalar BARK indexes today; M4 only makes it right for when U1
+lands. Under it bark_insert extracts the row's keys and checks each, by
+the own-TID rule bark_check_unique already applies (M1's "Uniqueness
+hooks"), inserting nothing. Each key's check must also find the row's own
+entry, and raises nbtree's "failed to re-find tuple within index" if it
+does not, as _bt_check_unique does: procedure 7 is immutable, so a missing
+key means a broken class. A deferred row inserted under
+UNIQUE_CHECK_PARTIAL has every key in the index ("When the check runs"),
+so the recheck sees all of them.
+
+'''UPDATE of a row whose keys change partly''', from
+<code>{1,2,3}</code> to <code>{2,3,4}</code>, is a new heap version with a
+new TID (the column changed, so it is not HOT), and its keys 2 and 3 meet
+the old version's entries. Those are not conflicts. The updating
+transaction is the old version's deleter, and HeapTupleSatisfiesDirty
+treats a tuple deleted by the current transaction as invisible, so
+bark_check_unique's fetch under SnapshotDirty skips it. That is why a
+non-HOT UPDATE that keeps a btree unique key does not conflict with itself
+today; the own-TID rule is not involved, since the TIDs differ. Another
+transaction inserting key 2 meanwhile finds the old version with an
+in-progress deleter and waits for the update to finish, then finds the new
+version. An UPDATE that changes only another column of a non-HOT row
+re-inserts all of the row's keys (indexUnchanged), and each one meets the
+old version's entry of the same key, skipped the same way.
+
+'''Error detail.''' BuildIndexValueDescription (genam.c) prints each column
+with the output function of the opclass's input type, so it must never be
+given a key of the storage type: <code>array_out</code> on an
+<code>int4</code> key would crash. bark_check_unique passes it the row's
+values as bark_insert received them, and, when it returns a description (it
+returns NULL when the user may not see the columns, or under row security),
+adds the shared key, printed with the storage type's output function:
+<code>Key (tenant, tags)=(1, {1,2,3}) shares key 2
+with an existing row.</code> MongoDB's E11000 message also names the
+duplicate key, not the document. bark_load deforms a sorted key tuple and
+passes it to BuildIndexValueDescription, which for an extracted column is
+the same mistake; there it gives only <code>Duplicate keys exist.</code>,
+nbtree's detail when no description is available, and an insert of either
+row names the key.
+
+==== CREATE INDEX ====
+
+bark_load already raises the unique violation when a sorted tuple's key
+columns equal its predecessor's and have no NULL. With an extracted
+column, the sort holds one tuple per (key, TID), a row's keys are distinct,
+so two equal adjacent tuples come from two rows: the check is right for
+multikey as it stands. Markers are skipped before it, as they are now, and
+insert puts them in unchecked (bark_insert_markers); a marker's key equals
+no data key, so it can conflict with nothing. What the build must add is
+the treatment of dead rows.
+
+'''Dead rows are indexed and not checked.''' Before card B12,
+bark_build_callback dropped a row that table_index_build_scan reports with
+<code>tupleIsAlive</code> false, a RECENTLY_DEAD row among them, which
+nbtree indexes because an older snapshot may still read it through the
+index. B12 fixed that as nbtree does with its second spool
+(_bt_build_callback, and _bt_load, which merges it): in a unique index,
+dead rows go to a second sort that is never unique-checked, and bark_load
+compares a live tuple only with the previous ''live'' tuple. A multikey
+index cannot be unique in M1, so bark_build_row_keys still puts every key
+in the main sort. M4 takes that from B12 and adds to it: a dead row's keys
+go to the second sort. A
+RECENTLY_DEAD row that shares a key with a live row, which is what an
+UPDATE that keeps a key leaves, is then not a violation. A dead row's
+oversized keys go to the oversized pass with UNIQUE_CHECK_NO, and a live
+row's with UNIQUE_CHECK_YES. bark_insert_oversized_keys, which passes
+UNIQUE_CHECK_NO for every row in M1b, takes the check from its caller.
+The live keys they meet are already loaded, and the dead ones are
+invisible to bark_check_unique's dirty snapshot. Parallel workers spool
+their dead rows' keys to the second sort the same way.
+
+CREATE INDEX CONCURRENTLY's validate_index inserts the rows the first scan
+missed through bark_insert with UNIQUE_CHECK_YES
+(heapam_index_validate_scan), so they are checked key by key as any insert
+is.
+
+==== Scans, the planner and amcheck ====
+
+'''Scans are unchanged.''' A unique index with an extracted column is read
+as M1's index is read: the seen set, <code>xs_recheck</code> wherever M1
+sets it, the same cost model. Uniqueness gives a scan nothing to drop:
+every rule in M1's "Scans" that sets <code>xs_recheck</code> (a NULL entry,
+two keys on the extracted column, procedure 9's maybe, a filter under an
+ordering key) is about which rows match the qual, not about how many rows
+hold a key, so it applies as before. The one fact uniqueness adds, that a
+point boundary on the extracted column under equalities on every fixed
+column finds at most one live row, is not used to stop the scan early;
+M1's seen set already returns that row once.
+
+'''Core must not read the index as a unique key.''' Core takes an index
+with <code>indisunique</code> and an equality clause on every key column as
+proof that at most one row matches. relation_has_unique_index_for
+(indxpath.c) and the GROUP BY reduction in remove_useless_groupby_columns
+(initsplan.c) check the clause's operator against the column's opfamily,
+and a BARK family has no equality (bark_translate_strategy), so they never
+match the extracted column. has_unique_index (plancat.c), which marks a
+column's statistics <code>isunique</code> for the equality-selectivity
+estimators, and barkcostestimate's <code>numIndexTuples = 1.0</code> look
+only at the column number and the clause positions, not the operator. Both
+would be wrong here: a row may hold many keys, and the column's values are
+not unique (two rows may both hold the empty array). M4 makes
+get_relation_info set <code>info->unique</code> false for an index with an
+extracted column, in the loop where M1 already gives such a column
+InvalidOid in <code>sortopfamily</code>; every planner reader above,
+barkcostestimate included, reads that field. infer_arbiter_indexes reads
+<code>pg_index</code> directly, so ON CONFLICT inference still finds the
+index.
+
+Two commands pick a unique index from <code>pg_index</code> and only then
+look for its columns' equality operators, and so would fail on this one
+rather than pass it by. transformFkeyCheckAttrs (tablecmds.c) takes the
+first valid unique index over the referenced columns, constraint or not,
+and ATAddForeignKeyConstraint then raises "could not identify an equality
+operator for foreign key", even when a btree unique index on the same
+columns comes later in the list. REFRESH MATERIALIZED VIEW CONCURRENTLY
+(matview.c's is_usable_unique_index, then refresh_by_match_merge) raises an
+internal "missing equality operator" error the same way. M4 makes both
+skip an index any of whose key columns has no COMPARE_EQ strategy
+(IndexAmTranslateCompareType), so a foreign key cannot reference the
+extracted column, and a btree index beside it is still found. REPLICA
+IDENTITY USING INDEX (ATExecReplicaIdentity) refuses such an index with an
+error saying why, since replication's lookup by identity
+(build_replindex_scan_key) needs equality on every column.
+
+'''amcheck.''' bark_index_check and bark_index_parent_check gain
+<code>checkunique</code> (amcheck 1.8), as bt_index_check and
+bt_index_parent_check have it, for every unique BARK index. It walks each run of equal key columns, which may
+cross leaves, and reports index corruption when two entries of the run
+point to heap tuples visible to the check's MVCC snapshot, as
+bt_entry_unique_check does. The run is of (fixed columns, key), so for an
+extracted column that is exactly M4's rule. One row's entries are never in
+one run, since its keys are distinct, so the check needs no own-row
+exception. A run whose key has a NULL column is skipped, as nbtree skips
+keys with <code>anynullkeys</code>. Markers are skipped, as every reader
+skips them; a marker's key equals no data key, so it is alone in its run.
+heapallindexed was refused on an index with an extracted column (M1b)
+until 2026-10-15; it now forms each row's keys through procedure 7, as
+CREATE INDEX does (bark_extract_row_keys), and probes the filter for each,
+and markers are not fingerprinted.  Uniqueness does not change it.  It is
+still refused where the column coalesces keys of different images (a
+GIN-interface class without equalimage, bark_index_may_coalesce): a row's
+own key image may then be in no entry.
+
+==== As built (M4a) ====
+
+bark_check_multikey_index accepts a unique index on an extracted column
+and refuses NULLS NOT DISTINCT there. bark_insert_row_keys marks the keys
+to check (none under a NULL fixed column, never the NULL key), and
+bark_insert_entries checks each in ascending order under its leaf's lock,
+waits and re-descends for that key only, and under UNIQUE_CHECK_PARTIAL
+inserts every key with the result false after the first conflict, as
+"When the check runs" says; bark_belongs_on_leaf takes the key-only
+move-right test for a checked key. The error detail is the caller's row
+plus the shared key ("Error detail"); bark_load gives "Duplicate keys
+exist." for such an index. A dead row's keys go to the second sort in the
+build callback, which covers the parallel build, and
+bark_insert_oversized_keys takes the caller's check. get_relation_info
+sets info->unique false.
+
+Tests: bark_multikey_unique.sql (one-element arrays decided as a unique
+btree on a[1] does, row by row; repeated, shared and NULL keys; the failed
+row's earlier keys removed by VACUUM; an UPDATE keeping keys; compound
+keys; CREATE UNIQUE INDEX over a shared key and over an updated row's old
+version) and the isolation spec bark_multikey_unique_concurrent (a wait
+then failure or success, keys in opposite order, and the deleter-wait
+deadlock).
+
+==== As built (M4b) ====
+
+Procedure 15 is BARK_TRANSLATE_CMPTYPE_PROC, registered under ("any",
+"any") as GiST's procedure 12 is, since bark_translate_cmptype has only the
+operator family; amsupport is 15. barkvalidate checks its signature,
+<code>int2 (int4)</code>, and barkadjustmembers gives it a soft dependency
+on the family. bark_translate_cmptype passes it COMPARE_OVERLAP only;
+bark_translate_strategy is unchanged. BuildSpeculativeIndexInfo asks for
+COMPARE_OVERLAP when a column has no COMPARE_EQ strategy, the one core
+change for the pre-check. bark_check_multikey_index refuses a unique index
+whose procedure 15 names no operator under the input type. The test class
+<code>bark_int4_array_ops</code> gains <code>|&amp;&amp;|</code> over
+<code>int4[]</code> at strategy 1, beside core's <code>&amp;&amp;</code>
+over <code>anyarray</code>. transformFkeyCheckAttrs and matview.c's
+is_usable_unique_index pass by an index with a key column that has no
+COMPARE_EQ (outside a foreign key's PERIOD part), and ATExecReplicaIdentity
+refuses one with an error naming the family.
+
+Tests (bark_multikey_unique.sql): ON CONFLICT DO NOTHING and DO UPDATE on
+one-element arrays decided as on a unique btree over a[1]; several keys
+per row, with one, two and same-statement conflicts, NULL and empty values,
+and DO UPDATE choosing the row with the smallest shared key; the executor's
+pre-check run with a row's own TID (bark_multikey_precheck, as logical
+replication runs it), which returns each row once; a btree arbiter beside
+the BARK index; refusals for a class without procedure 15, one naming no
+operator, and one with the wrong signature; the foreign-key,
+REFRESH MATERIALIZED VIEW CONCURRENTLY and REPLICA IDENTITY guards, each
+with and without a btree index beside. The isolation spec adds two ON
+CONFLICT DO NOTHING inserts sharing a key: the second waits, then does
+nothing.
+
+==== As built (M4c) ====
+
+bark_index_check and bark_index_parent_check take checkunique (amcheck
+1.8, three-argument overloads beside the 1.7 forms, as amcheck 1.4 added
+them for btree). bark_check_unique_runs walks the leaves by right links,
+following each run of equal key columns across leaves, skipping markers
+and runs with a NULL key column (unless NULLS NOT DISTINCT), and reports
+"index uniqueness is violated" when two entries of a run point to rows
+visible to the check's MVCC snapshot (table_fetch_tid follows HOT chains).
+OVERSIZED keys are compared in full. pg_amcheck --checkunique passes it
+to BARK indexes when amcheck is 1.8. bark_check_unique, the insert's check,
+also refuses an entry with several heap TIDs in a unique index as
+corruption instead of reading only its first. Tests (check_bark_unique.sql):
+healthy scalar and multikey unique indexes with dead duplicates; violations
+of a scalar index, a run across a leaf boundary, OVERSIZED keys (and a
+same-prefix non-violation), a multikey index and a compound one, each
+reported and cleared when the duplicate goes.
+
+==== What M4 does not do ====
+
+* NULLS NOT DISTINCT on an index with an extracted column, or over its
+  fixed columns alone.
+* Exclusion constraints on an extracted column (the conflict operator would
+  serve them, but they come with U1's constraint surface).
+* Deferrable uniqueness and primary keys on the index (U1), and foreign
+  keys that reference an extracted column, which need an equality.
+* A unique wildcard index (M5): it is a unique index whose key is (path,
+  value), so M4 provides it, but its semantics, unique per path, are M5's
+  to state and test.
+* Any MongoDB value semantics: null, missing, undefined, type order and
+  sparseness are the class's.
+* A check of all of a row's keys before any is inserted.
+* Tests are the implementation card's: M4's rules, each against a unique
+  btree index over an expression that gives one key per row where it can
+  (<code>bark(a)</code> with one-element arrays against btree on
+  <code>a[1]</code>), and against a sequential scan elsewhere: a row that
+  repeats a key; two rows sharing one key; compound keys; NULL and empty
+  values; ON CONFLICT DO NOTHING and DO UPDATE with one and two conflicting
+  rows; an UPDATE that keeps some keys; a build over RECENTLY_DEAD rows;
+  concurrent inserters sharing keys (isolation spec, including the
+  deleter-wait deadlock); amcheck's checkunique on a corrupted index.
+
+=== M3: per-locator data (closed) ===
+
+'''Decision: M3 is not needed and is closed.''' An entry whose members
+carry a value and are ordered by it is in the same order as a composite
+key (key, value), and holds the same members. Its one gain is size, a
+little over half a composite key's per member for an 8-byte value. In return every
+reader that treats an entry as one key would have to learn otherwise, and
+every insert would rewrite an entry. Each use case below is served by a
+composite key. The limit they share is a scan and planner limit, ordering
+past the extracted column, which M3 would have had too. It goes to M2.
+
+==== What M3 would be ====
+
+A LIST variant, <code>(key, [(value, TID), ...])</code> with members
+ordered by (value, TID). No POSTING variant is possible: an sbm is a set of
+TIDs, and its only order is TID order. Values kept beside it in a parallel
+array cost at least the value per member and are not in value order. Under
+H1 a composite key <code>bark(k, v)</code> orders its entries by (k, v, TID),
+so an M3 entry is a run of composite-key entries with the key stored once.
+Any scan over one is the same scan over the other.
+
+What that costs, beyond writing the shape:
+
+* An entry would hold members that differ in a key column. The scan tests
+  a qual once per entry (bark_readpage), the split cuts an entry by TID
+  (bark_entry_cut, bark_singleval_cut), amcheck and H1 require the entries
+  of one key to have disjoint, ascending TID ranges (the README's
+  "Invariants"), and a pivot can only fall between entries. Each of these
+  would have to treat an M3 entry as a sequence of keys.
+* Every insert would rewrite a LIST entry through the overwrite path. The
+  insert measurements under "Value sets that outgrow one entry" give that
+  path's cost: 10M scattered rows took 11593 MB of WAL as LIST appends and
+  1672 MB as SINGLE entries (ks, run 5). Those were appends. In value
+  order a member lands inside the entry whenever values do not arrive
+  ascending, and a full entry must then be cut. A timestamp mostly
+  ascends; a score does not.
+* A composite key inserts a SINGLE, the cheap path, or coalesces into an
+  entry of equal (k, v) as any BARK key does. Distinct values mean
+  SINGLE entries.
+
+==== Worked examples ====
+
+Sizes are computed from the formats, with an 8-kB page, and are not
+measured. A SINGLE entry is an 8-byte IndexTupleData header plus its key
+columns, MAXALIGNed, plus a 4-byte line pointer.
+
+'''Term search ordered by a timestamp''' (RUM's
+<code>rum_tsvector_addon_ops</code> with <code>WITH (attach = 'ts', to =
+'body')</code>, queried with <code>ORDER BY ts &lt;=| now()</code>; the
+operator names are from RUM's README as this note recalls it). In BARK it is
+<code>bark(tags bark_int4_array_ops, ts)</code>: one entry (tag, ts, TID)
+per tag of a row. For <code>WHERE tags @&gt; '{7}' ORDER BY ts DESC LIMIT
+10</code>, tag 7's run is in ts order, and the extracted column has one
+point boundary, so no row repeats and no seen set is needed (M1's
+"Returning a row once"). A walk backward from the end of the run could stop
+after ten rows; the scan rule that lets the planner ask for it is the third
+example's, and it is the same rule for M3's entry.
+An entry is 8 + 4 + 8, with ts aligned, which is 24 bytes, plus 4: 28 bytes
+per (tag, row). A normalized table of (tag, ts) rows under nbtree takes
+the same 28, since deduplication needs equal (tag, ts). M3 would take a 6-byte TID and an
+8-byte value, 14 to 16 bytes per member, plus about 20 bytes per entry of
+up to about 170 members. RUM's own format stores a compressed TID and the
+value, so it should be near M3's size; this note has not measured it.
+The plain alternative, <code>bark(tags)</code> with LIST and POSTING
+entries and a Sort, costs at most 6 bytes per member, but it fetches every
+matching row from the heap before the first row comes back. With a
+varlena key, a DocumentDB term say, leaf prefix compression stores only
+the bytes a key does not share with its page's prefix, so a long key that
+repeats on a page costs little more than an int4 one.
+
+Two terms, <code>@&gt; '{7,9}'</code>, are two point boundaries, and M1
+returns their rows in no order. But ts is a column of the row, so both runs
+are in (ts, TID) order and a row has the same (ts, TID) in each. Their
+intersection is a merge in that order, which can stop at the LIMIT: the
+leapfrog of "Containment queries", over (ts, TID) instead of TID. It is a
+later scan feature, and it works the same with a composite key or with M3.
+
+'''Ranking by a per-key score''' (a weight per term and document). The
+score differs between a row's keys, so it cannot be a fixed column. It
+is part of the class's key, as M5's path is: a storage type (term, score),
+ordered by term, then score descending, with one key per distinct term from
+procedure 7. For an int4 term and a float4 score packed into an 8-byte
+pass-by-value key, an entry is 16 bytes plus 4: 20 per member, against 10
+for M3 with a 4-byte value. "By the score of term t" is an ordering
+operator of the class whose procedure 8 returns t's range. M1's ordered
+scan walks that range, so rows come back in score order, each once, with the
+key as <code>xs_orderbyvals</code>. A rank over several terms (a sum,
+BM25) needs neither design. It is the block-max work that "Containment
+queries" leaves to a text-search index. So does RUM's tsvector ranking,
+whose positions are variable-length data per occurrence, which M3's "small
+value" would not have held either.
+
+'''ORDER BY a column after the extracted one.''' MongoDB's compound index
+<code>{tags: 1, created: -1}</code> with <code>find({tags: "x"}).sort({created:
+-1})</code>: MongoDB's documented rule lets an index provide a sort on the
+fields after an equality prefix. This note takes that rule to hold when the
+equality field is multikey and the sort field is not an array, and has not
+checked it on a server. In BARK the index is <code>bark(tags ops, created
+DESC)</code>, and the entries for tag x are in created order, which is the
+order the query wants. M1 cannot produce the plan. build_index_pathkeys
+stops at the extracted column (InvalidOid in <code>sortopfamily</code>,
+M1's "Ordered scans"), and nothing makes that column redundant, as an
+equivalence class with a constant makes <code>a</code> redundant under
+<code>a = 5</code> for btree(a, b). So <code>ORDER BY created</code> never
+matches the index. M3 would not have changed that: its entry for tag x
+would be in the same order, behind the same pathkeys.
+
+So M2 needs a scan rule, which M3 would have needed too: an ordering
+operator on a fixed column after the extracted one, KNN as BARK serves it
+on a leading column today, when every earlier column has an equality and
+the extracted column has one point boundary. The KNN scan's two cursors
+then run inside that point's run, and no row repeats in it.
+match_pathkeys_to_index offers an ordered index's ordering operator on its
+leading column only, since a later column's entries are spread over one
+group per leading value. Which later column the run fixes depends on the
+query's quals, so the planner change is to build_index_paths, which has
+them, as well as to BARK's scan and barkcostestimate. This is RUM's
+<code>ORDER BY ts &lt;=&gt; x</code> form. A plain <code>ORDER BY
+created</code> would need the planner to learn from a qual that the
+extracted column is fixed, and is left out.
+
+'''As built (M2b part 1).''' The planner asks the AM. A new optional
+IndexAmRoutine callback, <code>amorderbyopcolumn(IndexOptInfo *, List
+*indexclauses)</code>, copied into IndexOptInfo by get_relation_info, names
+the one column besides the leading one on which an index that is both
+amcanorder and amcanorderbyop can serve an ordering operator for a path's
+clauses; step 6 of build_index_paths calls it and passes the column to
+match_pathkeys_to_index, which otherwise still matches the leading column
+only. The core change is those few lines; an AM without the callback is
+unaffected. barkorderbyopcolumn walks the key columns from the first: a
+btree column is fixed by an equality among its clauses, the extracted
+column by its only clause when that has a Const and procedure 8 returns one
+point boundary whose two ends are the same argument (bark_cost_boundaries
+now reports it), and the answer is the column after the fixed prefix,
+unless that is the extracted column (its own ordering walks boundaries, not
+a run). So <code>tags &amp;&amp; '{x}'</code> and <code>tags @&gt;
+'{x}'</code> fix the column; <code>'{x,y}'</code>, two clauses on the
+column, an IN list on an earlier column, or a Param in the extracted
+column's clause fix nothing and leave a Sort. A Param in an earlier
+column's equality does fix it.
+
+The scan (barkknn.c): at rescan bark_knn_fix_column puts each fixed
+column's value from the scan keys into a BarkScanBound, the extracted
+column's point from its boundary (bark_mk_point in barkscan.c, the NULL
+entries' boundary as a NULL) and a plain equality's argument with its ORDER
+proc, then the center; bark_search_bound and bark_binsrch_bound position the
+two cursors as a plain scan's bound does, and bark_knn_readpage ends a
+cursor at the first entry outside the run. A row's keys are distinct, so a
+row has at most one entry in a point's run: the cursors use no seen set and
+no row repeats. A NULL fixed value (a generic plan's <code>tenant =
+$1</code> with $1 NULL) makes the run empty and the scan returns nothing, as
+the qual matches nothing; a NULL center (12b6ed60d3a) returns every row of
+the run at distance infinity. A scan whose keys do not fix the prefix
+raises an error rather than return rows out of order; only a direct caller
+of the AM can build one, since the planner offers the path only when they
+do. barkcostestimate counts the quals on the columns before the ordered one
+as bounding the scan, the extracted column's point as an equality, and
+leaves the others as filters. bark_property answers
+<code>distance_orderable</code> false for the later column, since whether
+it is ordered depends on the query.
+
+Tested in bark_multikey_scan.sql ("RUM's addon ordering") on 30000 rows
+with bark(tags, created) and bark(tenant, tags, created), the run of a tag
+spanning many leaves, created repeating about six times (ties) and NULL in
+one row of 97: EXPLAIN shows an index scan with Order By and no Sort for a
+point qual, with and without a tenant equality, and a Sort for two keys,
+two clauses, @&gt; of two elements; 21 queries (LIMIT 7 to 3001 and none,
+centers inside and outside the data, an empty run, a tenant with no rows)
+match a Sort over a seqscan of the same rows in count, distinct ids, the
+exact distance sequence and the ids inside the cut, before and after
+inserts that split the run's leaves; and a generic plan (force_generic_plan)
+on both indexes with a NULL center, a NULL tenant, NULL LIMIT and real
+values, ten executions, each compared with the seqscan's rows of the run
+(none outside it, none missing without a LIMIT, the same distances). The
+lead's randomized check, 600 queries over six index shapes before and after
+inserts and deletes, matched a seqscan Sort exactly.
+
+'''As built (M2b part 2).''' The bark_multikey test module adds an array
+similarity class after RUM's rum_anyarray_ops, over int4[]: a % q when the
+cosine similarity |a &cap; q| / sqrt(|a| |q|) of the non-NULL element sets
+is at least 0.5, and a <=> q = 1 minus it. % is a GIN-interface operator
+(strategy with procedures 7/10/11 and 13): extractQuery returns q's
+distinct non-NULL elements with GIN_SEARCH_MODE_DEFAULT, and consistent
+(and triConsistent) count the query elements the row holds and apply the
+0.5 cosine threshold, with the row's own |a| from its recheck of the heap
+tuple. So BARK serves % by the bitmap and (M2c) index scans, through
+bark_int4_array_sim_ops and the procedure-13-less bark_int4_array_sim11_ops;
+the class bark(a sim_ops, cardinality(a)) adds the length as a fixed column.
+
+<=> is not served as an ordered index scan, and the planner leaves it to a
+Sort over the % bitmap. The KNN machinery (barkknn.c) cannot answer it
+without changes outside M2b's scope: it computes an entry's distance as the
+ordering operator of (that entry's key, the center), but <=>'s distance
+depends on m, the number of q's elements the row holds, which no single
+entry carries (bark(a, cardinality(a)) gives only a bound, 1 -
+min(n,q)/sqrt(nq), which would need a class bound function, not the
+operator); the candidate rows lie in q runs, one per query element, and
+bark_knn positions its two cursors in one run; a row has up to m entries in
+those runs, and bark_knn assumes one entry per row; and bark_mk_order_setup
+requires the ordering operator to return the column's key type, which
+float8 is not. The lower-bound route a true <=> scan would take (sort the
+GIN item list by m, return 1 - sqrt(m/q) with xs_recheckorderby and let the
+executor reorder) still computes the whole result first, no better than the
+Sort the planner already uses, so it is not built. The test
+(bark_multikey_sim.sql) runs every query's % as a bitmap and an index scan
+on all three classes, whole and under LIMIT 1 and 7, against a seqscan
+ordered by the exact distance, before and after DELETE/UPDATE/INSERT/VACUUM:
+60 of 60 equal; the exact <=> distances match a seqscan's; and ORDER BY a
+<=> q without % has no index path.
+
+==== Which operator classes would need it ====
+
+None of M2's or M5's. M5's keys are (path, value), and its sort on a path
+is key order. RUM's <code>*_addon_ops</code> classes are the timestamp
+example above. RUM's README describes <code>rum_anyarray_ops</code> as
+storing each array's length with its elements, for the <code>&lt;=&gt;</code>
+similarity ordering; this note has not checked RUM's source. A per-row
+value that is carried, not ordered, is a fixed column after the extracted
+one, <code>bark(tags ops, cardinality(tags))</code>. Entries of equal
+(tag, length) coalesce, so it costs between a LIST's 6 bytes per member and
+a SINGLE's 20, for an int4 key and an int4 length. M2 can also do without
+it. With RUM's cosine-like measure, as
+this note understands it, a row that matches ''m'' of the query's ''q''
+elements has at least ''m'' elements, so its similarity is at most
+&radic;(m/q). That bounds its distance from below, which is what
+<code>xs_recheckorderby</code> and the executor's reorder queue
+(IndexNextWithReorder) take, and the heap value gives the exact distance.
+M2 chooses between the two; neither needs M3.
+
+'''Upgrade path.''' If composite-key indexes of this shape turn out too
+large in practice, the cheaper change is a more compact leaf format for
+entries that share their leading columns, an extension of leaf prefix
+compression past the first column. It keeps one key per entry, so no reader
+changes. Its ceiling is the 12 bytes of header and line pointer that every
+entry keeps.
 
 == Ground rules ==
 
