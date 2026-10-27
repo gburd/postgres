@@ -1482,7 +1482,7 @@ clear stays logged ("WAL").
 
 Versioned entries.  The marking is per entry and is decided by matching an
 entry's members to the TIDs the scan killed.  An entry that also carries a
-version tag ((key, TID, tag), phase 5b) is reported dead by the table AM
+version tag ((key, TID, tag), "Version tags") is reported dead by the table AM
 for that tag, and the same matching applies with the tag compared too: a
 kill names one (TID, tag) member, an entry is marked when all its members
 are killed, and simple deletion offers them as known deletable.  Nothing
