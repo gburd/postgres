@@ -3030,7 +3030,10 @@ END $$;
 -- A collation other than C: ICU's root locale where ICU is available.
 DO $$
 BEGIN
-  IF EXISTS (SELECT 1 FROM pg_collation WHERE collname = 'und-x-icu') THEN
+  -- ICU collations exist in every database but work only in one whose
+  -- encoding ICU supports (not SQL_ASCII)
+  IF EXISTS (SELECT 1 FROM pg_collation WHERE collname = 'und-x-icu') AND
+     getdatabaseencoding() <> 'SQL_ASCII' THEN
     CREATE COLLATION bark_pfx_coll FROM "und-x-icu";
   ELSE
     CREATE COLLATION bark_pfx_coll FROM "POSIX";
