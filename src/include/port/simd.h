@@ -396,6 +396,22 @@ vector8_and(const Vector8 v1, const Vector8 v2)
 #endif							/* ! USE_NO_SIMD */
 
 /*
+ * Return the bitwise AND of the first input with the complement of the
+ * second (v1 & ~v2).
+ */
+#ifndef USE_NO_SIMD
+static inline Vector8
+vector8_andnot(const Vector8 v1, const Vector8 v2)
+{
+#ifdef USE_SSE2
+	return _mm_andnot_si128(v2, v1);
+#elif defined(USE_NEON)
+	return vbicq_u8(v1, v2);
+#endif
+}
+#endif							/* ! USE_NO_SIMD */
+
+/*
  * Return the result of adding the respective elements of the input vectors.
  */
 #ifndef USE_NO_SIMD
