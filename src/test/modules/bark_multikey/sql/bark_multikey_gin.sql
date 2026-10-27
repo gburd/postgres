@@ -138,12 +138,12 @@ FROM mp_any;
 -- A bitmap scan of a partial match reads each boundary straight into the
 -- TIDBitmap (bark_mk_gin_key), so the bitmap's work_mem bounds it: at 64kB
 -- it goes lossy, at 64MB it stays exact, and the rows are the seqscan's
--- either way.  Every row holds 'pp', one key of 30000 rows in POSTING
+-- either way.  Every row holds 'pp', one key of 40000 rows in POSTING
 -- entries; 'p' matches it and the 'p<n>' keys, 'q1' some rows, 'zz' none.
 -- The heap rows are wide, so that 64kB of bitmap cannot hold every page.
 CREATE TABLE mb (id int, t text[] COLLATE "C", pad text);
 INSERT INTO mb SELECT i, ARRAY['pp', 'p' || (i % 37), 'q' || (i % 11)], repeat('x', 200)
-FROM generate_series(1, 30000) i;
+FROM generate_series(1, 40000) i;
 CREATE INDEX mb_bark ON mb USING bark (t bark_text_prefix_ops);
 VACUUM ANALYZE mb;
 SELECT bark_index_check('mb_bark');
