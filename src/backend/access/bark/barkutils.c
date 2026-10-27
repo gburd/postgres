@@ -2085,7 +2085,7 @@ bark_form_list(TupleDesc tupdesc, IndexTuple key, ItemPointer tids, int ntids)
  * duplicate-heavy index is one to a few bytes each rather than the six a raw
  * ItemPointerData takes.  The mapping and encoding are GIN's; sharing them
  * keeps BARK's coded LIST the same size as GIN's posting list on the same
- * locators (the V6 benchmark).
+ * locators.
  *
  * An index whose TID stride (bark_index_tid_stride) does not fit 11 bits, a
  * table whose locator offsets go past 2047, gives the offset as many bits as
