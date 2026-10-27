@@ -19,6 +19,8 @@ tests += {
       'bark_knn_inttypes',
       'bark_codedlist',
       'bark_l1_cache',
+      'bark_btree_impl',
+      'bark_lpdead',
     ],
     'regress_args': ['--temp-config', files('../injection_points/extra.conf')],
     # The injection points are run in the same backend, so disable
@@ -37,6 +39,9 @@ tests += {
       'bark_root_split_race',
       'bark_l1_concurrent',
       'bark_walk_left',
+      'bark_lpdead_snapshot',
+      'bark_unique_rebuild',
+      'bark_excl_hot',
     ],
     'regress_args': ['--temp-config', files('../injection_points/extra.conf')],
     # Injection points are cluster-wide.
@@ -56,6 +61,9 @@ tests += {
       't/010_bottomup_wal_level.pl',
       't/011_insert_multi_recovery.pl',
       't/012_codedlist_recovery.pl',
+      't/013_btree_impl_dump_upgrade.pl',
+      't/014_lpdead_standby.pl',
+      't/015_page_validator.pl',
     ],
   },
 }

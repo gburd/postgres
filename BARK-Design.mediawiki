@@ -220,14 +220,43 @@ locator than the descriptor states. ''Status:'' BARK leaves
 <code>amcanvarlocator</code> false, because its format stores a fixed 6-byte
 <code>ItemPointerData</code>: SINGLE entries keep the locator in
 <code>t_tid</code>, LIST entries are arrays of it (a coded LIST packs the
-offset into 11 bits), and POSTING entries map a TID to the 64-bit key
-<code>block * MaxHeapTuplesPerPage + offset - 1</code>.
+offset into <code>max(11, bits of the stride)</code> bits), and POSTING
+entries map a TID to the 64-bit key <code>block * stride + offset - 1</code>,
+where the stride is the table's <code>max_offset</code> at CREATE INDEX,
+kept in the meta page (<code>bark_tid_stride</code>).
 <code>index_check_locator()</code> therefore admits a BARK index only on a
-table whose locator is fixed-width and fits in 6 bytes, and
-<code>bark_build()</code> refuses a table whose <code>max_offset</code>
-exceeds <code>MaxHeapTuplesPerPage</code>, the bound the POSTING key
-needs (the coded LIST's 2047 is looser); <code>ginbuild()</code> refuses
-such a table too.
+table whose locator is fixed-width and fits in 6 bytes; a larger
+<code>max_offset</code> (up to <code>MaxOffsetNumber</code>) is indexed, with
+the mappings laid out for it. <code>ginbuild()</code> refuses such a table.
+
+''As built (2026-10-20, TID stride).'' Phase 2 first refused, in
+<code>bark_build()</code>, a table whose <code>max_offset</code> exceeds
+<code>MaxHeapTuplesPerPage</code>; the refusal is gone. CREATE INDEX stores
+the table's <code>max_offset</code> as the index's TID stride in what was
+the padding after <code>bark_allequalimage</code>, so a heap index's pages
+are unchanged and an older meta page reads 0, meaning
+<code>MaxHeapTuplesPerPage</code>; no version change. Every TID mapping takes
+the stride: the POSTING key, the coded LIST (heap's 11 offset bits are
+GIN's; MaxOffsetNumber at BLCKSZ 8192 takes 12), and the scan seen set's
+radix-tree key. ADD_TID and INSERT_SWAP redo recompute their entry from the
+logged TID, so a record of an index whose stride is not heap's carries it
+after its struct. aminsert and the build callback refuse a TID past the
+stride (the table's locators changed without a rebuild). A GIN-interface
+index scan, whose result is a TIDBitmap of BARK's own, folds an offset past
+<code>TBM_MAX_TUPLES_PER_PAGE</code> into further bitmap pages of the same
+heap block, one-to-one and in TID order; the executor's bitmaps are not
+folded, since the planner makes no bitmap scan of such a table. REINDEX and
+ALTER TABLE ... SET ACCESS METHOD rebuild with the new table's stride. Tests:
+<code>bark_locator.sql</code> (the stride through CREATE INDEX [CONCURRENTLY],
+SET ACCESS METHOD both ways and REINDEX; the mappings on synthetic TIDs at
+291 and MaxOffsetNumber, offsets 291/292 and 2047/2048, blocks 0 and
+MaxBlockNumber; the insert guard), <code>bark_wideblock.sql</code> on
+<code>bark_test_wideblock</code>, a heap whose TIDs fold seven blocks into
+one, so offsets reach 2037 (builds, every entry shape, every scan, VACUUM,
+bottom-up deletion, CIC, each compared with a seqscan and checked by
+<code>bark_index_check</code>), and <code>t/002_wideblock_recovery.pl</code>
+(standby replay under <code>wal_consistency_checking</code>, and crash
+recovery).
 The other fields ask nothing of an index AM: <code>stable</code> and
 <code>old_version_retained</code> are the executor's, and the bitmap
 callbacks are the table AM's. A wider locator would need a format change;
@@ -917,9 +946,27 @@ Each entry is marked ''done'' with its commits on <code>idxam</code>,
   (nbtree's <code>_bt_compare</code> forward optimization). ''(done:
   80e5ab22ec1)''
 * '''K2''' -- dead-tuple hints from scans and simple deletion before a split.
-  After <code>amgetbatch</code> (CF 4351) is in core and BARK adopts it, since
-  the hint goes through <code>amkillitemsbatch</code>. ''(blocked on
-  cf/4351 and G1)''
+  ''As built:'' through amgettuple's kill_prior_tuple, as nbtree's
+  _bt_killitems (with <code>amgetbatch</code>, CF 4351, the hint moves to
+  <code>amkillitemsbatch</code>, under G1).  A scan leaving a leaf marks
+  LP_DEAD the entries all of whose TIDs it killed: a SINGLE or OVERSIZED
+  entry for its one TID, a LIST, coded LIST or POSTING only when every
+  member died, as nbtree requires of a posting list.  The marks and
+  BARK_HAS_GARBAGE are unlogged hints (BufferBeginSetHintBits,
+  MarkBufferDirtyHint), masked by bark_mask; a plain MVCC scan, which drops
+  its pin, marks only a page whose LSN is unchanged, nbtree's dropPin rule.
+  Scans skip marked entries unless they started in recovery; the unique
+  check skips them and marks the entries of rows its fetch finds dead; the
+  GIN-interface scan, with no leaf position, marks nothing.  An insert that
+  would split a leaf first runs simple deletion (bark_simple_delete,
+  nbtree's _bt_simpledel_pass), which shares bottom-up deletion's pass and
+  XLOG_BARK_DELETE record and its conflict horizon.  OVERSIZED entries are
+  marked but left to VACUUM, which frees their chains.  Nothing in BARK
+  relied on pages without unlogged changes beyond bark_mask: the level-1
+  cache validates by page contents, not LSN.  regress/mvcc's index stays at
+  16 kB as nbtree's (64 kB before), and isolation/horizons matches nbtree's
+  with <code>default_btree_implementation = bark</code>.  See "Dead-entry
+  hints and simple deletion" in the README.''
 * '''G1''' -- adopt <code>amgetbatch</code>: <code>bark_readpage</code> fills
   an <code>IndexScanBatch</code>, and the scan position, mark/restore, the
   pin rule and parallel seize/release move to the batch layer; KNN keeps
@@ -997,6 +1044,61 @@ BENCHMARK-2026-10b.md, at 5d4e2883b10)
   not started)''
 * '''N2''' -- IS NULL and IS NOT NULL position and stop scans, as nbtree's
   do. ''(held: card written, not started)''
+* '''RT''' -- three recommendations of the RethinkDB review
+  (<code>/scratch/postgres-idxam/scratch-rethink/RETHINKDB-REVIEW.md</code>,
+  R3.1, R1 and R5), done before phase 5b of the versioned-entry design:
+  one pivot-suffix reserve, a page validator after every page change in
+  cassert builds, and a read stream in VACUUM's scan. ''(done, branch
+  bark-rethink: see "As built (RethinkDB review)" below)''
+
+'''As built (RethinkDB review).'''
+* ''R3.1, one pivot-suffix reserve.'' <code>BarkPivotSuffixReserve</code>
+  in bark.h replaces six hand-written <code>MAXALIGN(sizeof(ItemPointerData))</code>
+  reserves (leaf free space, the pivot itself, the split's and the build's
+  high-key estimate, the merge's target, the inline limit); the version tag
+  grows it from 8 to 16 bytes in one line. RethinkDB's
+  <code>leaf_node.cc</code> documents the bug it avoids: an optional field
+  counted in one size calculation and not another. A deterministic
+  workload's 3495 pages were byte-identical before and after.
+* ''R1, the page validator.'' amcheck's checks of one page moved to
+  <code>barkverify.c</code> (<code>bark_page_verify</code>), grouped SHAPES
+  (no catalog, no comparator), ORDER, CONTENTS and COMPLETE; amcheck calls
+  it, its messages unchanged. In cassert builds every function that ends a
+  critical section on a BARK page runs SHAPES and ORDER on each page it
+  changed, after the critical section and under the lock, and WAL redo runs
+  SHAPES on each page it replays. A failure is an ERROR in a backend (the
+  change is logged, so a PANIC would only replay it again) and a PANIC in
+  redo. From RethinkDB's <code>leaf::validate</code>, run after every node
+  mutation in its debug builds; sqlxtc's port caught a planted one-byte
+  fault its own test oracle missed. The developer option
+  <code>bark_verify_pages</code> (cassert builds only, on by default) turns
+  it off. A change of one or a few adjacent entries checks those entries
+  (and their order against the entry on each side), and every 32nd such
+  check in a backend the whole page; other changes check the whole page;
+  redo checks one such record in 32, whole, and every other record in
+  full. t/015_page_validator.pl plants a LIST count fault and an order
+  fault next to an ADD_TID (the INSERT fails at the call site; with the
+  validator off only amcheck reports the page; the standby's redo PANICs),
+  one away from it (a later change's whole-page check reports it), and
+  faults in a meta page and an overflow page. No false positive in the
+  BARK suites, core regress and isolation, or 027_stream_regress with
+  wal_consistency_checking. Cost under cassert: 5.6x on a long-LIST write
+  workload with every page checked whole, 1.9x bounded, 1.5x with the
+  shapes of the touched entries only; 1.17x on the BARK suites (README,
+  "Page validator").
+* ''R5, VACUUM's read stream.'' nbtree's c5c239e26e3 ported to
+  <code>bark_vacuum_scan</code>: a <code>block_range_read_stream_cb</code>
+  stream over the data blocks, re-armed for blocks added during the scan;
+  backtracking keeps <code>ReadBufferExtended</code>. Measured on
+  c7i.4xlarge (gp3 EBS, release build, shared_buffers 128MB, server
+  restarted and OS cache dropped before each timed VACUUM, PARALLEL 0;
+  10M rows, 30% deleted, four indexes (k), (d), (h), (v); median of 5):
+  VACUUM's reads in pg_stat_io fell from 142,195 to 19,849 for the same
+  2.6 GB, but the time did not: BARK 17.7 s before and 18.2 s after,
+  nbtree 18.6 s and 18.7 s, bark/btree 0.95 and 0.97 (pairwise 0.93-0.96
+  and 0.95-0.98). The heap passes dominate, and the volume serves 8 kB
+  reads in order well enough that combining them gains nothing here; the
+  win, if any, is on slower or contended storage.
 
 '''M-series -- documents (multikey)'''
 
@@ -1323,7 +1425,8 @@ scan requires an MVCC snapshot (nbtree's dropPin argument) and errors
 otherwise; no SQL reaches that today, since exclusion constraints are
 refused for multikey classes. The seen set is off for these scans (a TID in
 several boundaries' streams is merged into one row already), and
-kill_prior_tuple is ignored (no leaf position, no LP_DEAD hints).
+kill_prior_tuple is ignored (no leaf position to mark), though its reads
+skip the entries other scans marked LP_DEAD.
 bark_property keeps <code>index_scan</code> false when the column is not
 the first: rows come back in TID order, and the planner would take the
 scan to return the columns before it in order (pathkeys, merge joins, KNN).
@@ -1777,7 +1880,7 @@ reserved one). A marker is a SINGLE entry, so a marker key too large for a
 page is refused. Every reader skips
 an entry with the reserved TID: bark_readpage before matching, barkbulkdelete
 before its callback, bottom-up deletion before offering TIDs to the table
-AM, the later K2 kill hints, and amcheck, which accepts the reserved TID
+AM, the K2 kill hints, and amcheck, which accepts the reserved TID
 only on a SINGLE entry of a column with markers. The class reads a marker
 through <code>bark_index_has_marker(Relation, Datum key)</code>, one descent
 to (key, reserved TID); a planner support function of the class can call it
@@ -1839,6 +1942,70 @@ would add the whole ordering range and a heap fetch per row, waits for the
 ordering operator on that column. The index correlation is 0 when the extracted column is first. The
 rows the scan returns are the qual's selectivity times reltuples, without
 ''K'': the scan returns each row once.
+
+'''As built (HOT, amcomparedatums).''' BARK implements core's
+<code>amcomparedatums</code> (CF 5556) as barkcomparedatums, so an UPDATE
+whose new value gives a BARK index the entries the old one gave can be
+HOT. Since CF 5556 v43 core does not ask about a column the index can
+return (amcanreturn) and compares those by image itself; BARK returns
+every column but the extracted one, except in an index whose extracted
+column uses GIN's query interface, which returns none. The scalar and
+INCLUDE columns of such an index compare by image (datum_image_eq). The
+extracted column runs procedure 7 on both values through
+bark_extract_row_keys and compares the sorted, distinct keys pairwise by
+procedure 1 and by image, NULL keys alike; every marker of the new value
+must be among the old value's, since a new marker is an insert the index
+needs and markers are never removed. A GIN-interface column that is not
+equalimage and coalesces compares by procedure 1 only: its entries keep
+the first row's image of an equal key, as GIN's do. Not-ready and
+invalid indexes answer no. Core does not ask about an
+exclusion-constraint index: only a scalar column can be in a BARK
+exclusion constraint, so every column of one can be returned, and core
+keeps its entries only for the same value, which needs no new check of
+the constraint. Unique indexes are
+answered like any other (the HOT chain keeps the old entries pointing at the live
+version, so later inserts still conflict), though core asks only about a
+partial one. An optional opclass procedure that answers without
+extracting (CF 5556's "keys-changed") is not used yet; its number would
+be 16, since BARK's procedure 15 is translate-cmptype. Under cassert a
+yes is checked by forming both values' leaf entries and comparing their
+bytes. Tests: bark.sql (scalar, INCLUDE, numeric scale),
+bark_multikey_hot.sql (reorder, add and remove elements, NULL and empty
+values, markers, GIN int4 and numeric with and without coalescing, a
+fixed column before the extracted one, a GIN-interface index's fixed and
+INCLUDE columns, unique and partial unique),
+bark_wildcard.sql (paths the projection drops and keeps, a scalar
+becoming an array, number scale), and the isolation spec
+bark_multikey_hot_epq (the waiting UPDATE compares with the version it
+waited for).
+
+'''As built (BARK as a btree implementation).''' Core's implementation
+hook (<code>pg_index.indimplam</code>, <code>IndexAmRoutine.amimplements</code>,
+<code>default_btree_implementation</code>) lets an index AM's code serve
+indexes created <code>USING btree</code>. barkhandler sets
+<code>amimplements = BTREE_AM_OID</code>; nothing else in BARK changed
+for it, because BARK never tests relam and a btree class's family is
+btree's, so every column takes the scalar path (no extracted column, no
+procedure past 6, no procedure 15). Core's agreement check was relaxed
+for it: an implementation may number more support procedures (BARK's
+15 against btree's 6) and may have amstrategies 0; the relcache's
+opclass cache keeps the procedures for the largest count asked for. The
+<code>&lt;~&gt;</code> operators in btree's integer_ops give a
+BARK-implemented int btree index KNN paths that an nbtree one lacks, a
+capability of the implementation. btree's
+<code>deduplicate_items</code> (off: SINGLEs only, through
+bark_index_coalesces) and <code>vacuum_cleanup_index_scale_factor</code>
+(ignored) are BARK reloptions too. bt_* tools refuse such an index,
+bark_index_check and pageinspect's bark_* accept it; pg_amcheck checks
+it as a BARK index (by pg_index.indimplam). REPACK sorts on it (tuplesort_begin_cluster reads only opclass
+data). Multikey classes still need <code>USING bark</code>. Run with
+<code>default_btree_implementation = bark</code> cluster-wide, the core
+regression and isolation suites show no wrong result or crash; their
+differences are plans, one size (an empty index's two pages),
+<code>\d</code>'s "implemented by", index properties and one error
+detail; since K2, regress/mvcc and isolation/horizons match nbtree's. Tests:
+bark_btree_impl.sql and t/013_btree_impl_dump_upgrade.pl (bark module),
+test_index_impl.
 
 ==== Wildcard indexes as the check ====
 
@@ -2349,7 +2516,10 @@ visible to the check's MVCC snapshot (table_fetch_tid follows HOT chains).
 OVERSIZED keys are compared in full. pg_amcheck --checkunique passes it
 to BARK indexes when amcheck is 1.8. bark_check_unique, the insert's check,
 also refuses an entry with several heap TIDs in a unique index as
-corruption instead of reading only its first. Tests (check_bark_unique.sql):
+corruption instead of reading only its first, and bark_index_check reports
+one, with or without checkunique. Whether an index is unique, for its
+writers, is indisunique, not ii_Unique, which CLUSTER, VACUUM FULL and
+REPACK clear (bark_index_coalesces). Tests (check_bark_unique.sql):
 healthy scalar and multikey unique indexes with dead duplicates; violations
 of a scalar index, a run across a leaf boundary, OVERSIZED keys (and a
 same-prefix non-violation), a multikey index and a compound one, each
