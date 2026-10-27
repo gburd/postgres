@@ -1472,7 +1472,7 @@ CREATE INDEX bark_recycle_idx ON bark_recycle USING bark (a);
 INSERT INTO bark_recycle SELECT g FROM generate_series(1, 50000) g;
 -- Record the starting size, then run four disjoint cycles.
 CREATE TEMP TABLE bark_recycle_sz AS
-  SELECT pg_relation_size('bark_recycle_idx') / 8192 AS base_pages;
+  SELECT pg_relation_size('bark_recycle_idx') / current_setting('block_size')::int AS base_pages;
 -- cycle 1
 DELETE FROM bark_recycle WHERE a > 1000;
 VACUUM bark_recycle;
@@ -1536,7 +1536,7 @@ INSERT INTO bark_recycle_big
   SELECT repeat('k', 4000) || lpad(g::text, 8, '0')
     FROM generate_series(1, 400) g;
 CREATE TEMP TABLE bark_recycle_big_sz AS
-  SELECT pg_relation_size('bark_recycle_big_idx') / 8192 AS base_pages;
+  SELECT pg_relation_size('bark_recycle_big_idx') / current_setting('block_size')::int AS base_pages;
 -- cycle 1
 DELETE FROM bark_recycle_big;
 VACUUM bark_recycle_big;
@@ -1558,7 +1558,7 @@ INSERT INTO bark_recycle_big
   SELECT repeat('m', 4000) || lpad((3000 + g)::text, 8, '0')
     FROM generate_series(1, 400) g;
 VACUUM bark_recycle_big;
-SELECT (pg_relation_size('bark_recycle_big_idx') / 8192) <= base_pages * 2
+SELECT (pg_relation_size('bark_recycle_big_idx') / current_setting('block_size')::int) <= base_pages * 2
          AS overflow_growth_bounded
   FROM bark_recycle_big_sz;
  overflow_growth_bounded 
