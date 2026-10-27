@@ -2689,11 +2689,17 @@ that sees MKTAGS and an rd_index unique or exclusion sets it
 (bark_note_conversion: the first insert of a statement, through
 bark_insert_state; the non-MVCC rescan of a constraint check; VACUUM's
 bulkdelete, or its cleanup when bulkdelete did not run), under the meta
-page's exclusive lock, logged whole, as BARK_META_MULTIKEY is.  Nothing
-in recovery sets it.  From then on bark_indexmaykeeplocator answers false
-whatever rd_index says, so a constraint dropped mid-conversion does not
-let updates keep locators again: the barrier must see every writer that
-could still add a tagged entry.  amindexcanversion stays MKTAGS: an update
+page's exclusive lock, logged whole, as BARK_META_MULTIKEY is.  The
+caller read the bits unlocked, so they are checked again under the lock
+(bark_change_conversion_flags; the injection point
+bark-conversion-flags-before-lock is just before it): a backend that finds
+CONVERTING set by another, or MKTAGS gone because a VACUUM completed the
+conversion meanwhile (only a scan under AccessShareLock can be outlasted
+so), changes nothing.  Nothing in recovery sets it.  From then on
+bark_indexmaykeeplocator answers false whatever rd_index says, so a
+constraint dropped mid-conversion does not let updates keep locators
+again: the barrier must see every writer that could still add a tagged
+entry.  amindexcanversion stays MKTAGS: an update
 that began before the conversion and keeps its locator still needs its
 entries tagged.  BARK_META_SETTLED says VACUUM's barrier has passed, so
 no update that began under the old rd_index is still in progress.

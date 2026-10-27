@@ -52,6 +52,7 @@
 #include "utils/builtins.h"
 #include "utils/datum.h"
 #include "utils/fmgroids.h"
+#include "utils/injection_point.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/pg_locale.h"
@@ -726,6 +727,8 @@ bark_change_conversion_flags(Relation index, uint32 need, uint32 set,
 	BarkMetaPageData *meta;
 	uint32		flags;
 
+	/* the caller read the bits unlocked; another backend may change them */
+	INJECTION_POINT("bark-conversion-flags-before-lock", NULL);
 	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
 	metapage = BufferGetPage(metabuf);
 	meta = BarkPageGetMeta(metapage);

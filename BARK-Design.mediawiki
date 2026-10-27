@@ -426,7 +426,10 @@ build).'' The design is section 12.1 of the V2 design report; README
   began before the conversion and keeps its locator must still get tagged
   entries. amcheck and the validator (primary and redo) report CONVERTING
   without MKTAGS and SETTLED without CONVERTING (T12f in
-  <code>008_bark_mktags.pl</code>).
+  <code>008_bark_mktags.pl</code>). The bits are checked again under the
+  meta page's lock: isolation <code>bark_mk_convert_race</code> stops a
+  caller before it (another insert set CONVERTING; a VACUUM completed the
+  conversion while a dirty scan waited).
 * Items 4 and 7, done (this commit), with the amendment approved by the
   lead (2026-10-27): after SETTLED, BARK stores new entries of the index
   untagged (every writer then moves rows, and a new locator has no
