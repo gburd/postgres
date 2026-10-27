@@ -88,7 +88,7 @@ CREATE INDEX gn_bark_n ON gn USING bark (n, a bark_gin_numeric_array_ops);
 CREATE INDEX gn_bark_inc ON gn USING bark (a bark_gin_numeric_array_ops) INCLUDE (id);
 CREATE INDEX gn_gin ON gn USING gin (a);
 SELECT i AS idx, (SELECT allequalimage FROM bark_metap(i)) AS allequalimage,
-       (SELECT count(*) FILTER (WHERE shape = 'SINGLE') > 0 FROM gn_items(i)) AS has_single,
+       (SELECT bool_and(shape = 'SINGLE') FROM gn_items(i)) AS all_single,
        (SELECT count(*) FILTER (WHERE shape <> 'SINGLE') > 0 FROM gn_items(i)) AS has_coalesced,
        (SELECT count(*) FILTER (WHERE shape = 'POSTING') > 0 FROM gn_items(i)) AS has_posting
 FROM unnest(ARRAY['gn_bark', 'gn_bark_g', 'gn_bark_n', 'gn_bark_inc']) i;
