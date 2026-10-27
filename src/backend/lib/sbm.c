@@ -252,7 +252,7 @@ typedef struct
 #define SBM_ENOUGH_SPACE(need)                                        \
 	do {                                                         \
 		if (map->m_data_used + (need) + SBM_SIZEOF_OVERHEAD > \
-		    sbm_cap(map)) {                                  \
+			sbm_cap(map)) {                                  \
 			errno = ENOSPC;                              \
 			return SBM_IDX_MAX;                         \
 		}                                                    \
@@ -262,11 +262,11 @@ typedef struct
 	((size_t) ((((data)) & ((SbmBitvec)SBM_FLAG_MASK << ((at) * 2))) >> ((at) * 2)))
 #define SBM_CHUNK_SET_FLAGS(data, at, to)                                    \
 	((data) = ((data) & ~((SbmBitvec)SBM_FLAG_MASK << ((at) * 2))) | \
-	        ((SbmBitvec)(to) << ((at) * 2)))
+			((SbmBitvec)(to) << ((at) * 2)))
 #define SBM_IS_CHUNK_RLE(chunk)                                       \
 	(((*((SbmBitvecUnaligned *)(chunk)->m_data) &           \
-	      (((SbmBitvec)0x3) << (SBM_BITS_PER_VECTOR - 2))) >> \
-	     (SBM_BITS_PER_VECTOR - 2)) == SBM_PAYLOAD_NONE)
+		  (((SbmBitvec)0x3) << (SBM_BITS_PER_VECTOR - 2))) >> \
+		 (SBM_BITS_PER_VECTOR - 2)) == SBM_PAYLOAD_NONE)
 
 /*
  * RLE (Run-Length Encoding) Format
