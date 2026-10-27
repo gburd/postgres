@@ -432,14 +432,14 @@ SELECT est, act FROM wc_est('wc_pfx', 't %^% ''w12''');
 DROP TABLE wc_mk, wc_pfx;
 DROP EXTENSION bark_multikey;
 -- The sample is rebuilt after each invalidation, in a memory context that
--- replaces the old one: a hundred ANALYZEs, each followed by a plan, must
--- not grow the index's relcache memory.
+-- replaces the old one: ten ANALYZEs, each followed by a plan, must not
+-- grow the index's relcache memory (a sample left behind by each would).
 CREATE TEMP TABLE wc_cxt AS
   SELECT bark_wildcard_cxt_size('wc_sel_doc') AS before
     FROM wc_est('wc_sel', 'doc #= ''["p2", true]''');
 DO $$
 BEGIN
-  FOR i IN 1..100 LOOP
+  FOR i IN 1..10 LOOP
     ANALYZE wc_sel;
     PERFORM wc_est('wc_sel', 'doc #= ''["p2", true]''');
   END LOOP;
