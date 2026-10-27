@@ -71,7 +71,7 @@ $node->safe_psql(
 	           WHERE i.shape IN ('SINGLE', 'OVERSIZED') AND i.itemoffset > (s.bark_next <> 0)::int),
 	         (SELECT count(*) FROM bark_page_items(idx::text, b) i
 	           WHERE i.shape IN ('SINGLE', 'OVERSIZED') AND i.itemoffset > (s.bark_next <> 0)::int)
-	    FROM generate_series(1, pg_relation_size(idx) / 8192 - 1) b,
+	    FROM generate_series(1, pg_relation_size(idx) / current_setting('block_size')::int - 1) b,
 	         LATERAL bark_page_stats(idx::text, b) s
 	   WHERE s.type = 'leaf' $$;
 	-- the tag of the downlink to `child` (NULL for none), and whether
@@ -79,13 +79,13 @@ $node->safe_psql(
 	CREATE FUNCTION downlink(idx regclass, child int, OUT tag int8, OUT found bool)
 	  LANGUAGE sql AS $$
 	  SELECT max(i.tag), count(*) = 1
-	    FROM generate_series(1, pg_relation_size(idx) / 8192 - 1) b,
+	    FROM generate_series(1, pg_relation_size(idx) / current_setting('block_size')::int - 1) b,
 	         LATERAL bark_page_stats(idx::text, b) s,
 	         LATERAL bark_page_items(idx::text, b) i
 	   WHERE s.bark_level > 0 AND s.type IN ('internal', 'root')
 	     AND i.downlink = child AND NOT (s.bark_next <> 0 AND i.itemoffset = 1) $$;
 	CREATE FUNCTION tagged(idx regclass) RETURNS int8 LANGUAGE sql AS $$
-	  SELECT count(*) FROM generate_series(1, pg_relation_size(idx) / 8192 - 1) b,
+	  SELECT count(*) FROM generate_series(1, pg_relation_size(idx) / current_setting('block_size')::int - 1) b,
 	         LATERAL bark_page_items(idx::text, b) i
 	   WHERE i.tag IS NOT NULL AND i.shape IN ('SINGLE', 'OVERSIZED') $$;
 	-- xmins above the run's tags
@@ -213,12 +213,12 @@ is( $node->safe_psql(
 		 WHERE resource_manager = 'Bark' AND description ~ 'lower separator'}),
 	"UNLINK_PAGE: lower separator, left: $p1, right: $p2, parent: "
 	  . $node->safe_psql('postgres',
-		qq{SELECT b FROM generate_series(1, pg_relation_size('tl_k') / 8192 - 1) b,
+		qq{SELECT b FROM generate_series(1, pg_relation_size('tl_k') / current_setting('block_size')::int - 1) b,
 		          LATERAL bark_page_items('tl_k', b) i, LATERAL bark_page_stats('tl_k', b) s
 		    WHERE s.bark_level = 1 AND i.downlink = $p2})
 	  . ", poffset: "
 	  . $node->safe_psql('postgres',
-		qq{SELECT i.itemoffset FROM generate_series(1, pg_relation_size('tl_k') / 8192 - 1) b,
+		qq{SELECT i.itemoffset FROM generate_series(1, pg_relation_size('tl_k') / current_setting('block_size')::int - 1) b,
 		          LATERAL bark_page_items('tl_k', b) i, LATERAL bark_page_stats('tl_k', b) s
 		    WHERE s.bark_level = 1 AND i.downlink = $p2}),
 	'lowered: one UNLINK_PAGE record, described as a lowered separator');
@@ -229,7 +229,7 @@ check_index('tl_k', 'lowered');
 # Crash recovery replays the lowering and the untagging.
 my $sig = q{SELECT md5(string_agg(b || ' ' || i.itemoffset || ' ' || i.shape || ' ' ||
   coalesce(i.htid::text, '') || ' ' || coalesce(i.tag::text, '') || ' ' || i.data, ',' ORDER BY b, i.itemoffset))
-  FROM generate_series(1, pg_relation_size('tl_k') / 8192 - 1) b, LATERAL bark_page_items('tl_k', b) i};
+  FROM generate_series(1, pg_relation_size('tl_k') / current_setting('block_size')::int - 1) b, LATERAL bark_page_items('tl_k', b) i};
 my $sigbefore = $node->safe_psql('postgres', $sig);
 $node->stop('immediate');
 $node->start;
@@ -530,7 +530,7 @@ $node->safe_psql(
 	  FROM tp, generate_series(1, 200) g WHERE id = 1;
 });
 my $firstchild = q{
-	SELECT i.downlink FROM generate_series(1, pg_relation_size('tp_k') / 8192 - 1) b,
+	SELECT i.downlink FROM generate_series(1, pg_relation_size('tp_k') / current_setting('block_size')::int - 1) b,
 	       LATERAL bark_page_stats('tp_k', b) s, LATERAL bark_page_items('tp_k', b) i
 	 WHERE s.bark_level = 1 AND s.bark_prev <> 0
 	   AND i.itemoffset = CASE WHEN s.bark_next <> 0 THEN 2 ELSE 1 END};
