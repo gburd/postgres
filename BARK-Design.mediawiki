@@ -1302,7 +1302,7 @@ needs, since it creates indexes <code>USING documentdb_<am_name></code>). So
 BARK tests a family for not being btree's (bark_opfamily_is_own; with
 ambtreeopfamilies those are the only foreign families a BARK class can name)
 and a relation for its handler (bark_relation_is_bark). Testing for
-BARK_AM_OID, as M1 first did, read an alias's multikey family as a btree
+BARK_AM_OID, as the first version did, read an alias's multikey family as a btree
 family: its strategies taken for btree's, its keys never extracted, and an
 assertion failure in an assert build. amcheck compares handlers too;
 pg_amcheck still selects indexes by access method OID.
