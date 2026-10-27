@@ -57,6 +57,7 @@ my $sect;
 
 $node_primary->safe_psql(
 	$db, qq[
+CREATE TABLE flush_t (a int);
 CREATE TABLE pin_t (a int);
 INSERT INTO pin_t SELECT g FROM generate_series(1, 2000) g;
 CREATE INDEX pin_t_idx ON pin_t USING bark (a);
@@ -417,9 +418,10 @@ sub waldump_count
 	return 0 if $start eq $end;
 	# $end is an insert position, which WAL a background process wrote
 	# after the last commit can put past what is flushed, and pg_waldump
-	# cannot read unflushed WAL: commit a transaction with an xid, whose
-	# commit flushes everything before it.
-	$node_primary->safe_psql($db, 'SELECT pg_current_xact_id()');
+	# cannot read unflushed WAL: commit a write, whose commit flushes
+	# everything before it.  (A transaction that only took an xid writes
+	# no WAL before its commit record, and commits without a flush.)
+	$node_primary->safe_psql($db, 'INSERT INTO flush_t VALUES (1)');
 	my ($stdout, $stderr) = run_command(
 		[
 			'pg_waldump', '--rmgr=Bark',
