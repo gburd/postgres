@@ -313,6 +313,22 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 				info->amhasgettuple = (amroutine->amgettuple != NULL);
 
 				/*
+				 * An AM whose indexes differ in that (by operator class, say)
+				 * answers per index through amproperty, as
+				 * IndexSupportsBackwardScan asks it about backward scans.
+				 */
+				if (info->amhasgettuple && amroutine->amproperty != NULL)
+				{
+					bool		res = true;
+					bool		isnull = false;
+
+					if (amroutine->amproperty(indexoid, 0, AMPROP_INDEX_SCAN,
+											  "index_scan", &res, &isnull) &&
+						!isnull && !res)
+						info->amhasgettuple = false;
+				}
+
+				/*
 				 * A TID bitmap cannot hold the table's locators if their
 				 * offsets exceed its bound; see max_offset in amlocator.h.
 				 */
