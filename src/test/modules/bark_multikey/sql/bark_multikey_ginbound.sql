@@ -124,11 +124,11 @@ SELECT r.q, cardinality(s.ids) AS n,
        bool_and(r.ids = s.ids) AS ok,
        count(*) AS scans
 FROM gb_res r JOIN gb_seq s USING (q)
-GROUP BY r.q, s.ids ORDER BY r.q;
+GROUP BY r.q, s.ids ORDER BY r.q COLLATE "C";
 -- The small work_mem made the BARK bitmap scans' bitmaps lossy, the large
 -- one left them exact.
 SELECT mem, bool_or(lossy) AS any_lossy, bool_and(NOT lossy) AS all_exact
-FROM gb_res WHERE idx <> 'gb_gin' AND bitmap GROUP BY mem ORDER BY mem;
+FROM gb_res WHERE idx <> 'gb_gin' AND bitmap GROUP BY mem ORDER BY mem COLLATE "C";
 DROP TABLE gb_res, gb_seq;
 
 -- The merge's corners, at 64kB.  With a key column after the
@@ -148,7 +148,7 @@ SELECT q, (gb_run('gb_bark11_a2', q, true)).ids = (gb_run(NULL, q, true)).ids AS
 FROM unnest(ARRAY[$$a @> '{0,1}'$$, $$a @> '{1,-1}'$$, $$a && '{2,-2}'$$,
                   $$a @> '{0,1,2}'$$, $$a @> '{0,1,2,-1,-2}'$$, $$a @> '{0,0,0,0,0}'$$,
                   $$a <@ '{0,1,2,-1,-2,3}'$$,
-                  $$a @> '{4100}' AND a @> '{0}'$$]) q ORDER BY q;
+                  $$a @> '{4100}' AND a @> '{0}'$$]) q ORDER BY q COLLATE "C";
 RESET work_mem;
 DROP INDEX gb_bark11_a2;
 
