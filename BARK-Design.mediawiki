@@ -290,7 +290,7 @@ tags and never interprets them.
   check asks <code>table_fetch_tid_version</code> with the entry's tag;
   <code>UNIQUE_CHECK_EXISTING</code> recognizes the row's own entries by
   TID. An LP_DEAD kill marks only the entry of the tag returned. A
-  (K, L, t) the index already has is not stored again (2026-10-27): a
+  (K, L, t) the index already has is not stored again: a
   table AM may give several versions of a row one tag
   (heap_versioned uses the transaction ID), so A -> B -> A, or a key two
   in-place updates keep, re-inserts an entry; a second copy broke the
