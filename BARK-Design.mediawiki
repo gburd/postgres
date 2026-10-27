@@ -318,7 +318,7 @@ tags and never interprets them.
   when the page has no other split point. The runs are one row's same-key
   versions between two VACUUMs, so tagged pivots, and flagged pages, come
   only from a page that is all one run.
-* '''CREATE INDEX (T1, 2026-10-22).''' The build sorts tagged rows with the
+* '''CREATE INDEX.''' The build sorts tagged rows with the
   rest, in a tuplesort variant of BARK's own (<code>bark_sort_begin</code>)
   ordered by (key, TID, tag); nbtree's sort breaks ties on
   <code>t_tid</code>, which a tagged SINGLE uses for its trailer.
