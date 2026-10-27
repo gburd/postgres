@@ -1084,9 +1084,6 @@ Each entry is marked ''done'' with its commits on <code>idxam</code>,
   BitmapOr, through the executor's TIDBitmaps rather than sbm set algebra;
   6e3a262afa9 coalesce only equal images; e9803c87051 POSTING removal
   reserve; d7fae7124b1 LIST and POSTING at CREATE INDEX)''
-  table is UNDO-backed. Page recycling follows nbtree: a deleted page keeps
-  its sibling links and records a safexid, and is reused only once
-  <code>GlobalVisCheckRemovableFullXid</code> says no snapshot can still hold
   a link to it (the README's "Page deletion and recycling"). Bottom-up
   deletion, as nbtree's: an <code>indexUnchanged</code> insert that would
   split a leaf first asks the table AM which of the leaf's versions are dead
