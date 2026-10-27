@@ -50,7 +50,21 @@ CREATE TABLE flush_t (a int);
 CREATE TABLE lpd (a int, pad text) WITH (fillfactor = 10);
 CREATE INDEX lpd_a ON lpd USING bark (a) WITH (fillfactor = 100);
 INSERT INTO lpd SELECT g, repeat('x', 500) FROM generate_series(1, 400) g;
+-- Fill the leaf to within 20 entries of full, whatever an entry's size on
+-- this platform (an entry is 12 bytes where MAXALIGN is 4, 16 where it is
+-- 8), so that the 20 inserts below fill it.
+DO \$\$
+DECLARE n int := 400;
+BEGIN
+  WHILE (SELECT free_size FROM bark_page_stats('lpd_a', 1)) >=
+        20 * (SELECT avg(itemlen) + 4 FROM bark_page_items('lpd_a', 1)) LOOP
+    n := n + 1;
+    INSERT INTO lpd VALUES (n, repeat('x', 500));
+  END LOOP;
+END \$\$;
 ]);
+# The rows below 1000 are 1..$nrows.
+my $nrows = $node_primary->safe_psql($db, 'SELECT count(*) FROM lpd');
 $node_primary->backup('backup');
 my $node_standby = PostgreSQL::Test::Cluster->new('standby');
 $node_standby->init_from_backup($node_primary, 'backup', has_streaming => 1);
@@ -112,13 +126,13 @@ $sect = 'hints';
 $node_primary->safe_psql($db, 'DELETE FROM lpd WHERE a BETWEEN 101 AND 150');
 $node_primary->wait_for_replay_catchup($node_standby);
 is($node_standby->safe_psql($db, $scan . 'SELECT count(*) FROM lpd WHERE a > 0'),
-	'350', "$sect: standby index scan skips the deleted rows");
+	$nrows - 50, "$sect: standby index scan skips the deleted rows");
 is(ndead($node_standby), '0', "$sect: a standby scan marks nothing");
 
 $node_primary->safe_psql($db, 'CHECKPOINT');
 my $lsn0 = lsn();
 is($node_primary->safe_psql($db, $scan . 'SELECT count(*) FROM lpd WHERE a > 0'),
-	'350', "$sect: primary index scan");
+	$nrows - 50, "$sect: primary index scan");
 my $lsn1 = lsn();
 is(ndead($node_primary), '50', "$sect: the primary's scan marks 50 entries");
 is(waldump_count($lsn0, $lsn1, 'Bark', '\S'),
@@ -152,7 +166,7 @@ is(ndead($node_standby),
 	"$sect: the standby has only the logged marks");
 is(ndead($node_primary), '70', "$sect: the primary keeps its marks");
 is($node_standby->safe_psql($db, $scan . 'SELECT count(*) FROM lpd WHERE a > 0'),
-	'331', "$sect: standby index scan after the insert");
+	$nrows - 69, "$sect: standby index scan after the insert");
 unlike(
 	slurp_file($node_standby->logfile),
 	qr/inconsistent page/,
@@ -168,7 +182,8 @@ my $res = $psql_standby->query_safe(
 BEGIN ISOLATION LEVEL REPEATABLE READ;
 SELECT count(*) FROM lpd WHERE a > 0;
 ]);
-like($res, qr/^331$/m, "$sect: standby snapshot taken after the rows died");
+my $n69 = $nrows - 69;
+like($res, qr/^$n69$/m, "$sect: standby snapshot taken after the rows died");
 $log_location = -s $node_standby->logfile;
 
 # Fill the leaf: the insert that does not fit deletes the 70 marked entries
@@ -184,7 +199,7 @@ is(waldump_count($lsn0, $lsn1, 'Bark', 'DELETE snapshotConflictHorizon: [1-9]\d*
 	1, "$sect: one Bark/DELETE record deletes them, with a conflict horizon");
 $node_primary->wait_for_replay_catchup($node_standby);
 $res = $psql_standby->query_safe('SELECT count(*) FROM lpd WHERE a > 0');
-like($res, qr/^331$/m, "$sect: the standby snapshot is not cancelled");
+like($res, qr/^$n69$/m, "$sect: the standby snapshot is not cancelled");
 $psql_standby->query_safe('COMMIT');
 is(substr(slurp_file($node_standby->logfile), $log_location) =~
 	  /recovery conflict/ ? 1 : 0,
