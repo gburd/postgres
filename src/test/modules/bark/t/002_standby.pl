@@ -27,11 +27,17 @@ use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
 
+# Each section checks that the standby logged its wait on the conflicting
+# query, naming the record, before it cancelled the query.  A standby whose
+# replay is more than max_standby_streaming_delay behind (the page images
+# of wal_consistency_checking do that under load, and a slow machine does
+# it anyway) cancels at once, without the wait, so the delay is long; the
+# wait is logged after deadlock_timeout.
 my $node_primary = PostgreSQL::Test::Cluster->new('primary');
 $node_primary->init(allows_streaming => 1);
 $node_primary->append_conf(
 	'postgresql.conf', qq[
-max_standby_streaming_delay = 50ms
+max_standby_streaming_delay = 5s
 log_recovery_conflict_waits = on
 deadlock_timeout = 10ms
 autovacuum = off
@@ -63,6 +69,9 @@ VACUUM reuse_t;
 $node_primary->wait_for_replay_catchup($node_standby);
 
 my $psql_standby = $node_standby->background_psql($db, on_error_stop => 0);
+# Its timeout runs per query, not for the whole session, which outlives
+# the default timeout on a slow machine.
+$psql_standby->set_query_timer_restart();
 
 
 ## 1: buffer pin conflict on VACUUM replay
@@ -112,15 +121,6 @@ check_conflict_stat('bufferpin');
 
 ## 2: snapshot conflict when a deleted page is reused
 $sect = 'page reuse conflict';
-
-# As in the bottom-up deletion section below: the page images
-# wal_consistency_checking adds can put replay more than
-# max_standby_streaming_delay behind, and then the standby cancels the
-# conflicting query at once, without the wait whose log line names the
-# record.  Wait longer here; the buffer pin section above relies on the
-# short delay and has run.
-$node_standby->append_conf('postgresql.conf', 'max_standby_streaming_delay = 5s');
-$node_standby->reload;
 
 $log_location = -s $node_standby->logfile;
 my $lsn_before = $node_primary->safe_psql($db,
@@ -361,14 +361,7 @@ SELECT count(*) FROM churn_t;
 ]);
 like($res, qr/^4500$/m, "$sect: standby snapshot taken before the updates");
 
-# The page images wal_consistency_checking adds make replay fall behind, and
-# a standby more than max_standby_streaming_delay behind cancels a
-# conflicting query at once, without the wait whose log line names the
-# record.  So the standby waits longer in this section, and catches up
-# between the rounds.
-$node_standby->append_conf('postgresql.conf', 'max_standby_streaming_delay = 5s');
-$node_standby->reload;
-
+# The standby catches up between the rounds.
 $log_location = -s $node_standby->logfile;
 $lsn_before = $node_primary->safe_psql($db, 'SELECT pg_current_wal_insert_lsn()');
 my $tids = $node_primary->safe_psql($db,
