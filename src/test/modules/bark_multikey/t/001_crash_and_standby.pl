@@ -77,6 +77,11 @@ INSERT INTO t VALUES (2000, '{5,1000}');
 		'2',
 		'the row\'s first key is in the index before the crash');
 
+	# The first key's WAL is not flushed: the row never commits.  Commit a
+	# write in another session, which flushes all WAL before its commit
+	# record, so that the crash below keeps the first key and the flag.
+	$node->safe_psql('postgres', 'CREATE TABLE crash_flush (a int)');
+
 	# kill -9 the waiting backend.  TAP clusters run with restart_after_crash
 	# off, so the postmaster shuts down, and the start below recovers.
 	my $pid = $node->safe_psql('postgres',
