@@ -1881,6 +1881,7 @@ barkbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	if (stats == NULL)
 		stats = palloc0_object(IndexBulkDeleteResult);
 
+	bark_note_conversion(info->index);
 	bark_vacuum_scan(info, stats, callback, callback_state,
 					 info->version_callback);
 	return stats;
@@ -1909,6 +1910,7 @@ barkvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 
 	if (stats == NULL)
 	{
+		bark_note_conversion(info->index);
 		stats = palloc0_object(IndexBulkDeleteResult);
 		bark_vacuum_scan(info, stats, NULL, NULL, NULL);
 		stats->estimated_count = true;

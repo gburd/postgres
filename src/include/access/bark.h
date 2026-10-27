@@ -707,6 +707,24 @@ typedef struct BarkMetaPageData
 #define BARK_META_MKTAGS	(1 << 2)
 
 /*
+ * BARK_META_CONVERTING: an index with BARK_META_MKTAGS that the catalog has
+ * been seen to make unique or exclusion, a constraint added after its build
+ * ("Conversion" in the README).  Set by the first writer that sees it
+ * (bark_note_conversion): an insert, a constraint check's scan, or VACUUM.
+ * From then on no update keeps a locator in the index; tagged entries may
+ * remain, and VACUUM works them off.  Cleared, with the other two bits, when
+ * the conversion is complete.
+ *
+ * BARK_META_SETTLED: set with BARK_META_CONVERTING after VACUUM's barrier,
+ * when no update that began before the conversion can still be keeping a
+ * locator.  From then on every entry is stored untagged.
+ *
+ * CONVERTING without MKTAGS, or SETTLED without CONVERTING, is corruption.
+ */
+#define BARK_META_CONVERTING	(1 << 3)
+#define BARK_META_SETTLED	(1 << 4)
+
+/*
  * bark_tid_stride is the largest locator offset of the table, its
  * LocatorDesc's max_offset, when the index was built: every mapping of a
  * heap TID to an integer (bark_tid_to_key, and a coded LIST's) is laid out
@@ -1466,6 +1484,9 @@ extern bool bark_index_mktags(Relation index);
 extern bool bark_build_mktags(Relation index, bool versioned);
 extern bool bark_indexcanversion(Relation index);
 extern bool bark_indexmaykeeplocator(Relation index);
+extern uint32 bark_index_conversion_flags(Relation index);
+extern bool bark_index_converting(Relation index);
+extern void bark_note_conversion(Relation index);
 extern bool bark_heap_versioned(Relation heap);
 extern IndexTuple bark_entry_untag(IndexTuple itup);
 extern IndexTuple bark_form_tagged(IndexTuple key, ItemPointer tid,
@@ -2025,6 +2046,7 @@ typedef struct BarkAmCache
 	uint16		tidstride;		/* bark_index_tid_stride, or 0 until read */
 	int8		versioned;		/* bark_index_versioned, or -1 until read */
 	int8		mktags;			/* bark_index_mktags, or -1 until read */
+	int8		converting;		/* bark_index_converting, or -1 until read */
 	int			nmarkers;		/* markers seen present */
 	Size		markerlen;		/* bytes of markerdata in use */
 	int			nl1;			/* level-1 slots in use */

@@ -37,6 +37,7 @@
 #include "access/table.h"
 #include "access/tableam.h"
 #include "access/toast_internals.h"
+#include "access/xlog.h"
 #include "access/xloginsert.h"
 #include "catalog/pg_amop.h"
 #include "catalog/pg_type.h"
@@ -665,16 +666,122 @@ bark_indexcanversion(Relation index)
  * build, as DocumentDB's collMod prepareUnique adds one): a check under a
  * dirty snapshot could meet two versions at one locator.  Read at run
  * time, from rd_index, which a writer whose statement began after the
- * change has.  The index keeps BARK_META_MKTAGS, so its tagged entries are
- * still judged, and its scans keep rule D.  Every other index that stores
- * tags lets the locator be kept.
+ * change has, and from BARK_META_CONVERTING, which outlives a later DROP of
+ * the constraint: once the conversion has begun, no update may add a tagged
+ * entry that VACUUM's barrier did not wait for.  The index keeps
+ * BARK_META_MKTAGS until the conversion is complete, so its tagged entries
+ * are still judged, and its scans keep rule D.  Every other index that
+ * stores tags lets the locator be kept.
  */
 bool
 bark_indexmaykeeplocator(Relation index)
 {
 	if (bark_index_extracted_column(index) == 0)
 		return true;
-	return !index->rd_index->indisunique && !index->rd_index->indisexclusion;
+	return !index->rd_index->indisunique && !index->rd_index->indisexclusion &&
+		!bark_index_converting(index);
+}
+
+/*
+ * The meta page's BARK_META_MKTAGS, BARK_META_CONVERTING and
+ * BARK_META_SETTLED, read now under its share lock (0 for a meta page from
+ * before bark_flags).  The conversion changes them while the index is open,
+ * so a caller that relies on SETTLED reads it here, not from a cache.
+ */
+uint32
+bark_index_conversion_flags(Relation index)
+{
+	Buffer		metabuf = ReadBuffer(index, BARK_METAPAGE);
+	Page		metapage;
+	BarkMetaPageData *meta;
+	uint32		flags = 0;
+
+	LockBuffer(metabuf, BUFFER_LOCK_SHARE);
+	metapage = BufferGetPage(metabuf);
+	meta = BarkPageGetMeta(metapage);
+	if (((PageHeader) metapage)->pd_lower >=
+		((char *) &meta->bark_flags + sizeof(meta->bark_flags)) -
+		(char *) metapage)
+		flags = meta->bark_flags &
+			(BARK_META_MKTAGS | BARK_META_CONVERTING | BARK_META_SETTLED);
+	UnlockReleaseBuffer(metabuf);
+	return flags;
+}
+
+/*
+ * Has the conversion of this index, which stores tags on its keys, begun:
+ * BARK_META_CONVERTING, or BARK_META_MKTAGS gone from the meta page since
+ * the cache read it, which only a finished conversion does?  Read once per
+ * relcache entry.  An answer of false cannot go stale while the entry lasts:
+ * CONVERTING is set only after the catalog made the index unique or
+ * exclusion, a change of its pg_index row that rebuilds the entry in every
+ * backend that later locks the index.  An index without MKTAGS is not
+ * converting.
+ */
+bool
+bark_index_converting(Relation index)
+{
+	BarkAmCache *cache = bark_get_amcache(index);
+
+	if (!bark_index_mktags(index))
+		return false;
+	if (cache->converting < 0)
+	{
+		uint32		flags = bark_index_conversion_flags(index);
+
+		cache->converting = (flags & BARK_META_CONVERTING) != 0 ||
+			(flags & BARK_META_MKTAGS) == 0;
+	}
+	return cache->converting > 0;
+}
+
+/*
+ * Set BARK_META_CONVERTING if the index needs it and lacks it: it stores tags
+ * on its keys (BARK_META_MKTAGS) and the catalog now says it is unique or
+ * exclusion, a constraint added after its build ("Conversion" in the
+ * README).  The first writer that sees the change does it: an insert, a
+ * constraint check's scan, or VACUUM.  The caller holds no page lock.  The
+ * meta page is logged whole, as bark_set_multikey logs it; this happens
+ * once per conversion.  In recovery nothing is written, and nothing is
+ * needed: a standby's constraint checks do not run, and its scans are right
+ * whatever the bit says.
+ */
+void
+bark_note_conversion(Relation index)
+{
+	Buffer		metabuf;
+	Page		metapage;
+	BarkMetaPageData *meta;
+
+	if (bark_index_extracted_column(index) == 0 || !bark_index_mktags(index) ||
+		(!index->rd_index->indisunique && !index->rd_index->indisexclusion) ||
+		bark_index_converting(index) || RecoveryInProgress())
+		return;
+
+	metabuf = ReadBuffer(index, BARK_METAPAGE);
+	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
+	metapage = BufferGetPage(metabuf);
+	meta = BarkPageGetMeta(metapage);
+	if ((meta->bark_flags & BARK_META_MKTAGS) != 0 &&
+		(meta->bark_flags & BARK_META_CONVERTING) == 0)
+	{
+		START_CRIT_SECTION();
+
+		bark_meta_cover(metapage);
+		meta->bark_flags |= BARK_META_CONVERTING;
+		MarkBufferDirty(metabuf);
+		if (RelationNeedsWAL(index))
+			log_newpage_buffer(metabuf, true);
+		else
+			PageSetLSN(metapage, XLogGetFakeLSN(index));
+
+		END_CRIT_SECTION();
+
+		bark_verify_page_change(index, metabuf);
+	}
+	UnlockReleaseBuffer(metabuf);
+
+	bark_get_amcache(index)->converting = 1;
 }
 
 /* Is an index of `heap` built to hold tags (BARK_META_VERSIONED)? */

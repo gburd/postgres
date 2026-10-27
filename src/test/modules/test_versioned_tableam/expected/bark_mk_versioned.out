@@ -826,10 +826,11 @@ SELECT contype, conname FROM pg_constraint WHERE conindid = 'tmc_doc'::regclass;
  x       | tmc_doc
 (1 row)
 
-SELECT flags & 6 AS versioned_mktags FROM bark_metap('tmc_doc');
- versioned_mktags 
-------------------
-                6
+-- BARK_META_CONVERTING (8) waits for the first BARK writer to see it
+SELECT flags & 30 AS mktags_converting FROM bark_metap('tmc_doc');
+ mktags_converting 
+-------------------
+                 6
 (1 row)
 
 -- an update of the column now moves the row; its new entries are tagged
@@ -848,6 +849,12 @@ SELECT n AS kept_after FROM test_versioned_counts() WHERE counter = 'update_kept
 (1 row)
 
 RESET test_versioned_tableam.keep_locator;
+SELECT flags & 30 AS mktags_converting FROM bark_metap('tmc_doc');
+ mktags_converting 
+-------------------
+                14
+(1 row)
+
 SELECT count(*) FILTER (WHERE tag = t.xmin::text::int8) AS tagged
   FROM tmc t, bark_page_items('tmc_doc', 1) i WHERE t.id = 11 AND i.htid = t.ctid;
  tagged 
@@ -894,6 +901,32 @@ SELECT bark_index_check('tmc_doc');
  bark_index_check 
 ------------------
  
+(1 row)
+
+-- CONVERTING outlives the constraint: with indisexclusion cleared, an
+-- update still moves the row, since VACUUM's barrier must see every writer
+-- that could keep a locator
+UPDATE pg_catalog.pg_index SET indisexclusion = false
+  WHERE indexrelid = 'tmc_doc'::regclass;
+SET test_versioned_tableam.keep_locator = pretend;
+SELECT test_versioned_reset();
+ test_versioned_reset 
+----------------------
+ 
+(1 row)
+
+UPDATE tmc SET doc = '{120,121}' WHERE id = 12;
+SELECT n AS kept_dropped FROM test_versioned_counts() WHERE counter = 'update_kept';
+ kept_dropped 
+--------------
+            0
+(1 row)
+
+RESET test_versioned_tableam.keep_locator;
+SELECT flags & 30 AS mktags_converting FROM bark_metap('tmc_doc');
+ mktags_converting 
+-------------------
+                14
 (1 row)
 
 DROP TABLE tmc;
@@ -954,6 +987,12 @@ SELECT id FROM tmq WHERE doc && '{1,2,3,700}' ORDER BY id;
  104
 (3 rows)
 
+SELECT flags & 30 AS mktags_converting FROM bark_metap('tmq_doc');
+ mktags_converting 
+-------------------
+                14
+(1 row)
+
 SELECT bark_index_check('tmq_doc');
  bark_index_check 
 ------------------
@@ -961,6 +1000,45 @@ SELECT bark_index_check('tmq_doc');
 (1 row)
 
 DROP TABLE tmq;
+-- VACUUM notices a conversion too, and nothing sets CONVERTING on an
+-- index without MKTAGS (a multikey index on heap made unique by hand)
+CREATE TABLE tmz (id int, doc int4[]) USING heap_versioned
+  WITH (autovacuum_enabled = off);
+INSERT INTO tmz VALUES (1, '{1,2}'), (2, '{3,4}');
+CREATE INDEX tmz_doc ON tmz USING bark (doc bark_int4_array_ops);
+CREATE TABLE tmzh (id int, doc int4[]) WITH (autovacuum_enabled = off);
+INSERT INTO tmzh VALUES (1, '{1,2}'), (2, '{3,4}');
+CREATE INDEX tmzh_doc ON tmzh USING bark (doc bark_int4_array_ops);
+UPDATE pg_catalog.pg_index SET indisunique = true
+  WHERE indexrelid IN ('tmz_doc'::regclass, 'tmzh_doc'::regclass);
+SELECT flags & 30 AS mktags_converting FROM bark_metap('tmz_doc');
+ mktags_converting 
+-------------------
+                 6
+(1 row)
+
+VACUUM tmz;
+VACUUM tmzh;
+INSERT INTO tmzh VALUES (3, '{5,6}');
+SELECT flags & 30 AS mktags_converting FROM bark_metap('tmz_doc');
+ mktags_converting 
+-------------------
+                14
+(1 row)
+
+SELECT flags & 30 AS mktags_converting FROM bark_metap('tmzh_doc');
+ mktags_converting 
+-------------------
+                 0
+(1 row)
+
+SELECT bark_index_check('tmz_doc'), bark_index_check('tmzh_doc');
+ bark_index_check | bark_index_check 
+------------------+------------------
+                  | 
+(1 row)
+
+DROP TABLE tmz, tmzh;
 -- keep_locator = inplace: an update of the column keeps the row's locator L
 -- for real (heap's HOT chain at L holds the row's versions) and inserts the
 -- new key set tagged.  While the update is in progress (a prepared
@@ -1034,6 +1112,13 @@ SELECT locator, version = locator AS v0, recheck
  (0,1)   | f  | t
  (0,1)   | f  | t
 (3 rows)
+
+-- that scan, the first BARK call to see the constraint, set CONVERTING
+SELECT flags & 30 AS mktags_converting FROM bark_metap('tmp_doc');
+ mktags_converting 
+-------------------
+                14
+(1 row)
 
 -- MVCC scans see v0 only, through its entries, once
 SELECT id, doc FROM tmp WHERE doc && '{1,2,3}';

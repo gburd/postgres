@@ -313,13 +313,15 @@ SELECT test_versioned_add_exclusion('tmc_doc', '&&(anyarray,anyarray)');
 UPDATE pg_catalog.pg_index SET indisexclusion = true
   WHERE indexrelid = 'tmc_doc'::regclass;
 SELECT contype, conname FROM pg_constraint WHERE conindid = 'tmc_doc'::regclass;
-SELECT flags & 6 AS versioned_mktags FROM bark_metap('tmc_doc');
+-- BARK_META_CONVERTING (8) waits for the first BARK writer to see it
+SELECT flags & 30 AS mktags_converting FROM bark_metap('tmc_doc');
 -- an update of the column now moves the row; its new entries are tagged
 SET test_versioned_tableam.keep_locator = pretend;
 SELECT test_versioned_reset();
 UPDATE tmc SET doc = '{110,111,112}' WHERE id = 11;
 SELECT n AS kept_after FROM test_versioned_counts() WHERE counter = 'update_kept';
 RESET test_versioned_tableam.keep_locator;
+SELECT flags & 30 AS mktags_converting FROM bark_metap('tmc_doc');
 SELECT count(*) FILTER (WHERE tag = t.xmin::text::int8) AS tagged
   FROM tmc t, bark_page_items('tmc_doc', 1) i WHERE t.id = 11 AND i.htid = t.ctid;
 -- MVCC scans: the stale (1,L,0) is skipped, the valid (2,L,x) returned
@@ -339,6 +341,17 @@ INSERT INTO tmc VALUES (103, '{500,501}');
 INSERT INTO tmc VALUES (104, '{600,601,602}');
 SELECT id FROM tmc WHERE doc && '{1,500}' ORDER BY id;
 SELECT bark_index_check('tmc_doc');
+-- CONVERTING outlives the constraint: with indisexclusion cleared, an
+-- update still moves the row, since VACUUM's barrier must see every writer
+-- that could keep a locator
+UPDATE pg_catalog.pg_index SET indisexclusion = false
+  WHERE indexrelid = 'tmc_doc'::regclass;
+SET test_versioned_tableam.keep_locator = pretend;
+SELECT test_versioned_reset();
+UPDATE tmc SET doc = '{120,121}' WHERE id = 12;
+SELECT n AS kept_dropped FROM test_versioned_counts() WHERE counter = 'update_kept';
+RESET test_versioned_tableam.keep_locator;
+SELECT flags & 30 AS mktags_converting FROM bark_metap('tmc_doc');
 DROP TABLE tmc;
 
 -- The same for a unique index (pg_index.indisunique set by hand): the
@@ -367,8 +380,29 @@ INSERT INTO tmq VALUES (102, '{112}');
 INSERT INTO tmq VALUES (103, '{3,700}') ON CONFLICT DO NOTHING;
 INSERT INTO tmq VALUES (104, '{700}') ON CONFLICT DO NOTHING;
 SELECT id FROM tmq WHERE doc && '{1,2,3,700}' ORDER BY id;
+SELECT flags & 30 AS mktags_converting FROM bark_metap('tmq_doc');
 SELECT bark_index_check('tmq_doc');
 DROP TABLE tmq;
+
+-- VACUUM notices a conversion too, and nothing sets CONVERTING on an
+-- index without MKTAGS (a multikey index on heap made unique by hand)
+CREATE TABLE tmz (id int, doc int4[]) USING heap_versioned
+  WITH (autovacuum_enabled = off);
+INSERT INTO tmz VALUES (1, '{1,2}'), (2, '{3,4}');
+CREATE INDEX tmz_doc ON tmz USING bark (doc bark_int4_array_ops);
+CREATE TABLE tmzh (id int, doc int4[]) WITH (autovacuum_enabled = off);
+INSERT INTO tmzh VALUES (1, '{1,2}'), (2, '{3,4}');
+CREATE INDEX tmzh_doc ON tmzh USING bark (doc bark_int4_array_ops);
+UPDATE pg_catalog.pg_index SET indisunique = true
+  WHERE indexrelid IN ('tmz_doc'::regclass, 'tmzh_doc'::regclass);
+SELECT flags & 30 AS mktags_converting FROM bark_metap('tmz_doc');
+VACUUM tmz;
+VACUUM tmzh;
+INSERT INTO tmzh VALUES (3, '{5,6}');
+SELECT flags & 30 AS mktags_converting FROM bark_metap('tmz_doc');
+SELECT flags & 30 AS mktags_converting FROM bark_metap('tmzh_doc');
+SELECT bark_index_check('tmz_doc'), bark_index_check('tmzh_doc');
+DROP TABLE tmz, tmzh;
 
 -- keep_locator = inplace: an update of the column keeps the row's locator L
 -- for real (heap's HOT chain at L holds the row's versions) and inserts the
@@ -405,6 +439,8 @@ UPDATE pg_catalog.pg_index SET indisexclusion = true
   WHERE indexrelid = 'tmp_doc'::regclass;
 SELECT locator, version = locator AS v0, recheck
   FROM test_versioned_dirty_scan('tmp_doc', '&&(anyarray,anyarray)', '{2,3}'::int4[]);
+-- that scan, the first BARK call to see the constraint, set CONVERTING
+SELECT flags & 30 AS mktags_converting FROM bark_metap('tmp_doc');
 -- MVCC scans see v0 only, through its entries, once
 SELECT id, doc FROM tmp WHERE doc && '{1,2,3}';
 SELECT id, doc FROM tmp WHERE doc[1] >= 1;

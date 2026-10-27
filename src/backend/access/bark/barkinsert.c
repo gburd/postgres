@@ -2582,6 +2582,10 @@ bark_insert_state(Relation index, IndexInfo *indexInfo)
 												  ALLOCSET_DEFAULT_SIZES);
 		indexInfo->ii_AmCache = state;
 		MemoryContextSwitchTo(oldcxt);
+
+		/* A constraint added since the build begins the conversion. */
+		if (state->keyinfo->mktags)
+			bark_note_conversion(index);
 	}
 	return state;
 }

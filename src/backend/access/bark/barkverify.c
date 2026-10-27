@@ -719,9 +719,10 @@ bark_verify_chain(BarkVerify *v, OffsetNumber off, IndexTuple itup)
 
 /*
  * Check the meta page `page`, block `blkno` of `index`: its magic number and
- * version, and its flags.  BARK_META_MKTAGS needs BARK_META_VERSIONED, which
- * the page shows by itself, so redo (index NULL, relname its name) checks
- * that too.  With the index at hand, MKTAGS also needs an extracted column
+ * version, and its flags.  BARK_META_MKTAGS needs BARK_META_VERSIONED,
+ * BARK_META_CONVERTING needs MKTAGS and BARK_META_SETTLED needs CONVERTING,
+ * which the page shows by itself, so redo (index NULL, relname its name)
+ * checks them too.  With the index at hand, MKTAGS also needs an extracted column
  * whose scans are not GIN-interface (bark_build_mktags); that the index is
  * unique or exclusion now is no corruption, since rd_index can change after
  * the build.  The caller holds a lock on the page.
@@ -748,6 +749,17 @@ bark_verify_meta(Relation index, const char *relname, Page page,
 	if (meta->bark_version < 3 && (flags & BARK_META_VERSIONED) != 0)
 		bark_verify_fail(&v, "BARK index \"%s\" has a version %u meta page %u built for version tags",
 						 v.relname, meta->bark_version, blkno);
+
+	/*
+	 * A conversion runs only on an index with tags on its keys, and is
+	 * settled only once it has begun; completing it clears all three bits.
+	 */
+	if ((flags & BARK_META_SETTLED) != 0 && (flags & BARK_META_CONVERTING) == 0)
+		bark_verify_fail(&v, "BARK index \"%s\" has a meta page %u with a settled conversion that has not begun",
+						 v.relname, blkno);
+	if ((flags & BARK_META_CONVERTING) != 0 && (flags & BARK_META_MKTAGS) == 0)
+		bark_verify_fail(&v, "BARK index \"%s\" has a meta page %u converting an index without version tags on its keys",
+						 v.relname, blkno);
 	if ((flags & BARK_META_MKTAGS) == 0)
 		return;
 	if ((flags & BARK_META_VERSIONED) == 0)
@@ -967,8 +979,9 @@ bark_verify_plant_fault(Page page, OffsetNumber off)
 /*
  * Plant a fault in a meta or overflow page the caller has just changed, or
  * redo has just replayed, for the validator's tests: with bark-verify-fault-meta, a meta page's
- * version is set to 0; with bark-verify-fault-mktags, it gets
- * BARK_META_MKTAGS; with bark-verify-fault-overflow, an overflow page gets
+ * version is set to 0; with bark-verify-fault-mktags, -converting or
+ * -settled, it gets BARK_META_MKTAGS, BARK_META_CONVERTING or
+ * BARK_META_SETTLED; with bark-verify-fault-overflow, an overflow page gets
  * a left link.
  */
 static void
@@ -982,6 +995,12 @@ bark_verify_plant_page_fault(Page page)
 	if (BarkPageIsMeta(opaque) &&
 		IS_INJECTION_POINT_ATTACHED("bark-verify-fault-mktags"))
 		BarkPageGetMeta(page)->bark_flags |= BARK_META_MKTAGS;
+	if (BarkPageIsMeta(opaque) &&
+		IS_INJECTION_POINT_ATTACHED("bark-verify-fault-converting"))
+		BarkPageGetMeta(page)->bark_flags |= BARK_META_CONVERTING;
+	if (BarkPageIsMeta(opaque) &&
+		IS_INJECTION_POINT_ATTACHED("bark-verify-fault-settled"))
+		BarkPageGetMeta(page)->bark_flags |= BARK_META_SETTLED;
 	if (BarkPageIsOverflow(opaque) &&
 		IS_INJECTION_POINT_ATTACHED("bark-verify-fault-overflow"))
 		opaque->bark_prev = 1;

@@ -1879,8 +1879,10 @@ builds only, on by default there) turns both off; elsewhere the calls
 compile away.  t/015_page_validator.pl in src/test/modules/bark plants
 faults through the injection points bark-verify-fault-count,
 bark-verify-fault-order, bark-verify-fault-far, bark-verify-fault-meta
-and bark-verify-fault-overflow, and bark-verify-force-full makes the
-next check of a few entries a whole-page one.
+and bark-verify-fault-overflow (t/008_bark_mktags.pl of
+test_versioned_tableam through bark-verify-fault-mktags, -converting and
+-settled), and bark-verify-force-full makes the next check of a few
+entries a whole-page one.
 
 Its cost, in a cassert build on c7i.4xlarge: a write-only workload of
 long equal-key LISTs (60,000 inserts into a table with three BARK
@@ -2582,6 +2584,28 @@ twice and raise that error: a refused statement, not a wrong answer.  The
 rule is read from rd_index, so it holds until the index is reindexed;
 waiting out the old writers once, after which it is no longer needed, is
 the conversion barrier, left to a later change.
+
+The meta page records the conversion in two bits beside MKTAGS.
+BARK_META_CONVERTING says the conversion has begun: the first BARK call
+that sees MKTAGS and an rd_index unique or exclusion sets it
+(bark_note_conversion: the first insert of a statement, through
+bark_insert_state; the non-MVCC rescan of a constraint check; VACUUM's
+bulkdelete, or its cleanup when bulkdelete did not run), under the meta
+page's exclusive lock, logged whole, as BARK_META_MULTIKEY is.  Nothing
+in recovery sets it.  From then on bark_indexmaykeeplocator answers false
+whatever rd_index says, so a constraint dropped mid-conversion does not
+let updates keep locators again: the barrier must see every writer that
+could still add a tagged entry.  The answer is cached per relcache entry
+(BarkAmCache.converting), which is safe because the bit is set only after
+a pg_index change, and that change rebuilds the entry of every backend
+that later locks the index.  amindexcanversion stays MKTAGS: an update
+that began before the conversion and keeps its locator still needs its
+entries tagged.  BARK_META_SETTLED says VACUUM's barrier has passed, so
+no update that began under the old rd_index is still in progress.
+CONVERTING without MKTAGS, and SETTLED without CONVERTING, are corruption,
+which amcheck and the page validator report (bark_verify_meta; the
+injection points bark-verify-fault-converting and -settled plant them, on
+the primary and in redo).
 
 Updates.  An update that keeps the locator inserts, into each index it
 affects, the new version's entries, tagged.  For a multikey index that is

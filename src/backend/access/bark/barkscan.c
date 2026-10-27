@@ -1068,6 +1068,8 @@ bark_mk_rescan(IndexScanDesc scan)
 	mk->unsettled = mk->ruled && !IsMVCCSnapshot(scan->xs_snapshot) &&
 		(scan->indexRelation->rd_index->indisunique ||
 		 scan->indexRelation->rd_index->indisexclusion);
+	if (mk->unsettled)
+		bark_note_conversion(scan->indexRelation);
 	mk->havegroup = false;
 	MemoryContextReset(mk->groupCxt);
 	bark_mk_clear_seen(mk);
