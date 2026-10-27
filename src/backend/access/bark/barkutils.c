@@ -29,30 +29,41 @@
 #include "access/bark.h"
 #include "access/barkxlog.h"
 #include "access/detoast.h"
-#include "access/generic_xlog.h"
 #include "access/heaptoast.h"
 #include "access/htup_details.h"
 #include "access/itup.h"
 #include "access/toast_internals.h"
+#include "access/xloginsert.h"
 #include "catalog/pg_type.h"
 #include "lib/sbm.h"
 #include "miscadmin.h"
+#include "nodes/execnodes.h"
 #include "storage/bufmgr.h"
 #include "storage/indexfsm.h"
+#include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/pg_locale.h"
 #include "utils/rel.h"
+
+static Sbm *bark_posting_open(IndexTuple itup);
+static bool bark_first_column_bytewise(Relation index);
 
 /*
  * Translate between BARK strategy numbers and the generic CompareType.  BARK
  * uses the btree strategy numbers (1=<, 2=<=, 3==, 4=>=, 5=>), so these are
  * the same mappings the btree AM uses; the planner needs them to find an
  * opfamily's equality operator by compare type (e.g. when building pathkeys
- * for an ordered scan).
+ * for an ordered scan).  An operator in an operator family of BARK's own (a
+ * multikey family) has whatever strategy number its class gave it, and its
+ * values are not ordered by it, so it has no compare type: the planner must
+ * not read = or < semantics into it.
  */
 CompareType
 bark_translate_strategy(StrategyNumber strategy, Oid opfamily)
 {
+	if (OidIsValid(opfamily) && get_opfamily_method(opfamily) == BARK_AM_OID)
+		return COMPARE_INVALID;
+
 	switch (strategy)
 	{
 		case BTLessStrategyNumber:
@@ -73,6 +84,9 @@ bark_translate_strategy(StrategyNumber strategy, Oid opfamily)
 StrategyNumber
 bark_translate_cmptype(CompareType cmptype, Oid opfamily)
 {
+	if (OidIsValid(opfamily) && get_opfamily_method(opfamily) == BARK_AM_OID)
+		return InvalidStrategy;
+
 	switch (cmptype)
 	{
 		case COMPARE_LT:
@@ -127,21 +141,31 @@ bark_build_keyinfo(Relation index)
 		col->reverse = (indoption & INDOPTION_DESC) != 0;
 		col->nulls_first = (indoption & INDOPTION_NULLS_FIRST) != 0;
 
-		/*
-		 * The OVERSIZED inline-prefix fast path (see bark_compare_itups) is
-		 * sound only when a leading-byte difference in the first key column's
-		 * datum decides its order -- i.e. the column sorts bytewise.  That is
-		 * true for a text/bytea-style column under a C/POSIX collation; a
-		 * locale-aware collation can reorder across the prefix boundary, so
-		 * the fast path is disabled there and comparison fetches the full
-		 * value.  Only the first key column matters (the prefix only
-		 * shortcuts when the leading column differs).
-		 */
-		col->bytewise = (i == 0 && OidIsValid(col->collation) &&
-						 pg_newlocale_from_collation(col->collation)->collate_is_c);
+		/* Only the first key column has an OVERSIZED inline prefix. */
+		col->bytewise = (i == 0 && bark_first_column_bytewise(index));
 	}
 
 	return keyinfo;
+}
+
+/*
+ * Does the first key column of `index` sort as the bytes of its varlena
+ * datum's data area (memcmp, then length)?  The OVERSIZED inline-prefix fast
+ * path (bark_compare_itups, bark_set_oversized_prefix) is sound only then.
+ * A C/POSIX collation is not enough on its own: under it bpchar still ignores
+ * trailing spaces, an array still compares element by element, and name is
+ * stored as a cstring, not a varlena.  So require text's own comparator too.
+ * Any other column fetches the full value to compare, which is always
+ * correct.
+ */
+static bool
+bark_first_column_bytewise(Relation index)
+{
+	Oid			collation = index->rd_indcollation[0];
+
+	return index_getprocid(index, 1, BARK_ORDER_PROC) == F_BTTEXTCMP &&
+		OidIsValid(collation) &&
+		pg_newlocale_from_collation(collation)->collate_is_c;
 }
 
 /*
@@ -177,6 +201,109 @@ bark_allequalimage(Relation index)
 	}
 
 	return true;
+}
+
+/*
+ * Is key column attno of `index` an extracted column: does its operator
+ * class extract several keys from one value?  It is exactly when the class's
+ * operator family belongs to BARK (a scalar class's family is btree's) and
+ * has procedure 7, extract-value, registered under the class's input type.
+ * INCLUDE columns have no operator class, so they are never extracted.
+ */
+bool
+bark_column_is_extracted(Relation index, int attno)
+{
+	Assert(attno >= 1 && attno <= IndexRelationGetNumberOfAttributes(index));
+
+	if (attno > IndexRelationGetNumberOfKeyAttributes(index))
+		return false;
+	return bark_index_extracted_column(index) == attno;
+}
+
+/*
+ * The attribute number of `index`'s extracted column, or 0 when it has none.
+ * CREATE INDEX allows at most one (bark_check_multikey_index); when the
+ * catalog has more, the first is returned.  The answer depends only on the
+ * index's operator classes, which do not change for the life of the
+ * relcache entry, so it is computed once and kept in rd_amcache.
+ */
+int
+bark_index_extracted_column(Relation index)
+{
+	BarkAmCache *cache = bark_get_amcache(index);
+
+	if (cache->extracted < 0)
+	{
+		cache->extracted = 0;
+		for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index); i++)
+		{
+			if (bark_opfamily_extracts(index->rd_opfamily[i],
+									   index->rd_opcintype[i]))
+			{
+				cache->extracted = i + 1;
+				break;
+			}
+		}
+	}
+	return cache->extracted;
+}
+
+/*
+ * Does an operator class in family opfamily with input type opcintype
+ * extract keys?  See bark_column_is_extracted.
+ */
+bool
+bark_opfamily_extracts(Oid opfamily, Oid opcintype)
+{
+	return get_opfamily_method(opfamily) == BARK_AM_OID &&
+		OidIsValid(get_opfamily_proc(opfamily, opcintype, opcintype,
+									 BARK_EXTRACTVALUE_PROC));
+}
+
+/*
+ * Refuse, before anything is built, an index that M1 cannot build: one with
+ * an extracted column that is unique or carries an exclusion constraint, or
+ * that has two extracted columns.  Two would store the cross product of
+ * their keys, N times M entries per row ("parallel arrays", which MongoDB
+ * refuses for the same reason).  Uniqueness over multikey keys needs
+ * document-store semantics, unique across rows while one row may repeat a
+ * key, which is later work.  Until the insert path extracts keys, building
+ * any index with an extracted column is refused too.
+ */
+void
+bark_check_multikey_index(Relation index, IndexInfo *indexInfo)
+{
+	int			nextracted = 0;
+
+	for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index); i++)
+	{
+		if (bark_opfamily_extracts(index->rd_opfamily[i],
+								   index->rd_opcintype[i]))
+			nextracted++;
+	}
+	if (nextracted == 0)
+		return;
+
+	if (nextracted > 1)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("index \"%s\" has more than one column with a multikey operator class",
+						RelationGetRelationName(index)),
+				 errdetail("A BARK index may extract keys from at most one column.")));
+	if (indexInfo->ii_Unique)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("unique indexes are not supported for multikey operator classes in M1")));
+	if (indexInfo->ii_ExclusionOps != NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("exclusion constraints are not supported for multikey operator classes in M1")));
+
+	ereport(ERROR,
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+			 errmsg("multikey keys are not implemented yet"),
+			 errdetail("Index \"%s\" has a column with a multikey operator class.",
+					   RelationGetRelationName(index))));
 }
 
 /*
@@ -503,6 +630,103 @@ bark_keep_natts(Relation index, BarkKeyInfo *keyinfo, IndexTuple lastleft,
 	return keepnatts;
 }
 
+/*
+ * The heap TID of a pivot of either shape (a plain PIVOT or an OVERSIZED
+ * pivot), or NULL when it has none: minus infinity on the heap TID.
+ */
+ItemPointer
+bark_pivot_heap_tid(IndexTuple pivot)
+{
+	if (BarkEntryGetShape(pivot) == BARK_SHAPE_OVERSIZED)
+	{
+		BarkOverflowRef *ref = BarkOverflowGetRef(pivot);
+
+		Assert(ref->natts != BARK_OVERFLOW_LEAF);
+		return ItemPointerIsValid(&ref->pivottid) ? &ref->pivottid : NULL;
+	}
+	Assert(BarkEntryGetShape(pivot) == BARK_SHAPE_PIVOT);
+	return BarkPivotGetHeapTID(pivot);
+}
+
+/*
+ * The lowest and highest heap TIDs of a leaf entry, the range the entry
+ * occupies in the order of a run of equal keys: its t_tid for a SINGLE, its
+ * ref's locator for an OVERSIZED entry, the first and last members of a LIST,
+ * the sbm minimum and maximum of a POSTING.
+ */
+void
+bark_entry_tid_range(IndexTuple itup, ItemPointer lo, ItemPointer hi)
+{
+	switch (BarkEntryGetShape(itup))
+	{
+		case BARK_SHAPE_SINGLE:
+			*lo = *hi = itup->t_tid;
+			break;
+		case BARK_SHAPE_OVERSIZED:
+			Assert(BarkOverflowIsLeaf(itup));
+			*lo = *hi = BarkOverflowGetRef(itup)->locator;
+			break;
+		case BARK_SHAPE_LIST:
+			*lo = *BarkListGetTID(itup, 0);
+			*hi = *BarkListGetTID(itup, BarkListGetCount(itup) - 1);
+			break;
+		case BARK_SHAPE_POSTING:
+			{
+				Sbm		   *map = bark_posting_open(itup);
+
+				bark_key_to_tid(sbm_minimum(map), lo);
+				bark_key_to_tid(sbm_maximum(map), hi);
+				sbm_free(map);
+				break;
+			}
+		default:
+			elog(ERROR, "BARK leaf entry has unexpected shape %d",
+				 (int) BarkEntryGetShape(itup));
+	}
+}
+
+/*
+ * Compare `key` and, when `scantid` is not NULL, the heap TID `scantid` with
+ * `itup`, a pivot or a leaf entry, in the order of the tree: by key first
+ * (bark_compare_itups), then, within a key, by heap TID.  This is the
+ * comparison of nbtree's insertion scan key with a scantid (_bt_compare).
+ *
+ * Against a pivot equal on every key attribute, the pivot's heap TID decides,
+ * and a pivot without one is minus infinity, so the search key sorts after
+ * it.  (A pivot truncated on key attributes never ties: bark_compare_itups
+ * sorts the shorter one first.)  Against a leaf entry, 0 means scantid lies
+ * inside the entry's TID range, which an insert of that TID must go into.
+ */
+int
+bark_compare_itups_tid(BarkKeyInfo *keyinfo, Relation index, IndexTuple key,
+					   ItemPointer scantid, IndexTuple itup)
+{
+	int			cmp = bark_compare_itups(keyinfo, index, key, itup);
+	ItemPointerData lo;
+	ItemPointerData hi;
+
+	if (cmp != 0 || scantid == NULL)
+		return cmp;
+
+	if (!BarkEntryIsLeafData(itup) ||
+		(BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED &&
+		 !BarkOverflowIsLeaf(itup)))
+	{
+		ItemPointer ptid = bark_pivot_heap_tid(itup);
+
+		if (ptid == NULL)
+			return 1;
+		return ItemPointerCompare(scantid, ptid);
+	}
+
+	bark_entry_tid_range(itup, &lo, &hi);
+	if (ItemPointerCompare(scantid, &lo) < 0)
+		return -1;
+	if (ItemPointerCompare(scantid, &hi) > 0)
+		return 1;
+	return 0;
+}
+
 /* ----------------------------------------------------------------------------
  * LIST entry construction and reading
  *
@@ -530,7 +754,8 @@ bark_form_list(TupleDesc tupdesc, IndexTuple key, ItemPointer tids, int ntids)
 	IndexTuple	entry;
 
 	Assert(ntids >= 1 && ntids <= BARK_LIST_MAX_COUNT);
-	Assert(bodyoff <= BARK_OFFSET_MASK);	/* fits a uint16 body offset */
+	Assert(bodyoff <= PG_UINT16_MAX);	/* BarkEntrySetBodyOffset keeps 16
+										 * bits */
 	Assert(total <= INDEX_SIZE_MASK);
 
 	entry = (IndexTuple) palloc0(total);
@@ -672,7 +897,7 @@ bark_posting_from_map(IndexTuple key, Sbm *map, Size total)
 	uint16		datalen = (uint16) serialized;
 	IndexTuple	entry;
 
-	Assert(bodyoff <= BARK_OFFSET_MASK);
+	Assert(bodyoff <= PG_UINT16_MAX);
 	Assert(total <= INDEX_SIZE_MASK);
 	Assert(bodyoff + sizeof(uint16) + serialized <= total);
 
@@ -711,23 +936,30 @@ bark_form_posting(TupleDesc tupdesc, IndexTuple key, ItemPointer tids, int ntids
 	Assert(ntids >= 1);
 
 	/*
-	 * Build the sbm from the block-clustered keys in one pass.  Adding them
-	 * one at a time re-walks the chunk list from its head on every add, which
-	 * is quadratic for a scattered set, where every member has a chunk.
+	 * Decide the shape from the removal bound before building the sbm.  The
+	 * bound is a function of the set alone, so it can be computed from the
+	 * keys, and a set too scattered for POSTING to win, which is the common
+	 * case for a LIST that VACUUM or an insert re-forms, costs no sbm build.
 	 */
 	keys = palloc_array(uint64, ntids);
 	for (int i = 0; i < ntids; i++)
 		keys[i] = bark_tid_to_key(&tids[i]);
-	map = sbm_create_from_array(keys, ntids);
-	pfree(keys);
-
-	total = BarkPostingEntrySize(keysz, sbm_removal_bound(map));
+	total = BarkPostingEntrySize(keysz, sbm_removal_bound_sorted(keys, ntids));
 	listsz = MAXALIGN(MAXALIGN(keysz) + ntids * sizeof(ItemPointerData));
 	if (total >= listsz || total > INDEX_SIZE_MASK)
 	{
-		sbm_free(map);
+		pfree(keys);
 		return NULL;
 	}
+
+	/*
+	 * Build the sbm from the keys in one pass.  Adding them one at a time
+	 * re-walks the chunk list from its head on every add, which is quadratic
+	 * for a scattered set, where every member has a chunk.
+	 */
+	map = sbm_create_from_array(keys, ntids);
+	pfree(keys);
+	Assert(BarkPostingEntrySize(keysz, sbm_removal_bound(map)) == total);
 
 	entry = bark_posting_from_map(key, map, total);
 	sbm_free(map);
@@ -856,8 +1088,8 @@ bark_entry_key_part(IndexTuple entry)
 
 /*
  * Return `entry`, a LIST or POSTING entry, with heap TID `tid` added, or NULL
- * when the result would be larger than `maxsz` (or, for a LIST, when the TID
- * does not sort after every member, or the LIST is full).
+ * when the result would be larger than `maxsz` (or, for a LIST, when the
+ * LIST is full or already holds the TID).
  *
  * This is the whole of an insert's change to the entry, so that WAL can log
  * just the TID (XLOG_BARK_ADD_TID) and replay can call this function again
@@ -875,23 +1107,46 @@ bark_entry_add_tid(IndexTuple entry, ItemPointer tid, Size maxsz)
 		int			ncur = BarkListGetCount(entry);
 		Size		cursz = IndexTupleSize(entry);
 		Size		appended = cursz + sizeof(ItemPointerData);
+		Size		insoff;
+		int			ins = ncur;
 		IndexTuple	ext;
 
-		if (ncur >= BARK_LIST_MAX_COUNT ||
-			ItemPointerCompare(tid, BarkListGetTID(entry, ncur - 1)) <= 0 ||
-			MAXALIGN(appended) > maxsz)
+		if (ncur >= BARK_LIST_MAX_COUNT || MAXALIGN(appended) > maxsz)
 			return NULL;
 
 		/*
-		 * The body is a packed ascending ItemPointerData array ending at the
-		 * entry's used size; the new locator goes right after the last one.
-		 * The body offset (t_tid block field) is unchanged, so copying the
-		 * old entry verbatim and appending keeps the layout correct; only the
-		 * count and size change.
+		 * The new locator usually sorts after every member (heap TIDs mostly
+		 * ascend); otherwise binary-search for its place.
 		 */
+		if (ItemPointerCompare(tid, BarkListGetTID(entry, ncur - 1)) <= 0)
+		{
+			int			lo = 0;
+
+			while (lo < ins)
+			{
+				int			mid = lo + (ins - lo) / 2;
+
+				if (ItemPointerCompare(BarkListGetTID(entry, mid), tid) < 0)
+					lo = mid + 1;
+				else
+					ins = mid;
+			}
+			if (ItemPointerEquals(BarkListGetTID(entry, ins), tid))
+				return NULL;
+		}
+
+		/*
+		 * The body is a packed ascending ItemPointerData array ending at the
+		 * entry's used size; the new locator goes at its place in it, and the
+		 * members after it move up by one.  The body offset (t_tid block
+		 * field) is unchanged; only the count and size change.
+		 */
+		insoff = (char *) BarkListGetTID(entry, ins) - (char *) entry;
 		ext = (IndexTuple) palloc0(appended);
-		memcpy(ext, entry, cursz);
-		memcpy((char *) ext + cursz, tid, sizeof(ItemPointerData));
+		memcpy(ext, entry, insoff);
+		memcpy((char *) ext + insoff, tid, sizeof(ItemPointerData));
+		memcpy((char *) ext + insoff + sizeof(ItemPointerData),
+			   (char *) entry + insoff, cursz - insoff);
 		ext->t_info = (ext->t_info & ~INDEX_SIZE_MASK) | (uint16) appended;
 		ItemPointerSetOffsetNumber(&ext->t_tid,
 								   (OffsetNumber) ((uint16) (ncur + 1) |
@@ -908,6 +1163,802 @@ bark_entry_add_tid(IndexTuple entry, ItemPointer tid, Size maxsz)
 		pfree(key);
 		return ext;
 	}
+}
+
+/*
+ * Is `tid` one of the heap TIDs of the leaf entry `itup`?
+ */
+bool
+bark_entry_has_tid(IndexTuple itup, ItemPointer tid)
+{
+	switch (BarkEntryGetShape(itup))
+	{
+		case BARK_SHAPE_LIST:
+			{
+				int			lo = 0;
+				int			hi = BarkListGetCount(itup);
+
+				while (lo < hi)
+				{
+					int			mid = lo + (hi - lo) / 2;
+					int			c = ItemPointerCompare(BarkListGetTID(itup, mid),
+													   tid);
+
+					if (c == 0)
+						return true;
+					if (c < 0)
+						lo = mid + 1;
+					else
+						hi = mid;
+				}
+				return false;
+			}
+		case BARK_SHAPE_POSTING:
+			{
+				Sbm		   *map = bark_posting_open(itup);
+				bool		found = sbm_contains(map, bark_tid_to_key(tid), NULL);
+
+				sbm_free(map);
+				return found;
+			}
+		default:
+			{
+				ItemPointerData lo;
+				ItemPointerData hi;
+
+				bark_entry_tid_range(itup, &lo, &hi);
+				return ItemPointerEquals(&lo, tid);
+			}
+	}
+}
+
+/*
+ * The smallest leaf entry of `key` (a SINGLE-shape key tuple, or a key part,
+ * see bark_entry_key_part) holding the ascending heap TIDs tids[0..n): a
+ * SINGLE for one, else the smaller of POSTING and LIST.  NULL when it would
+ * exceed BarkMaxItemSize.
+ */
+IndexTuple
+bark_form_entry(IndexTuple key, ItemPointer tids, int n)
+{
+	IndexTuple	entry;
+
+	if (n == 1)
+	{
+		entry = CopyIndexTuple(key);
+		entry->t_tid = tids[0];
+		return entry;
+	}
+	entry = bark_form_posting(NULL, key, tids, n);
+	if (entry == NULL && n <= BARK_LIST_MAX_COUNT)
+		entry = bark_form_list(NULL, key, tids, n);
+	if (entry != NULL && MAXALIGN(IndexTupleSize(entry)) > BarkMaxItemSize)
+	{
+		pfree(entry);
+		entry = NULL;
+	}
+	return entry;
+}
+
+/*
+ * Make room for heap TID `tid`, which falls strictly inside the TID range of
+ * the LIST or POSTING entry `entry` but cannot be added to it, by dividing
+ * entry's members and tid between two entries of its key: *left, which
+ * replaces entry, and *right, which goes just after it.  Both are palloc'd.
+ * Each side's TIDs are below the other's, so the run stays in heap TID order.
+ *
+ * The members are divided in the middle.  nbtree's posting-list swap
+ * (_bt_swap_posting) instead keeps the list whole with tid in place of its
+ * highest member, which becomes a plain tuple; nbtree's deduplication pass
+ * later merges such tuples.  BARK has no such pass, and an entry that cannot
+ * take tid has usually reached the item ceiling, so every later TID in its
+ * range would push out one more member as a SINGLE of its own.  Halves have
+ * room for the TIDs that later fall in their ranges.
+ *
+ * Should a half of a POSTING not fit under BarkMaxItemSize (its sbm encoding
+ * is not monotone in the members), the members are cut at tid instead, with
+ * tid on either side.  The side without tid is a subset of entry, so it fits
+ * (a subset's removal bound is no larger), and the two sides' encodings
+ * together are entry's plus a few dozen bytes for tid and the cut, so at
+ * least one of those two cuts fits.
+ *
+ * Like bark_entry_add_tid, this depends only on its arguments, so WAL replay
+ * repeats it (XLOG_BARK_INSERT_SWAP).
+ */
+void
+bark_entry_swap_tid(IndexTuple entry, ItemPointer tid, IndexTuple *left,
+					IndexTuple *right)
+{
+	IndexTuple	key = bark_entry_key_part(entry);
+	int			n = bark_entry_count_tids(entry);
+	ItemPointer tids = palloc_array(ItemPointerData, n + 1);
+	int			ins;
+	int			cuts[3];
+
+	n = bark_entry_get_tids(entry, tids, n);
+	for (ins = 0; ins < n; ins++)
+	{
+		if (ItemPointerCompare(&tids[ins], tid) >= 0)
+			break;
+	}
+	Assert(ins > 0 && ins < n && !ItemPointerEquals(&tids[ins], tid));
+	memmove(&tids[ins + 1], &tids[ins], (n - ins) * sizeof(ItemPointerData));
+	tids[ins] = *tid;
+	n++;
+
+	/* Members tids[0..cut) go left, the rest right. */
+	cuts[0] = n / 2;
+	cuts[1] = ins + 1;
+	cuts[2] = ins;
+	for (int i = 0; i < lengthof(cuts); i++)
+	{
+		*left = bark_form_entry(key, tids, cuts[i]);
+		*right = bark_form_entry(key, tids + cuts[i], n - cuts[i]);
+		if (*left != NULL && *right != NULL)
+		{
+			pfree(tids);
+			pfree(key);
+			return;
+		}
+		if (*left)
+			pfree(*left);
+		if (*right)
+			pfree(*right);
+	}
+	elog(ERROR, "could not divide a BARK entry to add a heap TID");
+}
+
+/*
+ * Divide `entry`, a LIST or POSTING entry, for heap TID `tid`, which sorts
+ * after all its members: *left, which replaces entry, keeps the lowest
+ * members, as many as fit in `leftmax` bytes, and *right, which goes just
+ * after it, holds the rest and tid.  Both are palloc'd.  Returns false, with
+ * neither set, when no member fits on the left, or every one does (the entry
+ * then needs no cut).
+ *
+ * This is the split of a page full of one key (see bark_singleval_cut):
+ * nbtree's single-value deduplication (_bt_singleval_fillfactor) likewise
+ * caps the last posting list on such a page, so the page can be split at
+ * its single-value fill factor rather than only at whole tuples.
+ *
+ * The search for a POSTING's cut assumes that its size grows with its
+ * members (its removal bound, and a LIST's size, do); only an entry that
+ * was formed and measured is used either way.
+ */
+bool
+bark_entry_cut(IndexTuple entry, ItemPointer tid, Size leftmax,
+			   IndexTuple *left, IndexTuple *right)
+{
+	IndexTuple	key = bark_entry_key_part(entry);
+	int			n = bark_entry_count_tids(entry);
+	ItemPointer tids = palloc_array(ItemPointerData, n + 1);
+	int			lo = 0;
+	int			hi;
+
+	n = bark_entry_get_tids(entry, tids, n);
+	Assert(n > 0 && ItemPointerCompare(&tids[n - 1], tid) < 0);
+	tids[n] = *tid;
+
+	/*
+	 * The most members whose entry fits leftmax: 0 if none, n if all.  A
+	 * LIST's size is linear in its members, so for a LIST that is a division;
+	 * for a POSTING it is searched for.
+	 */
+	hi = n;
+	if (BarkEntryGetShape(entry) == BARK_SHAPE_LIST)
+		lo = hi = Max(0, Min(n, ((int) MAXALIGN_DOWN(leftmax) -
+								 (int) MAXALIGN(IndexTupleSize(key))) /
+							 (int) sizeof(ItemPointerData)));
+	while (lo < hi)
+	{
+		int			mid = lo + (hi - lo + 1) / 2;
+		IndexTuple	probe = bark_form_entry(key, tids, mid);
+
+		if (probe != NULL && MAXALIGN(IndexTupleSize(probe)) <= leftmax)
+			lo = mid;
+		else
+			hi = mid - 1;
+		if (probe != NULL)
+			pfree(probe);
+	}
+
+	/*
+	 * A LIST's parts stay LISTs, as a LIST that grows one TID at a time does
+	 * (bark_entry_add_tid): trying each as a POSTING would build an sbm on
+	 * every such split, for parts that bark_coalesce_list re-forms as a
+	 * POSTING anyway once they stop growing as LISTs.
+	 */
+	*left = *right = NULL;
+	if (lo > 0 && lo < n && BarkEntryGetShape(entry) == BARK_SHAPE_LIST)
+	{
+		*left = lo == 1 ? bark_form_entry(key, tids, 1) :
+			bark_form_list(NULL, key, tids, lo);
+		*right = bark_form_list(NULL, key, tids + lo, n + 1 - lo);
+	}
+	else if (lo > 0 && lo < n)
+	{
+		*left = bark_form_entry(key, tids, lo);
+		*right = bark_form_entry(key, tids + lo, n + 1 - lo);
+	}
+	pfree(tids);
+	pfree(key);
+	if (*left != NULL && *right != NULL)
+		return true;
+	if (*left != NULL)
+		pfree(*left);
+	if (*right != NULL)
+		pfree(*right);
+	*left = *right = NULL;
+	return false;
+}
+
+/* ----------------------------------------------------------------------------
+ * Leaf prefix compression (see BARK_PREFIX in bark.h for the format)
+ * ----------------------------------------------------------------------------
+ */
+
+/*
+ * Where each part of an entry goes in its coded form.  Coding and decoding
+ * both lay the entry out from this, so the two cannot disagree.
+ */
+typedef struct BarkPrefixPlan
+{
+	Size		hoff;			/* data offset: header and null bitmap */
+	Size		c1;				/* plain first column's size, with header */
+	Size		keyend;			/* end of the plain key (the body offset) */
+	uint8		code;			/* first payload byte of the coded column */
+	const char *suffix;			/* bytes stored after it */
+	Size		suffixlen;
+	Size		vsize;			/* coded column's size, with header */
+	Size		codedkeyend;	/* end of the coded key */
+	Size		total;			/* size of the coded entry */
+} BarkPrefixPlan;
+
+/*
+ * Is `itup` stored coded on a BARK_PREFIX page?  Only a leaf data entry
+ * whose first column is not NULL; an OVERSIZED entry keeps its key out of
+ * line and is stored as it is.
+ */
+static bool
+bark_prefix_codable(IndexTuple itup)
+{
+	BarkEntryShape shape = BarkEntryGetShape(itup);
+
+	if (shape != BARK_SHAPE_SINGLE && shape != BARK_SHAPE_LIST &&
+		shape != BARK_SHAPE_POSTING)
+		return false;
+	return !IndexTupleHasNulls(itup) ||
+		!att_isnull(0, (uint8 *) itup + sizeof(IndexTupleData));
+}
+
+/*
+ * Does the varlena `val` have the header decoding would give it back: the
+ * 1-byte header if its data fit one, else an uncompressed 4-byte header?
+ */
+static bool
+bark_prefix_canonical(const char *val)
+{
+	if (VARATT_IS_SHORT(val))
+		return !VARATT_IS_EXTERNAL(val);
+	return !VARATT_IS_EXTENDED(val) &&
+		VARSIZE(val) - VARHDRSZ + VARHDRSZ_SHORT > VARATT_SHORT_MAX;
+}
+
+/* End of a leaf entry's key: the body offset of a LIST or POSTING. */
+static Size
+bark_entry_keyend(IndexTuple itup)
+{
+	if (BarkEntryGetShape(itup) == BARK_SHAPE_SINGLE)
+		return IndexTupleSize(itup);
+	return BarkEntryGetBodyOffset(itup);
+}
+
+/*
+ * The size of a coded first column whose payload is `payload` bytes: a
+ * varlena with a 1-byte header when it fits one.
+ */
+static inline Size
+bark_prefix_vsize(Size payload)
+{
+	if (payload + VARHDRSZ_SHORT <= VARATT_SHORT_MAX)
+		return payload + VARHDRSZ_SHORT;
+	return payload + VARHDRSZ;
+}
+
+/*
+ * Offset at which the bytes after the first column go in a coded entry
+ * whose coded column ends at `vend`, when in the plain entry they start at
+ * `restorig`: the first offset at or after `vend` that is the same distance
+ * past a MAXALIGN boundary.
+ */
+static inline Size
+bark_prefix_restoff(Size vend, Size restorig)
+{
+	return vend + (MAXIMUM_ALIGNOF + restorig % MAXIMUM_ALIGNOF -
+				   vend % MAXIMUM_ALIGNOF) % MAXIMUM_ALIGNOF;
+}
+
+/* Plan the coding of the codable entry `itup` against `prefix`. */
+static void
+bark_prefix_plan(const char *prefix, Size prefixlen, IndexTuple itup,
+				 BarkPrefixPlan *plan)
+{
+	const char *val;
+	Size		restorig;
+	bool		storerest;
+
+	plan->hoff = IndexInfoFindDataOffset(itup->t_info);
+	val = (const char *) itup + plan->hoff;
+	plan->c1 = VARSIZE_ANY(val);
+	plan->keyend = bark_entry_keyend(itup);
+
+	if (bark_prefix_canonical(val))
+	{
+		const char *data = VARDATA_ANY(val);
+		Size		datalen = VARSIZE_ANY_EXHDR(val);
+		Size		limit = Min(prefixlen, datalen);
+		Size		shared = 0;
+
+		while (shared < limit && prefix[shared] == data[shared])
+			shared++;
+		plan->code = (uint8) shared;
+		plan->suffix = data + shared;
+		plan->suffixlen = datalen - shared;
+	}
+	else
+	{
+		plan->code = BARK_PREFIX_RAW;
+		plan->suffix = val;
+		plan->suffixlen = plan->c1;
+	}
+	plan->vsize = bark_prefix_vsize(1 + plan->suffixlen);
+
+	/*
+	 * The bytes after the first column can be left out when they are just the
+	 * zero padding that ends the key.
+	 */
+	restorig = plan->hoff + plan->c1;
+	storerest = plan->keyend != MAXALIGN(restorig);
+	for (Size i = restorig; !storerest && i < plan->keyend; i++)
+		storerest = ((const char *) itup)[i] != 0;
+
+	if (storerest)
+	{
+		plan->code |= BARK_PREFIX_REST;
+		plan->codedkeyend = bark_prefix_restoff(plan->hoff + plan->vsize,
+												restorig) +
+			(plan->keyend - restorig);
+	}
+	else
+		plan->codedkeyend = MAXALIGN(plan->hoff + plan->vsize);
+	plan->total = plan->codedkeyend + (IndexTupleSize(itup) - plan->keyend);
+}
+
+/*
+ * Copy n bytes, as memcpy.  Decoding moves a few short runs of bytes per
+ * entry, and gcc expands a memcpy of a variable length into an aligned
+ * buffer into a string move, whose startup cost is most of a scan's
+ * decoding time; eight bytes at a time is several times faster for runs
+ * this short.
+ */
+static inline void
+bark_prefix_copy(char *dst, const char *src, Size n)
+{
+	while (n >= sizeof(uint64))
+	{
+		memcpy(dst, src, sizeof(uint64));
+		dst += sizeof(uint64);
+		src += sizeof(uint64);
+		n -= sizeof(uint64);
+	}
+	while (n-- > 0)
+		*dst++ = *src++;
+}
+
+/* The prefix of a BARK_PREFIX page, and its length in *len. */
+const char *
+bark_page_get_prefix(Page page, Size *len)
+{
+	BarkPageOpaque opaque = BarkPageGetOpaque(page);
+	IndexTuple	item;
+
+	Assert(BarkPageHasPrefix(opaque));
+	item = (IndexTuple) PageGetItem(page,
+									PageGetItemId(page,
+												  BarkPagePrefixOff(opaque)));
+	*len = IndexTupleSize(item) - sizeof(IndexTupleData);
+	return (const char *) item + sizeof(IndexTupleData);
+}
+
+/*
+ * Give `page`, a leaf holding nothing yet but its high key (if it has one),
+ * the prefix `prefix` of `len` bytes: add the PREFIX item and set
+ * BARK_PREFIX.  Its padding comes from the page's free space, which PageInit
+ * zeroed, so a page rebuilt in redo is the same.
+ */
+void
+bark_page_set_prefix(Page page, const char *prefix, Size len)
+{
+	BarkPageOpaque opaque = BarkPageGetOpaque(page);
+	union
+	{
+		IndexTupleData hdr;
+		char		data[sizeof(IndexTupleData) + BARK_PREFIX_MAX];
+	}			item;
+
+	Assert(BarkPageIsLeaf(opaque) && !BarkPageHasPrefix(opaque));
+	Assert(len >= 1 && len <= BARK_PREFIX_MAX);
+	Assert(PageGetMaxOffsetNumber(page) == BarkPagePrefixOff(opaque) - 1);
+
+	memset(&item.hdr, 0, sizeof(IndexTupleData));
+	item.hdr.t_info = (unsigned short) (sizeof(IndexTupleData) + len);
+	memcpy(item.data + sizeof(IndexTupleData), prefix, len);
+	if (PageAddItem(page, item.data, sizeof(IndexTupleData) + len,
+					BarkPagePrefixOff(opaque), false, false) ==
+		InvalidOffsetNumber)
+		elog(ERROR, "failed to add prefix item to BARK page");
+	opaque->bark_flags |= BARK_PREFIX;
+}
+
+/*
+ * The coded form of the leaf entry `itup` for `page`, palloc'd; `itup`
+ * itself when the page has no prefix or the entry is stored plain.
+ */
+IndexTuple
+bark_prefix_encode(Page page, IndexTuple itup)
+{
+	const char *prefix;
+	Size		prefixlen;
+	BarkPrefixPlan plan;
+	char	   *coded;
+	char	   *v;
+	char	   *payload;
+
+	if (!BarkPageHasPrefix(BarkPageGetOpaque(page)) ||
+		!bark_prefix_codable(itup))
+		return itup;
+
+	prefix = bark_page_get_prefix(page, &prefixlen);
+	bark_prefix_plan(prefix, prefixlen, itup, &plan);
+	Assert(plan.total <= INDEX_SIZE_MASK);
+
+	coded = palloc0(plan.total);
+	memcpy(coded, itup, plan.hoff);
+	v = coded + plan.hoff;
+	if (plan.vsize <= VARATT_SHORT_MAX)
+	{
+		SET_VARSIZE_SHORT(v, plan.vsize);
+		payload = v + VARHDRSZ_SHORT;
+	}
+	else
+	{
+		SET_VARSIZE(v, plan.vsize);
+		payload = v + VARHDRSZ;
+	}
+	payload[0] = (char) plan.code;
+	memcpy(payload + 1, plan.suffix, plan.suffixlen);
+	if (plan.code & BARK_PREFIX_REST)
+	{
+		Size		restorig = plan.hoff + plan.c1;
+
+		memcpy(coded + bark_prefix_restoff(plan.hoff + plan.vsize, restorig),
+			   (char *) itup + restorig, plan.keyend - restorig);
+	}
+	memcpy(coded + plan.codedkeyend, (char *) itup + plan.keyend,
+		   IndexTupleSize(itup) - plan.keyend);
+
+	((IndexTuple) coded)->t_info =
+		(itup->t_info & ~INDEX_SIZE_MASK) | (unsigned short) plan.total;
+	if (BarkEntryGetShape(itup) != BARK_SHAPE_SINGLE)
+		BarkEntrySetBodyOffset((IndexTuple) coded, (uint16) plan.codedkeyend);
+
+#ifdef USE_ASSERT_CHECKING
+	{
+		BarkItemBuf check;
+		IndexTuple	decoded = bark_prefix_decode(page, (IndexTuple) coded,
+												 &check);
+
+		Assert(IndexTupleSize(decoded) == IndexTupleSize(itup) &&
+			   memcmp(decoded, itup, IndexTupleSize(itup)) == 0);
+	}
+#endif
+
+	return (IndexTuple) coded;
+}
+
+/* The MAXALIGNed size `itup` takes on `page`, coded if the page codes it. */
+Size
+bark_coded_size(Page page, IndexTuple itup)
+{
+	const char *prefix;
+	Size		prefixlen;
+	BarkPrefixPlan plan;
+
+	if (!BarkPageHasPrefix(BarkPageGetOpaque(page)) ||
+		!bark_prefix_codable(itup))
+		return MAXALIGN(IndexTupleSize(itup));
+
+	prefix = bark_page_get_prefix(page, &prefixlen);
+	bark_prefix_plan(prefix, prefixlen, itup, &plan);
+	return MAXALIGN(plan.total);
+}
+
+/*
+ * Decode the item `itup` of the BARK_PREFIX page `page` into `buf`, and
+ * return it; an item stored plain is returned as it is.  The inverse of
+ * bark_prefix_encode, byte for byte.  An item that does not decode within
+ * its own bounds, or claims more of the prefix than the page has, is
+ * reported as corruption.
+ */
+IndexTuple
+bark_prefix_decode(Page page, IndexTuple itup, BarkItemBuf *buf)
+{
+	const char *prefix;
+	Size		prefixlen;
+	Size		size = IndexTupleSize(itup);
+	Size		hoff;
+	Size		codedkeyend;
+	const char *v;
+	Size		vsize;
+	const char *payload;
+	Size		paylen;
+	uint8		code;
+	Size		shared;
+	char	   *out = buf->data;
+	char	   *val = NULL;
+	Size		c1;
+	Size		restorig;
+	Size		keyend;
+
+	if (!bark_prefix_codable(itup))
+		return itup;
+
+	prefix = bark_page_get_prefix(page, &prefixlen);
+	hoff = IndexInfoFindDataOffset(itup->t_info);
+	codedkeyend = bark_entry_keyend(itup);
+	v = (const char *) itup + hoff;
+	if (hoff >= codedkeyend || codedkeyend > size ||
+		(vsize = VARSIZE_ANY(v)) > codedkeyend - hoff ||
+		(paylen = VARSIZE_ANY_EXHDR(v)) < 1)
+		goto corrupt;
+	payload = VARDATA_ANY(v);
+	code = (uint8) payload[0];
+	shared = code & BARK_PREFIX_SHARED_MASK;
+
+	bark_prefix_copy(out, (const char *) itup, hoff);
+	val = out + hoff;
+	if (shared == BARK_PREFIX_RAW)
+	{
+		c1 = paylen - 1;
+		bark_prefix_copy(val, payload + 1, c1);
+		if (c1 < VARHDRSZ_SHORT || VARSIZE_ANY(val) != c1)
+			goto corrupt;
+	}
+	else
+	{
+		Size		datalen = shared + paylen - 1;
+		char	   *data;
+
+		if (hoff + VARHDRSZ + datalen > sizeof(BarkItemBuf))
+			goto corrupt;
+		if (shared > prefixlen)
+			ereport(ERROR,
+					(errcode(ERRCODE_INDEX_CORRUPTED),
+					 errmsg_internal("BARK leaf entry shares %zu bytes of a %zu-byte page prefix",
+									 shared, prefixlen)));
+		if (datalen + VARHDRSZ_SHORT <= VARATT_SHORT_MAX)
+		{
+			c1 = datalen + VARHDRSZ_SHORT;
+			SET_VARSIZE_SHORT(val, c1);
+			data = val + VARHDRSZ_SHORT;
+		}
+		else
+		{
+			c1 = datalen + VARHDRSZ;
+			SET_VARSIZE(val, c1);
+			data = val + VARHDRSZ;
+		}
+		bark_prefix_copy(data, prefix, shared);
+		bark_prefix_copy(data + shared, payload + 1, paylen - 1);
+	}
+
+	restorig = hoff + c1;
+	if (code & BARK_PREFIX_REST)
+	{
+		Size		restoff = bark_prefix_restoff(hoff + vsize, restorig);
+
+		if (restoff > codedkeyend)
+			goto corrupt;
+		keyend = restorig + (codedkeyend - restoff);
+		if (keyend + (size - codedkeyend) > sizeof(BarkItemBuf))
+			goto corrupt;
+		bark_prefix_copy(out + restorig, (const char *) itup + restoff,
+						 codedkeyend - restoff);
+	}
+	else
+	{
+		keyend = MAXALIGN(restorig);
+		if (keyend + (size - codedkeyend) > sizeof(BarkItemBuf))
+			goto corrupt;
+		memset(out + restorig, 0, keyend - restorig);
+	}
+	bark_prefix_copy(out + keyend, (const char *) itup + codedkeyend,
+					 size - codedkeyend);
+
+	((IndexTuple) out)->t_info = (itup->t_info & ~INDEX_SIZE_MASK) |
+		(unsigned short) (keyend + (size - codedkeyend));
+	if (BarkEntryGetShape(itup) != BARK_SHAPE_SINGLE)
+		BarkEntrySetBodyOffset((IndexTuple) out, (uint16) keyend);
+	return (IndexTuple) out;
+
+corrupt:
+	ereport(ERROR,
+			(errcode(ERRCODE_INDEX_CORRUPTED),
+			 errmsg_internal("BARK leaf entry is not a valid prefix-coded entry")));
+	return NULL;				/* keep compiler quiet */
+}
+
+/*
+ * The bytes of `itup`'s first column a page prefix may be taken from, and
+ * how many (at most BARK_PREFIX_MAX) in *len; NULL when the entry has none:
+ * it is not coded, its value is empty, or it would be stored raw.
+ */
+const char *
+bark_prefix_candidate(IndexTuple itup, Size *len)
+{
+	const char *val;
+
+	if (!bark_prefix_codable(itup))
+		return NULL;
+	val = (const char *) itup + IndexInfoFindDataOffset(itup->t_info);
+	if (!bark_prefix_canonical(val) || VARSIZE_ANY_EXHDR(val) == 0)
+		return NULL;
+	*len = Min(VARSIZE_ANY_EXHDR(val), BARK_PREFIX_MAX);
+	return VARDATA_ANY(val);
+}
+
+/*
+ * How many bytes of `prefix` the first column of `itup` would share on a
+ * page with that prefix: -1 when the entry would not be coded, 0 when it
+ * would be stored raw.
+ */
+int
+bark_prefix_shared(const char *prefix, Size prefixlen, IndexTuple itup)
+{
+	BarkPrefixPlan plan;
+
+	if (!bark_prefix_codable(itup))
+		return -1;
+	bark_prefix_plan(prefix, prefixlen, itup, &plan);
+	if ((plan.code & BARK_PREFIX_SHARED_MASK) == BARK_PREFIX_RAW)
+		return 0;
+	return plan.code & BARK_PREFIX_SHARED_MASK;
+}
+
+/*
+ * May the leaves of `index` have a prefix?  Only when the prefix_compression
+ * reloption is on and the first column is of a varlena type.
+ */
+bool
+bark_prefix_enabled(Relation index)
+{
+	return BarkGetPrefixCompression(index) &&
+		TupleDescAttr(RelationGetDescr(index), 0)->attlen == -1;
+}
+
+/*
+ * Choose the prefix for a leaf about to be built from the `n` entries
+ * `items`, in key order: the first entry's first-column bytes, cut to the
+ * longest run any later entry shares, provided the entries share at least
+ * BARK_PREFIX_MIN_SHARED bytes of it on average.  Returns the prefix's
+ * length, with *prefix pointing into items[0], or 0 for no prefix.
+ */
+Size
+bark_prefix_choose(Relation index, IndexTuple *items, int n,
+				   const char **prefix)
+{
+	const char *cand;
+	Size		candlen;
+	Size		longest = 0;
+	Size		total = 0;
+	int			ncoded = 0;
+
+	if (!bark_prefix_enabled(index) ||
+		(cand = bark_prefix_candidate(items[0], &candlen)) == NULL)
+		return 0;
+	if (n == 1)
+	{
+		*prefix = cand;
+		return candlen;
+	}
+	for (int i = 1; i < n; i++)
+	{
+		int			shared = bark_prefix_shared(cand, candlen, items[i]);
+
+		if (shared < 0)
+			continue;
+		total += shared;
+		ncoded++;
+		longest = Max(longest, (Size) shared);
+	}
+	if (longest == 0 || total < (Size) BARK_PREFIX_MIN_SHARED * ncoded)
+		return 0;
+	*prefix = cand;
+	return longest;
+}
+
+/* Add `item` of `size` bytes at offset `off` of `page`; false if no room. */
+static bool
+bark_split_add(Page page, const void *item, Size size, OffsetNumber off)
+{
+	return PageAddItem(page, item, size, off, false, false) !=
+		InvalidOffsetNumber;
+}
+
+/*
+ * Build the left half of a split of `origpage` on `page`, which the caller
+ * has initialized as the left half without BARK_PREFIX: the high key
+ * `hikey`, then the PREFIX item of `origpage` if it has one, then the
+ * original page's entries before `firstrightoff`, stored as they are, with
+ * `newitem` added before the entry at `newitemoff` (or after the last, when
+ * that is `firstrightoff`) and the entry at `replaceoff` replaced by
+ * `replaceitem`.  `newitem` and `replaceitem` are NULL when the split puts
+ * them on the right page, or has none; when given, they are coded for the
+ * original page.  Returns false when they do not fit.
+ *
+ * bark_split builds the left page here, and so does split redo from the
+ * same original page and the entries the record carries, so the two match
+ * byte for byte (see xl_bark_split).  The entries are copied, not decoded
+ * and coded again, so the left half keeps the original page's prefix.
+ */
+bool
+bark_split_build_left(Page page, Page origpage, IndexTuple hikey,
+					  OffsetNumber firstrightoff, IndexTuple newitem,
+					  OffsetNumber newitemoff, IndexTuple replaceitem,
+					  OffsetNumber replaceoff)
+{
+	BarkPageOpaque origopaque = BarkPageGetOpaque(origpage);
+	OffsetNumber o = BARK_P_HIKEY;
+
+	Assert(!BarkPageHasPrefix(BarkPageGetOpaque(page)));
+	Assert(firstrightoff >= BarkPageFirstDataKey(origopaque) &&
+		   firstrightoff <= OffsetNumberNext(PageGetMaxOffsetNumber(origpage)));
+
+	if (!bark_split_add(page, hikey, IndexTupleSize(hikey), o++))
+		return false;
+	if (BarkPageHasPrefix(origopaque))
+	{
+		ItemId		iid = PageGetItemId(origpage, BarkPagePrefixOff(origopaque));
+
+		if (!bark_split_add(page, PageGetItem(origpage, iid),
+							ItemIdGetLength(iid), o++))
+			return false;
+		BarkPageGetOpaque(page)->bark_flags |= BARK_PREFIX;
+	}
+
+	for (OffsetNumber off = BarkPageFirstDataKey(origopaque);
+		 off <= firstrightoff; off = OffsetNumberNext(off))
+	{
+		ItemId		iid;
+
+		if (off == newitemoff && newitem != NULL &&
+			!bark_split_add(page, newitem, IndexTupleSize(newitem), o++))
+			return false;
+		if (off == firstrightoff)
+			break;
+		if (off == replaceoff && replaceitem != NULL)
+		{
+			if (!bark_split_add(page, replaceitem, IndexTupleSize(replaceitem),
+								o++))
+				return false;
+			continue;
+		}
+		iid = PageGetItemId(origpage, off);
+		if (!bark_split_add(page, PageGetItem(origpage, iid),
+							ItemIdGetLength(iid), o++))
+			return false;
+	}
+	return true;
 }
 
 /* ----------------------------------------------------------------------------
@@ -1050,11 +2101,18 @@ bark_form_full_tuple(TupleDesc tupleDescriptor, const Datum *values,
 	return tuple;
 }
 
-/* True when `fulllen` bytes cannot sit inline on a page under the item cap. */
+/*
+ * True when a leaf entry of `fulllen` bytes cannot sit inline on a page.  As
+ * nbtree's BTMaxItemSize does, the limit keeps room under the item ceiling
+ * for the heap TID a pivot formed from the entry may have to carry (see
+ * bark_truncate_pivot), so a pivot is never oversized when its leaf entry is
+ * not.
+ */
 bool
 bark_len_is_oversized(Size fulllen)
 {
-	return MAXALIGN(fulllen) > BarkMaxItemSize;
+	return MAXALIGN(fulllen) >
+		BarkMaxItemSize - MAXALIGN(sizeof(ItemPointerData));
 }
 
 /* Overflow pages a full tuple of `fulllen` bytes occupies (at least one). */
@@ -1066,17 +2124,16 @@ bark_overflow_nchunks(Size fulllen)
 }
 
 /*
- * Lay out the `which`'th overflow chunk of a tuple of `fulllen` bytes into
- * `page`, copying its slice of `full` and linking it to `nextblk`.
+ * Lay out an overflow page holding `len` bytes of a tuple, `chunk`, linked to
+ * `nextblk`.
  */
 void
-bark_init_overflow_page(Page page, const char *full, Size fulllen,
-						BlockNumber which, BlockNumber nextblk)
+bark_init_overflow_page(Page page, const char *chunk, Size len,
+						BlockNumber nextblk)
 {
 	BarkPageOpaque opaque;
-	Size		start = (Size) which * BarkOverflowChunkSize;
-	Size		len = Min((Size) BarkOverflowChunkSize, fulllen - start);
 
+	Assert(len <= BarkOverflowChunkSize);
 	PageInit(page, BLCKSZ, sizeof(BarkPageOpaqueData));
 	opaque = BarkPageGetOpaque(page);
 	opaque->bark_prev = BARK_P_NONE;
@@ -1086,7 +2143,7 @@ bark_init_overflow_page(Page page, const char *full, Size fulllen,
 	opaque->bark_flags = BARK_OVERFLOW; /* not BARK_LEAF: vacuum skips it */
 	opaque->bark_page_id = BARK_PAGE_ID;
 
-	memcpy(BarkOverflowPageData(page), full + start, len);
+	memcpy(BarkOverflowPageData(page), chunk, len);
 	/* Advance pd_lower to cover the chunk so the page is not seen as empty. */
 	((PageHeader) page)->pd_lower = MAXALIGN(SizeOfPageHeaderData) + len;
 }
@@ -1129,6 +2186,7 @@ bark_form_oversized_entry(ItemPointer locator, Size fulllen,
 	ref->fulllen = (uint32) fulllen;
 	ref->locator = *locator;
 	ref->natts = is_leaf ? BARK_OVERFLOW_LEAF : natts;
+	ItemPointerSetInvalid(&ref->pivottid);
 	return entry;
 }
 
@@ -1147,7 +2205,6 @@ bark_set_oversized_prefix(IndexTuple entry, Relation index, IndexTuple full)
 {
 	BarkOverflowRef *ref = BarkOverflowGetRef(entry);
 	TupleDesc	tupdesc = RelationGetDescr(index);
-	Oid			collation = index->rd_indcollation[0];
 	Datum		d;
 	bool		isnull;
 	char	   *data;
@@ -1158,13 +2215,10 @@ bark_set_oversized_prefix(IndexTuple entry, Relation index, IndexTuple full)
 
 	/*
 	 * The prefix fast path is sound only when a leading-byte difference in
-	 * the first key column decides its order -- a text/bytea-style column
-	 * under a C/POSIX collation.  A locale-aware collation can reorder across
-	 * the prefix boundary, so leave prefixlen 0 and let comparison fetch the
-	 * full value.  (Only the first key column drives the prefix.)
+	 * the first key column decides its order.  For any other column leave
+	 * prefixlen 0 and let comparison fetch the full value.
 	 */
-	if (!OidIsValid(collation) ||
-		!pg_newlocale_from_collation(collation)->collate_is_c)
+	if (!bark_first_column_bytewise(index))
 		return;
 
 	d = index_getattr(full, 1, tupdesc, &isnull);
@@ -1182,7 +2236,7 @@ bark_set_oversized_prefix(IndexTuple entry, Relation index, IndexTuple full)
 		return;
 	Assert(!VARATT_IS_EXTERNAL(DatumGetPointer(d)));
 
-	/* A C-collation text/bytea datum is a varlena: use its data area. */
+	/* A C-collation text datum is a varlena: use its data area. */
 	data = VARDATA_ANY(DatumGetPointer(d));
 	len = VARSIZE_ANY_EXHDR(DatumGetPointer(d));
 
@@ -1196,12 +2250,13 @@ bark_set_oversized_prefix(IndexTuple entry, Relation index, IndexTuple full)
 
 /*
  * Write `full` (fulllen bytes) across a fresh BARK_OVERFLOW chain via the
- * buffer pool, each page WAL-logged with generic WAL, and return the first
- * block.  heaprel is the index's heap, for bark_get_free_page.  Generic WAL
- * covers at most MAX_GENERIC_XLOG_PAGES buffers per record, so a long chain
- * is written in several records; each page is self-contained (it carries its
- * own next-link and chunk bytes), so a crash between records leaves only
- * orphaned, BARK_P_NONE-terminated pages that no entry references.
+ * buffer pool, and return the first block.  heaprel is the index's heap, for
+ * bark_get_free_page.  The pages are logged in XLOG_BARK_OVERFLOW records,
+ * BARK_OVERFLOW_PER_RECORD to a record, each page with its next link and its
+ * slice of the tuple, so redo rebuilds it without reading it.  A long chain
+ * takes several records; each page is self-contained, so a crash between
+ * them leaves only orphaned, BARK_P_NONE-terminated pages that no entry
+ * references (the entry is written after the whole chain).
  */
 BlockNumber
 bark_write_overflow_chain(Relation index, Relation heaprel, IndexTuple full,
@@ -1220,22 +2275,47 @@ bark_write_overflow_chain(Relation index, Relation heaprel, IndexTuple full,
 	}
 	firstblk = blks[0];
 
-	/* Write the chunks, up to MAX_GENERIC_XLOG_PAGES per generic-WAL record. */
 	for (BlockNumber i = 0; i < nchunks;)
 	{
-		GenericXLogState *gstate = GenericXLogStart(index);
-		int			nin = 0;
+		BlockNumber first = i;
+		BlockNumber last = Min(nchunks, i + BARK_OVERFLOW_PER_RECORD);
+		xl_bark_overflow_page links[BARK_OVERFLOW_PER_RECORD];
+		XLogRecPtr	recptr;
 
-		for (; i < nchunks && nin < MAX_GENERIC_XLOG_PAGES; i++, nin++)
+		START_CRIT_SECTION();
+		for (; i < last; i++)
 		{
-			Page		page = GenericXLogRegisterBuffer(gstate, bufs[i],
-														 GENERIC_XLOG_FULL_IMAGE);
-			BlockNumber nextblk = (i + 1 < nchunks) ? blks[i + 1] : BARK_P_NONE;
+			Size		start = (Size) i * BarkOverflowChunkSize;
 
-			bark_init_overflow_page(page, (const char *) full, fulllen,
-									i, nextblk);
+			links[i - first].next = (i + 1 < nchunks) ? blks[i + 1] : BARK_P_NONE;
+			bark_init_overflow_page(BufferGetPage(bufs[i]),
+									(const char *) full + start,
+									Min((Size) BarkOverflowChunkSize,
+										fulllen - start),
+									links[i - first].next);
+			MarkBufferDirty(bufs[i]);
 		}
-		GenericXLogFinish(gstate);
+		if (RelationNeedsWAL(index))
+		{
+			XLogBeginInsert();
+			for (i = first; i < last; i++)
+			{
+				Size		start = (Size) i * BarkOverflowChunkSize;
+
+				XLogRegisterBuffer(i - first, bufs[i], REGBUF_WILL_INIT);
+				XLogRegisterBufData(i - first, &links[i - first],
+									sizeof(xl_bark_overflow_page));
+				XLogRegisterBufData(i - first, (const char *) full + start,
+									Min((Size) BarkOverflowChunkSize,
+										fulllen - start));
+			}
+			recptr = XLogInsert(RM_BARK_ID, XLOG_BARK_OVERFLOW);
+		}
+		else
+			recptr = XLogGetFakeLSN(index);
+		for (i = first; i < last; i++)
+			PageSetLSN(BufferGetPage(bufs[i]), recptr);
+		END_CRIT_SECTION();
 	}
 
 	for (BlockNumber i = 0; i < nchunks; i++)

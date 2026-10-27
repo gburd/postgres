@@ -1,0 +1,203 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1begin s1knn s1fetch s2ins s1rest s1commit s1count
+step s1begin: BEGIN ISOLATION LEVEL REPEATABLE READ;
+step s1knn: DECLARE c CURSOR FOR SELECT a, a <~> 500 FROM knn_shift ORDER BY a <~> 500;
+step s1fetch: SELECT knn_shift_fetch('c', 50);
+knn_shift_fetch
+---------------
+               
+(1 row)
+
+step s2ins: 
+	INSERT INTO knn_shift SELECT g FROM generate_series(1, 20) g;
+	INSERT INTO knn_shift SELECT 500 + g FROM generate_series(1, 9) g;
+
+step s1rest: SELECT knn_shift_fetch('c', 1000000);
+knn_shift_fetch
+---------------
+               
+(1 row)
+
+step s1commit: COMMIT;
+step s1count: 
+	SELECT count(*) AS fetched, count(DISTINCT a) AS distinct_rows,
+		   count(*) FILTER (WHERE a % 10 <> 0) AS foreign,
+		   count(*) FILTER (WHERE d < prev_d) AS out_of_order
+	  FROM (SELECT a, d, lag(d) OVER (ORDER BY n) AS prev_d
+			  FROM knn_shift_got) s;
+	TRUNCATE knn_shift_got;
+
+fetched|distinct_rows|foreign|out_of_order
+-------+-------------+-------+------------
+    100|          100|      0|           0
+(1 row)
+
+
+starting permutation: s1begin s1knnios s1fetch s2ins s1rest s1commit s1count
+step s1begin: BEGIN ISOLATION LEVEL REPEATABLE READ;
+step s1knnios: 
+	SET LOCAL enable_indexonlyscan = on;
+	DECLARE c CURSOR FOR SELECT a, a <~> 500 FROM knn_shift ORDER BY a <~> 500;
+
+step s1fetch: SELECT knn_shift_fetch('c', 50);
+knn_shift_fetch
+---------------
+               
+(1 row)
+
+step s2ins: 
+	INSERT INTO knn_shift SELECT g FROM generate_series(1, 20) g;
+	INSERT INTO knn_shift SELECT 500 + g FROM generate_series(1, 9) g;
+
+step s1rest: SELECT knn_shift_fetch('c', 1000000);
+knn_shift_fetch
+---------------
+               
+(1 row)
+
+step s1commit: COMMIT;
+step s1count: 
+	SELECT count(*) AS fetched, count(DISTINCT a) AS distinct_rows,
+		   count(*) FILTER (WHERE a % 10 <> 0) AS foreign,
+		   count(*) FILTER (WHERE d < prev_d) AS out_of_order
+	  FROM (SELECT a, d, lag(d) OVER (ORDER BY n) AS prev_d
+			  FROM knn_shift_got) s;
+	TRUNCATE knn_shift_got;
+
+fetched|distinct_rows|foreign|out_of_order
+-------+-------------+-------+------------
+    100|          100|      0|           0
+(1 row)
+
+
+starting permutation: s1begin s1knn s1fetch s2split s1rest s1commit s1count
+step s1begin: BEGIN ISOLATION LEVEL REPEATABLE READ;
+step s1knn: DECLARE c CURSOR FOR SELECT a, a <~> 500 FROM knn_shift ORDER BY a <~> 500;
+step s1fetch: SELECT knn_shift_fetch('c', 50);
+knn_shift_fetch
+---------------
+               
+(1 row)
+
+step s2split: INSERT INTO knn_shift SELECT g * 10 + 5 FROM generate_series(1, 2000) g;
+step s1rest: SELECT knn_shift_fetch('c', 1000000);
+knn_shift_fetch
+---------------
+               
+(1 row)
+
+step s1commit: COMMIT;
+step s1count: 
+	SELECT count(*) AS fetched, count(DISTINCT a) AS distinct_rows,
+		   count(*) FILTER (WHERE a % 10 <> 0) AS foreign,
+		   count(*) FILTER (WHERE d < prev_d) AS out_of_order
+	  FROM (SELECT a, d, lag(d) OVER (ORDER BY n) AS prev_d
+			  FROM knn_shift_got) s;
+	TRUNCATE knn_shift_got;
+
+fetched|distinct_rows|foreign|out_of_order
+-------+-------------+-------+------------
+    100|          100|      0|           0
+(1 row)
+
+
+starting permutation: s1begin s1knnios s1fetch s2split s1rest s1commit s1count
+step s1begin: BEGIN ISOLATION LEVEL REPEATABLE READ;
+step s1knnios: 
+	SET LOCAL enable_indexonlyscan = on;
+	DECLARE c CURSOR FOR SELECT a, a <~> 500 FROM knn_shift ORDER BY a <~> 500;
+
+step s1fetch: SELECT knn_shift_fetch('c', 50);
+knn_shift_fetch
+---------------
+               
+(1 row)
+
+step s2split: INSERT INTO knn_shift SELECT g * 10 + 5 FROM generate_series(1, 2000) g;
+step s1rest: SELECT knn_shift_fetch('c', 1000000);
+knn_shift_fetch
+---------------
+               
+(1 row)
+
+step s1commit: COMMIT;
+step s1count: 
+	SELECT count(*) AS fetched, count(DISTINCT a) AS distinct_rows,
+		   count(*) FILTER (WHERE a % 10 <> 0) AS foreign,
+		   count(*) FILTER (WHERE d < prev_d) AS out_of_order
+	  FROM (SELECT a, d, lag(d) OVER (ORDER BY n) AS prev_d
+			  FROM knn_shift_got) s;
+	TRUNCATE knn_shift_got;
+
+fetched|distinct_rows|foreign|out_of_order
+-------+-------------+-------+------------
+    100|          100|      0|           0
+(1 row)
+
+
+starting permutation: s1begin s1wide s1fetchmany s2inswide s1rest s1commit s1count
+step s1begin: BEGIN ISOLATION LEVEL REPEATABLE READ;
+step s1wide: DECLARE c CURSOR FOR SELECT a, a <~> 15000 FROM knn_shift_wide ORDER BY a <~> 15000;
+step s1fetchmany: SELECT knn_shift_fetch('c', 1000);
+knn_shift_fetch
+---------------
+               
+(1 row)
+
+step s2inswide: INSERT INTO knn_shift_wide SELECT g * 10 + 3 FROM generate_series(1, 3000) g;
+step s1rest: SELECT knn_shift_fetch('c', 1000000);
+knn_shift_fetch
+---------------
+               
+(1 row)
+
+step s1commit: COMMIT;
+step s1count: 
+	SELECT count(*) AS fetched, count(DISTINCT a) AS distinct_rows,
+		   count(*) FILTER (WHERE a % 10 <> 0) AS foreign,
+		   count(*) FILTER (WHERE d < prev_d) AS out_of_order
+	  FROM (SELECT a, d, lag(d) OVER (ORDER BY n) AS prev_d
+			  FROM knn_shift_got) s;
+	TRUNCATE knn_shift_got;
+
+fetched|distinct_rows|foreign|out_of_order
+-------+-------------+-------+------------
+   3000|         3000|      0|           0
+(1 row)
+
+
+starting permutation: s2del s1beginrc s1vac s1fetch s2vacuum s1rest s1commit s1count
+step s2del: 
+	DELETE FROM knn_shift_vac
+	 WHERE a BETWEEN 4000 AND 11990 OR a BETWEEN 14000 AND 21990;
+
+step s1beginrc: BEGIN ISOLATION LEVEL READ COMMITTED;
+step s1vac: DECLARE c CURSOR FOR SELECT a, a <~> 13000 FROM knn_shift_vac ORDER BY a <~> 13000;
+step s1fetch: SELECT knn_shift_fetch('c', 50);
+knn_shift_fetch
+---------------
+               
+(1 row)
+
+step s2vacuum: VACUUM (INDEX_CLEANUP ON) knn_shift_vac;
+step s1rest: SELECT knn_shift_fetch('c', 1000000);
+knn_shift_fetch
+---------------
+               
+(1 row)
+
+step s1commit: COMMIT;
+step s1count: 
+	SELECT count(*) AS fetched, count(DISTINCT a) AS distinct_rows,
+		   count(*) FILTER (WHERE a % 10 <> 0) AS foreign,
+		   count(*) FILTER (WHERE d < prev_d) AS out_of_order
+	  FROM (SELECT a, d, lag(d) OVER (ORDER BY n) AS prev_d
+			  FROM knn_shift_got) s;
+	TRUNCATE knn_shift_got;
+
+fetched|distinct_rows|foreign|out_of_order
+-------+-------------+-------+------------
+   1400|         1400|      0|           0
+(1 row)
+
