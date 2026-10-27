@@ -254,7 +254,7 @@ for my $pct (100, 50, 0)
 		cmp_ok( $node->safe_psql(
 				'postgres', q{
 				SELECT avg(s.free_size)::int
-				  FROM generate_series(1, pg_relation_size('tb_k') / 8192 - 1) b,
+				  FROM generate_series(1, pg_relation_size('tb_k') / current_setting('block_size')::int - 1) b,
 				       LATERAL bark_page_stats('tb_k', b) s
 				 WHERE s.type = 'leaf' AND s.bark_next <> 0}),
 			'<', 2048, "$what: tb_k's leaves are packed")
@@ -328,7 +328,7 @@ $node->safe_psql(
 	                 tailn int8, tailbytes int8, ndata int8)
 	  LANGUAGE sql AS $$
 	  WITH l AS (SELECT b::int AS blk, s.bark_next AS next, s.flags
-	               FROM generate_series(1, pg_relation_size(idx) / 8192 - 1) b,
+	               FROM generate_series(1, pg_relation_size(idx) / current_setting('block_size')::int - 1) b,
 	                    LATERAL bark_page_stats(idx::text, b) s
 	              WHERE s.type = 'leaf'),
 	       i AS MATERIALIZED (SELECT l.blk, l.next, it.* FROM l, LATERAL bark_page_items(idx::text, l.blk) it),
