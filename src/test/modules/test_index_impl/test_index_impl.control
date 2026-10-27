@@ -1,0 +1,5 @@
+# test_index_impl extension
+comment = 'test_index_impl - index access methods implementing btree indexes'
+default_version = '1.0'
+module_pathname = '$libdir/test_index_impl'
+relocatable = true
