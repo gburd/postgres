@@ -1910,11 +1910,10 @@ of an empty leaf removes, and an insert that writes a chain and then gives
 up the leaf it found by the fast path (bark_insert_key) the chain it
 wrote.  A deleted overflow page, which VACUUM freed and
 which awaits recycling, is not an overflow page and is not reported.
-Nothing reclaims orphaned pages but REINDEX (follow-up R4c: VACUUM would
-free a chain no entry references once the transaction that wrote it is
-over).  pg_amcheck checks BARK
-indexes, and btree indexes BARK implements, when the database's amcheck
-is version 1.7 or later (prepare_btree_command).
+Nothing reclaims orphaned pages but REINDEX (VACUUM could free a chain no
+entry references once the transaction that wrote it is over).
+pg_amcheck checks BARK indexes, and btree indexes BARK implements, when
+the database's amcheck is version 1.7 or later (prepare_btree_command).
 
 With checkunique (amcheck 1.8), both functions also walk the leaves of a
 unique index by right links and report a run of equal key columns, which
