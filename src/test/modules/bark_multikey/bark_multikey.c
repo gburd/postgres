@@ -525,6 +525,190 @@ bark_multikey_greatest(PG_FUNCTION_ARGS)
 }
 
 /*
+ * The range class's operators over an array's elements.  They are in C, not
+ * SQL, because every index answer is compared with a sequential scan that
+ * calls one per row.  A comparison with a NULL element is never true, so
+ * each skips NULL elements; |=| is x = ANY (a), whose result is NULL when
+ * no element equals x and one is NULL.
+ */
+PG_FUNCTION_INFO_V1(bark_multikey_any_gt);
+PG_FUNCTION_INFO_V1(bark_multikey_any_le);
+PG_FUNCTION_INFO_V1(bark_multikey_any_within);
+PG_FUNCTION_INFO_V1(bark_multikey_any_even_in);
+PG_FUNCTION_INFO_V1(bark_multikey_has);
+PG_FUNCTION_INFO_V1(bark_multikey_none_gt);
+PG_FUNCTION_INFO_V1(bark_multikey_any_ne);
+PG_FUNCTION_INFO_V1(bark_multikey_any_near);
+
+typedef bool (*ElementTest) (int32 e, int32 x);
+
+static bool
+element_gt(int32 e, int32 x)
+{
+	return e > x;
+}
+
+static bool
+element_le(int32 e, int32 x)
+{
+	return e <= x;
+}
+
+static bool
+element_ne(int32 e, int32 x)
+{
+	return e != x;
+}
+
+/*
+ * Near x / 10: above x / 10 - 2 (or equal, when bit 0 of x % 10 is clear),
+ * and below x / 10 + 2 (or equal, when bit 1 is clear), with no upper end
+ * when bit 2 is set; procedure 8 forms the same boundary.
+ */
+static bool
+element_near(int32 e, int32 x)
+{
+	int32		c = x / 10;
+	int32		bits = x % 10;
+
+	return (e > c - 2 || (e == c - 2 && (bits & 1) == 0)) &&
+		((bits & 4) == 4 || e < c + 2 || (e == c + 2 && (bits & 2) == 0));
+}
+
+/* Does some non-NULL element e of array pass test(e, x)? */
+static bool
+any_element(ArrayType *array, int32 x, ElementTest test)
+{
+	Datum	   *elems;
+	bool	   *nulls;
+	int			nelems;
+
+	deconstruct_array_builtin(array, INT4OID, &elems, &nulls, &nelems);
+	for (int i = 0; i < nelems; i++)
+	{
+		if (!nulls[i] && test(DatumGetInt32(elems[i]), x))
+			return true;
+	}
+	return false;
+}
+
+Datum
+bark_multikey_any_gt(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_BOOL(any_element(PG_GETARG_ARRAYTYPE_P(0), PG_GETARG_INT32(1),
+								element_gt));
+}
+
+Datum
+bark_multikey_any_le(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_BOOL(any_element(PG_GETARG_ARRAYTYPE_P(0), PG_GETARG_INT32(1),
+								element_le));
+}
+
+Datum
+bark_multikey_none_gt(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_BOOL(!any_element(PG_GETARG_ARRAYTYPE_P(0), PG_GETARG_INT32(1),
+								 element_gt));
+}
+
+Datum
+bark_multikey_any_ne(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_BOOL(any_element(PG_GETARG_ARRAYTYPE_P(0), PG_GETARG_INT32(1),
+								element_ne));
+}
+
+Datum
+bark_multikey_any_near(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_BOOL(any_element(PG_GETARG_ARRAYTYPE_P(0), PG_GETARG_INT32(1),
+								element_near));
+}
+
+/* a |><| q: some element is in [q[1], q[2]). */
+Datum
+bark_multikey_any_within(PG_FUNCTION_ARGS)
+{
+	ArrayType  *array = PG_GETARG_ARRAYTYPE_P(0);
+	Datum		q = PointerGetDatum(PG_GETARG_ARRAYTYPE_P(1));
+	int			sub;
+	bool		lonull;
+	bool		hinull;
+	int32		lo;
+	int32		hi;
+	Datum	   *elems;
+	bool	   *nulls;
+	int			nelems;
+
+	sub = 1;
+	lo = DatumGetInt32(array_get_element(q, 1, &sub, -1, sizeof(int32), true,
+										 TYPALIGN_INT, &lonull));
+	sub = 2;
+	hi = DatumGetInt32(array_get_element(q, 1, &sub, -1, sizeof(int32), true,
+										 TYPALIGN_INT, &hinull));
+	if (lonull || hinull)
+		PG_RETURN_BOOL(false);
+	deconstruct_array_builtin(array, INT4OID, &elems, &nulls, &nelems);
+	for (int i = 0; i < nelems; i++)
+	{
+		if (!nulls[i] && DatumGetInt32(elems[i]) >= lo &&
+			DatumGetInt32(elems[i]) < hi)
+			PG_RETURN_BOOL(true);
+	}
+	PG_RETURN_BOOL(false);
+}
+
+/* a |%| q: some even element is an element of q. */
+Datum
+bark_multikey_any_even_in(PG_FUNCTION_ARGS)
+{
+	ArrayType  *array = PG_GETARG_ARRAYTYPE_P(0);
+	int32	   *qkeys;
+	int			nqkeys;
+	Datum	   *elems;
+	bool	   *nulls;
+	int			nelems;
+
+	qkeys = sorted_elements(PG_GETARG_ARRAYTYPE_P(1), &nqkeys);
+	deconstruct_array_builtin(array, INT4OID, &elems, &nulls, &nelems);
+	for (int i = 0; i < nelems; i++)
+	{
+		int32		e = DatumGetInt32(elems[i]);
+
+		if (!nulls[i] && e % 2 == 0 &&
+			bsearch(&e, qkeys, nqkeys, sizeof(int32), cmp_int4) != NULL)
+			PG_RETURN_BOOL(true);
+	}
+	PG_RETURN_BOOL(false);
+}
+
+/* a |=| x: x = ANY (a). */
+Datum
+bark_multikey_has(PG_FUNCTION_ARGS)
+{
+	int32		x = PG_GETARG_INT32(1);
+	bool		sawnull = false;
+	Datum	   *elems;
+	bool	   *nulls;
+	int			nelems;
+
+	deconstruct_array_builtin(PG_GETARG_ARRAYTYPE_P(0), INT4OID, &elems,
+							  &nulls, &nelems);
+	for (int i = 0; i < nelems; i++)
+	{
+		if (nulls[i])
+			sawnull = true;
+		else if (DatumGetInt32(elems[i]) == x)
+			PG_RETURN_BOOL(true);
+	}
+	if (sawnull)
+		PG_RETURN_NULL();
+	PG_RETURN_BOOL(false);
+}
+
+/*
  * The support procedure procnum of operator class opclass, registered under
  * its input type, as BARK looks it up.
  */

@@ -116,33 +116,26 @@ FOR TYPE int4[] USING bark FAMILY bark_int4_array_ops AS
 -- element is greater than x, at most x, in [q[1], q[2]), an even element
 -- of q, or equal to x; no element above x; some element other than x; some
 -- element near x / 10 (see bark_multikey_extract_query).  |!| is always
--- true; its class's procedures misbehave on purpose.
+-- true; its class's procedures misbehave on purpose.  They are in C
+-- because the sequential scans that check every index answer call them
+-- once a row; COST 100, a SQL function's default, keeps the plans of SQL
+-- versions of them.
 CREATE FUNCTION bark_multikey_any_gt(int4[], int4) RETURNS bool
-  AS 'SELECT EXISTS (SELECT 1 FROM unnest($1) e WHERE e > $2)'
-  LANGUAGE sql IMMUTABLE STRICT;
+  AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT COST 100;
 CREATE FUNCTION bark_multikey_any_le(int4[], int4) RETURNS bool
-  AS 'SELECT EXISTS (SELECT 1 FROM unnest($1) e WHERE e <= $2)'
-  LANGUAGE sql IMMUTABLE STRICT;
+  AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT COST 100;
 CREATE FUNCTION bark_multikey_any_within(int4[], int4[]) RETURNS bool
-  AS 'SELECT EXISTS (SELECT 1 FROM unnest($1) e WHERE e >= $2[1] AND e < $2[2])'
-  LANGUAGE sql IMMUTABLE STRICT;
+  AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT COST 100;
 CREATE FUNCTION bark_multikey_any_even_in(int4[], int4[]) RETURNS bool
-  AS 'SELECT EXISTS (SELECT 1 FROM unnest($1) e WHERE e % 2 = 0 AND e = ANY ($2))'
-  LANGUAGE sql IMMUTABLE STRICT;
+  AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT COST 100;
 CREATE FUNCTION bark_multikey_has(int4[], int4) RETURNS bool
-  AS 'SELECT $2 = ANY ($1)' LANGUAGE sql IMMUTABLE STRICT;
+  AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT COST 100;
 CREATE FUNCTION bark_multikey_none_gt(int4[], int4) RETURNS bool
-  AS 'SELECT NOT EXISTS (SELECT 1 FROM unnest($1) e WHERE e > $2)'
-  LANGUAGE sql IMMUTABLE STRICT;
+  AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT COST 100;
 CREATE FUNCTION bark_multikey_any_ne(int4[], int4) RETURNS bool
-  AS 'SELECT EXISTS (SELECT 1 FROM unnest($1) e WHERE e <> $2)'
-  LANGUAGE sql IMMUTABLE STRICT;
+  AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT COST 100;
 CREATE FUNCTION bark_multikey_any_near(int4[], int4) RETURNS bool
-  AS 'SELECT EXISTS (SELECT 1 FROM unnest($1) e
-                     WHERE (e > $2 / 10 - 2 OR (e = $2 / 10 - 2 AND $2 % 10 & 1 = 0))
-                       AND ($2 % 10 & 4 = 4 OR e < $2 / 10 + 2 OR
-                            (e = $2 / 10 + 2 AND $2 % 10 & 2 = 0)))'
-  LANGUAGE sql IMMUTABLE STRICT;
+  AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT COST 100;
 CREATE FUNCTION bark_multikey_true(int4[], int4) RETURNS bool
   AS 'SELECT true' LANGUAGE sql IMMUTABLE STRICT;
 CREATE OPERATOR |>| (LEFTARG = int4[], RIGHTARG = int4,
