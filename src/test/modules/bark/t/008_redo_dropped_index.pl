@@ -211,10 +211,18 @@ is($node->safe_psql('postgres',
 sub waldump
 {
 	my @args = @_;
+	my ($start) = map { /^--start=(.*)/ ? $1 : () } @args;
+	my ($end) = map { /^--end=(.*)/ ? $1 : () } @args;
+	# Name the segments: given only a directory, pg_waldump learns the
+	# segment size from the first file it lists, which can be a preallocated
+	# segment of zeros.
 	my ($out, $err) = run_command(
 		[
 			'pg_waldump', '--rmgr=Bark',
-			'--path=' . $node->data_dir . '/pg_wal', @args
+			'--path=' . $node->data_dir . '/pg_wal', @args,
+			$node->safe_psql('postgres',
+				"SELECT pg_walfile_name('$start'::pg_lsn + 1)"),
+			$node->safe_psql('postgres', "SELECT pg_walfile_name('$end')")
 		]);
 	# A start LSN on a page boundary makes pg_waldump report, on stderr,
 	# skipping the page header; that is not an error.
