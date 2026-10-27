@@ -129,7 +129,7 @@ GROUP BY r.q, s.ids ORDER BY r.q COLLATE "C";
 -- one left them exact.
 SELECT mem, bool_or(lossy) AS any_lossy, bool_and(NOT lossy) AS all_exact
 FROM gb_res WHERE idx <> 'gb_gin' AND bitmap GROUP BY mem ORDER BY mem COLLATE "C";
-DROP TABLE gb_res, gb_seq;
+DROP TABLE gb_res;
 
 -- The merge's corners, at 64kB.  With a key column after the
 -- GIN-interface column every point's stream turns into a bitmap, and the
@@ -143,12 +143,13 @@ DROP TABLE gb_res, gb_seq;
 -- read.
 CREATE INDEX gb_bark11_a2 ON gb USING bark (a bark_gin11_int4_array_ops, (id % 3));
 SET work_mem = '64kB';
-SELECT q, (gb_run('gb_bark11_a2', q, true)).ids = (gb_run(NULL, q, true)).ids AS bark11_ok,
-       (gb_run('gb_bark', q, true)).ids = (gb_run(NULL, q, true)).ids AS bark_ok
+SELECT q, (gb_run('gb_bark11_a2', q, true)).ids = s.ids AS bark11_ok,
+       (gb_run('gb_bark', q, true)).ids = s.ids AS bark_ok
 FROM unnest(ARRAY[$$a @> '{0,1}'$$, $$a @> '{1,-1}'$$, $$a && '{2,-2}'$$,
                   $$a @> '{0,1,2}'$$, $$a @> '{0,1,2,-1,-2}'$$, $$a @> '{0,0,0,0,0}'$$,
                   $$a <@ '{0,1,2,-1,-2,3}'$$,
-                  $$a @> '{4100}' AND a @> '{0}'$$]) q ORDER BY q COLLATE "C";
+                  $$a @> '{4100}' AND a @> '{0}'$$]) q,
+     LATERAL gb_run(NULL, q, true) s ORDER BY q COLLATE "C";
 RESET work_mem;
 DROP INDEX gb_bark11_a2;
 
@@ -159,32 +160,36 @@ INSERT INTO gb SELECT i, ARRAY[0, 3, 4 + i % 13], ARRAY['k' || (i % 5)], ''
 FROM generate_series(40001, 41000) i;
 VACUUM gb;
 SELECT bark_index_check('gb_bark'), bark_index_check('gb_t');
-SELECT count(*) FILTER (WHERE (gb_run(i, q, true)).ids = (gb_run(NULL, q, true)).ids
-                          AND (gb_run(i, q, false)).ids = (gb_run(NULL, q, true)).ids) AS ok,
+-- The seqscan's rows of each query, for this and the checks below.
+DROP TABLE gb_seq;
+CREATE TABLE gb_seq AS
+SELECT q, (gb_run(NULL, q, false)).ids FROM gb_q;
+SELECT count(*) FILTER (WHERE (gb_run(i, q, true)).ids = s.ids
+                          AND (gb_run(i, q, false)).ids = s.ids) AS ok,
        count(*) AS total
-FROM gb_q, LATERAL unnest(CASE idx WHEN 'int4' THEN ARRAY['gb_bark', 'gb_bark11']
+FROM gb_q JOIN gb_seq s USING (q), LATERAL unnest(CASE idx WHEN 'int4' THEN ARRAY['gb_bark', 'gb_bark11']
                                   ELSE ARRAY['gb_t'] END) i;
 
 -- An index with a column before the GIN-interface one (bitmap scans only):
 -- a point's entries are not in TID order across the column's values, which
 -- the per-boundary bitmap absorbs.
 CREATE INDEX gb_bark_g ON gb USING bark ((id % 3), a bark_gin_int4_array_ops);
-SELECT count(*) FILTER (WHERE (gb_run('gb_bark_g', q, true)).ids = (gb_run(NULL, q, true)).ids) AS ok,
+SELECT count(*) FILTER (WHERE (gb_run('gb_bark_g', q, true)).ids = s.ids) AS ok,
        count(*) AS total
-FROM gb_q WHERE idx = 'int4';
+FROM gb_q JOIN gb_seq s USING (q) WHERE idx = 'int4';
 -- A key column after it: a point's entries are in (key, id % 3, TID)
 -- order, so its TIDs stop ascending at each new value of the later column,
 -- and the exact stream of a point turns into a bitmap there.  At 64kB the
 -- bitmaps go lossy too.
 CREATE INDEX gb_bark_a2 ON gb USING bark (a bark_gin_int4_array_ops, (id % 3));
 SET work_mem = '64kB';
-SELECT count(*) FILTER (WHERE (gb_run('gb_bark_a2', q, true)).ids = (gb_run(NULL, q, true)).ids
-                          AND (gb_run('gb_bark_a2', q, false)).ids = (gb_run(NULL, q, true)).ids) AS ok,
+SELECT count(*) FILTER (WHERE (gb_run('gb_bark_a2', q, true)).ids = s.ids
+                          AND (gb_run('gb_bark_a2', q, false)).ids = s.ids) AS ok,
        count(*) AS total
-FROM gb_q WHERE idx = 'int4' AND q NOT LIKE '%IS %NULL';
+FROM gb_q JOIN gb_seq s USING (q) WHERE idx = 'int4' AND q NOT LIKE '%IS %NULL';
 RESET work_mem;
 
-DROP TABLE gb, gb_q;
+DROP TABLE gb, gb_q, gb_seq;
 DROP FUNCTION gb_run(text, text, bool);
 DROP EXTENSION pageinspect;
 DROP EXTENSION bark_multikey;
