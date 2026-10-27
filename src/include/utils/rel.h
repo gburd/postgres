@@ -230,6 +230,13 @@ typedef struct RelationData
 	bytea	  **rd_opcoptions;	/* parsed opclass-specific options */
 
 	/*
+	 * Table attributes this index reads, offset by
+	 * FirstLowInvalidHeapAttributeNumber; see RelationGetIndexedAttrs().
+	 * Built on first use, in rd_indexcxt.
+	 */
+	Bitmapset  *rd_indattr;
+
+	/*
 	 * rd_amcache is available for index and table AMs to cache private data
 	 * about the relation.  This must be just a cache since it may get reset
 	 * at any time (in particular, it will get reset by a relcache inval
