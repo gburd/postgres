@@ -63,7 +63,8 @@ BEGIN
   FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) SELECT id FROM gb WHERE ' || q LOOP
     lossy := lossy OR l LIKE '%lossy=%';
     IF idx IS NOT NULL AND l LIKE '%Seq Scan%' THEN
-      RAISE EXCEPTION 'no scan of % for %', idx, q;
+      RAISE EXCEPTION 'no scan of % for % (work_mem %): %', idx, q,
+        current_setting('work_mem'), l;
     END IF;
   END LOOP;
   UPDATE pg_index SET indisvalid = true WHERE indrelid = 'gb'::regclass;
@@ -80,6 +81,7 @@ INSERT INTO gb_q (q) VALUES
   ($$a && '{1,3}'$$), ($$a && '{3,5,6,7,8,9}'$$),
   -- two scan keys (AND of keys), and = ANY over int4[] rows of a sub-select
   ($$a @> '{1}' AND a @> '{2}'$$), ($$a && '{3}' AND a @> '{0}'$$),
+  ($$a @> '{3}' AND a @> '{0}'$$),
   ($$a @> '{0}' AND a <@ '{0,1,2,3,4,5,6,7,8,9,10}'$$),
   -- NULL and empty handling: <@ and = with an empty array take the empty
   -- rows (hidden streams), NULL elements, IS NULL, IS NOT NULL
@@ -91,19 +93,30 @@ INSERT INTO gb_q VALUES
   -- partial match spanning many keys (every k* key, and the p1* prefix)
   ($$t %^% 'k'$$, 'text'), ($$t %^% 'p1'$$, 'text'), ($$t %^% 'k1' AND t %^% 'p2'$$, 'text'),
   ($$t %^% ANY (ARRAY['k49', 'p3_', 'zz'])$$, 'text'), ($$t %^% 'zz'$$, 'text');
-CREATE TABLE gb_res AS
-SELECT w.mem, q.q, q.idx AS kind, i.idx, m.bitmap, r.ids, r.lossy
-FROM unnest(ARRAY['64kB', '64MB']) w(mem)
-CROSS JOIN gb_q q
+-- Every scan of every query, at the current work_mem.  GIN has no IS NULL
+-- search (amsearchnulls), and no index scans.  At 64kB the planner prices
+-- BARK's scans for IS NULL and IS NOT NULL (a lossy bitmap over the whole
+-- heap) above even a disabled seqscan, so those two run at 64MB only.
+CREATE TABLE gb_res (mem text, q text, kind text, idx text, bitmap bool,
+                     ids int[], lossy bool);
+CREATE FUNCTION gb_all() RETURNS void LANGUAGE sql AS $$
+INSERT INTO gb_res
+SELECT current_setting('work_mem'), q.q, q.idx, i.idx, m.bitmap, r.ids, r.lossy
+FROM gb_q q
 CROSS JOIN LATERAL unnest(CASE q.idx WHEN 'int4' THEN ARRAY['gb_bark', 'gb_bark11', 'gb_gin']
                                     ELSE ARRAY['gb_t'] END) i(idx)
 CROSS JOIN unnest(ARRAY[true, false]) m(bitmap)
-CROSS JOIN LATERAL (SELECT set_config('work_mem', w.mem, false)) s
 CROSS JOIN LATERAL gb_run(i.idx, q.q, m.bitmap) r
--- GIN has no IS NULL search (amsearchnulls), and no index scans.
 WHERE (m.bitmap OR i.idx <> 'gb_gin') AND
-      NOT (i.idx = 'gb_gin' AND q.q LIKE '%IS %NULL');
+      NOT (i.idx = 'gb_gin' AND q.q LIKE '%IS %NULL') AND
+      NOT (q.q LIKE '%IS %NULL' AND current_setting('work_mem') = '64kB');
+$$;
+SET work_mem = '64kB';
+SELECT gb_all();
+SET work_mem = '64MB';
+SELECT gb_all();
 RESET work_mem;
+DROP FUNCTION gb_all();
 CREATE TABLE gb_seq AS
 SELECT q, (gb_run(NULL, q, false)).ids FROM gb_q;
 -- Every scan's rows are the seqscan's.
@@ -138,6 +151,17 @@ CREATE INDEX gb_bark_g ON gb USING bark ((id % 3), a bark_gin_int4_array_ops);
 SELECT count(*) FILTER (WHERE (gb_run('gb_bark_g', q, true)).ids = (gb_run(NULL, q, true)).ids) AS ok,
        count(*) AS total
 FROM gb_q WHERE idx = 'int4';
+-- A key column after it: a point's entries are in (key, id % 3, TID)
+-- order, so its TIDs stop ascending at each new value of the later column,
+-- and the exact stream of a point turns into a bitmap there.  At 64kB the
+-- bitmaps go lossy too.
+CREATE INDEX gb_bark_a2 ON gb USING bark (a bark_gin_int4_array_ops, (id % 3));
+SET work_mem = '64kB';
+SELECT count(*) FILTER (WHERE (gb_run('gb_bark_a2', q, true)).ids = (gb_run(NULL, q, true)).ids
+                          AND (gb_run('gb_bark_a2', q, false)).ids = (gb_run(NULL, q, true)).ids) AS ok,
+       count(*) AS total
+FROM gb_q WHERE idx = 'int4' AND q NOT LIKE '%IS %NULL';
+RESET work_mem;
 
 DROP TABLE gb, gb_q;
 DROP FUNCTION gb_run(text, text, bool);

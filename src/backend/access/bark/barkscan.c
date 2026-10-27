@@ -460,6 +460,15 @@ typedef struct BarkMkScanState
 								 * bark_mk_gin_tbm_add */
 	bool		ginfolding;		/* bark_mk_gin_items is filling gintbm, and
 								 * ginfold > 1 */
+
+	/*
+	 * The chunks of the GIN-interface scan's exact streams
+	 * (BarkGinChunk): allocated one at a time in ginChunkCxt, below
+	 * AllocSet's chunk limit, and kept on ginfree when a stream is done, so
+	 * a query reuses them key after key, and the scan rescan after rescan.
+	 */
+	MemoryContext ginChunkCxt;
+	struct BarkGinChunk *ginfree;
 	uint16		ginstride;		/* the index's TID stride */
 	int			ginp;
 	int			gini;
@@ -1496,6 +1505,11 @@ bark_mk_begin(IndexScanDesc scan, int attno)
 		mk->ginCxt = AllocSetContextCreate(CurrentMemoryContext,
 										   "BARK GIN result",
 										   ALLOCSET_DEFAULT_SIZES);
+		mk->ginChunkCxt = AllocSetContextCreate(CurrentMemoryContext,
+												"BARK GIN stream chunks",
+												ALLOCSET_SMALL_MINSIZE,
+												ALLOCSET_SMALL_INITSIZE,
+												ALLOCSET_SEPARATE_THRESHOLD);
 		mk->ginstride = so->keyinfo->tidstride;
 		mk->ginfold = (mk->ginstride + TBM_MAX_TUPLES_PER_PAGE - 1) /
 			TBM_MAX_TUPLES_PER_PAGE;
@@ -5084,31 +5098,89 @@ bark_tbm_end(BarkTbmBatch *batch)
  */
 
 /*
- * One boundary's rows: its TIDBitmap and an iterator over it, positioned on
- * heap page blkno (InvalidBlockNumber once the stream is done), which is
- * lossy, or whose exact offsets are offs[0 .. noffs - 1], extracted when
- * the merge first needs them (noffs -1 until then: an additional stream
- * passes most of its pages unread).  The page's recheck flag is res's; a
- * boundary that needs a recheck sets it on every page.
+ * An exact stream's TIDs, ascending, in a list of chunks below AllocSet's
+ * chunk limit (one heap TID and its recheck flag per slot).
+ */
+#define BARK_GIN_CHUNK_TIDS \
+	((ALLOCSET_SEPARATE_THRESHOLD - 256 - MAXALIGN(sizeof(void *) + sizeof(int))) / \
+	 (sizeof(ItemPointerData) + sizeof(bool)))
+
+typedef struct BarkGinChunk
+{
+	struct BarkGinChunk *next;
+	int			n;
+	ItemPointerData tids[BARK_GIN_CHUNK_TIDS];
+	bool		recheck[BARK_GIN_CHUNK_TIDS];
+} BarkGinChunk;
+
+StaticAssertDecl(sizeof(BarkGinChunk) <= ALLOCSET_SEPARATE_THRESHOLD - 64,
+				 "BarkGinChunk must stay below AllocSet's chunk limit");
+
+/*
+ * One boundary's rows, iterated a heap page at a time: positioned on heap
+ * page blkno (InvalidBlockNumber once the stream is done), which is lossy,
+ * or whose exact offsets are offs[0 .. noffs - 1], with recheck flags
+ * offrecheck.  A boundary whose TIDs come in TID order (a point on the
+ * leading column, H1) is exact: its TIDs are kept in chunks (first, the
+ * read's place cur and curi).  Any other is read into a TIDBitmap of its
+ * own and iterated (tbm, iter, res), its offsets extracted when the merge
+ * first needs them (noffs -1 until then: an additional stream passes most
+ * of its pages unread), with the page's recheck flag for every offset.
  */
 typedef struct BarkGinStream
 {
-	TIDBitmap  *tbm;
-	TBMPrivateIterator *iter;
 	int			entry;			/* the query key, or nentries for a hidden one */
 	int64		ntids;			/* the TIDs read, to order the streams */
-	TBMIterateResult res;
 	BlockNumber blkno;
 	bool		lossy;
 	int			noffs;
 	int			pos;			/* the merge's place in offs */
+	TIDBitmap  *tbm;			/* NULL for an exact stream */
+	TBMPrivateIterator *iter;
+	TBMIterateResult res;
+	BarkGinChunk *first;
+	BarkGinChunk *cur;
+	int			curi;
 	OffsetNumber offs[TBM_MAX_TUPLES_PER_PAGE];
+	bool		offrecheck[TBM_MAX_TUPLES_PER_PAGE];
 } BarkGinStream;
 
 /* Move stream s to its next heap page; false when it has none. */
 static bool
 bark_gin_stream_next(BarkGinStream *s)
 {
+	s->pos = 0;
+	if (s->tbm == NULL)
+	{
+		/* An exact stream: the run of its TIDs on the next heap page. */
+		s->noffs = 0;
+		s->lossy = false;
+		if (s->cur != NULL && s->curi == s->cur->n)
+		{
+			s->cur = s->cur->next;
+			s->curi = 0;
+		}
+		if (s->cur == NULL)
+		{
+			s->blkno = InvalidBlockNumber;
+			return false;
+		}
+		s->blkno = ItemPointerGetBlockNumber(&s->cur->tids[s->curi]);
+		while (s->cur != NULL &&
+			   ItemPointerGetBlockNumber(&s->cur->tids[s->curi]) == s->blkno)
+		{
+			/* distinct offsets of one heap page, at most a page's worth */
+			Assert(s->noffs < TBM_MAX_TUPLES_PER_PAGE);
+			s->offs[s->noffs] = ItemPointerGetOffsetNumber(&s->cur->tids[s->curi]);
+			s->offrecheck[s->noffs++] = s->cur->recheck[s->curi];
+			if (++s->curi == s->cur->n)
+			{
+				s->cur = s->cur->next;
+				s->curi = 0;
+			}
+		}
+		return true;
+	}
 	if (s->iter == NULL || !tbm_private_iterate(s->iter, &s->res))
 	{
 		s->blkno = InvalidBlockNumber;
@@ -5117,7 +5189,6 @@ bark_gin_stream_next(BarkGinStream *s)
 	s->blkno = s->res.blockno;
 	s->lossy = s->res.lossy;
 	s->noffs = s->lossy ? 0 : -1;
-	s->pos = 0;
 	return true;
 }
 
@@ -5225,35 +5296,43 @@ bark_mk_gin_tbm_add(BarkMkScanState *mk, BarkTbmBatch *batch,
 
 /*
  * Read boundary b's entries straight into the batch's bitmap, each TID with
- * recheck when recheck or its entry asks for one.  Returns how many TIDs
- * were added.
+ * recheck when recheck or its entry asks for one, a page at a time
+ * (bark_mk_gin_read_bitmap_pos, the page the scan is on).  Returns how many
+ * TIDs were added.
  */
+static int64
+bark_mk_gin_read_bitmap_pos(IndexScanDesc scan, bool recheck,
+							BarkTbmBatch *batch)
+{
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	int64		ntids = 0;
+
+	if (!so->mk->ginfolding)
+		return bark_tbm_add_pos(so, batch, recheck);
+	for (int i = so->currPos.firstItem; i <= so->currPos.lastItem; i++)
+	{
+		ItemPointer tids;
+		int			n = bark_item_tids(so, i, &tids);
+		bool		r = recheck || (so->currPos.items[i].indexOffset &
+									BARK_ITEM_RECHECK) != 0;
+
+		bark_mk_gin_tbm_add(so->mk, batch, tids, n, r);
+		ntids += n;
+	}
+	return ntids;
+}
+
 static int64
 bark_mk_gin_read_bitmap(IndexScanDesc scan, const BarkMkBoundary *b,
 						bool recheck, BarkTbmBatch *batch)
 {
-	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
 	int64		ntids = 0;
 
 	if (!bark_mk_gin_first(scan, b))
 		return 0;
 	do
 	{
-		if (!so->mk->ginfolding)
-		{
-			ntids += bark_tbm_add_pos(so, batch, recheck);
-			continue;
-		}
-		for (int i = so->currPos.firstItem; i <= so->currPos.lastItem; i++)
-		{
-			ItemPointer tids;
-			int			n = bark_item_tids(so, i, &tids);
-			bool		r = recheck || (so->currPos.items[i].indexOffset &
-										BARK_ITEM_RECHECK) != 0;
-
-			bark_mk_gin_tbm_add(so->mk, batch, tids, n, r);
-			ntids += n;
-		}
+		ntids += bark_mk_gin_read_bitmap_pos(scan, recheck, batch);
 	} while (bark_steppage(scan, ForwardScanDirection));
 	return ntids;
 }
@@ -5269,26 +5348,142 @@ bark_mk_gin_tbm_create(void)
 	return tbm_create(work_mem * (Size) 1024, NULL);
 }
 
+/* Give exact stream s's chunks back to the scan's free list. */
+static void
+bark_gin_stream_release(BarkMkScanState *mk, BarkGinStream *s)
+{
+	while (s->first != NULL)
+	{
+		BarkGinChunk *c = s->first;
+
+		s->first = c->next;
+		c->next = mk->ginfree;
+		mk->ginfree = c;
+	}
+	s->cur = NULL;
+}
+
+/*
+ * Read the rest of the boundary that the scan is positioned on (its current
+ * page from item i on) into stream s's TIDBitmap, after the TIDs already in
+ * its chunks, which go in first and are released.
+ */
+static void
+bark_gin_stream_to_bitmap(IndexScanDesc scan, BarkGinStream *s, int i,
+						  BarkTbmBatch *batch)
+{
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+
+	s->tbm = bark_mk_gin_tbm_create();
+	batch->tbm = s->tbm;
+	for (BarkGinChunk *c = s->first; c != NULL; c = c->next)
+	{
+		for (int j = 0; j < c->n; j++)
+			bark_tbm_add(batch, &c->tids[j], 1, c->recheck[j]);
+	}
+	bark_gin_stream_release(so->mk, s);
+	for (; i <= so->currPos.lastItem; i++)
+	{
+		ItemPointer tids;
+		int			n = bark_item_tids(so, i, &tids);
+
+		bark_mk_gin_tbm_add(so->mk, batch, tids, n,
+							(so->currPos.items[i].indexOffset &
+							 BARK_ITEM_RECHECK) != 0);
+		s->ntids += n;
+	}
+	while (bark_steppage(scan, ForwardScanDirection))
+		s->ntids += bark_mk_gin_read_bitmap_pos(scan, false, batch);
+	bark_tbm_end(batch);
+}
+
 /*
  * Read boundary b's entries, with the scan's other keys as filters, into a
- * new stream for query key entry, positioned on its first page.  The
- * scan's batch fills the stream's bitmap, then goes back to its own.
+ * new stream for query key entry, positioned on its first page.  A point
+ * on the leading column comes in TID order (H1) and is kept exact, in
+ * chunks taken from the scan's free list; a TID that does not ascend (the
+ * index has key columns after this one, whose order breaks a point's runs)
+ * turns the stream into a TIDBitmap from there on, as is any other
+ * boundary.  The scan's batch fills a stream's bitmap, then goes back to
+ * its own.
  */
 static BarkGinStream *
 bark_mk_gin_read(IndexScanDesc scan, const BarkMkBoundary *b, int entry,
 				 BarkTbmBatch *batch)
 {
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	BarkMkScanState *mk = so->mk;
 	TIDBitmap  *dest = batch->tbm;
 	BarkGinStream *s = palloc0_object(BarkGinStream);
+	BarkGinChunk *last = NULL;
+	ItemPointerData prev;
 
-	s->tbm = bark_mk_gin_tbm_create();
 	s->entry = entry;
 	bark_tbm_end(batch);		/* what is pending is dest's */
-	batch->tbm = s->tbm;
-	s->ntids = bark_mk_gin_read_bitmap(scan, b, false, batch);
-	bark_tbm_end(batch);
-	batch->tbm = dest;
-	s->iter = tbm_is_empty(s->tbm) ? NULL : tbm_begin_private_iterate(s->tbm);
+	/* offs[] holds a heap page's offsets only up to TBM_MAX_TUPLES_PER_PAGE */
+	if (!(b->point && !b->nulls && mk->attno == 1 && mk->ginfold == 1))
+	{
+		s->tbm = bark_mk_gin_tbm_create();
+		batch->tbm = s->tbm;
+		s->ntids = bark_mk_gin_read_bitmap(scan, b, false, batch);
+		bark_tbm_end(batch);
+		batch->tbm = dest;
+		s->iter = tbm_is_empty(s->tbm) ? NULL :
+			tbm_begin_private_iterate(s->tbm);
+		bark_gin_stream_next(s);
+		return s;
+	}
+
+	ItemPointerSetInvalid(&prev);
+	if (bark_mk_gin_first(scan, b))
+	{
+		do
+		{
+			for (int i = so->currPos.firstItem; i <= so->currPos.lastItem; i++)
+			{
+				ItemPointer tids;
+				int			n = bark_item_tids(so, i, &tids);
+				bool		r = (so->currPos.items[i].indexOffset &
+								 BARK_ITEM_RECHECK) != 0;
+
+				if (ItemPointerIsValid(&prev) &&
+					ItemPointerCompare(&tids[0], &prev) <= 0)
+				{
+					bark_gin_stream_to_bitmap(scan, s, i, batch);
+					batch->tbm = dest;
+					s->iter = tbm_begin_private_iterate(s->tbm);
+					bark_gin_stream_next(s);
+					return s;
+				}
+				for (int j = 0; j < n; j++)
+				{
+					if (last == NULL || last->n == BARK_GIN_CHUNK_TIDS)
+					{
+						BarkGinChunk *c = mk->ginfree;
+
+						if (c != NULL)
+							mk->ginfree = c->next;
+						else
+							c = MemoryContextAlloc(mk->ginChunkCxt,
+												   sizeof(BarkGinChunk));
+						c->next = NULL;
+						c->n = 0;
+						if (last == NULL)
+							s->first = c;
+						else
+							last->next = c;
+						last = c;
+					}
+					last->tids[last->n] = tids[j];
+					last->recheck[last->n++] = r;
+				}
+				prev = tids[n - 1];
+				s->ntids += n;
+			}
+		} while (bark_steppage(scan, ForwardScanDirection));
+	}
+	s->cur = s->first;
+	s->curi = 0;
 	bark_gin_stream_next(s);
 	return s;
 }
@@ -5329,15 +5524,14 @@ bark_mk_gin_tricall(BarkMkScanState *mk, BarkGinKey *key)
 /*
  * Does a row whose presence vector is key->check[0 .. nentries - 1] match
  * key?  triConsistent (13) answers when the class has it, else consistent
- * (11); *recheck is set when the answer needs one.  A NULL test matches
- * every row its hidden streams hold.
+ * (11); *recheck is set when the answer needs one.  A NULL test has no
+ * consistent call: bark_mk_gin_triconsistent answers it.
  */
 static bool
 bark_mk_gin_consistent(BarkMkScanState *mk, BarkGinKey *key, bool *recheck)
 {
+	Assert(!key->nulltest);
 	*recheck = false;
-	if (key->nulltest)
-		return true;
 	if (mk->gintriconsistent != NULL)
 	{
 		GinTernaryValue r;
@@ -5495,8 +5689,11 @@ bark_mk_gin_page(BarkMkScanState *mk, BarkGinKey *key,
 				key->tcheck[s->entry] = GIN_MAYBE;
 		}
 		else if (s->noffs < 0)
+		{
 			s->noffs = tbm_extract_page_tuple(&s->res, s->offs,
 											  TBM_MAX_TUPLES_PER_PAGE);
+			memset(s->offrecheck, s->res.recheck, s->noffs);
+		}
 	}
 	if (anylossy && bark_mk_gin_triconsistent(mk, key) != GIN_FALSE)
 	{
@@ -5531,7 +5728,7 @@ bark_mk_gin_page(BarkMkScanState *mk, BarkGinKey *key,
 			here = s->pos < s->noffs && s->offs[s->pos] == o;
 			if (here)
 			{
-				recheck |= s->res.recheck;
+				recheck |= s->offrecheck[s->pos];
 				s->pos++;
 			}
 			if (s->entry < key->nentries)
@@ -5721,6 +5918,8 @@ bark_mk_gin_key(IndexScanDesc scan, ScanKey sk, Datum query,
 		}
 		CHECK_FOR_INTERRUPTS();
 	}
+	for (int i = 0; i < nstreams; i++)
+		bark_gin_stream_release(mk, streams[i]);
 	return nadded;
 }
 
@@ -6134,6 +6333,8 @@ bark_endscan(IndexScanDesc scan)
 		MemoryContextDelete(so->mk->hitupCxt);
 		if (so->mk->ginCxt != NULL)
 			MemoryContextDelete(so->mk->ginCxt);
+		if (so->mk->ginChunkCxt != NULL)
+			MemoryContextDelete(so->mk->ginChunkCxt);
 		FreeTupleDesc(so->mk->hitupdesc);
 		if (so->mk->undo)
 			pfree(so->mk->undo);
