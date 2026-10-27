@@ -42,6 +42,8 @@ $node->append_conf(
 	'postgresql.conf', q[
 autovacuum = off
 wal_consistency_checking = 'Bark'
+# the page images make much WAL; keep it until the standby has replayed it
+wal_keep_size = 1GB
 ]);
 $node->start;
 
