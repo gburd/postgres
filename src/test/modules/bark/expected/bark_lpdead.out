@@ -754,7 +754,7 @@ DROP TABLE lpdk;
 -- (2) The leaf, the rightmost, splits: its left half now has a high key at
 -- offset 1, where the first dead entry was, and the entries are one offset
 -- right.
-CREATE TEMP TABLE lpds (a int);
+CREATE TEMP TABLE lpds (a int8);
 CREATE INDEX lpds_a ON lpds USING bark (a);
 INSERT INTO lpds SELECT g FROM generate_series(1, 300) g;
 DELETE FROM lpds WHERE a <= 10;
@@ -795,7 +795,7 @@ DROP TABLE lpds;
 -- 20 instead, and in passing the killed ones, 300 to 310, whose heap block
 -- it visits: the entries the scan killed are gone, and the ones now at
 -- their offsets are of later rows.  Nothing is marked.
-CREATE TEMP TABLE lpdv (a int);
+CREATE TEMP TABLE lpdv (a int8);
 CREATE INDEX lpdv_a ON lpdv USING bark (a);
 INSERT INTO lpdv SELECT g FROM generate_series(1, 400) g;
 DELETE FROM lpdv WHERE a <= 20;
