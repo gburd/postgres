@@ -52,15 +52,15 @@ $node->safe_psql(
 	         (SELECT i.htid::text || ' ' || coalesce(i.tag::text, '0')
 	            FROM bark_page_items(idx::text, b) i
 	           WHERE i.itemoffset = CASE WHEN s.bark_next <> 0 THEN 2 ELSE 1 END)
-	    FROM generate_series(1, pg_relation_size(idx) / 8192 - 1) b,
+	    FROM generate_series(1, pg_relation_size(idx) / current_setting('block_size')::int - 1) b,
 	         LATERAL bark_page_stats(idx::text, b) s
 	   WHERE s.type = 'leaf' ORDER BY 1 $$;
 	CREATE FUNCTION tagged_pivots(idx regclass) RETURNS int8 LANGUAGE sql AS $$
-	  SELECT count(*) FROM generate_series(1, pg_relation_size(idx) / 8192 - 1) b,
+	  SELECT count(*) FROM generate_series(1, pg_relation_size(idx) / current_setting('block_size')::int - 1) b,
 	         LATERAL bark_page_items(idx::text, b) i
 	   WHERE i.tag IS NOT NULL AND i.shape NOT IN ('SINGLE', 'LIST', 'POSTING', 'OVERSIZED') $$;
 	CREATE FUNCTION tagged(idx regclass) RETURNS int8 LANGUAGE sql AS $$
-	  SELECT count(*) FROM generate_series(1, pg_relation_size(idx) / 8192 - 1) b,
+	  SELECT count(*) FROM generate_series(1, pg_relation_size(idx) / current_setting('block_size')::int - 1) b,
 	         LATERAL bark_page_items(idx::text, b) i
 	   WHERE i.tag IS NOT NULL AND i.shape IN ('SINGLE', 'OVERSIZED') $$;
 });
@@ -215,7 +215,7 @@ $node->safe_psql('postgres', q{UPDATE t2 SET k = 5 WHERE id = 300});
 my $xmin300 = $node->safe_psql('postgres', q{SELECT xmin FROM t2 WHERE id = 300});
 my $page300 = $node->safe_psql(
 	'postgres', q{
-	SELECT b FROM generate_series(1, pg_relation_size('t2_k') / 8192 - 1) b,
+	SELECT b FROM generate_series(1, pg_relation_size('t2_k') / current_setting('block_size')::int - 1) b,
 	       LATERAL bark_page_items('t2_k', b) i
 	 WHERE i.htid = (SELECT ctid FROM t2 WHERE id = 300) AND i.shape = 'SINGLE'});
 like($node->safe_psql('postgres', qq{SELECT flags FROM leaves('t2_k') WHERE blk = $page300}),
@@ -326,7 +326,7 @@ $node->safe_psql(
 	END $$});
 is( $node->safe_psql(
 		'postgres', q{
-		SELECT count(*) FROM generate_series(1, pg_relation_size('t5_k') / 8192 - 1) b,
+		SELECT count(*) FROM generate_series(1, pg_relation_size('t5_k') / current_setting('block_size')::int - 1) b,
 		       LATERAL bark_page_items('t5_k', b) i
 		 WHERE i.htid = '(0,50)' AND i.shape = 'SINGLE'}),
 	'0', 'LP_DEAD: simple deletion removed them');
