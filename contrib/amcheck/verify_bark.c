@@ -49,7 +49,7 @@
  *	  refused, since a row's own key image may be in no entry;
  *	- checkunique, for a unique index: no two entries of a run of equal key
  *	  columns point to heap tuples visible to one MVCC snapshot.  For an
- *	  extracted column a run is one (fixed columns, key), M4's rule;
+ *	  extracted column a run is one (fixed columns, key);
  *	- bark_index_parent_check: the tree is walked level by level from the
  *	  root, under a ShareLock that keeps writers out, and each internal page's
  *	  downlinks must name, in order, exactly the pages of the level below,
@@ -1256,8 +1256,8 @@ bark_check_unique_tids(Relation rel, BarkCheckState *state,
  * leaves, and report two entries of a run whose rows are both visible to the
  * check's snapshot, as bt_index_check's checkunique does.  Entries compare on
  * their key columns only (bark_compare_itups), so for an extracted column a
- * run is one (fixed columns, key), M4's rule; one row's keys are distinct,
- * so its entries are never in one run and need no exception.  A key with a
+ * run is one (fixed columns, key); one row's keys are distinct, so its
+ * entries are never in one run and need no exception.  A key with a
  * NULL column, in an index whose NULLs are distinct, never conflicts and
  * ends the run, as nbtree treats a key with anynullkeys.  Markers name no
  * row and are skipped.
