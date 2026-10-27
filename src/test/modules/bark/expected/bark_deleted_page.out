@@ -89,7 +89,7 @@ t
 
 step s2_vacuum: VACUUM (INDEX_CLEANUP ON, TRUNCATE OFF) bark_dp;
 step s2_report: 
-	SELECT pg_relation_size('bark_dp_idx') / 8192 - built AS pages_added,
+	SELECT pg_relation_size('bark_dp_idx') / current_setting('block_size')::int - built AS pages_added,
 		   (SELECT count(*) FROM pg_freespace('bark_dp_idx')
 			 WHERE avail > 0) AS free_pages
 	  FROM bark_dp_built;
@@ -101,7 +101,7 @@ pages_added|free_pages
 
 step s2_insert1: INSERT INTO bark_dp SELECT g FROM generate_series(3001, 3500) g;
 step s2_report: 
-	SELECT pg_relation_size('bark_dp_idx') / 8192 - built AS pages_added,
+	SELECT pg_relation_size('bark_dp_idx') / current_setting('block_size')::int - built AS pages_added,
 		   (SELECT count(*) FROM pg_freespace('bark_dp_idx')
 			 WHERE avail > 0) AS free_pages
 	  FROM bark_dp_built;
@@ -114,7 +114,7 @@ pages_added|free_pages
 step s1_commit: COMMIT;
 step s2_vacuum: VACUUM (INDEX_CLEANUP ON, TRUNCATE OFF) bark_dp;
 step s2_report: 
-	SELECT pg_relation_size('bark_dp_idx') / 8192 - built AS pages_added,
+	SELECT pg_relation_size('bark_dp_idx') / current_setting('block_size')::int - built AS pages_added,
 		   (SELECT count(*) FROM pg_freespace('bark_dp_idx')
 			 WHERE avail > 0) AS free_pages
 	  FROM bark_dp_built;
@@ -126,7 +126,7 @@ pages_added|free_pages
 
 step s2_insert2: INSERT INTO bark_dp SELECT g FROM generate_series(3501, 3800) g;
 step s2_report: 
-	SELECT pg_relation_size('bark_dp_idx') / 8192 - built AS pages_added,
+	SELECT pg_relation_size('bark_dp_idx') / current_setting('block_size')::int - built AS pages_added,
 		   (SELECT count(*) FROM pg_freespace('bark_dp_idx')
 			 WHERE avail > 0) AS free_pages
 	  FROM bark_dp_built;
@@ -170,7 +170,7 @@ injection_points_set_local
 
 step s2_attach_after: 
 	SELECT injection_points_attach('bark-bulkdelete-after-page', 'wait',
-		(pg_relation_size('bark_dp_idx') / 8192 - 1)::text);
+		(pg_relation_size('bark_dp_idx') / current_setting('block_size')::int - 1)::text);
 
 injection_points_attach
 -----------------------
@@ -199,7 +199,7 @@ injection_points_wakeup
 
 step s2_vacuum: <... completed>
 step s2_report: 
-	SELECT pg_relation_size('bark_dp_idx') / 8192 - built AS pages_added,
+	SELECT pg_relation_size('bark_dp_idx') / current_setting('block_size')::int - built AS pages_added,
 		   (SELECT count(*) FROM pg_freespace('bark_dp_idx')
 			 WHERE avail > 0) AS free_pages
 	  FROM bark_dp_built;
@@ -226,7 +226,7 @@ t
 
 step s2_vacuum: VACUUM (INDEX_CLEANUP ON, TRUNCATE OFF) bark_dp;
 step s2_report: 
-	SELECT pg_relation_size('bark_dp_idx') / 8192 - built AS pages_added,
+	SELECT pg_relation_size('bark_dp_idx') / current_setting('block_size')::int - built AS pages_added,
 		   (SELECT count(*) FROM pg_freespace('bark_dp_idx')
 			 WHERE avail > 0) AS free_pages
 	  FROM bark_dp_built;

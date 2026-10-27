@@ -37,7 +37,7 @@ setup
 	INSERT INTO bark_dp SELECT g FROM generate_series(1, 3000) g;
 	CREATE INDEX bark_dp_idx ON bark_dp USING bark (a);
 	CREATE TABLE bark_dp_built WITH (autovacuum_enabled = off) AS
-		SELECT pg_relation_size('bark_dp_idx') / 8192 AS built;
+		SELECT pg_relation_size('bark_dp_idx') / current_setting('block_size')::int AS built;
 	DELETE FROM bark_dp WHERE a BETWEEN 1000 AND 2990;
 
 	-- Fetch the rest of cursor `cur` and summarize what came back.
@@ -129,7 +129,7 @@ setup
 step s2_attach_after
 {
 	SELECT injection_points_attach('bark-bulkdelete-after-page', 'wait',
-		(pg_relation_size('bark_dp_idx') / 8192 - 1)::text);
+		(pg_relation_size('bark_dp_idx') / current_setting('block_size')::int - 1)::text);
 }
 step s2_vacuum	{ VACUUM (INDEX_CLEANUP ON, TRUNCATE OFF) bark_dp; }
 step s2_insert1	{ INSERT INTO bark_dp SELECT g FROM generate_series(3001, 3500) g; }
@@ -137,7 +137,7 @@ step s2_insert2	{ INSERT INTO bark_dp SELECT g FROM generate_series(3501, 3800) 
 step s2_xid		{ SELECT pg_current_xact_id() IS NOT NULL AS xid_assigned; }
 step s2_report
 {
-	SELECT pg_relation_size('bark_dp_idx') / 8192 - built AS pages_added,
+	SELECT pg_relation_size('bark_dp_idx') / current_setting('block_size')::int - built AS pages_added,
 		   (SELECT count(*) FROM pg_freespace('bark_dp_idx')
 			 WHERE avail > 0) AS free_pages
 	  FROM bark_dp_built;

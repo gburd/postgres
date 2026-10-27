@@ -818,7 +818,7 @@ INSERT INTO bark_recycle SELECT g FROM generate_series(400001, 450000) g;
 VACUUM bark_recycle;
 -- Reuse works: growth across four cycles stays within one refill's worth of
 -- pages.  Report a boolean so the expected output is stable across platforms.
-SELECT (pg_relation_size('bark_recycle_idx') / 8192) <= 2 * base_pages + 20
+SELECT (pg_relation_size('bark_recycle_idx') / current_setting('block_size')::int) <= 2 * base_pages + 20
          AS index_growth_bounded
   FROM bark_recycle_sz;
 DROP TABLE bark_recycle_sz;
