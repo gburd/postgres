@@ -1231,8 +1231,7 @@ place of an inverted AM, without changing the scalar design above.
   with a sequential scan on 151 quals over 4000 documents, and a lax
   jsonpath oracle where the semantics coincide; the index's (key, TID)
   members are compared both ways with the keys of the heap's rows, which
-  heapallindexed now also checks one way (2026-10-15). M5b part 1, the per-path
-  no-seen-set extension (BarkQueryFlags.oneentry and .index), and part 2,
+  heapallindexed also checks one way. The per-path no-seen-set extension
   (BarkQueryFlags.oneentry and .index) and sorting by a path
   (BarkQueryFlags.orderrest) are built. Procedure 7
   writes every number with its scale trimmed, so keys that jsonb_cmp finds
@@ -2522,8 +2521,7 @@ one run, since its keys are distinct, so the check needs no own-row
 exception. A run whose key has a NULL column is skipped, as nbtree skips
 keys with <code>anynullkeys</code>. Markers are skipped, as every reader
 skips them; a marker's key equals no data key, so it is alone in its run.
-heapallindexed was refused on an index with an extracted column (M1b)
-until 2026-10-15; it now forms each row's keys through procedure 7, as
+heapallindexed forms each row's keys through procedure 7, as
 CREATE INDEX does (bark_extract_row_keys), and probes the filter for each,
 and markers are not fingerprinted.  Uniqueness does not change it.  It is
 still refused where the column coalesces keys of different images (a
