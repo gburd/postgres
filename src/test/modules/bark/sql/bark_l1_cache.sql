@@ -139,17 +139,21 @@ select bark_index_check('l1_idx', true);
 -- A slot whose page fails the check under its lock (bark-l1-stale stands in
 -- for a level-1 page that is not one any more, which the invariants rule
 -- out): the table is dropped, the descent starts at the root, and the next
--- descents refill the table and start below the root again.
+-- descents refill the table and start below the root again.  The key is
+-- the last, on the rightmost level-1 page, which the root's descent records:
+-- it does not record a level-2 page's first child, whose low key is not on
+-- that page, and which pages are first children depends on how many
+-- entries fit a page.
 begin;
 set local enable_seqscan = off; set local enable_bitmapscan = off;
 declare pin cursor for select k from l1 where k = '';	-- as above
-select count(*) from l1 where k = l1k(3000);
+select count(*) from l1 where k = l1k(7999);
 SELECT injection_points_attach('bark-l1-stale', 'notice');
-select count(*) from l1 where k = l1k(3000);
+select count(*) from l1 where k = l1k(7999);
 SELECT injection_points_detach('bark-l1-stale');
-select count(*) from l1 where k = l1k(3000);
+select count(*) from l1 where k = l1k(7999);
 SELECT injection_points_attach('bark-l1-start', 'notice');
-select count(*) from l1 where k = l1k(3000);
+select count(*) from l1 where k = l1k(7999);
 SELECT injection_points_detach('bark-l1-start');
 commit;
 
