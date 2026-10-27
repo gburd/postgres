@@ -1094,7 +1094,7 @@ RethinkDB's B-tree influenced four pieces of BARK.
   and 0.95-0.98). The heap passes dominate, and the volume serves 8 kB
   reads in order well enough that combining them gains nothing here; the
   win, if any, is on slower or contended storage.
-* ''R4a, orphaned overflow chains.'' <code>bark_index_parent_check</code>
+* ''Orphaned overflow chains.'' <code>bark_index_parent_check</code>
   follows every OVERSIZED entry's chain, leaf entries', high keys' and
   downlinks', and reports loops, crossed chains, chains that reach a
   non-overflow page or are longer than their entry, and, with a WARNING,
@@ -1103,20 +1103,18 @@ RethinkDB's B-tree influenced four pieces of BARK.
   it removes, which only the deleted leaf's high key shared, and an insert
   that writes an oversized key's chain on the fast path's cached leaf and
   then gives the leaf up frees that chain. Orphans are now left only by a
-  crash, or an error between writing a chain and placing its entry;
-  reclaiming them is R4c.
-* ''R4b, a chunk directory on overflow chains (not adopted).'' A list of
+  crash, or an error between writing a chain and placing its entry.
+* ''A chunk directory on overflow chains (not adopted).'' A list of
   the chain's blocks on its first page, read through a read_stream
-  (RethinkDB's blob reference, F3), was built and measured: release build,
+  (after RethinkDB's blob reference), was built and measured: release build,
   c7i.4xlarge local NVMe, 4000 keys of 30-60 kB, 400 cold point lookups,
   median of 3. Contiguous chains, as builds and ascending inserts write
   them: 2140 ms before, 3115 after (+46%) with io_method=worker, +25% with
   sync. Chains on scattered recycled pages: +1% to +7%. Warm lookups and
   inserts: within 1%. The stream's reads fell from 9654 to 3287 for the
-  same blocks, as R5's did, and again the time did not; links already read
-  a contiguous chain sequentially, under the kernel's readahead. The
-  branch is archive/bark/r4b-chunkdir (README, "Reading an overflow
-  chain").
+  same blocks, as VACUUM's did, and again the time did not; links already read
+  a contiguous chain sequentially, under the kernel's readahead (README,
+  "Reading an overflow chain").
 
 == Document indexes ==
 
