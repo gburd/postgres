@@ -21,7 +21,7 @@ SELECT bark_index_check('gm_bark'), bark_index_check('gm_bark11'),
        bark_index_check('gm_bark_g');
 CREATE EXTENSION pageinspect;
 SELECT count(*) FILTER (WHERE shape = 'POSTING') > 0 AS has_posting
-FROM generate_series(1, pg_relation_size('gm_bark') / 8192 - 1) b,
+FROM generate_series(1, pg_relation_size('gm_bark') / current_setting('block_size')::int - 1) b,
      bark_page_items('gm_bark', b);
 
 -- Rows of a query on table tab through index idx (NULL: seqscan).
