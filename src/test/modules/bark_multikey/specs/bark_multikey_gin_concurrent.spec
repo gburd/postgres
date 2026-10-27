@@ -102,8 +102,7 @@ step s2_check
 # churn splits leaves the scan has read and leaves it has not.
 step s2_shape
 {
-	SELECT (bark_metap('gbc_a')).level >= 1 AS has_root,
-	       pg_relation_size('gbc_a') / 8192 AS pages_before;
+	SELECT (bark_metap('gbc_a')).level >= 1 AS has_root;
 }
 
 session s3

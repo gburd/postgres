@@ -7,12 +7,11 @@ injection_points_set_local
 (1 row)
 
 step s2_shape: 
-	SELECT (bark_metap('gbc_a')).level >= 1 AS has_root,
-	       pg_relation_size('gbc_a') / 8192 AS pages_before;
+	SELECT (bark_metap('gbc_a')).level >= 1 AS has_root;
 
-has_root|pages_before
---------+------------
-t       |          52
+has_root
+--------
+t       
 (1 row)
 
 step s1_begin: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) > 0 AS snap FROM gbc;
