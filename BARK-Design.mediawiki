@@ -467,14 +467,13 @@ BARK entries obey the same visibility rules as nbtree. Four obligations:
   position). The correct general mechanism is comparing the '''stored leaf
   key''': BARK must retain enough of the leaf key to do this.
 * '''The recheck-hint bit.''' A proposed change to
-  <code>236cff2f</code> (<code>src/include/storage/itemptr.h</code>).'' The
-  tepid branch reserves bit 14 of a TID's offset for a locator whose match is
+  <code>src/include/storage/itemptr.h</code> reserves bit 14 of a TID's offset for a locator whose match is
   not exact, and <code>tbm_add_tuples</code> turns such a TID's page lossy.
   ''Status:'' not in this tree.  Every BARK entry is exact, so BARK would
   never set the bit, and carrying it cost a mask in
   <code>ItemPointerCompare</code> and <code>ItemPointerGetOffsetNumber</code>
-  for every caller; it was dropped from the series (2026-10-15) and stays on
-  the tepid branch for the table AM that needs it.  BARK's rechecks go
+  for every caller; it is not in this series, and is left to the table AM
+  that needs it.  BARK's rechecks go
   through <code>xs_recheck</code> and the recheck argument of
   <code>tbm_add_tuples</code>.
 === C-DELETE: delete-marking via UNDO ===
@@ -1039,8 +1038,6 @@ Not implemented:
 * Per-locator data (RUM's addInfo), closed as not needed: "Per-locator
   data (closed)" below.
 
-  ''(done, then dropped 2026-10-15: nothing in this tree sets it; see
-  C-MVCC.)''
   ''As built:'' through amgettuple's kill_prior_tuple, as nbtree's
   _bt_killitems (with <code>amgetbatch</code>, CF 4351, the hint moves to
   <code>amkillitemsbatch</code>, under G1).  A scan leaving a leaf marks
