@@ -33,7 +33,7 @@ setup
 	CREATE EXTENSION injection_points;
 	CREATE EXTENSION amcheck;
 	CREATE EXTENSION pg_freespacemap;
-	CREATE TABLE bark_dp (a int4) WITH (autovacuum_enabled = off);
+	CREATE TABLE bark_dp (a int8) WITH (autovacuum_enabled = off);
 	INSERT INTO bark_dp SELECT g FROM generate_series(1, 3000) g;
 	CREATE INDEX bark_dp_idx ON bark_dp USING bark (a);
 	CREATE TABLE bark_dp_built WITH (autovacuum_enabled = off) AS
