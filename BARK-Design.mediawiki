@@ -2574,11 +2574,10 @@ reported and cleared when the duplicate goes.
 
 * NULLS NOT DISTINCT on an index with an extracted column, or over its
   fixed columns alone.
-* Exclusion constraints on an extracted column. ''Done since (backlog
-  U1):'' any operator core accepts for an exclusion constraint, on a class
+* Exclusion constraints on an extracted column. ''Done since:'' any operator core accepts for an exclusion constraint, on a class
   with procedure 8; the README's "Exclusion constraints" paragraph under
   "Multikey keys" has the argument. They needed none of the PRIMARY KEY
-  and UNIQUE constraint surface of the roadmap's U1, since
+  and UNIQUE constraint surface that is not implemented, since
   <code>EXCLUDE USING bark</code> already worked on scalar columns.
 * Deferrable uniqueness and primary keys on the index, and foreign
   keys that reference an extracted column, which need an equality.

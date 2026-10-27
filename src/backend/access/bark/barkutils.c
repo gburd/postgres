@@ -1242,7 +1242,7 @@ bark_property(Oid index_oid, int attno, IndexAMProperty prop,
  * cross product of their keys, N times M entries per row ("parallel
  * arrays", which MongoDB refuses for the same reason), and an index with an
  * extracted column that is unique with NULLS NOT DISTINCT.  A unique one is
- * unique over its keys ("M4" in BARK-Design.mediawiki); its NULL key stands
+ * unique over its keys (BARK-Design.mediawiki); its NULL key stands
  * for a NULL value, an empty value and a NULL element alike, so under NULLS
  * NOT DISTINCT a row with an empty array would conflict with one holding
  * {7,NULL}.
