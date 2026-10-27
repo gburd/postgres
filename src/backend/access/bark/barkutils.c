@@ -1915,7 +1915,7 @@ bark_form_list(TupleDesc tupdesc, IndexTuple key, ItemPointer tids, int ntids)
 	IndexTuple	entry;
 
 	Assert(ntids >= 1 && ntids <= BARK_LIST_MAX_COUNT);
-	Assert(bodyoff <= BARK_OFFSET_MASK);		/* fits a uint16 body offset */
+	Assert(bodyoff <= PG_UINT16_MAX);	/* BarkEntrySetBodyOffset keeps 16 bits */
 	Assert(total <= INDEX_SIZE_MASK);
 
 	entry = (IndexTuple) palloc0(total);
