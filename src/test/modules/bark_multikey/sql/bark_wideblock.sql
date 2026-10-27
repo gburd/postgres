@@ -136,7 +136,9 @@ SELECT (SELECT array_agg(ctid ORDER BY ctid) FROM wb) =
           LATERAL bark_page_items('wb_k', s.blkno) i,
           LATERAL unnest(coalesce(i.tids, ARRAY[i.htid])) t
         WHERE s.type IN ('leaf', 'root') AND i.shape <> 'PIVOT') AS vacuumed_exactly;
-SELECT * FROM wb_shapes('wb_k');
+-- (How many runs VACUUM leaves as POSTING rather than plain LIST depends on
+-- the platform's alignment.)
+SELECT shape, wide FROM wb_shapes('wb_k');
 
 -- Bottom-up deletion: non-HOT updates of a full leaf's rows.
 CREATE TABLE wbb (id int, v int, k int) USING bark_test_wideblock
@@ -160,7 +162,7 @@ SELECT wb_same('SELECT id FROM wb WHERE id BETWEEN 3000 AND 12000') AS cic;
 -- WHERE CURRENT OF, row locks and a TID range scan, through the index.
 BEGIN;
 SET LOCAL enable_seqscan = off;
-DECLARE c CURSOR FOR SELECT id, ctid FROM wb WHERE k = -1 AND id > 6000 FOR UPDATE;
+DECLARE c CURSOR FOR SELECT id FROM wb WHERE k = -1 AND id > 6000 FOR UPDATE;
 FETCH 1 FROM c;
 UPDATE wb SET u = -u WHERE CURRENT OF c;
 COMMIT;

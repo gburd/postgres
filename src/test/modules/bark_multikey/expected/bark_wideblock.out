@@ -236,13 +236,15 @@ SELECT (SELECT array_agg(ctid ORDER BY ctid) FROM wb) =
  t
 (1 row)
 
-SELECT * FROM wb_shapes('wb_k');
-   shape    |  n  | wide 
-------------+-----+------
- LIST       |   6 | t
- LIST coded | 401 | t
- POSTING    |   1 | t
- SINGLE     |  11 | t
+-- (How many runs VACUUM leaves as POSTING rather than plain LIST depends on
+-- the platform's alignment.)
+SELECT shape, wide FROM wb_shapes('wb_k');
+   shape    | wide 
+------------+------
+ LIST       | t
+ LIST coded | t
+ POSTING    | t
+ SINGLE     | t
 (4 rows)
 
 -- Bottom-up deletion: non-HOT updates of a full leaf's rows.
@@ -285,11 +287,11 @@ SELECT wb_same('SELECT id FROM wb WHERE id BETWEEN 3000 AND 12000') AS cic;
 -- WHERE CURRENT OF, row locks and a TID range scan, through the index.
 BEGIN;
 SET LOCAL enable_seqscan = off;
-DECLARE c CURSOR FOR SELECT id, ctid FROM wb WHERE k = -1 AND id > 6000 FOR UPDATE;
+DECLARE c CURSOR FOR SELECT id FROM wb WHERE k = -1 AND id > 6000 FOR UPDATE;
 FETCH 1 FROM c;
-  id  | ctid  
-------+-------
- 6001 | (8,9)
+  id  
+------
+ 6001
 (1 row)
 
 UPDATE wb SET u = -u WHERE CURRENT OF c;
