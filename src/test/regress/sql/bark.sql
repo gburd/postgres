@@ -4242,7 +4242,7 @@ BEGIN
 END $$;
 SELECT opc, typ, bark_opc_check(c, '') AS plain,
        bark_opc_check(c, 'WITH (prefix_compression = on)') AS prefix
-FROM bark_opc_case c ORDER BY opc, typ;
+FROM bark_opc_case c ORDER BY opc COLLATE "C", typ COLLATE "C";
 DROP FUNCTION bark_opc_check(bark_opc_case, text);
 DROP TABLE bark_opc_case;
 
