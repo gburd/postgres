@@ -679,37 +679,33 @@ bark_indexmaykeeplocator(Relation index)
 {
 	if (bark_index_extracted_column(index) == 0)
 		return true;
-	return !index->rd_index->indisunique && !index->rd_index->indisexclusion &&
-		!bark_index_converting(index);
+	if (index->rd_index->indisunique || index->rd_index->indisexclusion)
+		return false;
+	return !bark_index_converting(index);
 }
 
 /*
  * The meta page's BARK_META_MKTAGS, BARK_META_CONVERTING and
- * BARK_META_SETTLED, read now under its share lock (0 for a meta page from
- * before bark_flags; MKTAGS alone while CREATE INDEX has not written the
- * meta page yet, which only builds an index with MKTAGS that is not
- * converting).  The conversion changes them while the index is open, so a
- * caller that relies on SETTLED reads it here, not from a cache.
+ * BARK_META_SETTLED, read now under its share lock, of an index whose
+ * cached flags say MKTAGS (bark_index_mktags), so its meta page has
+ * bark_flags.  MKTAGS alone while CREATE INDEX has not written the meta page
+ * yet (an index CREATE INDEX CONCURRENTLY has not built), which builds an
+ * index with MKTAGS that is not converting.  The conversion changes the bits
+ * while the index is open, so a caller that relies on SETTLED reads it here,
+ * not from a cache.
  */
 uint32
 bark_index_conversion_flags(Relation index)
 {
 	Buffer		metabuf;
-	Page		metapage;
-	BarkMetaPageData *meta;
-	uint32		flags = 0;
+	uint32		flags;
 
 	if (RelationGetNumberOfBlocks(index) == 0)
 		return BARK_META_MKTAGS;
 	metabuf = ReadBuffer(index, BARK_METAPAGE);
 	LockBuffer(metabuf, BUFFER_LOCK_SHARE);
-	metapage = BufferGetPage(metabuf);
-	meta = BarkPageGetMeta(metapage);
-	if (((PageHeader) metapage)->pd_lower >=
-		((char *) &meta->bark_flags + sizeof(meta->bark_flags)) -
-		(char *) metapage)
-		flags = meta->bark_flags &
-			(BARK_META_MKTAGS | BARK_META_CONVERTING | BARK_META_SETTLED);
+	flags = BarkPageGetMeta(BufferGetPage(metabuf))->bark_flags &
+		(BARK_META_MKTAGS | BARK_META_CONVERTING | BARK_META_SETTLED);
 	UnlockReleaseBuffer(metabuf);
 	return flags;
 }
@@ -757,7 +753,8 @@ bark_change_conversion_flags(Relation index, uint32 need, uint32 set,
 }
 
 /*
- * Has the conversion of this index, which stores tags on its keys, begun:
+ * Has the conversion of this index, which stores tags on its keys
+ * (bark_indexmaykeeplocator asks only for an index that can store tags), begun:
  * BARK_META_CONVERTING, or BARK_META_MKTAGS gone from the meta page since
  * the cache read it, which only a finished conversion does?  A true answer
  * is kept, since the bit stays until the conversion ends; a false one is
@@ -767,16 +764,13 @@ bark_change_conversion_flags(Relation index, uint32 need, uint32 set,
  * refuses to keep a locator.  The bit sends no invalidation (it is set
  * outside any catalog change, by whichever backend notices first), so a
  * false answer kept longer could outlive a constraint dropped meanwhile and
- * let a later transaction keep a locator after the barrier passed.  An
- * index without MKTAGS is not converting.
+ * let a later transaction keep a locator after the barrier passed.
  */
 bool
 bark_index_converting(Relation index)
 {
 	BarkAmCache *cache = bark_get_amcache(index);
 
-	if (!bark_index_mktags(index))
-		return false;
 	if (cache->converting <= 0 && cache->convlxid != MyProc->vxid.lxid)
 	{
 		uint32		flags = bark_index_conversion_flags(index);

@@ -349,6 +349,7 @@ UPDATE pg_catalog.pg_index SET indisexclusion = false
 SET test_versioned_tableam.keep_locator = pretend;
 SELECT test_versioned_reset();
 UPDATE tmc SET doc = '{120,121}' WHERE id = 12;
+UPDATE tmc SET doc = '{130,131}' WHERE id = 13;
 SELECT n AS kept_dropped FROM test_versioned_counts() WHERE counter = 'update_kept';
 RESET test_versioned_tableam.keep_locator;
 SELECT flags & 30 AS mktags_converting FROM bark_metap('tmc_doc');
@@ -433,6 +434,46 @@ SELECT flags & 30 AS mktags_converting FROM bark_metap('tmz_doc');
 SELECT flags & 30 AS mktags_converting FROM bark_metap('tmzh_doc');
 SELECT bark_index_check('tmz_doc'), bark_index_check('tmzh_doc');
 DROP TABLE tmz, tmzh;
+
+-- An index CREATE INDEX CONCURRENTLY left before its build (a lock
+-- timeout in its first wait, for a prepared writer) has no meta page yet;
+-- an update asks whether it may keep the locator in it, which reads the
+-- flags the build would write (MKTAGS, not converting), and then moves the
+-- row anyway, since the index is not ready.  A conversion of an unlogged
+-- table's index writes its meta page without WAL.
+CREATE TABLE tmn (id int, doc int4[]) USING heap_versioned
+  WITH (autovacuum_enabled = off);
+INSERT INTO tmn VALUES (1, '{1,2}');
+BEGIN;
+INSERT INTO tmn VALUES (2, '{3,4}');
+PREPARE TRANSACTION 'tmn_writer';
+SET lock_timeout = '10ms';
+\set VERBOSITY terse
+CREATE INDEX CONCURRENTLY tmn_doc ON tmn USING bark (doc bark_int4_array_ops);
+\set VERBOSITY default
+RESET lock_timeout;
+SELECT pg_relation_size('tmn_doc') AS size, indisvalid, indisready
+  FROM pg_index WHERE indexrelid = 'tmn_doc'::regclass;
+SET test_versioned_tableam.keep_locator = pretend;
+SELECT test_versioned_reset();
+UPDATE tmn SET doc = '{5,6}' WHERE id = 1;
+SELECT n AS kept FROM test_versioned_counts() WHERE counter = 'update_kept';
+RESET test_versioned_tableam.keep_locator;
+COMMIT PREPARED 'tmn_writer';
+DROP TABLE tmn;
+CREATE UNLOGGED TABLE tmn (id int, doc int4[]) USING heap_versioned
+  WITH (autovacuum_enabled = off);
+INSERT INTO tmn SELECT g, ARRAY[10 * g, 10 * g + 1] FROM generate_series(1, 20) g;
+CREATE INDEX tmn_doc ON tmn USING bark (doc bark_int4_array_ops);
+UPDATE pg_catalog.pg_index SET indisunique = true
+  WHERE indexrelid = 'tmn_doc'::regclass;
+INSERT INTO tmn VALUES (21, '{210}');
+SELECT flags & 30 AS mktags_converting FROM bark_metap('tmn_doc');
+VACUUM tmn;
+SELECT flags & 30 AS mktags_converting FROM bark_metap('tmn_doc');
+SELECT id FROM tmn WHERE doc && '{10,210}' ORDER BY id;
+SELECT bark_index_check('tmn_doc');
+DROP TABLE tmn;
 
 -- T12a: the whole conversion.  A tagged multikey index (the build tags
 -- every row) is made an exclusion constraint's; an insert begins the
