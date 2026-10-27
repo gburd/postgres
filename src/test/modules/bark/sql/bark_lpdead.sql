@@ -315,7 +315,7 @@ SET LOCAL enable_indexonlyscan = off;
 DECLARE c CURSOR FOR SELECT a FROM lpdc WHERE a > 0;
 FETCH 1 FROM c;
 INSERT INTO lpdc VALUES (1000);
-FETCH ALL FROM c \g /dev/null
+MOVE ALL FROM c;
 COMMIT;
 SELECT lpd_ndead('lpdc_a');
 SELECT * FROM lpd_count('SELECT * FROM lpdc WHERE a > 0');

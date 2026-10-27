@@ -690,7 +690,7 @@ FETCH 1 FROM c;
 (1 row)
 
 INSERT INTO lpdc VALUES (1000);
-FETCH ALL FROM c \g /dev/null
+MOVE ALL FROM c;
 COMMIT;
 SELECT lpd_ndead('lpdc_a');
  lpd_ndead 
