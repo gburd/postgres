@@ -9,26 +9,35 @@ left to do, and the traps already hit.
 ## 0. STATUS (2026-10-26) — read this first; sections 3, 4 and 7 describe the
 ## abandoned POC and are kept only as history
 
-- v1 is done: commit "Don't wait for the hash index metapage lock just to
-  count a tuple", pushed to `origin/hash-metapage-overflow-signal`. Every
-  commit whose subject starts with `ci:` or `dev:` stays in the branch but is
-  never part of a patch set. Produce the set from the patch commits only, e.g.
-  `git format-patch -v<N> -1 <patch-commit>` for the one-commit series.
-- The overflow-signal POC was dropped: pending counts die with the backend and
-  VACUUM only recounts when it removes tuples, so `pgbench -C` drove ntuples
-  to 487 for 200k rows (maxbucket 7). Design now: `ConditionalLockBuffer` on
-  the metapage; on failure defer the count in a backend-local dynahash keyed
-  by index OID; wait anyway after adding an overflow page or at 32 pending.
-  Metapage block ref omitted from XLOG_HASH_INSERT when deferred; increment
-  carried as block-1 data when >1.
-- Results, scripts, raw output: `/scratch/hegel-pg/hash-metapage/v1/`
-  (RESULTS.md). 2.04x at 64 clients, 2.23x at 128; count ~1% low worst case.
-- Email draft for the thread: `/tmp/hash-metapage-v1-reply.eml` (never send
-  email yourself; Greg sends).
+- v2 is done (target: match or beat btree). Patch commits on the branch:
+  142c13af436 (v1) and 9c0eb338be8 (v2 delta). The posted v2 patch is the
+  SQUASH of those two, built in a throwaway worktree on upstream/master
+  (cherry-pick -n both, one commit, `git format-patch -v2 -1`). Every commit
+  whose subject starts with `ci:` or `dev:` stays in the branch but is never
+  part of a patch set. No force-push: add new commits, squash only when
+  formatting the patch.
+- Design: `ConditionalLockBuffer` on the metapage; on failure defer the count
+  in a backend-local dynahash keyed by index OID. Metapage not pinned on the
+  common path. After 1024 inserts into an index + a failed try, a backend
+  tries only every 32nd insert (or after adding an overflow page); waits at
+  256 pending. Short sessions try every insert (without that, 10-insert -C
+  sessions lost 30% of the count). Metapage block ref omitted from
+  XLOG_HASH_INSERT when deferred; increment carried as block-1 data when >1.
+- Results: `/scratch/hegel-pg/hash-metapage/v2/RESULTS.md` (c7i.24xlarge,
+  server pinned to 64 vCPUs). 1-row INSERT: v2 = btree. 10-row: 81-116% of
+  btree on a growing index (the gap is split/overflow traffic on the metapage
+  and bitmap page, a separate patch), 97-112% on a presized one. Count worst
+  case 1.4% low. Why v1 "peaked at 32": c7i.8xlarge is 16 physical cores;
+  see `/scratch/hegel-pg/hash-metapage/v1/scaling-investigation/`.
+- Email draft for the thread: `/tmp/hash-metapage-v2-reply.eml` (copy in the
+  v2 dir). Never send email yourself; Greg sends.
 - Tests: `src/test/modules/hash` (`hash_deferred_count` regress via injection
-  point `hash-insert-defer-count`, `t/001_concurrent_inserts.pl` TAP).
+  point `hash-insert-defer-count`, `t/001_concurrent_inserts.pl` TAP). After a
+  rebuild run `meson test --suite setup` before `--suite hash`, or you test
+  the old binary.
 - `wal_consistency_checking=hash` still fails on unpatched upstream master.
-- Next: review feedback from the list; XLOG_PAGE_MAGIC bump left to committer.
+- Next: review feedback from the list; XLOG_PAGE_MAGIC bump left to committer;
+  possible follow-up: split/overflow allocation without the metapage lock.
 
 ## 1. What this is
 
