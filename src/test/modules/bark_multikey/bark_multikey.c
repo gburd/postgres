@@ -1793,14 +1793,15 @@ bark_test_tid_mappings(PG_FUNCTION_ARGS)
 		pfree(cur);
 
 		/*
-		 * Scattered: ten TIDs 2^20 blocks apart (5-byte deltas) and one next
-		 * to the last, 80 bytes coded against 88 plain.  A 1-byte delta more
-		 * stays coded; a 7-byte one makes 88 against the plain 88 of twelve,
-		 * and the result is plain.
+		 * Scattered: ten TIDs 2^20 blocks apart (5-byte deltas) and one 8
+		 * blocks past the last (a 3-byte delta), 80 bytes coded against 88
+		 * plain where MAXALIGN is 8, 76 against 80 where it is 4.  A 1-byte
+		 * delta more stays coded; a 7-byte one makes it as large as the
+		 * plain LIST of twelve (88, or 84), and the result is plain.
 		 */
 		for (int i = 0; i < 10; i++)
 			ItemPointerSet(&set[i], (BlockNumber) i << 20, 1);
-		ItemPointerSet(&set[10], 9 << 20, 2);
+		ItemPointerSet(&set[10], (9 << 20) + 8, 1);
 		cur = bark_form_list_best(desc, key, set, 11, stride);
 		ok = ok && BarkListIsCoded(cur);
 		for (int wide = 0; wide <= 1; wide++)
@@ -1808,7 +1809,7 @@ bark_test_tid_mappings(PG_FUNCTION_ARGS)
 			if (wide)
 				ItemPointerSet(&set[11], MaxBlockNumber, 1);
 			else
-				ItemPointerSet(&set[11], 9 << 20, 3);
+				ItemPointerSet(&set[11], (9 << 20) + 8, 2);
 			ext = bark_entry_add_tid(cur, &set[11], BLCKSZ, stride);
 			want = bark_form_list_best(desc, key, set, 12, stride);
 			ok = ok && ext != NULL && BarkListIsCoded(ext) == !wide &&
