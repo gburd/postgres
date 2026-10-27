@@ -109,8 +109,11 @@ my $evict = q[
 SELECT buffers_flushed > 0, buffers_skipped
 FROM pg_buffercache_evict_relation('split_done_idx');
 ];
-is($node->safe_psql('postgres', $evict), 't|0',
-	'dirty index pages were flushed and evicted, none skipped');
+# Whether this eviction or the background writer wrote the dirty pages out
+# does not matter: none may be left behind.
+is($node->safe_psql('postgres', q[
+SELECT buffers_skipped FROM pg_buffercache_evict_relation('split_done_idx');
+]), '0', 'the index pages were flushed and evicted, none skipped');
 is($node->safe_psql('postgres', qq[
 SELECT lsn > '$newroot'::pg_lsn FROM page_header(get_raw_page('split_done_idx', 1));
 ]), 't', 'the on-disk left page is newer than the split record');
