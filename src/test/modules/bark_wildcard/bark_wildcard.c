@@ -1436,9 +1436,8 @@ bark_wildcard_strategy(Oid operator)
  * per-path values these operators test, so the sample buys no accuracy
  * here; it only runs the operator -- about ten times the cost of jsonb's
  * own containment per document -- once per sample row, and that cost grows
- * with default_statistics_target.  BENCHMARK-M5b.md measured a #= planning
- * at 0.25 to 0.68 ms against GIN's 0.04 to 0.08, almost all of it this
- * per-row cost.
+ * with default_statistics_target.  Planning a #= took 0.25 to 0.68 ms
+ * against GIN's 0.04 to 0.08, almost all of it this per-row cost.
  *
  * So estimate without touching the sample.  When the column has a BARK
  * index of this operator's family, the index answers: its separator keys
