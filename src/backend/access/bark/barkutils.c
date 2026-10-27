@@ -2080,7 +2080,7 @@ bark_form_coded_list(IndexTuple key, ItemPointer tids, int ntids, bool force,
 	IndexTuple	entry;
 
 	Assert(ntids >= 2 && ntids <= BARK_LIST_MAX_COUNT);
-	Assert(bodyoff <= BARK_OFFSET_MASK);
+	Assert(bodyoff <= PG_UINT16_MAX);
 
 	/* Keep the plain LIST unless coding is strictly smaller, or it overflows. */
 	if (nbytes > PG_UINT16_MAX || total > INDEX_SIZE_MASK)
