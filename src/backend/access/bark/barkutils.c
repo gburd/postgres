@@ -2498,7 +2498,7 @@ bark_posting_from_map(IndexTuple key, Sbm *map, Size total)
  * body, and the entry is sized for the set's removal bound, so that VACUUM
  * can rewrite it in place whatever members it removes.  Returns NULL when
  * that size is not smaller than the equivalent LIST -- plain, or coded when
- * coding is smaller (V6) -- and the caller then keeps the LIST
+ * coding is smaller -- and the caller then keeps the LIST
  * (bark_form_list_best), so POSTING is used only when it saves space even
  * with the reserve, or when it would not fit t_info's size field.  Deciding
  * here covers every caller: CREATE INDEX, insert coalescing, VACUUM and

@@ -2362,7 +2362,7 @@ decides from the removal bound, sbm_removal_bound_sorted, and the coded
 LIST's length, before building the sbm), else a LIST, which holds at most
 BARK_LIST_MAX_COUNT TIDs; neither is made larger than BarkMaxItemSize.
 
-A LIST is plain or coded (V6; bark_form_list_best keeps the smaller).  A
+A LIST is plain or coded (bark_form_list_best keeps the smaller).  A
 plain LIST is an ItemPointerData array.  A coded LIST sets BARK_LIST_CODED
 (the 0x1000 status bit, BARK_PIVOT_META on a pivot, never set on a leaf
 entry) and holds a BarkCodedListHdr (the varbyte stream's length and the
