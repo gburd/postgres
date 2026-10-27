@@ -5155,11 +5155,7 @@ bark_gin_stream_next(BarkGinStream *s)
 		/* An exact stream: the run of its TIDs on the next heap page. */
 		s->noffs = 0;
 		s->lossy = false;
-		if (s->cur != NULL && s->curi == s->cur->n)
-		{
-			s->cur = s->cur->next;
-			s->curi = 0;
-		}
+		/* the loop below leaves cur on an unread TID, or NULL */
 		if (s->cur == NULL)
 		{
 			s->blkno = InvalidBlockNumber;

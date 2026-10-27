@@ -131,6 +131,27 @@ SELECT mem, bool_or(lossy) AS any_lossy, bool_and(NOT lossy) AS all_exact
 FROM gb_res WHERE idx <> 'gb_gin' AND bitmap GROUP BY mem ORDER BY mem;
 DROP TABLE gb_res, gb_seq;
 
+-- The merge's corners, at 64kB.  With a key column after the
+-- GIN-interface column every point's stream turns into a bitmap, and the
+-- frequent elements' bitmaps go lossy.  Without triConsistent
+-- (bark_gin11_int4_array_ops) consistent then decides a lossy page through
+-- ginlogic.c's shim, which tries every combination of up to four MAYBE
+-- entries (two or three frequent elements) and answers MAYBE beyond: five
+-- copies of one element are five identical streams, lossy on the same
+-- pages.
+-- A key whose result is empty ends a two-key AND before the second key is
+-- read.
+CREATE INDEX gb_bark11_a2 ON gb USING bark (a bark_gin11_int4_array_ops, (id % 3));
+SET work_mem = '64kB';
+SELECT q, (gb_run('gb_bark11_a2', q, true)).ids = (gb_run(NULL, q, true)).ids AS bark11_ok,
+       (gb_run('gb_bark', q, true)).ids = (gb_run(NULL, q, true)).ids AS bark_ok
+FROM unnest(ARRAY[$$a @> '{0,1}'$$, $$a @> '{1,-1}'$$, $$a && '{2,-2}'$$,
+                  $$a @> '{0,1,2}'$$, $$a @> '{0,1,2,-1,-2}'$$, $$a @> '{0,0,0,0,0}'$$,
+                  $$a <@ '{0,1,2,-1,-2,3}'$$,
+                  $$a @> '{4100}' AND a @> '{0}'$$]) q ORDER BY q;
+RESET work_mem;
+DROP INDEX gb_bark11_a2;
+
 -- After DELETE, INSERT (LIST entries and new rows of the rare key) and
 -- VACUUM, the results still agree.
 DELETE FROM gb WHERE id % 7 = 0;
