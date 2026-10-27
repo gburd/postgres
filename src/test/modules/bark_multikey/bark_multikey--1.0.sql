@@ -373,7 +373,8 @@ FOR TYPE text[] USING bark FAMILY bark_text_prefix_ops AS
 -- similarity of the two sets of non-NULL elements, |a & b| / sqrt(|a| |b|),
 -- is at least 0.5, and a <=> b is 1 minus it.  The class serves % through
 -- GIN's interface; <=> is not in it, since BARK's scans cannot order by it
--- (BARK-Design.mediawiki, "As built (M2b part 2)"), so ORDER BY a <=> q
+-- (BARK-Design.mediawiki, "As built, an array similarity class"), so
+-- ORDER BY a <=> q
 -- sorts.
 CREATE FUNCTION bark_multikey_sim_match(int4[], int4[]) RETURNS bool
 AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;

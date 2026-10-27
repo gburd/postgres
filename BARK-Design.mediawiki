@@ -1218,9 +1218,10 @@ place of an inverted AM, without changing the scalar design above.
   interface (procedures 10-13, partial match included) in bitmap and index
   scans, "As built" under "Which interface first."; RUM's addon ordering
   (an ordering operator on the column after the extracted one, inside a
-  data". M2b part 2, an array similarity class after rum_anyarray_ops, is
-  built for its % operator, "As built (M2b part 2)" there, with the <=>
-  ordering operator left to the executor's Sort for the reasons given.
+  point's run) and an array similarity class after rum_anyarray_ops, for
+  its % operator, under "Per-locator data (closed)". The <=> ordering
+  operator of that class is left to the executor's Sort, for the reasons
+  given there.
   M2 is done. The scalar classes in a BARK family (a class whose operators
   are not btree's but whose keys are scalar) are not needed by any M or M5
   case and are not started)''
@@ -2838,7 +2839,7 @@ values, ten executions, each compared with the seqscan's rows of the run
 lead's randomized check, 600 queries over six index shapes before and after
 inserts and deletes, matched a seqscan Sort exactly.
 
-'''As built (M2b part 2).''' The bark_multikey test module adds an array
+'''As built, an array similarity class.''' The bark_multikey test module adds an array
 similarity class after RUM's rum_anyarray_ops, over int4[]: a % q when the
 cosine similarity |a &cap; q| / sqrt(|a| |q|) of the non-NULL element sets
 is at least 0.5, and a <=> q = 1 minus it. % is a GIN-interface operator
@@ -2846,13 +2847,13 @@ is at least 0.5, and a <=> q = 1 minus it. % is a GIN-interface operator
 distinct non-NULL elements with GIN_SEARCH_MODE_DEFAULT, and consistent
 (and triConsistent) count the query elements the row holds and apply the
 0.5 cosine threshold, with the row's own |a| from its recheck of the heap
-tuple. So BARK serves % by the bitmap and (M2c) index scans, through
+tuple. So BARK serves % by the bitmap and index scans, through
 bark_int4_array_sim_ops and the procedure-13-less bark_int4_array_sim11_ops;
 the class bark(a sim_ops, cardinality(a)) adds the length as a fixed column.
 
 <=> is not served as an ordered index scan, and the planner leaves it to a
 Sort over the % bitmap. The KNN machinery (barkknn.c) cannot answer it
-without changes outside M2b's scope: it computes an entry's distance as the
+without changes outside this class's scope: it computes an entry's distance as the
 ordering operator of (that entry's key, the center), but <=>'s distance
 depends on m, the number of q's elements the row holds, which no single
 entry carries (bark(a, cardinality(a)) gives only a bound, 1 -

@@ -2,7 +2,7 @@
 -- cosine similarity |a & q| / sqrt(|a| |q|) is at least 0.5, and a <=> q,
 -- 1 minus it.  BARK serves % through GIN's interface, by bitmap and index
 -- scans; ORDER BY a <=> q sorts their rows (BARK-Design.mediawiki, "As
--- built (M2b part 2)").  Every query is compared with a Sort by the exact
+-- built, an array similarity class").  Every query is compared with a Sort by the exact
 -- distance over a sequential scan, before and after DML.
 CREATE EXTENSION IF NOT EXISTS bark_multikey;
 SELECT opcname, amvalidate(oid) FROM pg_opclass
