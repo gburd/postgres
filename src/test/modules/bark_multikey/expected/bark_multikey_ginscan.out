@@ -362,12 +362,12 @@ FROM string_to_array(bark_multikey_walk('mg_bark', '@>(anyarray,anyarray)', '{3,
  t        | t
 (1 row)
 
-SELECT bark_multikey_walk('mg_bark', '@>(anyarray,anyarray)', '{3,7}'::int4[], 'bb') AS walk,
+SELECT bark_multikey_walk('mg_bark', '@>(anyarray,anyarray)', '{3,7}'::int4[], 'bb') =
        (SELECT string_agg(ctid::text, ' ' ORDER BY ctid DESC) FROM
-          (SELECT ctid FROM mg WHERE a @> '{3,7}' ORDER BY ctid DESC LIMIT 2) s) AS seq;
-      walk       |       seq       
------------------+-----------------
- (33,80) (33,50) | (33,80) (33,50)
+          (SELECT ctid FROM mg WHERE a @> '{3,7}' ORDER BY ctid DESC LIMIT 2) s) AS walk_ok;
+ walk_ok 
+---------
+ t
 (1 row)
 
 SELECT bark_multikey_walk('mg_bark', '@>(anyarray,anyarray)', '{100,200}'::int4[], 'fbf');

@@ -205,9 +205,9 @@ SELECT w[1:4] = (SELECT array_agg(ctid::text ORDER BY ctid) FROM
        w[5:7] = ARRAY[w[3], w[2], w[1]] AND w[8:9] = '{-,-}' AND w[10] = w[1] AS turn_ok
 FROM string_to_array(bark_multikey_walk('mg_bark', '@>(anyarray,anyarray)', '{3,7}'::int4[],
                                         'ffffbbbbbf'), ' ') w;
-SELECT bark_multikey_walk('mg_bark', '@>(anyarray,anyarray)', '{3,7}'::int4[], 'bb') AS walk,
+SELECT bark_multikey_walk('mg_bark', '@>(anyarray,anyarray)', '{3,7}'::int4[], 'bb') =
        (SELECT string_agg(ctid::text, ' ' ORDER BY ctid DESC) FROM
-          (SELECT ctid FROM mg WHERE a @> '{3,7}' ORDER BY ctid DESC LIMIT 2) s) AS seq;
+          (SELECT ctid FROM mg WHERE a @> '{3,7}' ORDER BY ctid DESC LIMIT 2) s) AS walk_ok;
 SELECT bark_multikey_walk('mg_bark', '@>(anyarray,anyarray)', '{100,200}'::int4[], 'fbf');
 -- Off the far end and still forward stays there; back from there returns
 -- the last row.
