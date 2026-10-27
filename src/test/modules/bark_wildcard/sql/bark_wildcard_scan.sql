@@ -158,7 +158,7 @@ INSERT INTO wc_quals (q, oracle) VALUES
 INSERT INTO wc_quals (q)
 SELECT format('doc #? %L', p)
   FROM unnest(ARRAY['a', 'b', 'b.c', 'b.d', '', 'n', 'x\.y', 'zz', 'a.b']) p;
-SELECT n, q, (wc_compare(q, oracle)).* FROM wc_quals ORDER BY n;
+SELECT n, q, c.* FROM wc_quals, wc_compare(q, oracle) c ORDER BY n;
 
 -- The plans wc_run accepted, two of them in full: the projected-out path
 -- b.c on wc_exc (every row the scan reads is rechecked), and the compound

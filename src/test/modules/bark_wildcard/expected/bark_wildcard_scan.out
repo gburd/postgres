@@ -152,7 +152,7 @@ INSERT INTO wc_quals (q, oracle) VALUES
 INSERT INTO wc_quals (q)
 SELECT format('doc #? %L', p)
   FROM unnest(ARRAY['a', 'b', 'b.c', 'b.d', '', 'n', 'x\.y', 'zz', 'a.b']) p;
-SELECT n, q, (wc_compare(q, oracle)).* FROM wc_quals ORDER BY n;
+SELECT n, q, c.* FROM wc_quals, wc_compare(q, oracle) c ORDER BY n;
   n  |                                    q                                    |                    seq                     | mismatches | jsonpath 
 -----+-------------------------------------------------------------------------+--------------------------------------------+------------+----------
    1 | doc #< '["a", null]'                                                    | 0:0:-                                      |            | same
