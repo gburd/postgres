@@ -418,7 +418,7 @@ DROP TABLE tmd;
 
 -- VACUUM notices a conversion too, and nothing sets CONVERTING on an
 -- index without MKTAGS (a multikey index on heap made unique by hand).
--- tmz's index has no tagged entry, so that VACUUM also completes it (T12a).
+-- tmz's index has no tagged entry, so that VACUUM also completes it.
 CREATE TABLE tmz (id int, doc int4[]) USING heap_versioned
   WITH (autovacuum_enabled = off);
 INSERT INTO tmz VALUES (1, '{1,2}'), (2, '{3,4}');
@@ -480,7 +480,7 @@ SELECT id FROM tmn WHERE doc && '{10,210}' ORDER BY id;
 SELECT bark_index_check('tmn_doc');
 DROP TABLE tmn;
 
--- T12a: the whole conversion.  A tagged multikey index (the build tags
+-- The whole conversion.  A tagged multikey index (the build tags
 -- every row) is made an exclusion constraint's; an insert begins the
 -- conversion (CONVERTING, 8); MVCC results do not change; a VACUUM whose
 -- table AM untags nothing (untag_tag names no entry's tag) passes the

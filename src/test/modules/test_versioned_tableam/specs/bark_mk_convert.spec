@@ -15,8 +15,8 @@
 # through (2,L,0), whose recheck fails, and drops the entries that lead to
 # v1, so s2 commits a duplicate.
 #
-# s4's VACUUM, after the conversion has begun, runs the conversion barrier
-# (V2-DESIGN 12.1 item 4): it waits for s1, whose update began before the
+# s4's VACUUM, after the conversion has begun, runs the conversion barrier:
+# it waits for s1, whose update began before the
 # conversion and kept the locator, and sets BARK_META_SETTLED (16) only once
 # s1 has ended.  The injection point before the wait shows that it got
 # there; pg_locks shows what it waits on.

@@ -4,7 +4,7 @@
 # The conversion of a tagged multikey BARK index made unique or exclusion
 # after its build ("Conversion" in the BARK README): VACUUM's barrier,
 # which a manual VACUUM waits in and autovacuum does not, and the
-# completion that clears BARK_META_MKTAGS (T12a and T12e of the V2 design),
+# completion that clears BARK_META_MKTAGS,
 # under wal_consistency_checking = bark, with a standby that must see the
 # meta page's bits and return the primary's MVCC results throughout.
 

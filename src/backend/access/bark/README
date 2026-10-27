@@ -2739,9 +2739,9 @@ table is.
 
 From SETTLED on, inserts store their entries untagged, even when the table
 AM hands a tag: every update moves the rows it changes (CONVERTING), and a
-new locator has no history, so an untagged entry is valid for it.  This
-replaces the design's "no tagged entry can be added after SETTLED", which
-did not hold: canversion stays MKTAGS, and the executor tags every entry
+new locator has no history, so an untagged entry is valid for it.  The
+simpler rule "no tagged entry can be added after SETTLED" would
+not hold: canversion stays MKTAGS, and the executor tags every entry
 of an index that can store tags, moved row or not.
 
 Completion (bark_convert_complete).  A VACUUM pass that passed the
@@ -2761,17 +2761,18 @@ validator accept a pivot tag in any index with BARK_META_VERSIONED.  An
 entry kept tagged because its page's lower bound has a tag, or because the
 table AM keeps answering LIVE for it (a row with history the table AM
 cannot drop), keeps the conversion open; until it ends the index works
-as a converting one, item 5's rule included until SETTLED, and rule D
+as a converting one, the constraint-check rule above included until
+SETTLED, and rule D
 after.
 
-Tests: bark_mk_versioned (T12a: CONVERTING, SETTLED, untagged inserts,
+Tests: bark_mk_versioned (CONVERTING, SETTLED, untagged inserts,
 completion, the constraint after it; the bits through each caller of
-bark_note_conversion); isolation bark_mk_convert (T12b: VACUUM waits for
+bark_note_conversion); isolation bark_mk_convert (VACUUM waits for
 the in-place update, then SETTLED); t/009_bark_convert.pl (autovacuum
 does not wait, a manual VACUUM waits twice, a row the table AM will not
 untag holds the conversion open, completion, and a standby that sees each
 bit and returns the same rows, under wal_consistency_checking);
-t/008_bark_mktags.pl (T12f).
+t/008_bark_mktags.pl (the bits' corruption checks).
 
 Updates.  An update that keeps the locator inserts, into each index it
 affects, the new version's entries, tagged.  For a multikey index that is
