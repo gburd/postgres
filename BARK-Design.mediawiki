@@ -1899,7 +1899,7 @@ section left open or that differ from it:
   raise errors. bark_canreturn answers false for the extracted
   column (an index-only scan would otherwise return keys as values).
 
-'''As built (M1d, in progress).''' Done: plancat sets
+'''As built, the planner.''' plancat sets
 <code>amcanparallel</code> false for an index with an extracted column (the
 same test that puts InvalidOid in its <code>sortopfamily</code>), so the
 planner never makes a parallel scan that needs the seen set; IndexSupportsBackwardScan asks
