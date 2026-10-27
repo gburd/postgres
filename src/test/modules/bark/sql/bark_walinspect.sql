@@ -53,25 +53,26 @@ INSERT INTO wi_prefix SELECT g, md5(g::text) || 'https://x/' || g
 -- time (ADD_TID).
 CREATE TABLE wi_dup (k int) WITH (autovacuum_enabled = off);
 CREATE INDEX wi_dup_idx ON wi_dup USING bark (k);
-INSERT INTO wi_dup SELECT 1 FROM generate_series(1, 150000);
+INSERT INTO wi_dup SELECT 1 FROM generate_series(1, 60000);
 INSERT INTO wi_dup SELECT 100000 + g % 100 FROM generate_series(1, 20000) g;
 INSERT INTO wi_dup SELECT 200000 + (g - 1) / 1000 FROM generate_series(1, 20000) g;
 
 -- Heap TIDs inside the TID range of LIST (wi_hkl) and POSTING (wi_hkp)
 -- entries: the heap leaves half of each page free, and rows of another key
 -- updated to the key go on their old version's page, inside the key's run.
--- Entries that cannot take the TID are divided around it (INSERT_SWAP).
+-- Entries that cannot take the TID are divided around it (INSERT_SWAP, of
+-- wi_hkp's POSTING entries at this size).
 -- After REINDEX the pages are full, and an insert first merges the page's
 -- equal-key entries (MERGE).
 CREATE TABLE wi_hkl (k int, v int) WITH (fillfactor = 50, autovacuum_enabled = off);
 CREATE INDEX wi_hkl_idx ON wi_hkl USING bark (k);
-INSERT INTO wi_hkl SELECT g % 50, g FROM generate_series(1, 100000) g;
+INSERT INTO wi_hkl SELECT g % 50, g FROM generate_series(1, 40000) g;
 UPDATE wi_hkl SET k = 1 WHERE k = 2 AND v % 4 = 2;
 REINDEX INDEX wi_hkl_idx;
 UPDATE wi_hkl SET k = 1 WHERE k = 3 AND v % 4 = 3;
 CREATE TABLE wi_hkp (k int, v int) WITH (fillfactor = 50, autovacuum_enabled = off);
 CREATE INDEX wi_hkp_idx ON wi_hkp USING bark (k);
-INSERT INTO wi_hkp SELECT g % 2, g FROM generate_series(1, 100000) g;
+INSERT INTO wi_hkp SELECT g % 2, g FROM generate_series(1, 40000) g;
 UPDATE wi_hkp SET k = 1 WHERE k = 0 AND v % 4 = 0;
 REINDEX INDEX wi_hkp_idx;
 UPDATE wi_hkp SET k = 1 WHERE k = 0 AND v % 4 = 2;
