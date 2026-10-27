@@ -2599,10 +2599,7 @@ page's exclusive lock, logged whole, as BARK_META_MULTIKEY is.  Nothing
 in recovery sets it.  From then on bark_indexmaykeeplocator answers false
 whatever rd_index says, so a constraint dropped mid-conversion does not
 let updates keep locators again: the barrier must see every writer that
-could still add a tagged entry.  The answer is cached per relcache entry
-(BarkAmCache.converting), which is safe because the bit is set only after
-a pg_index change, and that change rebuilds the entry of every backend
-that later locks the index.  amindexcanversion stays MKTAGS: an update
+could still add a tagged entry.  amindexcanversion stays MKTAGS: an update
 that began before the conversion and keeps its locator still needs its
 entries tagged.  BARK_META_SETTLED says VACUUM's barrier has passed, so
 no update that began under the old rd_index is still in progress.
@@ -2611,7 +2608,7 @@ which amcheck and the page validator report (bark_verify_meta; the
 injection points bark-verify-fault-converting and -settled plant them, on
 the primary and in redo).
 
-A false answer of bark_index_converting is read again in each transaction
+bark_index_converting's answer is read again in each transaction
 (BarkAmCache.convlxid), never kept longer: the bit is set outside any
 catalog change, so no invalidation tells other backends.  That is enough
 for the barrier.  A transaction that read the bit clear may keep locators

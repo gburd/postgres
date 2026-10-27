@@ -756,9 +756,9 @@ bark_change_conversion_flags(Relation index, uint32 need, uint32 set,
  * Has the conversion of this index, which stores tags on its keys
  * (bark_indexmaykeeplocator asks only for an index that can store tags), begun:
  * BARK_META_CONVERTING, or BARK_META_MKTAGS gone from the meta page since
- * the cache read it, which only a finished conversion does?  A true answer
- * is kept, since the bit stays until the conversion ends; a false one is
- * read again in each transaction.  That is what VACUUM's barrier needs: a
+ * the cache read it, which only a finished conversion does?  The answer is
+ * read once per transaction (one meta page read per transaction that updates
+ * the index's column).  That is what VACUUM's barrier needs: a
  * transaction that read false before the bit was set already held its lock
  * on the table, which the barrier waits out, and one that reads it later
  * refuses to keep a locator.  The bit sends no invalidation (it is set
@@ -771,7 +771,7 @@ bark_index_converting(Relation index)
 {
 	BarkAmCache *cache = bark_get_amcache(index);
 
-	if (cache->converting <= 0 && cache->convlxid != MyProc->vxid.lxid)
+	if (cache->convlxid != MyProc->vxid.lxid)
 	{
 		uint32		flags = bark_index_conversion_flags(index);
 
@@ -811,6 +811,7 @@ bark_note_conversion(Relation index)
 
 	flags = bark_change_conversion_flags(index, BARK_META_MKTAGS,
 										 BARK_META_CONVERTING, 0);
+	/* this transaction may have read the bit clear before */
 	bark_get_amcache(index)->converting = 1;
 	return flags;
 }
