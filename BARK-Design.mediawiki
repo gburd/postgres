@@ -1863,7 +1863,7 @@ determine its row's value: a row with several keys has an entry per key,
 and the NULL key stands for a NULL value, an empty value and a NULL
 element alike, so a value rebuilt from one entry could be a wrong value,
 which BARK never returns. (The design once let procedure 14 rebuild the
-value; M1c found the NULL key ambiguous, and the lead dropped it: MongoDB
+value; the NULL key is ambiguous, so it was dropped: MongoDB
 does not cover queries on a multikey path either.) Fixed columns are
 returned as now, with the seen set.
 
@@ -1896,7 +1896,7 @@ section left open or that differ from it:
 * For callers that did not ask the planner, the scan refuses rather than
   answers wrong: a change of direction with the set in use, a parallel
   scan that needs the set, and an ordering key on the extracted column
-  column raise errors. bark_canreturn answers false for the extracted
+  raise errors. bark_canreturn answers false for the extracted
   column (an index-only scan would otherwise return keys as values).
 
 '''As built (M1d, in progress).''' Done: plancat sets
