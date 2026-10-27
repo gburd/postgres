@@ -49,6 +49,7 @@
 #include "postgres.h"
 
 #include "access/bark.h"
+#include "access/detoast.h"
 #include "access/gin.h"
 #include "access/htup_details.h"
 #include "access/relscan.h"
@@ -66,6 +67,7 @@
 #include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/datum.h"
+#include "utils/hsearch.h"
 #include "utils/injection_point.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
@@ -75,6 +77,8 @@
 #include "utils/wait_event.h"
 
 static int	bark_key_cmp(IndexScanDesc scan, int i, IndexTuple itup);
+static bool bark_prefix_past_bound(IndexScanDesc scan, IndexTuple itup,
+								   ScanDirection dir);
 static void bark_killitems(IndexScanDesc scan);
 static bool bark_mk_gin_gettuple(IndexScanDesc scan, ScanDirection dir);
 static bool bark_key_bounds(IndexScanDesc scan, ScanKey sk, bool *lower,
@@ -508,8 +512,28 @@ typedef struct BarkMkScanState
 	bark_seen_radix_tree *seen;
 	uint64		nseen;			/* TIDs in it */
 	bool		havegroup;
+	MemoryContext groupCxt;		/* groupvals' copies */
 	Datum		groupvals[INDEX_MAX_KEYS];
 	bool		groupnulls[INDEX_MAX_KEYS];
+
+	/*
+	 * Rule D ("Versioned multikey scans" in the README): in an index with
+	 * BARK_META_MKTAGS scanned through a table AM, the seen set is R, the
+	 * rows the table AM returned, filled from its verdict on each entry the
+	 * scan returned (bark_mk_settle), not when a page is read; rejected holds
+	 * J, the (TID, tag) pairs it rejected under an MVCC snapshot.  A page
+	 * read keeps every accepted entry, and bark_mk_admit skips at return time
+	 * the entries of rows in R and the pairs in J.  verdictdue says an entry
+	 * was returned whose verdict is not read yet; pendingtid and pendingtag
+	 * name it.  A group change (bark_mk_group) is found when the page is read
+	 * and recorded on the item (BARK_ITEM_NEWGROUP); R and J empty when the
+	 * scan returns from such an item.
+	 */
+	bool		ruled;
+	bool		verdictdue;
+	ItemPointerData pendingtid;
+	IndexVersionTag pendingtag;
+	HTAB	   *rejected;		/* J, in seenCxt, or NULL while empty */
 
 	/*
 	 * Mark and restore (bark_markpos): while marked, every TID added to the
@@ -992,7 +1016,9 @@ bark_mk_clear_seen(BarkMkScanState *mk)
 	MemoryContextReset(mk->seenCxt);
 	mk->seen = NULL;
 	mk->nseen = 0;
-	mk->havegroup = false;
+	mk->rejected = NULL;
+	if (!mk->ruled)
+		mk->havegroup = false;
 }
 
 /*
@@ -1016,6 +1042,14 @@ bark_mk_rescan(IndexScanDesc scan)
 	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
 	BarkMkScanState *mk = so->mk;
 
+	/*
+	 * Rule D needs a table AM to judge each entry; a caller that drives
+	 * amgettuple itself gets the page-read seen set, dedup by TID.
+	 */
+	mk->ruled = so->keyinfo->mktags && scan->heapRelation != NULL;
+	mk->verdictdue = false;
+	mk->havegroup = false;
+	MemoryContextReset(mk->groupCxt);
 	bark_mk_clear_seen(mk);
 	mk->started = false;
 	mk->marked = false;
@@ -1063,10 +1097,13 @@ bark_mk_rescan(IndexScanDesc scan)
 /*
  * Does entry itup belong to another group of the columns before the
  * extracted one than the rows in the seen set?  If so, make it the set's
- * group.  Rows of different groups share no entry group, so the set then
- * empties: it holds at most one group's rows.
+ * group and return true.  Rows of different groups share no entry group, so
+ * the set then empties: it holds at most one group's rows.  Under rule D
+ * the set fills when rows are returned, after the page is read, so the
+ * caller marks the item and the sets empty when the scan returns from it
+ * (bark_mk_admit).
  */
-static void
+static bool
 bark_mk_group(IndexScanDesc scan, BarkMkScanState *mk, IndexTuple itup)
 {
 	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
@@ -1089,10 +1126,13 @@ bark_mk_group(IndexScanDesc scan, BarkMkScanState *mk, IndexTuple itup)
 			same = false;
 	}
 	if (same)
-		return;
+		return false;
 
-	bark_mk_clear_seen(mk);
-	oldcxt = MemoryContextSwitchTo(mk->seenCxt);
+	/* Under rule D the sets empty when the scan returns from this entry. */
+	if (!mk->ruled)
+		bark_mk_clear_seen(mk);
+	MemoryContextReset(mk->groupCxt);
+	oldcxt = MemoryContextSwitchTo(mk->groupCxt);
 	for (int i = 0; i < mk->attno - 1; i++)
 	{
 		Form_pg_attribute att = TupleDescAttr(tupdesc, i);
@@ -1103,6 +1143,7 @@ bark_mk_group(IndexScanDesc scan, BarkMkScanState *mk, IndexTuple itup)
 	}
 	MemoryContextSwitchTo(oldcxt);
 	mk->havegroup = true;
+	return true;
 }
 
 /*
@@ -1121,18 +1162,29 @@ bark_mk_group(IndexScanDesc scan, BarkMkScanState *mk, IndexTuple itup)
  * mark on the page restores to them (see bark_markpos for later pages).
  * The set grows past get_hash_memory_limit() rather than return a row
  * twice; the planner keeps plans inside it.
+ *
+ * Under rule D (mk->ruled) the set is filled from the table AM's verdicts
+ * instead (bark_mk_settle), so every accepted member is kept here, and only
+ * the group change is reported, in *newgroup.
  */
 int
 bark_mk_seen(IndexScanDesc scan, IndexTuple itup, ItemPointer tids,
-			 int ntids, bool newgroups)
+			 int ntids, bool newgroups, bool *newgroup)
 {
 	BarkMkScanState *mk = ((BarkScanOpaque) scan->opaque)->mk;
 	int			nkept = 0;
 
 	if (!mk->useseen || mk->bitmap)
 		return ntids;
+	if (mk->ruled)
+	{
+		/* rule D: R and J are read at return time (bark_mk_admit) */
+		if (newgroups && mk->attno > 1 && bark_mk_group(scan, mk, itup))
+			*newgroup = true;
+		return ntids;
+	}
 	if (newgroups && mk->attno > 1 && !mk->marked)
-		bark_mk_group(scan, mk, itup);
+		(void) bark_mk_group(scan, mk, itup);
 	if (mk->seen == NULL)
 	{
 		MemoryContext oldcxt = MemoryContextSwitchTo(mk->seenCxt);
@@ -1170,6 +1222,153 @@ bark_mk_seen(IndexScanDesc scan, IndexTuple itup, ItemPointer tids,
 		tids[nkept++] = tids[i];
 	}
 	return nkept;
+}
+
+/* J's key: an entry's (TID, tag). */
+typedef struct BarkMkRejected
+{
+	ItemPointerData tid;
+	IndexVersionTag tag;
+}			BarkMkRejected;
+
+/* Add tid to R, the seen set, and to the undo list while marked. */
+static void
+bark_mk_seen_add(IndexScanDesc scan, BarkMkScanState *mk, ItemPointer tid)
+{
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	uint64		key = bark_tid_to_key(tid, so->keyinfo->tidstride);
+	uint64		bit = UINT64CONST(1) << (key & 63);
+	uint64	   *word;
+
+	if (mk->seen == NULL)
+	{
+		MemoryContext oldcxt = MemoryContextSwitchTo(mk->seenCxt);
+
+		mk->seen = bark_seen_create(mk->seenCxt);
+		MemoryContextSwitchTo(oldcxt);
+	}
+	word = bark_seen_find(mk->seen, key >> 6);
+	if (word != NULL && (*word & bit) != 0)
+		return;
+	if (word != NULL)
+		*word |= bit;
+	else
+		bark_seen_set(mk->seen, key >> 6, &bit);
+	mk->nseen++;
+	if (mk->marked)
+	{
+		if (mk->nundo >= mk->maxundo)
+		{
+			mk->maxundo = Max(mk->maxundo * 2, 64);
+			mk->undo = mk->undo == NULL ?
+				MemoryContextAlloc(so->scanCxt,
+								   mk->maxundo * sizeof(ItemPointerData)) :
+				repalloc_array(mk->undo, ItemPointerData, mk->maxundo);
+		}
+		mk->undo[mk->nundo++] = *tid;
+	}
+}
+
+/*
+ * Rule D, step 3: settle the entry returned last by the table AM's verdict
+ * on it (xs_entry_verdict), which it set before it asked for this row.
+ * VALID puts its row in R; INVALID puts (TID, tag) in J under an MVCC
+ * snapshot, whose facts hold for the whole scan (a non-MVCC snapshot may
+ * see another version later); UNKNOWN means the table AM broke its
+ * obligation (amlocator.h), and the scan stops rather than guess.  Nothing
+ * is pending after a rescan or a restore (bark_restrpos), and the row
+ * returned before a LIMIT stopped the scan is never settled.
+ */
+void
+bark_mk_settle(IndexScanDesc scan)
+{
+	BarkMkScanState *mk = ((BarkScanOpaque) scan->opaque)->mk;
+
+	if (mk == NULL || !mk->verdictdue)
+		return;
+	mk->verdictdue = false;
+	switch (scan->xs_entry_verdict)
+	{
+		case INDEX_SCAN_ENTRY_VALID:
+			bark_mk_seen_add(scan, mk, &mk->pendingtid);
+			break;
+		case INDEX_SCAN_ENTRY_INVALID:
+			if (scan->xs_snapshot != NULL &&
+				IsMVCCSnapshot(scan->xs_snapshot))
+			{
+				BarkMkRejected key;
+
+				if (mk->rejected == NULL)
+				{
+					HASHCTL		ctl;
+
+					ctl.keysize = sizeof(BarkMkRejected);
+					ctl.entrysize = sizeof(BarkMkRejected);
+					ctl.hcxt = mk->seenCxt;
+					mk->rejected = hash_create("BARK rejected entries", 64,
+											   &ctl,
+											   HASH_ELEM | HASH_BLOBS |
+											   HASH_CONTEXT);
+				}
+				memset(&key, 0, sizeof(key));
+				key.tid = mk->pendingtid;
+				key.tag = mk->pendingtag;
+				(void) hash_search(mk->rejected, &key, HASH_ENTER, NULL);
+			}
+			break;
+		case INDEX_SCAN_ENTRY_UNKNOWN:
+			elog(ERROR, "table access method gave no verdict on an entry of BARK index \"%s\"",
+				 RelationGetRelationName(scan->indexRelation));
+	}
+}
+
+/*
+ * Rule D, step 4: may the scan return the entry (tid, tag)?  Not when its
+ * row is in R, nor when the pair is in J.  When it may, it becomes the
+ * pending entry, which the next call settles.  An entry of a new group
+ * (newgroup) first empties R and J, unless the scan is marked: a restore
+ * must find the marked group's R whole.
+ */
+bool
+bark_mk_admit(IndexScanDesc scan, ItemPointer tid, IndexVersionTag tag,
+			  bool newgroup)
+{
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	BarkMkScanState *mk = so->mk;
+
+	if (newgroup && !mk->marked)
+		bark_mk_clear_seen(mk);
+	if (mk->seen != NULL)
+	{
+		uint64		key = bark_tid_to_key(tid, so->keyinfo->tidstride);
+		uint64	   *word = bark_seen_find(mk->seen, key >> 6);
+
+		if (word != NULL && (*word & (UINT64CONST(1) << (key & 63))) != 0)
+			return false;
+	}
+	if (mk->rejected != NULL)
+	{
+		BarkMkRejected rkey;
+
+		memset(&rkey, 0, sizeof(rkey));
+		rkey.tid = *tid;
+		rkey.tag = tag;
+		if (hash_search(mk->rejected, &rkey, HASH_FIND, NULL) != NULL)
+			return false;
+	}
+	mk->verdictdue = true;
+	mk->pendingtid = *tid;
+	mk->pendingtag = tag;
+	return true;
+}
+
+/* Does the scan apply rule D? */
+bool
+bark_mk_ruled(IndexScanDesc scan)
+{
+	BarkMkScanState *mk = ((BarkScanOpaque) scan->opaque)->mk;
+
+	return mk != NULL && mk->ruled && mk->useseen && !mk->bitmap;
 }
 
 /*
@@ -1231,6 +1430,8 @@ bark_mk_begin(IndexScanDesc scan, int attno)
 	mk->col = &so->keyinfo->cols[attno - 1];
 	mk->seenCxt = AllocSetContextCreate(so->scanCxt, "BARK seen set",
 										ALLOCSET_DEFAULT_SIZES);
+	mk->groupCxt = AllocSetContextCreate(so->scanCxt, "BARK seen set group",
+										 ALLOCSET_SMALL_SIZES);
 	if (OidIsValid(index_getprocid(index, attno, BARK_EXTRACTQUERY_PROC)))
 	{
 		mk->extractquery = index_getprocinfo(index, attno,
@@ -2284,6 +2485,43 @@ bark_past_bound(IndexScanDesc scan, IndexTuple itup, ScanDirection dir)
 }
 
 /*
+ * Can a scan moving in direction dir stop at OVERSIZED entry itup on its
+ * inline prefix alone, before its overflow chain is read?  As
+ * bark_past_bound does for a key on column 1, when the prefix decides the
+ * order (bark_oversized_prefix_cmp).  An entry past such a bound fails that
+ * key, so it is not a match either.  False whenever the prefix cannot tell,
+ * and for the keys bark_past_bound reads on later columns or row
+ * comparisons: the caller then reads the chain and asks bark_past_bound.
+ */
+static bool
+bark_prefix_past_bound(IndexScanDesc scan, IndexTuple itup, ScanDirection dir)
+{
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	bool		forward = ScanDirectionIsForward(dir);
+
+	for (int i = 0; i < so->numberOfKeys; i++)
+	{
+		ScanKey		sk = &scan->keyData[i];
+		bool		lower;
+		bool		upper;
+		bool		known;
+		int			c;
+
+		if (sk->sk_attno != 1 || !bark_key_bounds(scan, sk, &lower, &upper) ||
+			(forward ? !upper : !lower))
+			continue;
+		c = bark_oversized_prefix_cmp(so->keyinfo, itup, &so->keyCmp[i],
+									  sk->sk_collation, sk->sk_argument,
+									  &known);
+		if (so->keyinfo->cols[0].reverse)
+			c = -c;
+		if (forward ? c > 0 : c < 0)
+			return true;
+	}
+	return false;
+}
+
+/*
  * Compare index tuple itup's value in scan key i's column with the key's
  * argument, through the key's ORDER proc: <0, 0 or >0 as the value sorts
  * before, with or after the argument in index order (DESC inverted).  A NULL
@@ -2451,7 +2689,14 @@ bark_skip_save(IndexScanDesc scan, BarkScanBound * bound, bool palloced)
 	if (!so->skipValueByVal && so->skipValue != (Datum) 0)
 		pfree(DatumGetPointer(so->skipValue));
 	oldcxt = MemoryContextSwitchTo(so->scanCxt);
-	so->skipValue = datumCopy(bound->args[0], att->attbyval, att->attlen);
+
+	/*
+	 * A value read from an OVERSIZED entry's full tuple may be compressed:
+	 * decompress it once here rather than in every comparison of the descent.
+	 */
+	so->skipValue = att->attlen == -1 ?
+		PointerGetDatum(PG_DETOAST_DATUM_COPY(bound->args[0])) :
+		datumCopy(bound->args[0], att->attbyval, att->attlen);
 	MemoryContextSwitchTo(oldcxt);
 	so->skipValueByVal = att->attbyval;
 	if (palloced)
@@ -2868,6 +3113,47 @@ bark_setup_key_procs(IndexScanDesc scan)
 	MemoryContextSwitchTo(oldcxt);
 }
 
+/*
+ * Detoast, once per rescan, the compressed or external arguments of the keys
+ * on a bytewise first column (a Const; the executor detoasts runtime keys
+ * itself).  Each comparison with an OVERSIZED entry reads an argument's
+ * leading bytes for the inline-prefix fast path, and the column's comparator
+ * would decompress it on every call.  The plain copy also serves the final
+ * comparison with a full value.  It lives in the array keys' context, which
+ * the next rescan resets, along with the keys themselves.
+ *
+ * shortcut: row comparison members are left as they are (they belong to the
+ * executor), so a compressed one is sliced per comparison; detoast those too
+ * if a keyset scan over OVERSIZED keys turns up in a profile.
+ */
+static void
+bark_detoast_first_keys(IndexScanDesc scan)
+{
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	Oid			opcintype = scan->indexRelation->rd_opcintype[0];
+
+	if (!so->keyinfo->cols[0].bytewise)
+		return;
+	for (int i = 0; i < so->numberOfKeys; i++)
+	{
+		ScanKey		sk = &scan->keyData[i];
+		varlena    *arg;
+		MemoryContext oldcxt;
+
+		/* A cross-type key's argument need not even be a varlena. */
+		if (sk->sk_attno != 1 ||
+			(sk->sk_flags & (SK_ISNULL | SK_ROW_HEADER | SK_SEARCHARRAY)) ||
+			(OidIsValid(sk->sk_subtype) && sk->sk_subtype != opcintype))
+			continue;
+		arg = (varlena *) DatumGetPointer(sk->sk_argument);
+		if (!VARATT_IS_EXTERNAL(arg) && !VARATT_IS_COMPRESSED(arg))
+			continue;
+		oldcxt = MemoryContextSwitchTo(bark_array_cxt(so));
+		sk->sk_argument = PointerGetDatum(detoast_attr(arg));
+		MemoryContextSwitchTo(oldcxt);
+	}
+}
+
 IndexScanDesc
 bark_beginscan(Relation index, int nkeys, int norderbys)
 {
@@ -2886,11 +3172,10 @@ bark_beginscan(Relation index, int nkeys, int norderbys)
 	so->knn = NULL;
 	BarkScanPosInvalidate(so->currPos);
 	so->currPos.items = NULL;
-	so->currPos.maxItems = 0;
 	so->markItemIndex = -1;
 	BarkScanPosInvalidate(so->markPos);
 	so->markPos.items = NULL;
-	so->markPos.maxItems = 0;
+	so->memberItem = -1;
 
 	/*
 	 * Index-only scans read the key columns from xs_itup, described by the
@@ -2972,6 +3257,7 @@ bark_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 	 */
 	bark_free_array_keys(so);
 	bark_setup_array_keys(scan);
+	bark_detoast_first_keys(scan);
 	bark_setup_key_procs(scan);
 	if (so->mk != NULL)
 	{
@@ -3215,24 +3501,37 @@ bark_parallel_release(IndexScanDesc scan, BlockNumber next_page,
 	ConditionVariableSignal(&bps->bps_cv);
 }
 
-/* Make room for at least `need` items in pos->items. */
+/*
+ * Allocate pos->items, once per scan: it holds one item per matching entry
+ * of a page, so BARK_POS_MAX_ITEMS always suffice, and at 16 bytes an item
+ * that is less than a page: at BLCKSZ 8192, 6.5 kB, under AllocSet's chunk
+ * limit (ALLOC_CHUNK_LIMIT), so it comes from the scan context's blocks with
+ * no malloc of its own.  An allocation that
+ * scales with a page's heap TIDs (192 kB for a leaf of coded LISTs) would
+ * cost an mmap and munmap per query wherever malloc keeps a fixed mmap
+ * threshold.
+ */
+StaticAssertDecl(sizeof(BarkScanPosItem) == 16,
+				 "BarkScanPosItem should be 16 bytes");
+StaticAssertDecl(BARK_POS_MAX_ITEMS * sizeof(BarkScanPosItem) <= BLCKSZ,
+				 "a scan's items[] should take no more than a page");
+
 static void
-bark_pos_reserve(BarkScanOpaque so, BarkScanPosData *pos, int need)
+bark_pos_alloc(BarkScanOpaque so, BarkScanPosData *pos)
 {
-	if (need <= pos->maxItems)
-		return;
-	pos->maxItems = Max(need, Max(pos->maxItems * 2, 256));
 	if (pos->items == NULL)
 		pos->items = MemoryContextAlloc(so->scanCxt,
-										pos->maxItems * sizeof(BarkScanPosItem));
-	else
-		pos->items = repalloc(pos->items,
-							  pos->maxItems * sizeof(BarkScanPosItem));
+										BARK_POS_MAX_ITEMS * sizeof(BarkScanPosItem));
 }
 
 /*
- * Make an index-only scan's tuple workspace (currTuples or markTuples) hold
- * at least `need` bytes, keeping its contents.
+ * Make a scan's tuple workspace (currTuples or markTuples) hold at least
+ * `need` bytes, keeping its contents.  Like items[], it is kept across
+ * rescans.  It holds the copied LIST and POSTING bodies of a page, no more
+ * bytes than the page, and for an index-only scan the entries' keys too; it
+ * starts at nbtree's BLCKSZ * 2 and grows past that for a page whose keys
+ * decode larger (prefix compression, OVERSIZED entries, each copied whole)
+ * and for a multikey scan's survivor arrays.
  */
 static void
 bark_tuples_reserve(BarkScanOpaque so, char **tuples, uint32 *size, Size need)
@@ -3241,7 +3540,8 @@ bark_tuples_reserve(BarkScanOpaque so, char **tuples, uint32 *size, Size need)
 
 	if (*tuples != NULL && need <= *size)
 		return;
-	newsize = Max((Size) BLCKSZ, Max((Size) *size * 2, need));
+	newsize = so->tuplesInit != 0 ? so->tuplesInit : BLCKSZ * 2;
+	newsize = Max(newsize, Max((Size) *size * 2, need));
 	if (*tuples == NULL)
 		*tuples = MemoryContextAlloc(so->scanCxt, newsize);
 	else
@@ -3251,25 +3551,22 @@ bark_tuples_reserve(BarkScanOpaque so, char **tuples, uint32 *size, Size need)
 
 /*
  * Copy position src into dst, as nbtree's mark/restore copies a BTScanPosData:
- * the page details, the items read from the page and, for an index-only scan,
- * the tuple workspace those items refer to (srctuples, into *dsttuples).  dst
- * keeps its own items array, grown to fit.  When src holds a pin, dst gets a
- * pin of its own on the same buffer.
+ * the page details, the items read from the page and the tuple workspace
+ * those items refer to (srctuples, into *dsttuples).  dst keeps its own
+ * items array.  When src holds a pin, dst gets a pin of its own on the same
+ * buffer.
  */
 static void
 bark_copy_pos(BarkScanOpaque so, BarkScanPosData *dst, char **dsttuples,
 			  uint32 *dsttuplessize, BarkScanPosData *src, char *srctuples)
 {
 	BarkScanPosItem *items;
-	int			maxItems;
 
 	Assert(!BarkScanPosIsPinned(*dst));
-	bark_pos_reserve(so, dst, src->lastItem + 1);
+	bark_pos_alloc(so, dst);
 	items = dst->items;
-	maxItems = dst->maxItems;
 	*dst = *src;
 	dst->items = items;
-	dst->maxItems = maxItems;
 	if (src->lastItem >= 0)
 		memcpy(dst->items, src->items,
 			   (src->lastItem + 1) * sizeof(BarkScanPosItem));
@@ -3326,11 +3623,68 @@ bark_save_tuple(BarkScanOpaque so, char **tuples, uint32 *tuplesSize,
 }
 
 /*
+ * Copy the members of LIST or POSTING entry `itup` into currTuples, for
+ * bark_gettuple to return one at a time, and return the copy's offset there.
+ * `tids`, when not NULL, are the ntids members a multikey scan kept, which
+ * are copied as an array instead of the entry's body.  keyoff is the
+ * entry's key copy, when the scan saves keys.
+ */
+static uint32
+bark_save_members(BarkScanOpaque so, BarkScanPosData *pos, IndexTuple itup,
+				  ItemPointer tids, int ntids, uint32 keyoff)
+{
+	uint32		off = pos->nextTupleOffset;
+	BarkScanMembers *m;
+	const char *body;
+	Size		nbytes;
+	uint16		shape;
+	uint16		count;
+
+	if (tids != NULL)
+	{
+		shape = BARK_MEMBERS_ARRAY;
+		count = ntids;
+		body = (const char *) tids;
+		nbytes = ntids * sizeof(ItemPointerData);
+	}
+	else if (BarkEntryGetShape(itup) == BARK_SHAPE_POSTING)
+	{
+		if (!BarkPostingDataFits(itup))
+			elog(ERROR, "BARK posting entry has a corrupt sbm serialization");
+		shape = BARK_MEMBERS_POSTING;
+		count = 0;
+		body = (const char *) BarkPostingGetData(itup);
+		nbytes = BarkPostingGetDataSize(itup);
+	}
+	else
+	{
+		shape = BarkListIsCoded(itup) ? BARK_MEMBERS_CODED : BARK_MEMBERS_ARRAY;
+		count = BarkListGetCount(itup);
+		body = (const char *) BarkListGetTIDArray(itup);
+		nbytes = shape == BARK_MEMBERS_CODED ?
+			sizeof(BarkCodedListHdr) + sizeof(ItemPointerData) +
+			BarkCodedListGetHdr(itup)->nbytes :
+			count * sizeof(ItemPointerData);
+	}
+	bark_tuples_reserve(so, &so->currTuples, &so->currTuplesSize,
+						off + MAXALIGN(sizeof(BarkScanMembers)) + MAXALIGN(nbytes));
+	m = (BarkScanMembers *) (so->currTuples + off);
+	m->shape = shape;
+	m->count = count;
+	m->nbytes = nbytes;
+	m->keyOffset = keyoff;
+	memcpy(BarkScanMembersBody(m), body, nbytes);
+	pos->nextTupleOffset = off + MAXALIGN(sizeof(BarkScanMembers)) +
+		MAXALIGN(nbytes);
+	return off;
+}
+
+/*
  * Read the share-locked leaf in so->currPos.buf into so->currPos, as nbtree's
- * _bt_readpage does: copy every matching heap TID on the page into items[]
- * (and, for an index-only scan, each matching entry's key into the tuple
- * workspace), so that bark_gettuple returns them without touching the page
- * again.  A concurrent insert or split on the page cannot then shift the
+ * _bt_readpage does: copy every matching entry on the page into items[], a
+ * LIST or POSTING entry's members (its body) and, for an index-only scan,
+ * each entry's key into the tuple workspace, so that bark_gettuple returns
+ * them without touching the page again.  A concurrent insert or split on the page cannot then shift the
  * scan's place on it.  Reads from offset `offnum` in direction dir (a
  * position bark_first found, or the end of the page).  Returns true when the
  * page holds at least one match.
@@ -3340,7 +3694,7 @@ bark_save_tuple(BarkScanOpaque so, char **tuples, uint32 *tuplesSize,
  * parallel scan, publishing the next page, before doing any work.
  *
  * items[] is in index order whatever the direction: a backward read fills it
- * from the top down, ending with firstItem at the lowest slot used.
+ * from the bottom up and then reverses it.
  *
  * firstpage says the page is the first one a descent reached.  On any later
  * page the keys every entry satisfies are found once and not tested again
@@ -3360,8 +3714,6 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 	bool		forward = ScanDirectionIsForward(dir);
 	OffsetNumber minoff = BarkPageFirstDataKey(opaque);
 	OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
-	int			nmatched = 0;
-	int			nitems = 0;
 	uint64		skipkeys = 0;
 	bool		allsatisfied = false;
 	bool		skipdone = false;	/* bark_skip_on_page reached the page end */
@@ -3369,6 +3721,10 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 
 	Assert(!BarkPageIgnore(opaque));
 	so->numKilled = 0;			/* the kills of the page left are moot */
+	so->memberItem = -1;
+	bark_pos_alloc(so, pos);
+	so->tuplesInit = (scan->xs_want_itup || (so->mk != NULL && so->mk->order)) ?
+		BLCKSZ * 2 : BLCKSZ;
 	pos->currPage = BufferGetBlockNumber(pos->buf);
 	pos->prevPage = opaque->bark_prev;
 	pos->nextPage = opaque->bark_next;
@@ -3410,11 +3766,13 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 		IndexTuple	itup;
 		bool		fetched;
 		IndexTuple	resolved;
-		int			ntids;
+		int			ntids = 0;
 		uint32		tupoff = 0;
 		bool		recheck = false;
+		bool		newgroup = false;
 		bool		dead;
-		IndexVersionTag tag;
+		BarkScanPosItem *item;
+		BarkEntryShape shape;
 
 		/*
 		 * An entry marked LP_DEAD (bark_killitems) is dead to every snapshot,
@@ -3436,6 +3794,21 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 		/* A marker names no row ("Markers" in BARK-Design.mediawiki). */
 		if (BarkEntryIsMarker(itup))
 			continue;
+
+		/*
+		 * An OVERSIZED entry's inline prefix can show that the scan is past
+		 * its bound, so that the entry's chain need not be read: a lookup
+		 * then reads only the chain of the entry it returns.
+		 */
+		if (!allsatisfied && BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED &&
+			bark_prefix_past_bound(scan, itup, dir))
+		{
+			if (forward)
+				pos->moreRight = false;
+			else
+				pos->moreLeft = false;
+			break;
+		}
 
 		resolved = bark_scan_resolve(index, itup, &fetched);
 		if (!allsatisfied && !bark_tuple_matches(scan, resolved, skipkeys))
@@ -3500,25 +3873,33 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 			continue;
 		}
 
-		/* Expand the entry into one item per heap TID. */
-		ntids = bark_entry_count_tids(itup);
-		if (ntids > so->entryTidsAlloc)
-		{
-			if (so->entryTids)
-				pfree(so->entryTids);
-			so->entryTidsAlloc = Max(ntids, 64);
-			so->entryTids = MemoryContextAlloc(so->scanCxt,
-											   so->entryTidsAlloc * sizeof(ItemPointerData));
-		}
-		ntids = bark_entry_get_tids(itup, so->entryTids, so->entryTidsAlloc,
-									so->keyinfo->tidstride);
+		/*
+		 * One item per entry.  A multikey scan filters the entry's members
+		 * here (it decides which rows it returns as it reads), so it decodes
+		 * them; any other scan copies a LIST or POSTING body as it is, and
+		 * bark_gettuple decodes it when it gets there.
+		 */
+		Assert(pos->lastItem + 1 < BARK_POS_MAX_ITEMS);
+		item = &pos->items[pos->lastItem + 1];
+		shape = BarkEntryGetShape(itup);
 		if (so->mk != NULL)
 		{
+			ntids = bark_entry_count_tids(itup);
+			if (ntids > so->entryTidsAlloc)
+			{
+				if (so->entryTids)
+					pfree(so->entryTids);
+				so->entryTidsAlloc = Max(ntids, 64);
+				so->entryTids = MemoryContextAlloc(so->scanCxt,
+												   so->entryTidsAlloc * sizeof(ItemPointerData));
+			}
+			ntids = bark_entry_get_tids(itup, so->entryTids, so->entryTidsAlloc,
+										so->keyinfo->tidstride);
 			ntids = bark_mk_accept(scan, resolved, so->entryTids, ntids,
 								   &recheck);
 			if (ntids > 0)
 				ntids = bark_mk_seen(scan, resolved, so->entryTids, ntids,
-									 true);
+									 true, &newgroup);
 			if (ntids == 0)
 			{
 				if (fetched)
@@ -3530,51 +3911,33 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 			tupoff = bark_save_tuple(so, &so->currTuples, &so->currTuplesSize,
 									 &pos->nextTupleOffset, itup, resolved);
 		/* a tagged entry has one TID; a LIST, POSTING or multikey entry 0 */
-		tag = BarkEntryGetTag(itup);
+		item->tag = BarkEntryGetTag(itup);
+		item->indexOffset = offnum | (recheck ? BARK_ITEM_RECHECK : 0) |
+			(newgroup ? BARK_ITEM_NEWGROUP : 0);
+		item->tupleOffset = tupoff;
+		if (so->mk != NULL ? ntids > 1 :
+			(shape == BARK_SHAPE_LIST || shape == BARK_SHAPE_POSTING))
+		{
+			item->indexOffset |= BARK_ITEM_MEMBERS;
+			item->tupleOffset = bark_save_members(so, pos, itup,
+												  so->mk != NULL ? so->entryTids : NULL,
+												  ntids, tupoff);
+			ItemPointerSetInvalid(&item->heapTid);
+		}
+		else if (so->mk != NULL)
+			item->heapTid = so->entryTids[0];
+		else
+			item->heapTid = *BarkEntryGetHeapTid(itup);
 		if (fetched)
 			pfree(resolved);
-
-		bark_pos_reserve(so, pos, pos->lastItem + 1 + ntids);
-		if (forward)
-		{
-			for (int i = 0; i < ntids; i++)
-			{
-				BarkScanPosItem *item = &pos->items[pos->lastItem + 1 + i];
-
-				item->heapTid = so->entryTids[i];
-				item->tag = tag;
-				item->indexOffset = offnum;
-				item->tupleOffset = tupoff;
-				item->recheck = recheck;
-				item->killed = false;
-			}
-			pos->lastItem += ntids;
-		}
-		else
-		{
-			/*
-			 * Backward: entries arrive in descending order.  Collect them in
-			 * reverse (last entry's highest TID first) and flip the whole
-			 * array once the page is read.
-			 */
-			for (int i = 0; i < ntids; i++)
-			{
-				BarkScanPosItem *item = &pos->items[pos->lastItem + 1 + i];
-
-				item->heapTid = so->entryTids[ntids - 1 - i];
-				item->tag = tag;
-				item->indexOffset = offnum;
-				item->tupleOffset = tupoff;
-				item->recheck = recheck;
-				item->killed = false;
-			}
-			pos->lastItem += ntids;
-		}
-		nmatched++;
-		nitems += ntids;
+		pos->lastItem++;
 	}
 
-	if (!forward && nitems > 1)
+	/*
+	 * Backward: the entries arrived in descending order; put them in index
+	 * order.  Each entry's members stay ascending in their copy.
+	 */
+	if (!forward)
 	{
 		for (int lo = 0, hi = pos->lastItem; lo < hi; lo++, hi--)
 		{
@@ -3593,27 +3956,196 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 		pos->arrayReseek = skipdone ? skipreseek :
 			bark_skip_plan(scan, page, maxoff);
 
-	if (nitems == 0)
+	if (pos->lastItem < 0)
 		return false;
 
 	pos->itemIndex = forward ? -1 : pos->lastItem + 1;
-	(void) nmatched;
+	pos->memberIndex = 0;
+	pos->nmembers = 0;
 	return true;
 }
 
-/* Return currPos's item at itemIndex to the executor. */
+/*
+ * The member TIDs of currPos's item i, ascending: *tids is set to an array
+ * of the returned count, which stays valid until the next call (it may be
+ * so->entryTids, into which a coded LIST or POSTING body is decoded).
+ */
+static int
+bark_item_tids(BarkScanOpaque so, int i, ItemPointer *tids)
+{
+	BarkScanPosItem *item = &so->currPos.items[i];
+	BarkScanMembers *m;
+	int			n;
+
+	if ((item->indexOffset & BARK_ITEM_MEMBERS) == 0)
+	{
+		*tids = &item->heapTid;
+		return 1;
+	}
+	m = (BarkScanMembers *) (so->currTuples + item->tupleOffset);
+	if (m->shape == BARK_MEMBERS_ARRAY)
+	{
+		*tids = (ItemPointer) BarkScanMembersBody(m);
+		return m->count;
+	}
+	so->memberItem = -1;		/* entryTids is about to change */
+	if (m->shape == BARK_MEMBERS_CODED)
+	{
+		n = m->count;
+		if (n > so->entryTidsAlloc)
+		{
+			if (so->entryTids)
+				pfree(so->entryTids);
+			so->entryTidsAlloc = Max(n, 64);
+			so->entryTids = MemoryContextAlloc(so->scanCxt,
+											   so->entryTidsAlloc * sizeof(ItemPointerData));
+		}
+		bark_coded_body_get_tids(BarkScanMembersBody(m), n, so->entryTids,
+								 so->keyinfo->tidstride);
+	}
+	else
+		n = bark_posting_body_get_tids((uint8 *) BarkScanMembersBody(m),
+									   m->nbytes, &so->entryTids,
+									   &so->entryTidsAlloc, so->scanCxt,
+									   so->keyinfo->tidstride);
+	*tids = so->entryTids;
+	return n;
+}
+
+/*
+ * Make currPos's item i the one whose members so->memberTids holds, and
+ * return its number of members.  bark_step_member and bark_saveitem read a
+ * SINGLE or OVERSIZED item's heap TID straight from the item instead, so
+ * memberItem names the last item with BARK_ITEM_MEMBERS loaded.
+ */
+static int
+bark_load_members(BarkScanOpaque so, int i)
+{
+	int			n = bark_item_tids(so, i, &so->memberTids);
+
+	so->memberItem = i;
+	return n;
+}
+
+/*
+ * Move currPos to the next member in direction dir, entering the next item
+ * when the current one's members are used up.  Returns false when the page's
+ * items are, leaving the position as it was.  A fresh page (itemIndex before
+ * its first item, or after its last, and no members) enters its first item
+ * in dir.  A change of direction continues from the member returned last.
+ */
+static bool
+bark_step_member(BarkScanOpaque so, ScanDirection dir)
+{
+	BarkScanPosData *pos = &so->currPos;
+	int			itemIndex = pos->itemIndex;
+	int			n;
+
+	if (ScanDirectionIsForward(dir))
+	{
+		if (pos->memberIndex + 1 < pos->nmembers)
+		{
+			pos->memberIndex++;
+			return true;
+		}
+		do
+		{
+			if (itemIndex >= pos->lastItem)
+				return false;
+			itemIndex++;
+			n = likely((pos->items[itemIndex].indexOffset & BARK_ITEM_MEMBERS) == 0) ?
+				1 : bark_load_members(so, itemIndex);
+		} while (n == 0);
+		pos->memberIndex = 0;
+	}
+	else
+	{
+		if (pos->memberIndex > 0 && pos->memberIndex < pos->nmembers)
+		{
+			pos->memberIndex--;
+			return true;
+		}
+		do
+		{
+			if (itemIndex <= pos->firstItem)
+				return false;
+			itemIndex--;
+			n = likely((pos->items[itemIndex].indexOffset & BARK_ITEM_MEMBERS) == 0) ?
+				1 : bark_load_members(so, itemIndex);
+		} while (n == 0);
+		pos->memberIndex = n - 1;
+	}
+	pos->itemIndex = itemIndex;
+	pos->nmembers = n;
+	return true;
+}
+
+/*
+ * Remember that the executor found the row returned last, currPos's member
+ * memberIndex of item itemIndex, dead to every snapshot, for bark_killitems:
+ * extend the last kill run when the member is next to it, as a scan killing
+ * an entry's members in turn does; else start a run.  With no room left the
+ * kill is dropped, which only loses the hint.
+ */
+#define BARK_MAX_KILL_RUNS	512
+
+static void
+bark_kill_prior(BarkScanOpaque so)
+{
+	BarkScanPosData *pos = &so->currPos;
+	BarkKillRun *r;
+
+	if (so->killRuns == NULL)
+		so->killRuns = MemoryContextAlloc(so->scanCxt,
+										  BARK_MAX_KILL_RUNS * sizeof(BarkKillRun));
+	if (so->numKilled > 0)
+	{
+		r = &so->killRuns[so->numKilled - 1];
+		if (r->item == pos->itemIndex)
+		{
+			if (pos->memberIndex == r->hi + 1)
+			{
+				r->hi++;
+				return;
+			}
+			if (pos->memberIndex == r->lo - 1)
+			{
+				r->lo--;
+				return;
+			}
+		}
+	}
+	if (so->numKilled >= BARK_MAX_KILL_RUNS)
+		return;
+	r = &so->killRuns[so->numKilled++];
+	r->item = pos->itemIndex;
+	r->lo = r->hi = pos->memberIndex;
+}
+
+/* Return currPos's member memberIndex of item itemIndex to the executor. */
 static void
 bark_saveitem(IndexScanDesc scan)
 {
 	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
-	BarkScanPosItem *item = &so->currPos.items[so->currPos.itemIndex];
+	BarkScanPosData *pos = &so->currPos;
+	BarkScanPosItem *item = &pos->items[pos->itemIndex];
+	uint32		keyoff = item->tupleOffset;
 
-	scan->xs_heaptid = item->heapTid;
+	if (likely((item->indexOffset & BARK_ITEM_MEMBERS) == 0))
+		scan->xs_heaptid = item->heapTid;
+	else
+	{
+		/* A restored mark, or bark_item_tids, may have changed the members. */
+		if (so->memberItem != pos->itemIndex)
+			(void) bark_load_members(so, pos->itemIndex);
+		scan->xs_heaptid = so->memberTids[pos->memberIndex];
+		keyoff = ((BarkScanMembers *) (so->currTuples + keyoff))->keyOffset;
+	}
 	scan->xs_heaptag = item->tag;
-	scan->xs_recheck = item->recheck;
+	scan->xs_recheck = (item->indexOffset & BARK_ITEM_RECHECK) != 0;
 	if (scan->xs_want_itup)
 	{
-		scan->xs_itup = (IndexTuple) (so->currTuples + item->tupleOffset);
+		scan->xs_itup = (IndexTuple) (so->currTuples + keyoff);
 		if (so->mk != NULL)
 			scan->xs_hitup = bark_mk_form_hitup(scan, scan->xs_itup);
 	}
@@ -3621,7 +4153,7 @@ bark_saveitem(IndexScanDesc scan)
 	/* An ordering key on the extracted column: the entry's key, exact. */
 	if (so->mk != NULL && so->mk->order)
 	{
-		IndexTuple	itup = (IndexTuple) (so->currTuples + item->tupleOffset);
+		IndexTuple	itup = (IndexTuple) (so->currTuples + keyoff);
 		bool		isnull;
 
 		scan->xs_orderbyvals[0] = index_getattr(itup, so->mk->attno,
@@ -3714,7 +4246,6 @@ bark_killitems(IndexScanDesc scan)
 
 	if (so->numKilled == 0)
 		return;
-	so->numKilled = 0;
 	Assert(BarkScanPosIsValid(*pos));
 	Assert(scan->heapRelation != NULL);
 
@@ -3747,17 +4278,21 @@ bark_killitems(IndexScanDesc scan)
 	if (BarkPageIgnore(opaque))
 		goto done;
 
-	/* items[] is in index order, and an entry's members are consecutive. */
-	for (int i = pos->firstItem; i <= pos->lastItem; i++)
+	for (int k = 0; k < so->numKilled; k++)
 	{
-		BarkScanPosItem *kitem = &pos->items[i];
+		BarkKillRun *r = &so->killRuns[k];
+		BarkScanPosItem *kitem = &pos->items[r->item];
+		ItemPointer ktids;
+		int			nk;
 
-		if (!kitem->killed)
+		/* Every member must be killed, in one run. */
+		nk = bark_item_tids(so, r->item, &ktids);
+		if (r->lo != 0 || r->hi != nk - 1)
 			continue;
 
 		/* The entry may have moved right on the page since it was read. */
-		for (OffsetNumber offnum = kitem->indexOffset; offnum <= maxoff;
-			 offnum = OffsetNumberNext(offnum))
+		for (OffsetNumber offnum = kitem->indexOffset & BARK_ITEM_OFFSET_MASK;
+			 offnum <= maxoff; offnum = OffsetNumberNext(offnum))
 		{
 			ItemId		iid = PageGetItemId(page, offnum);
 			BarkItemBuf ibuf;
@@ -3765,7 +4300,6 @@ bark_killitems(IndexScanDesc scan)
 			ItemPointerData lo;
 			ItemPointerData hi;
 			int			n;
-			int			j;
 
 			if (offnum < minoff)
 				continue;		/* a split gave the page a high key */
@@ -3773,16 +4307,18 @@ bark_killitems(IndexScanDesc scan)
 			/* A marker's TID is no row's, so its range holds no kill. */
 			itup = BarkPageGetItem(page, offnum, &ibuf);
 			bark_entry_tid_range(itup, &lo, &hi, so->keyinfo->tidstride);
-			if (ItemPointerCompare(&kitem->heapTid, &lo) < 0 ||
-				ItemPointerCompare(&kitem->heapTid, &hi) > 0)
+			if (ItemPointerCompare(&ktids[0], &lo) < 0 ||
+				ItemPointerCompare(&ktids[0], &hi) > 0)
 				continue;
 
 			/* A kill is of one entry: (TID, tag), of a row's versions. */
 			if (BarkEntryGetTag(itup) != kitem->tag)
 				continue;
 
-			/* Every member must be killed, from this item on. */
+			/* It must still hold exactly the members the scan killed. */
 			n = bark_entry_count_tids(itup);
+			if (n != nk)
+				break;
 			if (n > tidsalloc)
 			{
 				tidsalloc = Max(n, 64);
@@ -3790,13 +4326,8 @@ bark_killitems(IndexScanDesc scan)
 					repalloc_array(tids, ItemPointerData, tidsalloc);
 			}
 			n = bark_entry_get_tids(itup, tids, n, so->keyinfo->tidstride);
-			for (j = 0; j < n && i + j <= pos->lastItem; j++)
-			{
-				if (!pos->items[i + j].killed ||
-					!ItemPointerEquals(&tids[j], &pos->items[i + j].heapTid))
-					break;
-			}
-			if (j == n && !ItemIdIsDead(iid))
+			if (memcmp(tids, ktids, n * sizeof(ItemPointerData)) == 0 &&
+				!ItemIdIsDead(iid))
 			{
 				if (!killedsomething && !BufferBeginSetHintBits(buf))
 					goto done;
@@ -3805,11 +4336,6 @@ bark_killitems(IndexScanDesc scan)
 			}
 			break;
 		}
-
-		/* The other items of the entry read at this offset are done with. */
-		while (i < pos->lastItem &&
-			   pos->items[i + 1].indexOffset == kitem->indexOffset)
-			i++;
 	}
 
 	if (killedsomething)
@@ -3819,16 +4345,13 @@ bark_killitems(IndexScanDesc scan)
 	}
 
 done:
+	so->numKilled = 0;
 	if (tids != NULL)
 		pfree(tids);
 	if (!so->dropPin)
 		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
 	else
 		UnlockReleaseBuffer(buf);
-
-	/* A copy for a mark must not carry the kills over to a later call. */
-	for (int i = pos->firstItem; i <= pos->lastItem; i++)
-		pos->items[i].killed = false;
 }
 
 /*
@@ -4171,6 +4694,8 @@ bark_steppage(IndexScanDesc scan, ScanDirection dir)
 		bark_copy_pos(so, &so->markPos, &so->markTuples, &so->markTuplesSize,
 					  &so->currPos, so->currTuples);
 		so->markPos.itemIndex = so->markItemIndex;
+		so->markPos.memberIndex = so->markMemberIndex;
+		so->markPos.nmembers = so->markNmembers;
 		so->markItemIndex = -1;
 	}
 
@@ -4233,6 +4758,8 @@ bool
 bark_gettuple(IndexScanDesc scan, ScanDirection dir)
 {
 	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	bool		ruled;
+	ItemPointerData tid;
 
 	if (so->mk != NULL && so->mk->gin && so->mk->nkeys > 0)
 		return bark_mk_gin_gettuple(scan, dir);
@@ -4251,6 +4778,14 @@ bark_gettuple(IndexScanDesc scan, ScanDirection dir)
 	 */
 	if (so->mk != NULL && so->mk->order)
 		dir = so->mk->orderdir;
+
+	/*
+	 * Rule D: settle the entry returned last by the table AM's verdict on it,
+	 * before anything else moves ("Versioned multikey scans" in the README).
+	 */
+	ruled = bark_mk_ruled(scan);
+	if (ruled)
+		bark_mk_settle(scan);
 
 	/*
 	 * A scan with a seen set that reverses direction would meet the entries
@@ -4276,49 +4811,57 @@ bark_gettuple(IndexScanDesc scan, ScanDirection dir)
 		if (!bark_first(scan, dir) && !bark_mk_order_rest(scan, dir))
 			return false;
 	}
-	else
+	else if (scan->kill_prior_tuple)
 	{
 		/*
-		 * The executor found the item returned last dead to every snapshot:
+		 * The executor found the row returned last dead to every snapshot:
 		 * remember it, for bark_killitems to mark when the scan leaves the
 		 * page.
 		 */
-		if (scan->kill_prior_tuple)
-		{
-			so->currPos.items[so->currPos.itemIndex].killed = true;
-			so->numKilled++;
-		}
-
-		/*
-		 * Advance within the page read last.  A reversal of direction
-		 * continues from the same item, in the new direction, which is what a
-		 * scroll cursor needs; only running off either end steps to a page.
-		 */
-		if (ScanDirectionIsForward(dir))
-		{
-			if (++so->currPos.itemIndex > so->currPos.lastItem)
-			{
-				if (!bark_steppage(scan, dir) &&
-					!bark_mk_order_rest(scan, dir))
-					return false;
-			}
-		}
-		else
-		{
-			if (--so->currPos.itemIndex < so->currPos.firstItem)
-			{
-				if (!bark_steppage(scan, dir) &&
-					!bark_mk_order_rest(scan, dir))
-					return false;
-			}
-		}
+		bark_kill_prior(so);
 	}
 
-	/* A fresh page starts at its first item in the scan direction. */
-	if (so->currPos.itemIndex < so->currPos.firstItem)
-		so->currPos.itemIndex = so->currPos.firstItem;
-	else if (so->currPos.itemIndex > so->currPos.lastItem)
-		so->currPos.itemIndex = so->currPos.lastItem;
+	/*
+	 * Here the row returned last (currPos's member memberIndex of item
+	 * itemIndex) is settled: the executor has said whether it was dead, and
+	 * under rule D the table AM whether it returned the row through the entry
+	 * (bark_mk_settle), before the position moves.
+	 *
+	 * Advance within the page read last, a member at a time.  A reversal of
+	 * direction continues from the row returned last, in the new direction,
+	 * which is what a scroll cursor needs; only running off either end of the
+	 * page's items steps to a page.  A fresh page enters its first item in
+	 * the scan direction.  Under rule D an entry of a row in R, or one the
+	 * table AM rejected (J), is passed over.
+	 */
+	for (;;)
+	{
+		BarkScanPosItem *item;
+
+		while (!bark_step_member(so, dir))
+		{
+			if (!bark_steppage(scan, dir) && !bark_mk_order_rest(scan, dir))
+				return false;
+		}
+		if (!ruled)
+			break;
+		item = &so->currPos.items[so->currPos.itemIndex];
+		if (likely((item->indexOffset & BARK_ITEM_MEMBERS) == 0))
+			tid = item->heapTid;
+		else
+		{
+			if (so->memberItem != so->currPos.itemIndex)
+				(void) bark_load_members(so, so->currPos.itemIndex);
+			tid = so->memberTids[so->currPos.memberIndex];
+		}
+		/* the group changes on the item's first member in the scan's order */
+		if (bark_mk_admit(scan, &tid, item->tag,
+						  (item->indexOffset & BARK_ITEM_NEWGROUP) != 0 &&
+						  so->currPos.memberIndex ==
+						  (ScanDirectionIsForward(dir) ? 0 :
+						   so->currPos.nmembers - 1)))
+			break;
+	}
 
 	bark_saveitem(scan);
 	return true;
@@ -4454,33 +4997,43 @@ bark_mk_gin_read(IndexScanDesc scan, const BarkMkBoundary *b, int entry,
 	{
 		for (int i = so->currPos.firstItem; i <= so->currPos.lastItem; i++)
 		{
-			BarkGinItem *it;
+			ItemPointer tids;
+			int			ntids = bark_item_tids(so, i, &tids);
+			bool		recheck = (so->currPos.items[i].indexOffset &
+								   BARK_ITEM_RECHECK) != 0;
 
-			if (s->nitems >= maxitems)
+			for (int j = 0; j < ntids; j++)
 			{
-				/*
-				 * A partial-match boundary can cover a whole path (an
-				 * operator class's extractQuery may ask for every key of a
-				 * path, as DocumentDB's $elemMatch on scalars does), so a
-				 * stream can hold every TID of the column: allocate huge. The
-				 * streams are exact, 12 bytes a TID, and unbounded; a bitmap
-				 * scan avoids them for the common shape, a key whose rows all
-				 * come from one partial-match boundary (bark_mk_gin_key),
-				 * whose memory the TIDBitmap bounds.
-				 */
-				maxitems = Max(maxitems * 2, 256);
-				s->items = s->items == NULL ?
-					palloc_extended(sizeof(BarkGinItem) * maxitems, MCXT_ALLOC_HUGE) :
-					repalloc_huge(s->items, sizeof(BarkGinItem) * maxitems);
+				BarkGinItem *it;
+
+				if (s->nitems >= maxitems)
+				{
+					/*
+					 * A partial-match boundary can cover a whole path (an
+					 * operator class's extractQuery may ask for every key of
+					 * a path, as DocumentDB's $elemMatch on scalars does), so
+					 * a stream can hold every TID of the column: allocate
+					 * huge.  The streams are exact, 12 bytes a TID, and
+					 * unbounded; a bitmap scan avoids them for the common
+					 * shape, a key whose rows all come from one partial-match
+					 * boundary (bark_mk_gin_key), whose memory the TIDBitmap
+					 * bounds.
+					 */
+					maxitems = Max(maxitems * 2, 256);
+					s->items = s->items == NULL ?
+						palloc_extended(sizeof(BarkGinItem) * maxitems,
+										MCXT_ALLOC_HUGE) :
+						repalloc_huge(s->items, sizeof(BarkGinItem) * maxitems);
+				}
+				it = &s->items[s->nitems];
+				it->tid = tids[j];
+				it->entry = entry;
+				it->recheck = recheck;
+				if (s->nitems > 0 &&
+					ItemPointerCompare(&it->tid, &it[-1].tid) <= 0)
+					sorted = false;
+				s->nitems++;
 			}
-			it = &s->items[s->nitems];
-			it->tid = so->currPos.items[i].heapTid;
-			it->entry = entry;
-			it->recheck = so->currPos.items[i].recheck;
-			if (s->nitems > 0 &&
-				ItemPointerCompare(&it->tid, &it[-1].tid) <= 0)
-				sorted = false;
-			s->nitems++;
 		}
 	} while (bark_steppage(scan, ForwardScanDirection));
 
@@ -4554,9 +5107,16 @@ bark_mk_gin_read_bitmap(IndexScanDesc scan, const BarkMkBoundary *b,
 	do
 	{
 		for (int i = so->currPos.firstItem; i <= so->currPos.lastItem; i++)
-			bark_mk_gin_tbm_add(so->mk, tbm, &so->currPos.items[i].heapTid,
-								recheck || so->currPos.items[i].recheck);
-		ntids += so->currPos.lastItem - so->currPos.firstItem + 1;
+		{
+			ItemPointer tids;
+			int			n = bark_item_tids(so, i, &tids);
+			bool		r = recheck || (so->currPos.items[i].indexOffset &
+										BARK_ITEM_RECHECK) != 0;
+
+			for (int j = 0; j < n; j++)
+				bark_mk_gin_tbm_add(so->mk, tbm, &tids[j], r);
+			ntids += n;
+		}
 	} while (bark_steppage(scan, ForwardScanDirection));
 	return ntids;
 }
@@ -5266,9 +5826,14 @@ bark_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 	do
 	{
 		for (int i = so->currPos.firstItem; i <= so->currPos.lastItem; i++)
-			tbm_add_tuples(tbm, &so->currPos.items[i].heapTid, 1,
-						   so->currPos.items[i].recheck);
-		ntids += so->currPos.lastItem - so->currPos.firstItem + 1;
+		{
+			ItemPointer tids;
+			int			n = bark_item_tids(so, i, &tids);
+
+			tbm_add_tuples(tbm, tids, n,
+						   (so->currPos.items[i].indexOffset & BARK_ITEM_RECHECK) != 0);
+			ntids += n;
+		}
 	} while (bark_steppage(scan, ForwardScanDirection));
 	return ntids;
 }
@@ -5296,6 +5861,8 @@ bark_endscan(IndexScanDesc scan)
 		pfree(so->markTuples);
 	if (so->entryTids)
 		pfree(so->entryTids);
+	if (so->killRuns)
+		pfree(so->killRuns);
 	if (so->keyCmp)
 		pfree(so->keyCmp);
 	if (!so->skipValueByVal && so->skipValue != (Datum) 0)
@@ -5349,16 +5916,24 @@ bark_markpos(IndexScanDesc scan)
 	/*
 	 * The rows the scan adds to the seen set from here on are the ones a
 	 * restore must take out again; the ones before stay, since the scan
-	 * returns them, or returns them again from the marked page's copy.
+	 * returns them, or returns them again from the marked page's copy. Under
+	 * rule D the marked row is settled now: a restore resumes after it, so
+	 * its verdict belongs to the time before the mark.
 	 */
 	if (so->mk != NULL)
 	{
+		if (bark_mk_ruled(scan))
+			bark_mk_settle(scan);
 		so->mk->marked = true;
 		so->mk->nundo = 0;
 	}
 
 	if (BarkScanPosIsValid(so->currPos))
+	{
 		so->markItemIndex = so->currPos.itemIndex;
+		so->markMemberIndex = so->currPos.memberIndex;
+		so->markNmembers = so->currPos.nmembers;
+	}
 	else
 	{
 		BarkScanPosInvalidate(so->markPos);
@@ -5368,9 +5943,9 @@ bark_markpos(IndexScanDesc scan)
 
 /*
  * bark_restrpos -- return the scan to the marked position (nbtree's
- * btrestrpos).  The next bark_gettuple advances from the marked item in the
- * scan direction.  An item inside a LIST or POSTING entry is restored to the
- * same member, since every member is its own item.
+ * btrestrpos).  The next bark_gettuple advances from the marked row in the
+ * scan direction: a row of a LIST or POSTING entry is restored to the same
+ * member of the entry's item.
  */
 void
 bark_restrpos(IndexScanDesc scan)
@@ -5404,6 +5979,12 @@ bark_restrpos(IndexScanDesc scan)
 	{
 		BarkMkScanState *mk = so->mk;
 
+		/*
+		 * The entry whose verdict is due was returned after the mark, so the
+		 * restored scan returns it again; core has reset its verdict
+		 * (index_restrpos).  The marked row was settled by bark_markpos.
+		 */
+		mk->verdictdue = false;
 		for (int i = 0; i < mk->nundo; i++)
 		{
 			uint64		key = bark_tid_to_key(&mk->undo[i],
@@ -5423,6 +6004,8 @@ bark_restrpos(IndexScanDesc scan)
 		 * markPos may be stale and is not used.
 		 */
 		so->currPos.itemIndex = so->markItemIndex;
+		so->currPos.memberIndex = so->markMemberIndex;
+		so->currPos.nmembers = so->markNmembers;
 	}
 	else
 	{
@@ -5432,6 +6015,7 @@ bark_restrpos(IndexScanDesc scan)
 		{
 			bark_copy_pos(so, &so->currPos, &so->currTuples,
 						  &so->currTuplesSize, &so->markPos, so->markTuples);
+			so->memberItem = -1;	/* the loaded members are another page's */
 
 			/*
 			 * skipBound describes the page read last, not the marked one; the
