@@ -2658,6 +2658,40 @@ bark_insert_key(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 	coalesce = coalesce && !oversized && keyinfo->instag == InvalidIndexVersionTag;
 
 	/*
+	 * A tagged (key, TID, tag) already in the index is not stored again.  A
+	 * table AM may give several versions of a row one tag (heap_versioned
+	 * tags each with its transaction ID), so an update that keeps the locator
+	 * can insert an entry the row already has: A -> B -> A in one
+	 * transaction, or a key that two updates of a multikey column keep.  A
+	 * second copy would break the strict (key, TID, tag) order that searches
+	 * and splits rely on, and return the row twice.  The copy present is the
+	 * entry just before off, the first that sorts after (key, TID, tag); if a
+	 * scan marked it dead, the insert says the version is live, so the mark
+	 * goes.
+	 */
+	if (keyinfo->instag != InvalidIndexVersionTag &&
+		off > BarkPageFirstDataKey(BarkPageGetOpaque(page)))
+	{
+		BarkItemBuf ibuf;
+		IndexTuple	prev = BarkPageGetItem(page, OffsetNumberPrev(off), &ibuf);
+
+		if ((BarkEntryGetShape(prev) == BARK_SHAPE_SINGLE ||
+			 BarkEntryGetShape(prev) == BARK_SHAPE_OVERSIZED) &&
+			bark_compare_itups_tid(keyinfo, index, itup, &itup->t_tid,
+								   keyinfo->instag, prev) == 0)
+		{
+			if (ItemIdIsDead(PageGetItemId(page, OffsetNumberPrev(off))))
+			{
+				IndexTuple	same = CopyIndexTuple(prev);
+
+				bark_overwrite_entry(index, buf, OffsetNumberPrev(off), same);
+				pfree(same);
+			}
+			return BARK_PLACE_ONPAGE;
+		}
+	}
+
+	/*
 	 * A tagged entry never coalesces, but its (key, TID) may fall inside the
 	 * TID range of an untagged LIST or POSTING of its key: the entry sorts
 	 * after the members up to its TID and before the rest.  Divide that entry

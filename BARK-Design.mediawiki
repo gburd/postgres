@@ -298,7 +298,13 @@ tags and never interprets them.
   entry's tag in <code>xs_heaptag</code>; a bitmap scan drops it. The unique
   check asks <code>table_fetch_tid_version</code> with the entry's tag;
   <code>UNIQUE_CHECK_EXISTING</code> recognizes the row's own entries by
-  TID. An LP_DEAD kill marks only the entry of the tag returned.
+  TID. An LP_DEAD kill marks only the entry of the tag returned. A
+  (K, L, t) the index already has is not stored again (2026-10-27): a
+  table AM may give several versions of a row one tag
+  (heap_versioned uses the transaction ID), so A -> B -> A, or a key two
+  in-place updates keep, re-inserts an entry; a second copy broke the
+  strict (key, TID, tag) order and made an index scan return the row
+  twice. An insert that meets its copy marked LP_DEAD clears the mark.
 * '''VACUUM and the untag rule (R3.2).''' VACUUM asks the table AM's
   version callback about every entry. LIVE_UNTAG moves an entry from
   (K, L, t) to (K, L, 0), before every entry of (K, L) with a tag. BARK

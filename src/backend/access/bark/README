@@ -2385,6 +2385,19 @@ first; only the table AM reads tags modularly, if it likes.  A LIST or
 POSTING entry's members are untagged.  bark_compare_itups_tid compares a
 (key, TID, tag) with an entry or a pivot.
 
+The order is strict: no two entries share a (key, TID, tag), as no two
+share a (key, TID) in an index of heap's.  A table AM may still hand an
+insert a (key, TID, tag) the index has: it may give several versions of a
+row one tag (heap_versioned tags each with its transaction ID), and an
+update that keeps the locator inserts the row's full key set, so A -> B ->
+A in one transaction, or a key two updates of a multikey column both keep,
+inserts an entry twice.  The second insert finds its copy just before its
+insert offset and stores nothing (bark_insert_key); if a scan marked the
+copy LP_DEAD, it clears the mark (an OVERWRITE of the same entry), since
+the insert says that version is live.  A second copy would break the order
+that searches, splits and amcheck rely on, and an index scan would return
+the row through both.
+
 Pivots.  Suffix truncation keeps a tag only where it separates: when
 lastleft and firstright are equal on every key attribute and on heap TID
 (two entries of one row), the high key keeps firstright's TID and tag;
