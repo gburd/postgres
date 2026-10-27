@@ -1185,7 +1185,7 @@ BEGIN
     ctr, qual)
     INTO n, dup, outside, missing, ordered;
 END $$;
-SELECT c, (mk_knn_check(i, cols, ops, args, 1000, q)).*
+SELECT c, k.*
   FROM (VALUES
     -- An inequality and an equality on tenant: the inequality only filters.
     ('ineq then eq', 'mk_ord_tac', '{1,1,2}'::int2[],
@@ -1214,7 +1214,8 @@ SELECT c, (mk_knn_check(i, cols, ops, args, 1000, q)).*
     ('key on ordered col', 'mk_ord_tac', '{1,2,3}',
      '{"=(int4,int4)","&&(anyarray,anyarray)",">(int4,int4)"}', '{1,"{3}",2500}',
      'tenant = 1 AND tags && ''{3}'' AND created > 2500')
-  ) v(c, i, cols, ops, args, q);
+  ) v(c, i, cols, ops, args, q),
+  mk_knn_check(i, cols, ops, args, 1000, q) k;
 -- A NULL test on the extracted column is not a point of the class's
 -- procedure 8, so it fixes nothing either, and neither does a NULL test
 -- on a fixed column.
@@ -1247,9 +1248,9 @@ DROP OPERATOR FAMILY mk_kp_ops USING btree;
 -- run that ends at them stops there.
 INSERT INTO mk_ord VALUES (900001, NULL, '{3}', 10), (900002, NULL, '{3}', 4000);
 INSERT INTO mk_ord_seq VALUES (900001, NULL, '{3}', 10), (900002, NULL, '{3}', 4000);
-SELECT (mk_knn_check('mk_ord_tac', '{1,2}',
+SELECT * FROM mk_knn_check('mk_ord_tac', '{1,2}',
           '{"=(int4,int4)","&&(anyarray,anyarray)"}', '{2,"{3}"}', 4500,
-          'tenant = 2 AND tags && ''{3}''')).*;
+          'tenant = 2 AND tags && ''{3}''');
 SELECT count(*) FROM bark_multikey_knn('mk_ord_tac', '{1,2}',
   '{NULL,"&&(anyarray,anyarray)"}', '{null,"{3}"}', 3, '<~>(int4,int4)', 0);
 -- An empty index with a fixed prefix, in a generic plan.
@@ -1313,11 +1314,12 @@ BEGIN
   same := got IS NOT DISTINCT FROM want;
 END $$;
 -- Ties in distance are broken by id on both sides, after the scan.
-SELECT q, (mk_long_check(q, 300)).*
+SELECT q, l.*
   FROM (VALUES ('t = mk_long_key(1) AND tags |%| ''{2}'''),
                ('t = mk_long_key(1) AND tags |%| ''{3}'''),
                ('t = mk_long_key(0) AND tags |%| ''{0}'' AND created > 250'),
-               ('t = mk_long_key(2) AND tags |%| ''{2}''')) v(q);
+               ('t = mk_long_key(2) AND tags |%| ''{2}''')) v(q),
+       mk_long_check(q, 300) l;
 DROP FUNCTION mk_long_check(text, int);
 DROP TABLE mk_long;
 DROP FUNCTION mk_long_key(int);
