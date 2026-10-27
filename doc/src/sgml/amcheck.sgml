@@ -286,6 +286,23 @@ ORDER BY c.relpages DESC LIMIT 10;
       <parameter>checkunique</parameter> default to
       <literal>false</literal>.
      </para>
+     <para>
+      It also follows the overflow chain of each <literal>OVERSIZED</literal>
+      entry, high key and downlink to its end, and reports as corruption a
+      chain that loops, crosses another chain, reaches a page that is not an
+      overflow page, or is longer than its entry needs.  An overflow page
+      that no chain reaches is reported with a <literal>WARNING</literal>,
+      which names the first page of the orphaned chain and its number of
+      pages, not as corruption: an oversized key's overflow chain is written
+      before the entry that references it, so a crash in between leaves the
+      chain's pages unreferenced; so does a crash while
+      <command>VACUUM</command> frees a chain, one page at a time, and an
+      error, such as running out of disk space, that ends an insert after
+      it wrote a chain and before it placed the entry.  No other path leaves
+      such pages, so in an index that has been through no crash and no such
+      error the warning means a bug.  Such pages are wasted space only.
+      Nothing reclaims them but <command>REINDEX</command>.
+     </para>
     </listitem>
    </varlistentry>
 
