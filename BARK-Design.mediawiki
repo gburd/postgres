@@ -1217,9 +1217,6 @@ place of an inverted AM, without changing the scalar design above.
   pg_extended_btree interface (procedures 7-9) in every scan; GIN's query
   interface (procedures 10-13, partial match included) in bitmap and index
   scans, "As built" under "Which interface first."; RUM's addon ordering
-  keys, "As built (P1)" there, P2, coalescing its keys by GIN's rule,
-  "As built (P2)", and M2c, index scans of such a column, "As built (M2c)"
-  there. M2b part 1, RUM's addon ordering (an
   (an ordering operator on the column after the extracted one, inside a
   data". M2b part 2, an array similarity class after rum_anyarray_ops, is
   built for its % operator, "As built (M2b part 2)" there, with the <=>
@@ -1440,11 +1437,11 @@ before and after DELETE, INSERT (LIST entries) and VACUUM; core's tsvector
 support functions as a BARK class, mixing point and prefix (partial-match)
 keys, NOT and phrase queries, compared with a seqscan and GIN.
 
-'''As built (P2).''' A GIN-interface column coalesces equal keys whatever
+'''As built, GIN's key rule.''' A GIN-interface column coalesces equal keys whatever
 equalimage says (bark_index_may_coalesce), the GIN key rule: keys that
 procedure 1 finds equal are one key, stored in the first row's image.
 DocumentDB's index terms have no equalimage and cannot have one (int32 1,
-int64 1 and double 1.0 compare equal), so before P2 every (term, row) was a
+int64 1 and double 1.0 compare equal), so before this every (term, row) was a
 SINGLE entry: 520 MB of BARK indexes against RUM's 211 MB on a million
 documents. bark_coalesce_list keeps the existing entry's image when it
 turns a SINGLE into a LIST; the build already kept a run's first. A point
