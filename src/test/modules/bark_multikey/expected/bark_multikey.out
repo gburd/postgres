@@ -387,7 +387,7 @@ INSERT INTO mk_t SELECT g, ARRAY(SELECT (g * 37 + i * 101) % 20000
   FROM generate_series(1, 2000) g;
 INSERT INTO mk_t SELECT 3000, ARRAY(SELECT generate_series(1, 20000, 3));
 INSERT INTO mk_t SELECT 3001, ARRAY(SELECT generate_series(20000, 1, -7));
-SELECT pg_relation_size('mk_a') / 8192 > 20 AS several_leaves;
+SELECT pg_relation_size('mk_a') / current_setting('block_size')::int > 20 AS several_leaves;
  several_leaves 
 ----------------
  t
