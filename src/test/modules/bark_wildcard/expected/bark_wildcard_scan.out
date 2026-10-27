@@ -436,7 +436,7 @@ CREATE TABLE wc_empty_q AS
 SELECT q, wc_run('wc_empty', NULL, q, 'seq') AS seq,
        wc_run('wc_empty', 'wc_empty_doc', q, 'index') AS index,
        wc_run('wc_empty', 'wc_empty_doc', q, 'bitmap') AS bitmap
-  FROM wc_empty_q ORDER BY q;
+  FROM wc_empty_q ORDER BY q COLLATE "C";
          q          |                 seq                  |                index                 |                bitmap                
 --------------------+--------------------------------------+--------------------------------------+--------------------------------------
  doc #< '["s", 7]'  | 3:3:55b84a9d317184fe61224bfb4a060fb0 | 3:3:55b84a9d317184fe61224bfb4a060fb0 | 3:3:55b84a9d317184fe61224bfb4a060fb0

@@ -242,7 +242,7 @@ CREATE TABLE wc_empty_q AS
 SELECT q, wc_run('wc_empty', NULL, q, 'seq') AS seq,
        wc_run('wc_empty', 'wc_empty_doc', q, 'index') AS index,
        wc_run('wc_empty', 'wc_empty_doc', q, 'bitmap') AS bitmap
-  FROM wc_empty_q ORDER BY q;
+  FROM wc_empty_q ORDER BY q COLLATE "C";
 SELECT q, (SELECT array_agg(id ORDER BY id) FROM wc_empty e
             WHERE CASE q WHEN 's=5' THEN doc #= '["s", 5]'
                          WHEN 's?' THEN doc #? 's' END) AS ids
