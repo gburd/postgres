@@ -55,7 +55,7 @@ SKIP:
 	cmp_ok(
 		$node->safe_psql(
 			'postgres', q[
-SELECT count(*) FROM generate_series(1, pg_relation_size('t_a') / 8192 - 1) b,
+SELECT count(*) FROM generate_series(1, pg_relation_size('t_a') / current_setting('block_size')::int - 1) b,
        bark_page_stats('t_a', b) s WHERE s.type = 'leaf']),
 		'>=', 3, 'the index has three leaves or more');
 	my $s1 = $node->background_psql('postgres', on_error_stop => 0);
