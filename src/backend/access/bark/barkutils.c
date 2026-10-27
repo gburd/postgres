@@ -2333,7 +2333,7 @@ bark_posting_from_map(IndexTuple key, Sbm *map, Size total)
 	uint16		datalen = (uint16) serialized;
 	IndexTuple	entry;
 
-	Assert(bodyoff <= BARK_OFFSET_MASK);
+	Assert(bodyoff <= PG_UINT16_MAX);
 	Assert(total <= INDEX_SIZE_MASK);
 	Assert(bodyoff + sizeof(uint16) + serialized <= total);
 
