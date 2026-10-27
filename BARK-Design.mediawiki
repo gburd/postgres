@@ -2,9 +2,9 @@
 
 ''Status:'' a working access method under development, at parity with nbtree
 on most of its scalar workload (see [[#Where BARK stands|Where BARK
-stands]]); the multikey (M) series is being built. This document is the
+stands]]), with multikey keys for document indexes. This document is the
 contract every commit refers to: the contracts, the decisions and the
-roadmap. How the code works is in <code>src/backend/access/bark/README</code>,
+status. How the code works is in <code>src/backend/access/bark/README</code>,
 and the user manual is <code>doc/src/sgml/bark.sgml</code>. Update this
 document in the same commit that changes a contract; do not let code and
 this document drift.
@@ -33,8 +33,7 @@ cheaply:
   write path (BARK's C files have no file-scope variables; per-index state
   lives in the relcache's <code>rd_amcache</code> and per-statement state in
   <code>ii_AmCache</code>). The annotations of the multithreaded PostgreSQL
-  work (the <code>xtc</code> worktree's <code>utils/global_lifetime.h</code>)
-  are not in this tree.
+  work (its <code>utils/global_lifetime.h</code>) are not in this tree.
 
 BARK is '''not''' a replacement for the catalog and TOAST indexes. Those stay
 on nbtree by deliberate policy (see [[#The capability sweep|the capability
@@ -60,18 +59,16 @@ Beyond nbtree it has keys of any size, LIST and POSTING entries, leaf prefix
 compression and KNN ordering.
 
 '''Not yet at parity.''' No PRIMARY KEY or UNIQUE constraint can use a BARK
-index, so there is no deferrable uniqueness (U1, held). IS NULL and IS NOT
-NULL only filter (N2, held). There are no dead-tuple hints from scans and no
-simple deletion before a split (K2), and skip scan runs forward only and
-over one column; both wait on <code>amgetbatch</code> (cf/4351, G1). CLUSTER
+index, so there is no deferrable uniqueness. IS NULL and IS NOT NULL only
+filter. Skip scan runs forward only and over one column; that waits on
+<code>amgetbatch</code> (CF 4351). CLUSTER
 and REPACK read through a BARK index rather than sorting
 (<code>tuplesort_begin_cluster</code> asserts btree). The RI trigger fast
 path is btree-only. A multikey index cannot be scanned backward after a
 forward start, in parallel when it needs a seen set, or in the order of an
 operator on its extracted column, until M1d.
 
-'''Performance.''' From the Z2 benchmark (BENCHMARK-2026-10b.md): idxam at
-5d4e2883b10, release build (<code>-O3</code>, no assertions), EC2
+'''Performance.''' Release build (<code>-O3</code>, no assertions), EC2
 c7i.4xlarge (16 vCPU), Debian 12, shared_buffers 4GB, autovacuum off; 5
 runs, the first dropped, median of the other four; pgbench <code>-M
 prepared</code> 30 s. The ratio is BARK's median over btree's: below 1 is
@@ -79,7 +76,7 @@ better for BARK for times and sizes, above 1 for tps. The report marks a
 row within noise when the two ranges overlap.
 
 {| class="wikitable"
-|+ BARK against nbtree, Z2 (5d4e2883b10) and later fixes
+|+ BARK against nbtree
 ! workload !! measure !! bark/btree
 |-
 | CREATE INDEX: 10M int4 unique / 10M int4, 1000 distinct / 10M md5 text / 5M URL text || build time || 1.01 / 1.01 / 1.03 / 0.96
@@ -114,23 +111,22 @@ row within noise when the two ranges overlap.
 |-
 | (a, b, c), 10M rows: a = X AND b = Y / a = X AND b &lt; Y / a = X AND b BETWEEN || tps, 1 client || 1.02 / 1.00 / 1.02
 |-
-| a IN (3 values) AND b = Y / a = X AND b IN (3 values), in Z2 || tps, 1 client || 0.02 / 0.03
+| a IN (3 values) AND b = Y / a = X AND b IN (3 values), before equality arrays positioned the scan || tps, 1 client || 0.02 / 0.03
 |-
-| same after A2 (5ef4c024135; release build, 3 rounds of 6 s alternating, medians) || tps, 1 client || 1.02 / 0.99
+| same, after equality arrays on any column position the scan (release build, 3 rounds of 6 s alternating, medians) || tps, 1 client || 1.02 / 0.99
 |-
-| (a, b) &gt; (X, Y) LIMIT 20 on (a, b, c), in Z2 || tps, 1 client || 0.93
+| (a, b) &gt; (X, Y) LIMIT 20 on (a, b, c), before the scan started past a strict bound || tps, 1 client || 0.93
 |-
-| same after Q3 (f50e3cee0d8; perf stat over 20000 prepared executions) || user-mode instructions per query || 1.02 (163824 vs 160972)
+| same, after it does (perf stat over 20000 prepared executions) || user-mode instructions per query || 1.02 (163824 vs 160972)
 |}
 
 The (a, b, c) point and range rows read 100 to 391 index pages before
-f0b25ae677f made a later column's bound end the scan under leading
-equalities, which Z2 already includes (a = 42 AND b = 751 went from 1752 to
+a later column's bound ended the scan under leading equalities, which the
+table includes (a = 42 AND b = 751 went from 1752 to
 15376 tps at 1 client, btree 16574; release build, 10M rows). Still behind:
 inserts, at 1.05-1.12x btree's statement time with equal WAL and no single
 hot spot in the profile, and keys too large for btree, which cost BARK a
-decompression per comparison. The full tables, profiles and caveats are in
-the benchmark report.
+decompression per comparison.
 
 === Relationship to the sbm ADT ===
 
@@ -495,7 +491,7 @@ than leaving dead entries for VACUUM:
   is the per-relation switch.
 * <code>IndexAmRoutine.amdeletemark</code> / <code>amundomark</code> (both may
   be NULL for an AM that opts out) mark and un-mark an entry.
-* nbtree's encoding on the undo branch, which BARK mirrors: an alternate-TID
+* nbtree's encoding in that patch set, which BARK mirrors: an alternate-TID
   subtype with <code>BT_IS_DELETE_MARKED = 0x4000</code> set (and
   <code>BT_IS_POSTING</code> clear) in the entry's <code>t_tid</code> offset.
   <code>genam.h</code>'s <code>index_delete_mark</code> /
@@ -505,7 +501,7 @@ than leaving dead entries for VACUUM:
 '''BARK obligation:''' reserve a delete-marked entry subtype in the on-disk
 format from the start, and implement <code>amdeletemark</code>/<code>amundomark</code>
 when UNDO integration lands (not in the first functional AM).
-''Status:'' none of the undo branch's interface is in this tree (no
+''Status:'' none of that interface is in this tree (no
 <code>amdeletemark</code>, <code>am_supports_undo</code>,
 <code>BT_IS_DELETE_MARKED</code> or <code>index_delete_mark</code>).
 The bit once reserved for it, 0x4000, is <code>BARK_HAS_TAG</code> since
@@ -607,10 +603,10 @@ none of this has a per-locator cost (run 2: an index-only scan spends 90 ns
 per locator on a key spread over 31 entries, and 94 ns on keys of one entry
 each). GIN needs a separate tree only because
 its entry tree holds each key once. The one thing a per-key tree would add is
-locator order within a key. When this note was written (0a621f81692), insert
+locator order within a key. When this note was written, insert
 coalesced into the last entry of the key's run, so the entries of a key were
-in arrival order and their locator ranges could overlap. Since H1
-(82694a0d540) they are in heap TID order with disjoint ranges, which gives
+in arrival order and their locator ranges could overlap. Since then
+they are in heap TID order with disjoint ranges, which gives
 that order without a second tree (option (b) below).
 
 '''Measurements.''' All on a release build (<code>-Dcassert=false</code>),
@@ -783,7 +779,7 @@ No measured cost scales with how many entries a key has.
   bound, as today. Like nbtree's pass, it keeps a run as several entries
   when one entry would exceed <code>BarkMaxItemSize</code>.
 : ''Status:'' the pass was built as <code>bark_merge_page</code> in
-  <code>barkdelete.c</code> (7a80942793b), beside the per-insert coalesce
+  <code>barkdelete.c</code>, beside the per-insert coalesce
   rather than in place of it; see recommendation 4.
 
 ; (d) A GIN-fastupdate-style pending list.
@@ -811,10 +807,8 @@ No measured cost scales with how many entries a key has.
   <code>rm_desc</code>, <code>rm_identify</code>, <code>rm_mask</code> for
   <code>wal_consistency_checking</code>, and a rewrite of every
   <code>GenericXLogStart</code> site (13 in <code>bark.c</code>,
-  <code>barkinsert.c</code> and <code>barkutils.c</code>). Each of those sites
-  is being changed right now by the concurrency, VACUUM and split work.
-: ''Status:'' done (92c15cee8a5, 03fb7f146bb, ab351f6ea3f, ec2a4ef1ac4,
-  a45e6d67a7c); BARK writes no generic WAL. See recommendation 5.
+  <code>barkinsert.c</code> and <code>barkutils.c</code>).
+: ''Status:'' done; BARK writes no generic WAL. See recommendation 5.
 
 ; (f) Build LIST and POSTING entries at CREATE INDEX.
 : <code>bark_load</code> receives tuples sorted by key and then heap TID
@@ -948,7 +942,7 @@ count is an estimate that leaves <code>reltuples</code> alone.
 === The capability sweep ===
 
 There were '''30''' <code>BTREE_AM_OID</code> references in the tree when this
-was written; at ac12fa1e140 there are 33 in <code>.c</code> and <code>.h</code>
+was written, and 33 when the sweep was done, in <code>.c</code> and <code>.h</code>
 files outside the catalog headers. They fall into three groups; only the
 middle group is BARK work.
 
@@ -971,7 +965,7 @@ middle group is BARK work.
   "supports this sort") rather than to compare against
   <code>BTREE_AM_OID</code>. This is the largest mechanical part of the series.
   ''Status:'' the planner sites are done by the
-  <code>ambtreeopfamilies</code> capability (b02ddd944a8:
+  <code>ambtreeopfamilies</code> capability (
   <code>plancat.c</code>'s sort-family fast path,
   <code>match_rowcompare_to_indexcol</code>,
   <code>ec_member_matches_indexcol</code>). Still btree-only:
@@ -980,16 +974,16 @@ middle group is BARK work.
   <code>ri_triggers.c</code>, which falls back to SPI for other AMs; and
   <code>tablecmds.c</code>'s partition opclass choice, which is a btree
   opclass lookup and stays. <code>pg_amcheck</code> now checks BARK indexes
-  too (c2ecf2d23ba).
+  too.
 # '''Ambiguous, decided case by case''' (<code>access/index/amapi.c</code>'s
   index-AM validation): keep the btree-specific validation for btree, add
   BARK's own.
 
 KNN ordering (<code>amcanorderbyop</code>) was a reserved field in BARK's
-<code>IndexAmRoutine</code> from the first commit and was implemented in
-phase P07 (965b1f9590a); <code>indxpath.c</code> gives an index that is both
+<code>IndexAmRoutine</code> from the first commit and was implemented later;
+<code>indxpath.c</code> gives an index that is both
 ordered and <code>amcanorderbyop</code> at most one ordering operator, on its
-leading column (2c59e5d829d).
+leading column.
 
 == Status ==
 
@@ -1046,90 +1040,8 @@ Not implemented:
 * Per-locator data (RUM's addInfo), closed as not needed: "Per-locator
   data (closed)" below.
 
-Each entry is marked ''done'' with its commits on <code>idxam</code>,
-''in progress'', ''held'' (designed, not started, by decision) or
-''blocked'' (with what it waits for). The commit hashes are those of
-<code>git log --oneline</code> on <code>idxam</code> as of ac12fa1e140.
-
-* '''0001''' -- this design document (the contract of record). ''(done:
-  643b5e704bf)''
-* '''sbm ADT''' -- vendored sparse bitmap set, PG-native, standalone-tested.
-  ''(done: b437ccaf775)''
-* '''test_sbm''' -- the sbm regression + differential-test module, plus the
-  sbm-vs-Bitmapset-vs-TIDBitmap benchmark. ''(done: 5b02c573b5c)''
-  ''(done: tepid's eight contract commits at the base of the series; they
-  replace this tree's earlier <code>LocatorCapability</code> enum and
-  <code>amcanlocators</code> bitmask.)''
   ''(done, then dropped 2026-10-15: nothing in this tree sets it; see
   C-MVCC.)''
-  every capability, so this is behavior-preserving. ''(done for the planner:
-  b02ddd944a8, <code>ambtreeopfamilies</code>; 6d73daac716 lets such an AM
-  share btree's operator families. Not done: <code>tuplesort</code>'s
-  cluster sort and <code>repack</code>, and the RI fast path, which stay
-  btree-only; see "The capability sweep".)''
-  ''(done: 92f1c3c696a)''
-  <code>README</code> under the AM directory. ''(done: e8ecfa2a997; page ID
-  distinct from nbtree's, 41c820caf25)''
-  nbtree uses. ''(done: 03950777ddc build, 6a3c6088b95 insert and split,
-  965c12ad4f7 interrupted splits; nbtree's locking: c875cdc8170 child before
-  parent, c920f0aa9ed write descents finish incomplete splits; f48c923c5d5
-  split points by bytes and fillfactor; 7c16246fae1 suffix truncation)''
-  ''(done: f1c10b62f62, 099fec68d16, d40c3e51622, 9d9c86555f8 backward;
-  page-at-a-time scans 6eac5be00a8, mark/restore 86dc81669eb, cross-type
-  keys 12f7157b115, row comparisons af421f48a59, ScalarArrayOp
-  860b5787393 and 9a2d18ea58e, skip scan 4384f134bc0 and abb8869ca9e)''
-  ''(done: 40f59eae200, 3d3e340450b, 761c298af97; speculative insertion
-  6fa04f5e1af)''
-  ''(done: 4b96254199e LIST, 1cd5c7a61c2 POSTING, 04534607eb4 BitmapAnd and
-  BitmapOr, through the executor's TIDBitmaps rather than sbm set algebra;
-  6e3a262afa9 coalesce only equal images; e9803c87051 POSTING removal
-  reserve; d7fae7124b1 LIST and POSTING at CREATE INDEX)''
-  a link to it (the README's "Page deletion and recycling"). Bottom-up
-  deletion, as nbtree's: an <code>indexUnchanged</code> insert that would
-  split a leaf first asks the table AM which of the leaf's versions are dead
-  and deletes their entries (<code>XLOG_BARK_DELETE</code>; the README's
-  "Bottom-up deletion"). ''(done: 030fe7e8025 VACUUM, 9588dc33517 FSM,
-  864c14a22be cycle IDs and cleanup locks, cb480247c5b safe recycling,
-  14346b8273c key space to the right sibling, 047a54523f4 one pass,
-  d7e21783d59 parallel VACUUM, 7b651b29179 bottom-up deletion. C-DELETE
-  delete-marking: blocked on the UNDO work, whose interface is not in this
-  tree.)''
-  BARK. ''(done: d65a886d783, bf2e930db15, 06ae9a70ead)''
-  from test_sbm; A/B against <code>master</code>'s nbtree. ''(done as the
-  Z1 and Z2 benchmarks and the cards they produced, below; see "Where BARK
-  stands". Inserts are still 1.05-1.12x btree's time.)''
-  C-STATS cost model tuned to the new shapes. ''(done: d13b4ea40fb,
-  761c298af97, d365b638713, e381e4c52e9; cost model 24e449dfa22, replaced
-  by C3 9dd712a3fc8)''
-  ''(done: 965b1f9590a, 627d94fcf06, 2c59e5d829d; no parallel KNN, by
-  design, 37aa0402e67)''
-* '''Leaf prefix compression''' -- the <code>prefix_compression</code>
-  reloption: a leaf flagged <code>BARK_PREFIX</code> holds a PREFIX item, and
-  its entries store the first key column front-coded against it (a shared
-  count, then the rest), each entry recording its own share, so the prefix is
-  chosen only when a leaf is written whole (CREATE INDEX, either half of a
-  split) and never forces a rewrite. <code>BarkPageGetItem</code> decodes;
-  coding is catalog-free, so ADD_TID redo repeats it. Format in the README's
-  "Leaf prefix compression". nbtree has nothing comparable. ''(done:
-  a27685f01d8, f358effd8bb)''
-* '''W-series, the WAL resource manager''' (option (e) under "Value sets
-  that outgrow one entry"). ''(done: 92c15cee8a5 VACUUM, page deletion and
-  reuse; 03fb7f146bb inserts; ab351f6ea3f ADD_TID; ec2a4ef1ac4 splits and
-  new roots; a45e6d67a7c overflow chains)''
-
-  its highest TID. Requires REINDEX of indexes built before it. ''(done:
-  82694a0d540. An insert inside a full entry divides it in the middle
-  rather than swapping its highest TID; see "Heap TID order" in the
-  README.)''
-  recovery-conflict resolution. ''(done: 7b651b29179)''
-* '''F1''' -- cut the last entry of a single-value split so the left page
-  reaches its fill factor (nbtree's <code>_bt_singleval_fillfactor</code>).
-  ''(done: 5205a1e693a)''
-* '''F2''' -- merge a leaf's equal-key entries before splitting it (nbtree's
-  deduplication pass). ''(done: 7a80942793b)''
-* '''P3''' -- a lower bound sorts after an equal pivot with no heap TID
-  (nbtree's <code>_bt_compare</code> forward optimization). ''(done:
-  80e5ab22ec1)''
   ''As built:'' through amgettuple's kill_prior_tuple, as nbtree's
   _bt_killitems (with <code>amgetbatch</code>, CF 4351, the hint moves to
   <code>amkillitemsbatch</code>, under G1).  A scan leaving a leaf marks
@@ -1151,30 +1063,6 @@ Each entry is marked ''done'' with its commits on <code>idxam</code>,
   16 kB as nbtree's (64 kB before), and isolation/horizons matches nbtree's
   with <code>default_btree_implementation = bark</code>.  See "Dead-entry
   hints and simple deletion" in the README.''
-* '''G1''' -- adopt <code>amgetbatch</code>: <code>bark_readpage</code> fills
-  an <code>IndexScanBatch</code>, and the scan position, mark/restore, the
-  pin rule and parallel seize/release move to the batch layer; KNN keeps
-  <code>amgettuple</code>. ''(blocked on cf/4351)''
-* '''Backward skip scan''', and skipping over several leading columns, as
-  nbtree's skip arrays do. ''(blocked on cf/4351 and G1, so that the scan
-  position work is done once)''
-
-'''Work since the Z1 benchmark''' (BENCHMARK-2026-10.md at 76d2f802ab2; Z2,
-BENCHMARK-2026-10b.md, at 5d4e2883b10)
-
-* '''Q2''' -- skip the scan keys every entry of a leaf satisfies (nbtree's
-  <code>_bt_set_startikey</code>). ''(done: f87bc3d7411)''
-* '''W5''' -- log only the right half of a split, as nbtree does.
-  ''(done: 72fb06e7bdf)''
-* '''B11''' -- form each row's index tuple once in CREATE INDEX.
-  ''(done: e86f99da3ab)''
-* '''Q1''' -- insert ascending keys on the cached rightmost leaf
-  (<code>_bt_search_insert</code>'s fast path). ''(done: 3340c4d7819)''
-* '''Required keys''' -- end a scan on a later column's bound under leading
-  equalities (<code>_bt_check_compare</code>'s required keys).
-  ''(done: f0b25ae677f)''
-* '''V5''' -- decide a POSTING entry's shape before building its sbm, which
-  brought serial VACUUM to parity. ''(done: 54b9ed6c092)''
 * '''V6''' -- delta+varbyte coded LIST entries, GIN's posting-list coding.
   ''As built: a coded LIST is the 0x1000 status bit on a LIST (free on leaf
   entries), a header with the stream length and the last TID, the first TID
@@ -1188,8 +1076,6 @@ BENCHMARK-2026-10b.md, at 5d4e2883b10)
   (btree 1896), a DocumentDB-like int4[] GIN-interface index 253 -> 92 (GIN
   133), 1M rows of 10-element arrays 8040 -> 3429 (GIN 5026).  A cost: denser
   leaves fill later, so bottom-up deletion runs less often between VACUUMs.''
-* '''K3''' -- a descent as cheap as nbtree's, and a cheaper skip-scan group.
-  ''(done: bd501974823)''
 * '''R1''' -- root contention on many-core machines.  Every descent pins and
   share-locks the root, so its buffer header (pin count and content lock in
   one state word) is written by every lookup; measured on m7i.metal-48xl
@@ -1201,33 +1087,6 @@ BENCHMARK-2026-10b.md, at 5d4e2883b10)
   internal page is never deleted and its low key never changes, so moving
   right from a cached page reaches the page the root would have chosen.
   Write descents keep starting at the root (they need the parent path).
-* '''I2''' -- per-insert overhead: the unique-index fast path and the insert
-  state cached in <code>ii_AmCache</code>. ''(done: 5d4e2883b10)''
-* '''N1''' -- honor <code>UNIQUE ... NULLS NOT DISTINCT</code>.
-  ''(done: f8b597a5ccf)''
-* '''C3''' -- btcostestimate's correlation and descent costs.
-  ''(done: 9dd712a3fc8)''
-* '''A2''' -- equality arrays on any column position the scan (nbtree's
-  required array keys). ''(done: 5ef4c024135)''
-* '''O1''' -- an operator class for every btree operator class.
-  ''(done: a1deb45c0fc)''
-* '''T2''' -- nbtree's tools for BARK. ''(done: 0c08ff0ec74 pageinspect,
-  9700b2d3a2e pgstattuple, c2ecf2d23ba amcheck heapallindexed and parent
-  check, and pg_amcheck)''
-* '''Q3''' -- start a scan past a strict bound (nbtree's nextkey), and let
-  the per-page test satisfy row comparisons and arrays. ''(done:
-  f50e3cee0d8)''
-* '''D2''' -- the user manual (<code>doc/src/sgml/bark.sgml</code>), the
-  README as built, and this roadmap. ''(in progress, branch bark-docs)''
-* '''U1''' -- PRIMARY KEY and UNIQUE constraints on a BARK index (the SQL
-  surface, pg_dump, and every place that assumes a constraint's index is
-  btree), which also makes deferrable uniqueness possible. ''(held: card
-  written, not started)''
-* '''V6''' -- code LIST entries as varbyte deltas, as GIN's posting lists
-  are, to halve scattered duplicate-heavy indexes. ''(held: card written,
-  not started)''
-* '''N2''' -- IS NULL and IS NOT NULL position and stop scans, as nbtree's
-  do. ''(held: card written, not started)''
 * '''RT''' -- three recommendations of the RethinkDB review
   (<code>/scratch/postgres-idxam/scratch-rethink/RETHINKDB-REVIEW.md</code>,
   R3.1, R1 and R5), done before phase 5b of the versioned-entry design:
@@ -1426,8 +1285,6 @@ place of an inverted AM, without changing the scalar design above.
   equal are equal bytes, and the class declares equalimage (btequalimage):
   its equal keys coalesce into LIST and POSTING entries. Not yet: a
   comparison with GIN's jsonb_path_ops)''
-  C-KEYSHAPE. ''(not started; the TID filter for an ordered scan is blocked
-  on cf/4351)''
 
 === Multikey keys ===
 
