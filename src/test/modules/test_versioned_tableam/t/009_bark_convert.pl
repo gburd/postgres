@@ -82,6 +82,15 @@ $node->safe_psql(
 });
 is(bits($node, 'tc_doc'), '4', 'built with MKTAGS');
 
+# A standby's dirty scan of the index sees the constraint but writes
+# nothing: the conversion begins on the primary.
+$node->wait_for_replay_catchup($standby);
+is( $standby->safe_psql(
+		'postgres', q{
+		SELECT count(*) FROM test_versioned_dirty_scan('tc_doc', '&&(anyarray,anyarray)', '{10}'::int4[])}),
+	'1', 'standby: a dirty scan of the converted index');
+is(bits($standby, 'tc_doc'), '4', 'standby: CONVERTING not set in recovery');
+
 # An old writer: a transaction that holds the table's RowExclusiveLock from
 # before the conversion began.
 my $old = $node->background_psql('postgres');

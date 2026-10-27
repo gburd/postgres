@@ -348,8 +348,10 @@ UPDATE pg_catalog.pg_index SET indisexclusion = false
   WHERE indexrelid = 'tmc_doc'::regclass;
 SET test_versioned_tableam.keep_locator = pretend;
 SELECT test_versioned_reset();
+BEGIN;
 UPDATE tmc SET doc = '{120,121}' WHERE id = 12;
 UPDATE tmc SET doc = '{130,131}' WHERE id = 13;
+COMMIT;
 SELECT n AS kept_dropped FROM test_versioned_counts() WHERE counter = 'update_kept';
 RESET test_versioned_tableam.keep_locator;
 SELECT flags & 30 AS mktags_converting FROM bark_metap('tmc_doc');
@@ -463,8 +465,11 @@ COMMIT PREPARED 'tmn_writer';
 DROP TABLE tmn;
 CREATE UNLOGGED TABLE tmn (id int, doc int4[]) USING heap_versioned
   WITH (autovacuum_enabled = off);
-INSERT INTO tmn SELECT g, ARRAY[10 * g, 10 * g + 1] FROM generate_series(1, 20) g;
+INSERT INTO tmn VALUES (1, '{10}');
 CREATE INDEX tmn_doc ON tmn USING bark (doc bark_int4_array_ops);
+-- the first row with two keys sets MULTIKEY, unlogged too
+INSERT INTO tmn SELECT g, ARRAY[10 * g, 10 * g + 1] FROM generate_series(2, 20) g;
+SELECT flags & 1 AS multikey FROM bark_metap('tmn_doc');
 UPDATE pg_catalog.pg_index SET indisunique = true
   WHERE indexrelid = 'tmn_doc'::regclass;
 INSERT INTO tmn VALUES (21, '{210}');
