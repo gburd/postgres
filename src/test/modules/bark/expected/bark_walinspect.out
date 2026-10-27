@@ -137,8 +137,8 @@ INSERT INTO wi_vac SELECT 2000 + g % 10000, repeat('z', 100)
 -- A lowered lower bound (the second form of UNLINK_PAGE): a run of one
 -- row's tagged entries fills whole leaves, so a split inside it leaves the
 -- leftmost leaf a tagged high key.  VACUUM, told the run's entries on that
--- leaf are dead (tags 2..432) and the next leaf's first may be untagged
--- (434), lowers the bound.  Another run, in the middle of the key space,
+-- leaf are dead (tags 2 up to its highest, 432 where MAXALIGN is 8) and the
+-- next leaf's first may be untagged, lowers the bound.  Another run, in the middle of the key space,
 -- has its first leaf deleted, and its right sibling keeps a flag for an
 -- untagged bound, which VACUUM clears alone.  The xmins must be above the
 -- runs' tags.
@@ -156,9 +156,17 @@ SELECT count(test_versioned_insert_entry('wi_lower_k', ctid, 2 * g))
   1200
 (1 row)
 
+CREATE EXTENSION IF NOT EXISTS pageinspect;
+SELECT max(i.tag) AS wi_last FROM bark_page_items('wi_lower_k', 1) i
+ WHERE i.shape = 'SINGLE' AND i.itemoffset > 1 AND i.tag < 1300 \gset
 SET test_versioned_tableam.stale_dead_min = 2;
-SET test_versioned_tableam.stale_dead_max = 432;
-SET test_versioned_tableam.untag_tag = 434;
+SET test_versioned_tableam.stale_dead_max = :wi_last;
+SELECT set_config('test_versioned_tableam.untag_tag', (:wi_last + 2)::text, false) IS NOT NULL AS set;
+ set 
+-----
+ t
+(1 row)
+
 VACUUM wi_lower;
 RESET test_versioned_tableam.stale_tags;
 RESET test_versioned_tableam.stale_dead_min;
