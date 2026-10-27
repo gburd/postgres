@@ -7,7 +7,7 @@ CREATE INDEX bark1_a_idx ON bark1 USING bark (a);
 SELECT * FROM bark_metap('bark1_a_idx');
 -[ RECORD 1 ]-+-----------
 magic         | 1380008523
-version       | 2
+version       | 3
 root          | 1
 level         | 0
 allequalimage | t
@@ -63,6 +63,7 @@ htid           | (0,1)
 tids           | 
 downlink       | 
 overflow_blkno | 
+tag            | 
 data           | 01 00 00 00 00 00 00 01
 
 SELECT * FROM bark_page_items('bark1_a_idx', 2);
@@ -79,6 +80,7 @@ htid           | (0,1)
 tids           | 
 downlink       | 
 overflow_blkno | 
+tag            | 
 data           | 01 00 00 00 00 00 00 01
 
 \x
@@ -256,8 +258,8 @@ SELECT * FROM bark_page_items(get_raw_page('bark5_k_idx',
   (SELECT min(overflow_blkno) FROM bark_page_items('bark5_k_idx',
      (SELECT root FROM bark_metap('bark5_k_idx'))))::int));
 NOTICE:  page is an overflow page
- itemoffset | ctid | itemlen | shape | ntids | htid | tids | downlink | overflow_blkno | data 
-------------+------+---------+-------+-------+------+------+----------+----------------+------
+ itemoffset | ctid | itemlen | shape | ntids | htid | tids | downlink | overflow_blkno | tag | data 
+------------+------+---------+-------+-------+------+------+----------+----------------+-----+------
 (0 rows)
 
 -- Prefix compression: a BARK_PREFIX leaf holds a PREFIX item, and its other
@@ -316,8 +318,8 @@ SELECT * FROM bark_page_items('bark7_a_idx',
   (SELECT min(blkno) FROM bark_multi_page_stats('bark7_a_idx', 1, -1)
    WHERE type = 'deleted'));
 NOTICE:  page is deleted
- itemoffset | ctid | itemlen | shape | ntids | htid | tids | downlink | overflow_blkno | data 
-------------+------+---------+-------+-------+------+------+----------+----------------+------
+ itemoffset | ctid | itemlen | shape | ntids | htid | tids | downlink | overflow_blkno | tag | data 
+------------+------+---------+-------+-------+------+------+----------+----------------+-----+------
 (0 rows)
 
 -- Failures: not a BARK index, and pages that are not BARK pages.
