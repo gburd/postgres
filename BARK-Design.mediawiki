@@ -1035,8 +1035,6 @@ Not implemented:
 * Per-locator data (RUM's addInfo), closed as not needed: "Per-locator
   data (closed)" below.
 
-  streams)" under "Which interface first."; positioned streams and coded
-  member reads are the next step, README "Bounded streams, next step".)''
 === Ideas taken from RethinkDB ===
 
 RethinkDB's B-tree influenced four pieces of BARK.
@@ -1489,16 +1487,16 @@ to 33.4 ms. <code>@&gt;</code> with a frequent and a rare element 62.2 to
 (direct) is unchanged at 24.2 ms. GIN stays far ahead on the rare-key
 AND (0.10 ms): every boundary is still read to its end. The largest BARK
 allocation per query fell from 134,217,728 bytes to 166,144: the tuple
-workspace for a POSTING body, which P1 already had. A first version made
+workspace for a POSTING body, which the scan already had. A first version made
 every stream a TIDBitmap; at 17k rows per key that made a 2-key AND of
-points 41% slower than P1 (two more core pagetables per query: 573 tps
+points 41% slower than before (two more core pagetables per query: 573 tps
 against 967 at 16 clients, 1,600 page faults per query against 876), so
-a point on the leading column, which comes in TID order (H1), keeps an
+a point on the leading column, which comes in TID order, keeps an
 exact stream of 7.9 kB chunks reused from a free list, and only the other
 boundaries get a TIDBitmap. On that workload (4M rows, 235 values, about
 17k rows on 14.3k heap pages per key, work_mem 4MB, 16 clients, pgbench
 -t, ABBA) the chunked streams give 986-993 tps and 743-745 faults per
-query with glibc against P1's 952-963 and 874-877, and 1,004-1,007 tps
+query with glibc against the earlier 952-963 and 874-877, and 1,004-1,007 tps
 and 805-806 faults with MALLOC_MMAP_THRESHOLD_ and MALLOC_TRIM_THRESHOLD_
 at 128 kB (musl-like) against 962-971 and 956-957. What is left is the
 executor's TIDBitmap and the page read's member decoding (three 32 kB

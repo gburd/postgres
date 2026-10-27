@@ -830,8 +830,8 @@ clears amhasgettuple.  barkcostestimate makes the whole index cost startup
 cost.  The scan calls extractQuery, turns its keys into point boundaries (a
 partial-match key into a range filtered and ended by comparePartial), and
 reads each boundary into a stream (BarkGinStream), iterated a heap page at
-a time.  A point on the leading column comes in TID order (H1), so its
-stream is exact: its TIDs and recheck flags in a list of chunks
+a time.  A point on the leading column comes in TID order ("Heap TID
+order"), so its stream is exact: its TIDs and recheck flags in a list of chunks
 (BarkGinChunk, 7.9 kB each, below AllocSet's chunk limit), taken from a
 free list the scan keeps (ginfree, in ginChunkCxt), so a query reuses them
 key after key and the scan rescan after rescan.  Any other boundary (a

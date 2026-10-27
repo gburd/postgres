@@ -5121,7 +5121,7 @@ StaticAssertDecl(sizeof(BarkGinChunk) <= ALLOCSET_SEPARATE_THRESHOLD - 64,
  * page blkno (InvalidBlockNumber once the stream is done), which is lossy,
  * or whose exact offsets are offs[0 .. noffs - 1], with recheck flags
  * offrecheck.  A boundary whose TIDs come in TID order (a point on the
- * leading column, H1) is exact: its TIDs are kept in chunks (first, the
+ * leading column) is exact: its TIDs are kept in chunks (first, the
  * read's place cur and curi).  Any other is read into a TIDBitmap of its
  * own and iterated (tbm, iter, res), its offsets extracted when the merge
  * first needs them (noffs -1 until then: an additional stream passes most
@@ -5396,7 +5396,7 @@ bark_gin_stream_to_bitmap(IndexScanDesc scan, BarkGinStream *s, int i,
 /*
  * Read boundary b's entries, with the scan's other keys as filters, into a
  * new stream for query key entry, positioned on its first page.  A point
- * on the leading column comes in TID order (H1) and is kept exact, in
+ * on the leading column comes in TID order and is kept exact, in
  * chunks taken from the scan's free list; a TID that does not ascend (the
  * index has key columns after this one, whose order breaks a point's runs)
  * turns the stream into a TIDBitmap from there on, as is any other
