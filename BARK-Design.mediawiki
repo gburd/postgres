@@ -1214,8 +1214,9 @@ place of an inverted AM, without changing the scalar design above.
   walks an IN-list, re-descending only where the next range starts past the
   page. An operator class may provide either interface; one written for
   pg_extended_btree ports to BARK unchanged. As built: the
-  wildcard class; M2a, GIN's query interface (procedures 10-13, partial
-  match included) in bitmap scans, is built: "As built (M2a)" under
+  pg_extended_btree interface (procedures 7-9) in every scan; GIN's query
+  interface (procedures 10-13, partial match included) in bitmap and index
+  scans, "As built" under "Which interface first."; RUM's addon ordering
   "Which interface first.", P1, merging its TID streams with required
   keys, "As built (P1)" there, P2, coalescing its keys by GIN's rule,
   "As built (P2)", and M2c, index scans of such a column, "As built (M2c)"
@@ -1364,8 +1365,8 @@ column of every BARK index, scalar ones included.
   with <code>xs_recheck</code> set.
 * '''10-13''' GIN's extractQuery, consistent, comparePartial and
   triConsistent (GIN's 3, 4, 5, 6), with GIN's signatures. barkvalidate
-  accepts them from M1, so catalogs need not change; bitmap scans use them
-  from M2a.
+  accepts them, and bitmap and index scans use them ("Which interface
+  first.").
 * '''14''' fetch, <code>value (key)</code>, optional and reserved:
   barkvalidate accepts it, BARK does not call it (see "Index-only scans"
   under "Scans": a key cannot be turned back into its row's value).
@@ -1385,7 +1386,7 @@ read the NULL entries (see "Insert and build"). A class provides 8 and 9,
 or 10 and 11 or 13, or both; one written for pg_extended_btree ports by
 renumbering 101-103 as 7-9.
 
-'''As built (M2a).''' A column whose class has procedure 10 and not 8
+'''As built.''' A column whose class has procedure 10 and not 8
 (bark_index_gin_query) is read by bitmap scans only (M2c, below, adds index
 scans when the column leads the index): bark_property answers
 <code>index_scan</code> false, get_relation_info asks amproperty for
