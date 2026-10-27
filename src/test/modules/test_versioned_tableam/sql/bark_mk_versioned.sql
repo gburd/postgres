@@ -137,7 +137,7 @@ CREATE INDEX tml_doc ON tml USING bark (doc bark_int4_array_ops);
 SELECT test_versioned_insert_entry('tml_doc', ctid, 0) FROM tml WHERE id = 0;
 SELECT count(DISTINCT blk) AS leaves, count(*) AS entries,
        count(*) FILTER (WHERE tag IS NULL) AS untagged
-  FROM (SELECT b AS blk, i.tag FROM generate_series(1, pg_relation_size('tml_doc') / 8192 - 1) b,
+  FROM (SELECT b AS blk, i.tag FROM generate_series(1, pg_relation_size('tml_doc') / current_setting('block_size')::int - 1) b,
           LATERAL bark_page_items('tml_doc', b) i
          WHERE i.htid = (SELECT ctid FROM tml WHERE id = 0)) e;
 SELECT count(*) FROM tml WHERE doc && '{1,5000}';
