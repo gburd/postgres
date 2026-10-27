@@ -357,7 +357,7 @@ FETCH 1 FROM c;
 INSERT INTO lpds SELECT g FROM generate_series(301, 500) g;
 MOVE ALL FROM c;
 COMMIT;
-SELECT pg_relation_size('lpds_a') / 8192 > 2 AS split,
+SELECT pg_relation_size('lpds_a') / current_setting('block_size')::int > 2 AS split,
        (SELECT count(*) FROM lpd_dead('lpds_a', 1)) AS dead;
 SELECT * FROM lpd_count('SELECT * FROM lpds WHERE a > 0');
 SELECT bark_index_check('lpds_a', true);
