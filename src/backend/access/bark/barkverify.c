@@ -641,6 +641,15 @@ bark_verify_chain(BarkVerify *v, OffsetNumber off, IndexTuple itup)
 			bark_verify_fail(v, "BARK index \"%s\" oversized entry on page %u at offset %u points at out-of-range overflow block %u",
 							 v->relname, v->blkno, off, chainblk);
 
+		/*
+		 * The page being checked is locked by the caller and is not an
+		 * overflow page: report a chain that leads back to it here, as the
+		 * check below would, rather than lock its buffer a second time.
+		 */
+		if (chainblk == v->blkno)
+			bark_verify_fail(v, "BARK index \"%s\" oversized entry on page %u at offset %u references non-overflow block %u",
+							 v->relname, v->blkno, off, chainblk);
+
 		cbuf = ReadBuffer(v->rel, chainblk);
 		LockBuffer(cbuf, BUFFER_LOCK_SHARE);
 		cpage = BufferGetPage(cbuf);

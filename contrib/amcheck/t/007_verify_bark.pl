@@ -53,7 +53,7 @@ my %idx = (
 	i_post_len => 't_post', i_post_size => 't_post',
 	map({ $_ => 't_big' }
 		qw(i_big_out i_big_nonovf i_big_trunc i_big_prefix i_big_complete
-		  i_big_chain)),
+		  i_big_chain i_big_self)),
 	i_bigz_prefix => 't_bigz');
 for my $i (sort keys %idx)
 {
@@ -248,6 +248,8 @@ for my $i (qw(i_big_prefix i_big_complete i_bigz_prefix))
 	cmp_ok(g16(\$p, item(\$p, 1) + 8 + 18), '>', 0, "$i has an inline prefix");
 }
 patch('i_big_out', $broot, sub { set_tid_blk($_[0], item($_[0], 1), 999999) });
+# A chain that starts at the entry's own leaf, which the check holds locked.
+patch('i_big_self', $broot, sub { set_tid_blk($_[0], item($_[0], 1), $broot) });
 # A zeroed first overflow page: valid as a new page, but not an overflow page.
 patch('i_big_nonovf', $info{i_big_nonovf}{ovf}, sub { ${ $_[0] } = "\0" x $blksz });
 patch('i_big_trunc', $broot,
@@ -312,6 +314,7 @@ both('i_post_len', "has a corrupt posting set on page $proot at offset $poff");
 both('i_post_size', "posting entry on page $proot at offset $poff, smaller than the \\d+ bytes");
 both('i_big_out', "oversized entry on page $broot at offset 1 points at out-of-range overflow block 999999");
 both('i_big_nonovf', "oversized entry on page $broot at offset 1 references non-overflow block $info{i_big_nonovf}{ovf}");
+both('i_big_self', "oversized entry on page $broot at offset 1 references non-overflow block $broot");
 both('i_big_trunc', "oversized entry on page $broot at offset 1 has a truncated overflow chain");
 both('i_big_prefix', "oversized entry on page $broot at offset 1 has a prefix that does not match its first key column");
 both('i_big_complete', "oversized entry on page $broot at offset 1 claims a complete 32-byte prefix");
