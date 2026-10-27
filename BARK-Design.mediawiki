@@ -551,7 +551,7 @@ when it beats the list shape with the reserve included.
 
 ==== Containment queries: in BARK, or beside it ====
 
-"Which rows contain term X" is a key lookup in BARK: once M1 extracts a
+"Which rows contain term X" is a key lookup in BARK: once a multikey class extracts a
 row's terms, the tree maps each term to its locator set, in SINGLE, LIST and
 POSTING entries over consecutive leaves, which is the shape GIN and pg_tre
 build from a term tree and per-term posting trees. What BARK keeps in house,
@@ -560,7 +560,7 @@ and what it leaves to another index:
 * '''Exact containment''' (an array or document holds X; all of X, Y; any
   of them) belongs in BARK. A single term is an equality scan. Several terms
   combine either as bitmap scans the executor ANDs and ORs, which works
-  today, or inside one BARK scan: with H1, a term's run is in TID order, so
+  today, or inside one BARK scan: with heap TID order, a term's run is in TID order, so
   intersecting a rare term with a common one probes the common term's run
   at (term, TID) for each candidate instead of reading it (a leapfrog join,
   as a WAND cursor seeks), and two POSTING entries intersect as sbm sets
@@ -585,8 +585,8 @@ and what it leaves to another index:
   change.
 
 The cost to watch in house is writes: a document with N distinct terms is N
-inserts. M1's one-pass insert of a row's sorted keys amortizes the descents,
-and D1 and coalescing keep version churn from growing the index; a GIN-style
+inserts. The one-pass insert of a row's sorted keys amortizes the descents,
+and bottom-up deletion and coalescing keep version churn from growing the index; a GIN-style
 pending list is not an option, since ordered scans would have to merge it.
 
 ==== Value sets that outgrow one entry ====
@@ -1117,17 +1117,10 @@ Each entry is marked ''done'' with its commits on <code>idxam</code>,
   reuse; 03fb7f146bb inserts; ab351f6ea3f ADD_TID; ec2a4ef1ac4 splits and
   new roots; a45e6d67a7c overflow chains)''
 
-'''H/D-series -- nbtree parity that remains'''
-
-* '''H1''' -- order duplicates by heap TID (nbtree's heapkeyspace): pivots
-  keep a heap TID when both sides are equal on every key column, inserts
-  descend by (key, TID), an insert inside a full LIST or POSTING swaps with
   its highest TID. Requires REINDEX of indexes built before it. ''(done:
   82694a0d540. An insert inside a full entry divides it in the middle
   rather than swapping its highest TID; see "Heap TID order" in the
   README.)''
-* '''D1''' -- bottom-up index deletion on the executor's
-  <code>indexUnchanged</code> hint, with its own WAL record and
   recovery-conflict resolution. ''(done: 7b651b29179)''
 * '''F1''' -- cut the last entry of a single-value split so the left page
   reaches its fill factor (nbtree's <code>_bt_singleval_fillfactor</code>).
@@ -1137,7 +1130,6 @@ Each entry is marked ''done'' with its commits on <code>idxam</code>,
 * '''P3''' -- a lower bound sorts after an equal pivot with no heap TID
   (nbtree's <code>_bt_compare</code> forward optimization). ''(done:
   80e5ab22ec1)''
-* '''K2''' -- dead-tuple hints from scans and simple deletion before a split.
   ''As built:'' through amgettuple's kill_prior_tuple, as nbtree's
   _bt_killitems (with <code>amgetbatch</code>, CF 4351, the hint moves to
   <code>amkillitemsbatch</code>, under G1).  A scan leaving a leaf marks
@@ -1324,16 +1316,16 @@ BENCHMARK-2026-10b.md, at 5d4e2883b10)
   branch is archive/bark/r4b-chunkdir (README, "Reading an overflow
   chain").
 
-'''M-series -- documents (multikey)'''
+== Document indexes ==
 
 These make BARK an index that a document store such as DocumentDB can use in
 place of an inverted AM, without changing the scalar design above.
 
-* '''M1''' -- multikey keys: an opclass support procedure that extracts N
+* '''Multikey keys''': an opclass support procedure that extracts N
   keys from one column value, called by insert and build; one row's sorted
   keys are inserted in one pass that reuses the descent. A scan returns a row
   that matches through several keys once. The meta page records whether the
-  index has multikey rows. Needs H1, so that (key, TID) names exactly one
+  index has multikey rows. It needs heap TID order, so that (key, TID) names
   entry member. Design: [[#M1: multikey keys|M1: multikey keys]] below.
   ''(done: design 76d2f802ab2; M1a catalog interface 36e18a3ca93; M1b
   insert and build ac12fa1e140; M1c scans 181eb9d700d; M1d planner
@@ -1390,8 +1382,8 @@ place of an inverted AM, without changing the scalar design above.
   an ordering operator on the column after the extracted one inside a
   key's run, is M2's. Design note:
   [[#M3: per-locator data (closed)|M3: per-locator data]] below.
-* '''M4''' -- unique indexes over multikey keys with document-store
-  semantics: unique across rows, while one row may repeat a key.
+* '''Unique indexes over multikey keys''' with document-store
+  semantics: unique across rows, while one row may repeat a key. Design:
   ''(in progress. M4a, the insert, build and planner sides, is built:
   "As built (M4a)" under [[#M4: unique indexes over multikey keys|M4]]
   below; M4b, procedure 15, ON CONFLICT and the foreign-key, REFRESH
@@ -1434,7 +1426,6 @@ place of an inverted AM, without changing the scalar design above.
   equal are equal bytes, and the class declares equalimage (btequalimage):
   its equal keys coalesce into LIST and POSTING entries. Not yet: a
   comparison with GIN's jsonb_path_ops)''
-* '''T1''' -- term containment at scale; see "Containment queries" under
   C-KEYSHAPE. ''(not started; the TID filter for an ordered scan is blocked
   on cf/4351)''
 
