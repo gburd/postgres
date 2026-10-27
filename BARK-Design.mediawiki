@@ -1222,9 +1222,6 @@ place of an inverted AM, without changing the scalar design above.
   its % operator, under "Per-locator data (closed)". The <=> ordering
   operator of that class is left to the executor's Sort, for the reasons
   given there.
-  M2 is done. The scalar classes in a BARK family (a class whose operators
-  are not btree's but whose keys are scalar) are not needed by any M or M5
-  case and are not started)''
 * '''Unique indexes over multikey keys''' with document-store
   semantics: unique across rows, while one row may repeat a key. Design:
   [[#Unique indexes over multikey keys|Unique indexes over multikey keys]]
