@@ -1,0 +1,1993 @@
+/*-------------------------------------------------------------------------
+ *
+ * test_versioned_tableam.c
+ *		Test access methods for the version-tag API.
+ *
+ * heap_versioned is heap, except that its locator says it is versioned
+ * (see "Versioned locators" in amlocator.h).  Its tag for a row version is
+ * the version's raw xmin, which freezing keeps.  Rows still move on every
+ * update that changes an indexed column, as heap's do, so every index entry
+ * keeps describing the version its TID names.  That makes heap's own
+ * visibility answers right for it, and lets each place that hands a
+ * (TID, tag) pair to this AM check the pair against the tuple at that TID:
+ * the tag must be 0 or that tuple's raw xmin.  This tests that core carries
+ * tags to the table AM, not the semantics of in-place updates, which belong
+ * to an AM that updates in place.  heap_versioned never keeps a locator, so
+ * no row has history (see "Versioned locators" in amlocator.h), and its
+ * build and validation scans may tag or not.  They tag every row, as an AM
+ * must tag a row that has history, and tvh_build_callback asserts that the
+ * tag is valid, so the build side of that rule is exercised even though
+ * nothing here creates history.
+ *
+ * Because every update moves the row, heap_versioned never really keeps a
+ * row's locator across a change to an indexed attribute.  To test the
+ * executor's TU_Affected path anyway, test_versioned_tableam.keep_locator =
+ * pretend makes heap_versioned report TU_Affected whenever the executor
+ * allowed it to keep the locator (TABLE_UPDATE_MAY_KEEP_LOCATOR) and heap
+ * moved the row.  The executor then makes entries only in the indexes the
+ * update affected, so the others lack an entry for the moved row: the table
+ * is corrupt afterwards, and the tests use it only on scratch tables.  With
+ * 'untagged', it also reports tag 0, which the executor must refuse.
+ *
+ * keep_locator = inplace keeps the locator for real, as an AM that updates
+ * in place does, with heap's HOT chain standing for the row's versions:
+ * heap_update is allowed a heap-only version although an indexed column
+ * changed, the new version is reported at the chain's root (the locator
+ * every entry of the row names), and the row gets a history in the changed
+ * column (tv_history_column).  Its versions are then the chain's members,
+ * an entry is valid for the member whose xmin is its tag, and a non-MVCC
+ * snapshot can see two versions at one locator while the update is in
+ * progress: the case a constraint check under a dirty snapshot must handle.
+ *
+ * nbtree's unique check calls table_fetch_tid(), since nbtree stores no
+ * tags, so fetch_tid_version is reached from SQL (test_versioned_fetch),
+ * which passes it an entry's recorded tag, as an index AM that stores tags
+ * would from its unique check.
+ *
+ * test_versioned_btree is nbtree with amcanversion, amindexcanversion and
+ * amimplements =
+ * btree, so that heap_versioned can ask for it for its btree indexes.  It
+ * stores no tag on disk: aminsert and its build callback record (index,
+ * TID) -> tag in a shared hash, and amgettuple reports the recorded tag in
+ * xs_heaptag.  heap's index scan code replaces xs_heaptid with the HOT
+ * chain member it returns, so amgettuple also remembers the TID it returned,
+ * for heap_versioned's check.  The hash lives in dynamic shared memory, so it survives
+ * across backends but not restarts, and an index rebuilt in place
+ * (REINDEX, REPACK) gets new entries over the old ones.  One tag per
+ * (index, TID) is enough because rows move: a TID names one version.
+ *
+ * heap_versioned's VACUUM runs heap's, then vacuums each
+ * test_versioned_btree index again with a version callback that answers
+ * DEAD for TIDs whose tuple is gone and LIVE_UNTAG for live tagged ones;
+ * the index then clears the recorded tag.
+ *
+ * test_versioned_tableam.invalid_untagged = '(b,o)' makes index scans
+ * treat the untagged entry at that TID as invalid, as an AM that updated
+ * the row in place, changing the index's key, would (its tagged entry is
+ * then the row's only valid one); VACUUM's verdicts ignore it, so a test
+ * can play an AM that wrongly answers LIVE for the untagged entry.
+ *
+ * Counters (test_versioned_counts()) record how many tags each check saw,
+ * so that the tests can tell that tags reached the table AM.
+ *
+ * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1994, Regents of the University of California
+ *
+ * IDENTIFICATION
+ *	  src/test/modules/test_versioned_tableam/test_versioned_tableam.c
+ *
+ *-------------------------------------------------------------------------
+ */
+#include "postgres.h"
+
+#include "access/amapi.h"
+#include "access/amlocator.h"
+#include "access/genam.h"
+#include "access/heapam.h"
+#include "access/htup_details.h"
+#include "access/nbtree.h"
+#include "access/relscan.h"
+#include "access/tableam.h"
+#include "access/xact.h"
+#include "catalog/index.h"
+#include "catalog/pg_am_d.h"
+#include "catalog/pg_constraint.h"
+#include "catalog/pg_operator_d.h"
+#include "catalog/pg_type_d.h"
+#include "commands/defrem.h"
+#include "commands/vacuum.h"
+#include "executor/executor.h"
+#include "executor/tuptable.h"
+#include "fmgr.h"
+#include "funcapi.h"
+#include "lib/dshash.h"
+#include "miscadmin.h"
+#include "optimizer/optimizer.h"
+#include "storage/bufmgr.h"
+#include "storage/dsm_registry.h"
+#include "utils/builtins.h"
+#include "utils/datum.h"
+#include "utils/fmgroids.h"
+#include "utils/guc.h"
+#include "utils/lsyscache.h"
+#include "utils/rel.h"
+#include "utils/snapmgr.h"
+#include "utils/tuplesort.h"
+#include "utils/tuplestore.h"
+
+PG_MODULE_MAGIC;
+
+/* ------------------------------------------------------------------------
+ * Shared state: recorded tags and counters
+ * ------------------------------------------------------------------------
+ */
+
+typedef struct TagKey
+{
+	Oid			indexoid;
+	ItemPointerData tid;
+	uint16		pad;			/* keep the key free of uninitialized bytes */
+} TagKey;
+
+typedef struct TagEntry
+{
+	TagKey		key;
+	IndexVersionTag tag;
+} TagEntry;
+
+/* what each check saw: tagged and untagged (TID, tag) pairs */
+typedef enum TvCounter
+{
+	TVC_INSERT_TAGGED,
+	TVC_BUILD_TAGGED,
+	TVC_SCAN_TAGGED,
+	TVC_SCAN_UNTAGGED,
+	TVC_FETCH_TAGGED,
+	TVC_FETCH_UNTAGGED,
+	TVC_DELETE_STATUS,
+	TVC_DELETE_STALE,
+	TVC_VACUUM_DEAD,
+	TVC_VACUUM_UNTAG,
+	TVC_VACUUM_LIVE,
+	TVC_VALIDATE_TAGGED,
+	TVC_VALIDATE_UNTAGGED,
+	TVC_BITMAP_ROWS,
+	TVC_UPDATE_KEPT,
+	TVC_JUDGE_VALID,
+	TVC_JUDGE_INVALID,
+	TVC_VERDICT_UNKNOWN,
+	TVC_VERDICT_VALID,
+	TVC_VERDICT_INVALID,
+	NUM_TVC
+} TvCounter;
+
+static const char *const tvc_names[NUM_TVC] = {
+	"insert_tagged", "build_tagged", "scan_tagged", "scan_untagged",
+	"fetch_tagged", "fetch_untagged", "delete_status", "delete_stale",
+	"vacuum_dead",
+	"vacuum_untag", "vacuum_live", "validate_tagged", "validate_untagged", "bitmap_rows",
+	"update_kept", "judge_valid", "judge_invalid",
+	"verdict_unknown", "verdict_valid", "verdict_invalid",
+};
+
+typedef struct TvShared
+{
+	pg_atomic_uint64 counters[NUM_TVC];
+} TvShared;
+
+static TvShared *tv_shared = NULL;
+
+/* no entry here has this tag; see tvh_index_getnext_slot */
+#define TV_NO_TAG	((IndexVersionTag) PG_UINT32_MAX)
+
+/*
+ * How heap_versioned judges a stale entry (tv_tag_stale): dead (index
+ * deletion and VACUUM remove it), or, for tests that need many entries of
+ * one row, live (kept; VACUUM answers LIVE) or untag (kept; VACUUM answers
+ * LIVE_UNTAG).  Unless dead, the checks accept a stale tag.
+ */
+typedef enum
+{
+	STALE_TAGS_DEAD,
+	STALE_TAGS_LIVE,
+	STALE_TAGS_UNTAG,
+}			StaleTags;
+
+static int	stale_tags = STALE_TAGS_DEAD;
+
+/*
+ * VACUUM's verdicts, for tests: a stale entry whose tag is in
+ * [stale_dead_min, stale_dead_max] is dead whatever stale_tags says; and with
+ * untag_tag >= 0 only an entry of that tag is answered LIVE_UNTAG, and every
+ * other live entry LIVE.
+ */
+static int	stale_dead_min = -1;
+static int	stale_dead_max = -1;
+static int	untag_tag = -1;
+
+/* index scans reject the untagged entry at this TID; see the file header */
+static char *invalid_untagged = NULL;
+static dshash_table *tv_tags = NULL;
+
+static const dshash_parameters tv_tags_params = {
+	sizeof(TagKey),
+	sizeof(TagEntry),
+	dshash_memcmp,
+	dshash_memhash,
+	dshash_memcpy,
+};
+
+static void
+tv_init_shared(void *ptr, void *arg)
+{
+	TvShared   *shared = (TvShared *) ptr;
+
+	for (int i = 0; i < NUM_TVC; i++)
+		pg_atomic_init_u64(&shared->counters[i], 0);
+}
+
+static void
+tv_attach(void)
+{
+	bool		found;
+
+	if (tv_shared == NULL)
+		tv_shared = GetNamedDSMSegment("test_versioned_tableam",
+									   sizeof(TvShared), tv_init_shared,
+									   &found, NULL);
+	if (tv_tags == NULL)
+		tv_tags = GetNamedDSHash("test_versioned_tableam_tags",
+								 &tv_tags_params, &found);
+}
+
+static void
+tv_count(TvCounter c)
+{
+	tv_attach();
+	pg_atomic_fetch_add_u64(&tv_shared->counters[c], 1);
+}
+
+static TagKey
+tv_key(Oid indexoid, ItemPointer tid)
+{
+	TagKey		key;
+
+	memset(&key, 0, sizeof(key));
+	key.indexoid = indexoid;
+	key.tid = *tid;
+	return key;
+}
+
+static void
+tv_record(Oid indexoid, ItemPointer tid, IndexVersionTag tag)
+{
+	TagKey		key = tv_key(indexoid, tid);
+	TagEntry   *entry;
+	bool		found;
+
+	tv_attach();
+	entry = dshash_find_or_insert(tv_tags, &key, &found);
+	entry->tag = tag;
+	dshash_release_lock(tv_tags, entry);
+}
+
+static IndexVersionTag
+tv_lookup(Oid indexoid, ItemPointer tid)
+{
+	TagKey		key = tv_key(indexoid, tid);
+	TagEntry   *entry;
+	IndexVersionTag tag = InvalidIndexVersionTag;
+
+	tv_attach();
+	entry = dshash_find(tv_tags, &key, false);
+	if (entry)
+	{
+		tag = entry->tag;
+		dshash_release_lock(tv_tags, entry);
+	}
+	return tag;
+}
+
+static void
+tv_forget(Oid indexoid, ItemPointer tid)
+{
+	TagKey		key = tv_key(indexoid, tid);
+
+	tv_attach();
+	(void) dshash_delete_key(tv_tags, &key);
+}
+
+/* ------------------------------------------------------------------------
+ * The plumbing check
+ * ------------------------------------------------------------------------
+ */
+
+/*
+ * The member of the HOT chain at offset off of page (after a redirect) whose
+ * raw xmin is tag, or with only_first, that tuple only if its own xmin is
+ * tag; InvalidOffsetNumber if there is none.  The versions of a row updated
+ * in place (keep_locator = inplace) are the members of the chain whose root
+ * its entries name.
+ */
+static OffsetNumber
+tv_chain_member(Page page, BlockNumber blkno, OffsetNumber off,
+				IndexVersionTag tag, bool only_first)
+{
+	for (int n = 0; n < MaxHeapTuplesPerPage; n++)
+	{
+		ItemId		lp;
+		HeapTupleHeader htup;
+
+		if (off < FirstOffsetNumber || off > PageGetMaxOffsetNumber(page))
+			return InvalidOffsetNumber;
+		lp = PageGetItemId(page, off);
+		if (ItemIdIsRedirected(lp))
+		{
+			off = ItemIdGetRedirect(lp);
+			continue;
+		}
+		if (!ItemIdIsNormal(lp))
+			return InvalidOffsetNumber;
+		htup = (HeapTupleHeader) PageGetItem(page, lp);
+		if ((IndexVersionTag) HeapTupleHeaderGetRawXmin(htup) == tag)
+			return off;
+		if (only_first || !HeapTupleHeaderIsHotUpdated(htup) ||
+			ItemPointerGetBlockNumber(&htup->t_ctid) != blkno)
+			return InvalidOffsetNumber;
+		off = ItemPointerGetOffsetNumber(&htup->t_ctid);
+	}
+	return InvalidOffsetNumber;
+}
+
+/*
+ * Check that (tid, tag), handed to the table AM by `what`, names the tuple
+ * at tid: the tag is 0 or that tuple's raw xmin.  Returns whether a live
+ * row may be reached through tid: a tuple is there, or a redirect to the
+ * rest of a pruned HOT chain (whose root, the tuple the tag named, is gone,
+ * so the tag cannot be checked).
+ */
+static bool
+tv_check_tag(Relation rel, ItemPointer tid, IndexVersionTag tag,
+			 const char *what)
+{
+	Buffer		buf;
+	Page		page;
+	OffsetNumber off = ItemPointerGetOffsetNumber(tid);
+	ItemId		lp;
+	bool		present = false;
+
+	if (ItemPointerGetBlockNumber(tid) >= RelationGetNumberOfBlocks(rel))
+		return false;
+
+	buf = ReadBuffer(rel, ItemPointerGetBlockNumber(tid));
+	LockBuffer(buf, BUFFER_LOCK_SHARE);
+	page = BufferGetPage(buf);
+	if (off >= FirstOffsetNumber && off <= PageGetMaxOffsetNumber(page))
+	{
+		lp = PageGetItemId(page, off);
+		if (ItemIdIsRedirected(lp))
+			present = true;
+		else if (ItemIdIsNormal(lp))
+		{
+			HeapTupleHeader htup = (HeapTupleHeader) PageGetItem(page, lp);
+			TransactionId xmin = HeapTupleHeaderGetRawXmin(htup);
+
+			present = true;
+			if (tag != InvalidIndexVersionTag &&
+				!OffsetNumberIsValid(tv_chain_member(page,
+													 ItemPointerGetBlockNumber(tid),
+													 off, tag, false)) &&
+				stale_tags == STALE_TAGS_DEAD)
+			{
+				UnlockReleaseBuffer(buf);
+				elog(ERROR, "%s: tag %u does not name the tuple at (%u,%u), whose xmin is %u",
+					 what, tag, ItemPointerGetBlockNumber(tid), off, xmin);
+			}
+		}
+	}
+	UnlockReleaseBuffer(buf);
+	return present;
+}
+
+/*
+ * Is the entry (tid, tag) stale: tagged, at a TID whose tuple (and HOT
+ * chain, for a row updated in place) has another raw xmin?
+ * heap_versioned's validity rule (rows move, so an entry is valid only for
+ * the version at its TID) makes such an entry valid for no version.  Only
+ * test_versioned_insert_entry's "stale" tags make one; every other check
+ * refuses it (tv_check_tag).
+ */
+static bool
+tv_tag_stale(Relation rel, ItemPointer tid, IndexVersionTag tag)
+{
+	Buffer		buf;
+	Page		page;
+	OffsetNumber off = ItemPointerGetOffsetNumber(tid);
+	bool		stale = false;
+
+	if (tag == InvalidIndexVersionTag ||
+		ItemPointerGetBlockNumber(tid) >= RelationGetNumberOfBlocks(rel))
+		return false;
+	buf = ReadBuffer(rel, ItemPointerGetBlockNumber(tid));
+	LockBuffer(buf, BUFFER_LOCK_SHARE);
+	page = BufferGetPage(buf);
+	if (off >= FirstOffsetNumber && off <= PageGetMaxOffsetNumber(page) &&
+		ItemIdIsNormal(PageGetItemId(page, off)))
+		stale = !OffsetNumberIsValid(tv_chain_member(page,
+													 ItemPointerGetBlockNumber(tid),
+													 off, tag, false));
+	UnlockReleaseBuffer(buf);
+	return stale;
+}
+
+/* The tag heap_versioned gives a tuple: its raw xmin. */
+static IndexVersionTag
+tv_tag_of(HeapTuple tuple)
+{
+	return (IndexVersionTag) HeapTupleHeaderGetRawXmin(tuple->t_data);
+}
+
+/*
+ * A row with history (test_versioned_mark_history) stands for a row a table
+ * AM updated in place, changing the marked column: its index entries are
+ * judged by the validity rule with M = {that column}.  An entry of an index
+ * on M is valid for the version at its TID only if its tag is that
+ * version's xmin; an untagged or stale entry is valid for no version.  The
+ * mark lives in the tag hash under the table's OID, with the column's
+ * attribute number as its "tag".
+ */
+#define TV_MARK_INPLACE		0x10000
+
+static AttrNumber
+tv_history_column(Relation heap, ItemPointer tid)
+{
+	return (AttrNumber) (tv_lookup(RelationGetRelid(heap), tid) & 0xFFFF);
+}
+
+/*
+ * Was the row's history made by keep_locator = inplace?  Then its HOT
+ * chain's root, while it is a tuple, is the row's base, which untagged
+ * entries name; after pruning, no untagged entry is valid.
+ */
+static bool
+tv_history_inplace(Relation heap, ItemPointer tid)
+{
+	return (tv_lookup(RelationGetRelid(heap), tid) & TV_MARK_INPLACE) != 0;
+}
+
+/* does index read column attno, as a key or within an expression? */
+static bool
+tv_index_reads(Relation index, AttrNumber attno)
+{
+	Bitmapset  *attrs = NULL;
+
+	for (int i = 0; i < index->rd_index->indnatts; i++)
+		if (index->rd_index->indkey.values[i] == attno)
+			return true;
+	pull_varattnos((Node *) RelationGetIndexExpressions(index), 1, &attrs);
+	return bms_is_member(attno - FirstLowInvalidHeapAttributeNumber, attrs);
+}
+
+/* do tuples a and b have the same value in column attno? */
+static bool
+tv_same_value(TupleDesc desc, HeapTuple a, HeapTuple b, AttrNumber attno)
+{
+	Form_pg_attribute att = TupleDescAttr(desc, attno - 1);
+	bool		anull;
+	bool		bnull;
+	Datum		av = heap_getattr(a, attno, desc, &anull);
+	Datum		bv = heap_getattr(b, attno, desc, &bnull);
+
+	if (anull || bnull)
+		return anull && bnull;
+	return datumIsEqual(av, bv, att->attbyval, att->attlen);
+}
+
+/*
+ * The versions of the row whose HOT chain starts at root, on the locked page
+ * of buf: up to MaxHeapTuplesPerPage members, oldest first, each with its
+ * offset in offs[] and in tags[] the tag an entry of an index on column attno
+ * must have to be valid for it: the xmin of the last member up to it that
+ * changed attno (the root counts as one), g0 of the validity rule
+ * (amlocator.h).  Returns the number of members.
+ */
+static int
+tv_chain_versions(Relation rel, Buffer buf, ItemPointer root, AttrNumber attno,
+				  OffsetNumber *offs, IndexVersionTag *tags)
+{
+	Page		page = BufferGetPage(buf);
+	BlockNumber blkno = ItemPointerGetBlockNumber(root);
+	OffsetNumber off = ItemPointerGetOffsetNumber(root);
+	HeapTupleData prev;
+	IndexVersionTag g0 = InvalidIndexVersionTag;
+	int			n = 0;
+
+	for (int steps = 0; steps <= MaxHeapTuplesPerPage; steps++)
+	{
+		ItemId		lp;
+		HeapTupleData tup;
+
+		if (off < FirstOffsetNumber || off > PageGetMaxOffsetNumber(page))
+			break;
+		lp = PageGetItemId(page, off);
+		if (ItemIdIsRedirected(lp))
+		{
+			off = ItemIdGetRedirect(lp);
+			continue;
+		}
+		if (!ItemIdIsNormal(lp))
+			break;
+		tup.t_data = (HeapTupleHeader) PageGetItem(page, lp);
+		tup.t_len = ItemIdGetLength(lp);
+		tup.t_tableOid = RelationGetRelid(rel);
+		ItemPointerSet(&tup.t_self, blkno, off);
+		if (n == 0 || !tv_same_value(RelationGetDescr(rel), &prev, &tup, attno))
+			g0 = (IndexVersionTag) HeapTupleHeaderGetRawXmin(tup.t_data);
+		offs[n] = off;
+		tags[n] = g0;
+		n++;
+		if (!HeapTupleHeaderIsHotUpdated(tup.t_data) ||
+			ItemPointerGetBlockNumber(&tup.t_data->t_ctid) != blkno)
+			break;
+		prev = tup;
+		off = ItemPointerGetOffsetNumber(&tup.t_data->t_ctid);
+	}
+	return n;
+}
+
+/*
+ * Judge the entry (tid, tag) of index under the history rule.  Returns
+ * false only for an entry of a marked row's index on M that is valid for no
+ * version: one not tagged with the row's xmin, or for a row updated in place
+ * (tv_history_inplace), one whose tag is not the g0 of any member of its
+ * chain (tv_chain_versions), or with `version` (a member, or tid itself),
+ * not of that member.  Every other entry is valid as before (rows move).
+ * Counts the judgments the rule makes.
+ */
+static bool
+tv_entry_valid(Relation heap, Relation index, ItemPointer tid,
+			   IndexVersionTag tag, ItemPointer version)
+{
+	AttrNumber	attno = tv_history_column(heap, tid);
+	bool		valid = false;
+	OffsetNumber offs[MaxHeapTuplesPerPage];
+	IndexVersionTag tags[MaxHeapTuplesPerPage];
+	Buffer		buf;
+	int			n;
+
+	if (attno == InvalidAttrNumber || !tv_index_reads(index, attno))
+		return true;
+	if (!tv_history_inplace(heap, tid))
+		valid = tag != InvalidIndexVersionTag && !tv_tag_stale(heap, tid, tag);
+	else if (ItemPointerGetBlockNumber(tid) < RelationGetNumberOfBlocks(heap))
+	{
+		buf = ReadBuffer(heap, ItemPointerGetBlockNumber(tid));
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		n = tv_chain_versions(heap, buf, tid, attno, offs, tags);
+		UnlockReleaseBuffer(buf);
+		/* an untagged entry names the base: see tv_history_inplace */
+		if (tag == InvalidIndexVersionTag && n > 0 &&
+			offs[0] == ItemPointerGetOffsetNumber(tid))
+			tag = tags[0];
+		for (int i = 0; i < n && !valid; i++)
+			valid = tag != InvalidIndexVersionTag && tags[i] == tag &&
+				(version == NULL ||
+				 ItemPointerGetOffsetNumber(version) == offs[i] ||
+				 (i == 0 && ItemPointerEquals(version, tid)));
+	}
+	tv_count(valid ? TVC_JUDGE_VALID : TVC_JUDGE_INVALID);
+	return valid;
+}
+
+/*
+ * fetch_tid_version for an entry of a marked row's index on M: is a
+ * version the entry is valid for visible to snapshot?  The first such
+ * member of the chain decides, so that a dirty snapshot's xmin and xmax
+ * describe it.  *all_dead is left false: no entry is killed by this.
+ */
+static bool
+tv_fetch_valid_version(Relation heap, ItemPointer tid, IndexVersionTag tag,
+					   AttrNumber attno, Snapshot snapshot)
+{
+	OffsetNumber offs[MaxHeapTuplesPerPage];
+	IndexVersionTag tags[MaxHeapTuplesPerPage];
+	Buffer		buf;
+	int			n;
+	bool		found = false;
+
+	buf = ReadBuffer(heap, ItemPointerGetBlockNumber(tid));
+	LockBuffer(buf, BUFFER_LOCK_SHARE);
+	n = tv_chain_versions(heap, buf, tid, attno, offs, tags);
+	if (tag == InvalidIndexVersionTag && n > 0)
+		tag = tags[0];			/* tv_entry_valid said the base is there */
+	for (int i = 0; i < n && !found; i++)
+	{
+		HeapTupleData tup;
+		ItemId		lp = PageGetItemId(BufferGetPage(buf), offs[i]);
+
+		if (tags[i] != tag)
+			continue;
+		tup.t_data = (HeapTupleHeader) PageGetItem(BufferGetPage(buf), lp);
+		tup.t_len = ItemIdGetLength(lp);
+		tup.t_tableOid = RelationGetRelid(heap);
+		ItemPointerSet(&tup.t_self, ItemPointerGetBlockNumber(tid), offs[i]);
+		found = HeapTupleSatisfiesVisibility(&tup, snapshot, buf);
+	}
+	UnlockReleaseBuffer(buf);
+	return found;
+}
+
+/* ------------------------------------------------------------------------
+ * test_versioned_btree
+ * ------------------------------------------------------------------------
+ */
+
+static IndexAmRoutine tvb_routine;
+
+static bool
+tvb_insert(Relation rel, Datum *values, bool *isnull,
+		   ItemPointer ht_ctid, Relation heapRel,
+		   IndexUniqueCheck checkUnique, bool indexUnchanged,
+		   IndexInfo *indexInfo)
+{
+	bool		result;
+
+	result = btinsert(rel, values, isnull, ht_ctid, heapRel, checkUnique,
+					  indexUnchanged, indexInfo);
+
+	/* a recheck makes no entry; see indexam.sgml */
+	if (checkUnique != UNIQUE_CHECK_EXISTING)
+	{
+		tv_record(RelationGetRelid(rel), ht_ctid, indexInfo->ii_VersionTag);
+		if (indexInfo->ii_VersionTag != InvalidIndexVersionTag)
+			tv_count(TVC_INSERT_TAGGED);
+	}
+	return result;
+}
+
+/*
+ * The build callback's side of recording a tag.  nbtree's btbuild passes
+ * its own callback to the table AM's build scan, which test_versioned_btree
+ * cannot wrap without copying btbuild, so heap_versioned's build scan calls
+ * this after nbtree's callback, while ii_VersionTag still holds the row's
+ * tag.  (A real index AM reads ii_VersionTag in its own callback.)
+ */
+static void
+tvb_build_record(Relation index, ItemPointer tid, IndexInfo *indexInfo)
+{
+	tv_record(RelationGetRelid(index), tid, indexInfo->ii_VersionTag);
+	if (indexInfo->ii_VersionTag != InvalidIndexVersionTag)
+		tv_count(TVC_BUILD_TAGGED);
+}
+
+/* the entry the last tvb_gettuple call returned; see the file header */
+static IndexScanDesc tvb_last_scan = NULL;
+static ItemPointerData tvb_last_tid;
+
+/*
+ * Read the table AM's verdict on the entry this scan returned last, as an
+ * index AM with several entries per row would, and count it.  A rescan or
+ * restore leaves no entry to judge.
+ */
+static bool
+tvb_gettuple(IndexScanDesc scan, ScanDirection dir)
+{
+	if (tvb_last_scan == scan)
+		tv_count(scan->xs_entry_verdict == INDEX_SCAN_ENTRY_VALID ?
+				 TVC_VERDICT_VALID :
+				 scan->xs_entry_verdict == INDEX_SCAN_ENTRY_INVALID ?
+				 TVC_VERDICT_INVALID : TVC_VERDICT_UNKNOWN);
+	tvb_last_scan = NULL;
+	if (!btgettuple(scan, dir))
+		return false;
+	scan->xs_heaptag = tv_lookup(RelationGetRelid(scan->indexRelation),
+								 &scan->xs_heaptid);
+	tvb_last_scan = scan;
+	tvb_last_tid = scan->xs_heaptid;
+	return true;
+}
+
+static void
+tvb_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
+		   ScanKey orderbys, int norderbys)
+{
+	if (tvb_last_scan == scan)
+		tvb_last_scan = NULL;
+	btrescan(scan, scankey, nscankeys, orderbys, norderbys);
+}
+
+static void
+tvb_restrpos(IndexScanDesc scan)
+{
+	if (tvb_last_scan == scan)
+		tvb_last_scan = NULL;
+	btrestrpos(scan);
+}
+
+/* a later scan may get the same address */
+static void
+tvb_endscan(IndexScanDesc scan)
+{
+	if (tvb_last_scan == scan)
+		tvb_last_scan = NULL;
+	btendscan(scan);
+}
+
+typedef struct TvbVacuumState
+{
+	IndexBulkDeleteCallback callback;
+	void	   *callback_state;
+	IndexBulkDeleteVersionCallback version_callback;
+	void	   *version_state;
+	Oid			indexoid;
+} TvbVacuumState;
+
+/* hand nbtree's (TID) question to the version callback with its tag */
+static bool
+tvb_vacuum_callback(ItemPointer tid, void *state)
+{
+	TvbVacuumState *vs = (TvbVacuumState *) state;
+	IndexVersionTag tag = tv_lookup(vs->indexoid, tid);
+
+	switch (vs->version_callback(tid, tag, vs->version_state))
+	{
+		case INDEX_ENTRY_DEAD:
+			tv_forget(vs->indexoid, tid);
+			return true;
+		case INDEX_ENTRY_LIVE_UNTAG:
+			tv_record(vs->indexoid, tid, InvalidIndexVersionTag);
+			return false;
+		case INDEX_ENTRY_LIVE:
+			return false;
+	}
+	return false;
+}
+
+static IndexBulkDeleteResult *
+tvb_bulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
+			   IndexBulkDeleteCallback callback, void *callback_state)
+{
+	TvbVacuumState vs;
+
+	if (info->version_callback == NULL)
+		return btbulkdelete(info, stats, callback, callback_state);
+
+	vs.callback = callback;
+	vs.callback_state = callback_state;
+	vs.version_callback = info->version_callback;
+	vs.version_state = info->version_state;
+	vs.indexoid = RelationGetRelid(info->index);
+	return btbulkdelete(info, stats, tvb_vacuum_callback, &vs);
+}
+
+/*
+ * amindexcanversion: an index whose name ends in "_notag" stores no tags, so
+ * that a test can show the executor treating one index of an AM with
+ * amcanversion as an index without it.
+ */
+static bool
+tvb_indexcanversion(Relation index)
+{
+	const char *name = RelationGetRelationName(index);
+	size_t		len = strlen(name);
+
+	return !(len >= 6 && strcmp(name + len - 6, "_notag") == 0);
+}
+
+/*
+ * amindexmaykeeplocator: an index whose name ends in "_nokeep" stores tags
+ * but refuses to let an update keep a row's locator, so that a test can
+ * show the executor moving the row while the index still judges by tag.
+ */
+static bool
+tvb_indexmaykeeplocator(Relation index)
+{
+	const char *name = RelationGetRelationName(index);
+	size_t		len = strlen(name);
+
+	return !(len >= 7 && strcmp(name + len - 7, "_nokeep") == 0);
+}
+
+PG_FUNCTION_INFO_V1(test_versioned_btree_handler);
+Datum
+test_versioned_btree_handler(PG_FUNCTION_ARGS)
+{
+	if (tvb_routine.type == 0)
+	{
+		IndexAmRoutine routine = *GetIndexAmRoutine(F_BTHANDLER);
+
+		routine.amcanversion = true;
+		routine.amindexcanversion = tvb_indexcanversion;
+		routine.amindexmaykeeplocator = tvb_indexmaykeeplocator;
+		routine.amimplements = BTREE_AM_OID;
+		routine.amcanbuildparallel = false; /* see tvb_build_record */
+		routine.aminsert = tvb_insert;
+		routine.amgettuple = tvb_gettuple;
+		routine.amrescan = tvb_rescan;
+		routine.amrestrpos = tvb_restrpos;
+		routine.amendscan = tvb_endscan;
+		routine.ambulkdelete = tvb_bulkdelete;
+		tvb_routine = routine;
+	}
+	PG_RETURN_POINTER(&tvb_routine);
+}
+
+/* ------------------------------------------------------------------------
+ * heap_versioned
+ * ------------------------------------------------------------------------
+ */
+
+static TableAmRoutine tvh_routine;
+
+typedef enum
+{
+	KEEP_LOCATOR_OFF,
+	KEEP_LOCATOR_PRETEND,
+	KEEP_LOCATOR_UNTAGGED,
+	KEEP_LOCATOR_INPLACE,
+} KeepLocatorMode;
+
+static int	keep_locator = KEEP_LOCATOR_OFF;
+
+/* percentage of rows its build scan tags; see tvh_build_callback */
+static int	build_tag_percent = 100;
+
+/* older versions its build scan hands for each row it tags; ditto */
+static int	build_history = 0;
+
+/*
+ * forget_verdict breaks the verdict obligation (amlocator.h), for the tests
+ * of the index AM's protocol check: "all" leaves every returned entry's
+ * verdict UNKNOWN, "ios" only an index-only scan's.
+ */
+typedef enum
+{
+	FORGET_VERDICT_OFF,
+	FORGET_VERDICT_ALL,
+	FORGET_VERDICT_IOS,
+}			ForgetVerdictMode;
+
+static int	forget_verdict = FORGET_VERDICT_OFF;
+
+static const struct config_enum_entry forget_verdict_options[] = {
+	{"off", FORGET_VERDICT_OFF, false},
+	{"all", FORGET_VERDICT_ALL, false},
+	{"ios", FORGET_VERDICT_IOS, false},
+	{NULL, 0, false}
+};
+
+
+static const struct config_enum_entry stale_tags_options[] = {
+	{"dead", STALE_TAGS_DEAD, false},
+	{"live", STALE_TAGS_LIVE, false},
+	{"untag", STALE_TAGS_UNTAG, false},
+	{NULL, 0, false}
+};
+
+static const struct config_enum_entry keep_locator_options[] = {
+	{"off", KEEP_LOCATOR_OFF, false},
+	{"pretend", KEEP_LOCATOR_PRETEND, false},
+	{"untagged", KEEP_LOCATOR_UNTAGGED, false},
+	{"inplace", KEEP_LOCATOR_INPLACE, false},
+	{NULL, 0, false}
+};
+
+static bool tvh_fetch_tid_version(Relation rel, ItemPointer tid,
+								  IndexVersionTag tag, Relation index,
+								  Snapshot snapshot, bool *all_dead);
+
+static const LocatorDesc tvh_locator = {
+	.width = sizeof(ItemPointerData),
+	.max_offset = MaxHeapTuplesPerPage,
+	.name = "tid",
+	.stable = false,
+	.old_version_retained = true,
+	.versioned = true,
+};
+
+static const LocatorDesc *
+tvh_relation_locator(Relation rel)
+{
+	return &tvh_locator;
+}
+
+/*
+ * btree indexes are test_versioned_btree, unless default_btree_implementation
+ * names another implementation (bark), which then implements them.
+ */
+static Oid
+tvh_index_implementation(Relation rel, Oid amoid)
+{
+	if (amoid == BTREE_AM_OID && default_btree_implementation[0] == '\0')
+		return get_index_am_oid("test_versioned_btree", false);
+	return InvalidOid;
+}
+
+/*
+ * The root of the HOT chain that tid is a member of: the TID an index entry
+ * for that row names.  heap's index scan replaces xs_heaptid with the chain
+ * member it returns.
+ */
+static ItemPointerData
+tv_root_tid(Relation rel, ItemPointer tid)
+{
+	OffsetNumber roots[MaxHeapTuplesPerPage];
+	Buffer		buf = ReadBuffer(rel, ItemPointerGetBlockNumber(tid));
+	ItemPointerData root = *tid;
+
+	LockBuffer(buf, BUFFER_LOCK_SHARE);
+	heap_get_root_tuples(BufferGetPage(buf), roots);
+	UnlockReleaseBuffer(buf);
+	if (OffsetNumberIsValid(roots[ItemPointerGetOffsetNumber(tid) - 1]))
+		ItemPointerSetOffsetNumber(&root,
+								   roots[ItemPointerGetOffsetNumber(tid) - 1]);
+	return root;
+}
+
+/* heap's TOAST tables are plain heap */
+static Oid
+tvh_relation_toast_am(Relation rel)
+{
+	return HEAP_TABLE_AM_OID;
+}
+
+/*
+ * heap_getnext() refuses any relation whose routine is not heap's, and
+ * heap's build, validation and CLUSTER code uses it, so present heap's
+ * routine while running them.  The locator descriptor is cached first, so
+ * that it stays ours.
+ */
+#define AS_HEAP(rel, stmt) \
+	do { \
+		const TableAmRoutine *saved_ = (rel)->rd_tableam; \
+		(void) RelationGetLocatorDesc(rel); \
+		(rel)->rd_tableam = GetHeapamTableAmRoutine(); \
+		PG_TRY(); \
+		{ \
+			stmt; \
+		} \
+		PG_FINALLY(); \
+		{ \
+			(rel)->rd_tableam = saved_; \
+		} \
+		PG_END_TRY(); \
+	} while (0)
+
+/* --- index scans --- */
+
+typedef struct TvhScanState
+{
+	void	   *heap_opaque;	/* heap's own xs_table_opaque */
+	bool		(*heap_getnext) (IndexScanDesc scan, ScanDirection direction,
+								 TupleTableSlot *slot);
+	bool		returned;		/* a tuple was returned through the entry */
+} TvhScanState;
+
+/*
+ * heap's index scan, then the history rule (tv_entry_valid) on the version
+ * heap returned through the entry.  A version the entry is not valid for is
+ * passed over; under a non-MVCC snapshot heap may then go on along the HOT
+ * chain to another (xs_heap_continue), which, for a row updated in place,
+ * is another version at the same locator.  The verdict is about the entry
+ * (amlocator.h): VALID once a version was returned through it, and a version
+ * passed over after that does not lower it.  To tell a continuation from the
+ * next entry, which may be another entry of the same row with the same tag,
+ * xs_heaptag is set to TV_NO_TAG before a continuation: the index AM sets it
+ * for each entry it returns.
+ */
+static bool
+tvh_index_getnext_slot(IndexScanDesc scan, ScanDirection direction,
+					   TupleTableSlot *slot)
+{
+	TvhScanState *ts = (TvhScanState *) scan->xs_table_opaque;
+	bool		versioned = index_can_version(scan->indexRelation);
+	bool		result;
+	ItemPointerData tid;
+
+	for (;;)
+	{
+		bool		cont = scan->xs_heap_continue && versioned;
+		IndexVersionTag tag = scan->xs_heaptag;
+
+		if (cont)
+			scan->xs_heaptag = TV_NO_TAG;
+		scan->xs_table_opaque = ts->heap_opaque;
+		PG_TRY();
+		{
+			result = ts->heap_getnext(scan, direction, slot);
+		}
+		PG_FINALLY();
+		{
+			scan->xs_table_opaque = ts;
+		}
+		PG_END_TRY();
+
+		if (cont && scan->xs_heaptag == TV_NO_TAG)
+			scan->xs_heaptag = tag;
+		else
+			ts->returned = false;
+		if (!result || !versioned)
+			break;
+		/* test_versioned_btree remembers its entry's TID; others: the root */
+		tid = tvb_last_scan == scan ? tvb_last_tid :
+			tv_root_tid(scan->heapRelation, &scan->xs_heaptid);
+		/* an entry valid for no version returns nothing, here or in an IOS */
+		if (tv_entry_valid(scan->heapRelation, scan->indexRelation, &tid,
+						   scan->xs_heaptag, &scan->xs_heaptid) &&
+			!(scan->xs_heaptag == InvalidIndexVersionTag &&
+			  invalid_untagged != NULL && invalid_untagged[0] != '\0' &&
+			  ItemPointerEquals(&tid,
+								DatumGetItemPointer(DirectFunctionCall1(tidin,
+																		CStringGetDatum(invalid_untagged))))))
+			break;
+
+		/*
+		 * Passed over.  heap lowers an UNKNOWN verdict to INVALID when the
+		 * chain ends with nothing returned, before it asks for the next
+		 * entry.
+		 */
+		scan->xs_entry_verdict = ts->returned ? INDEX_SCAN_ENTRY_VALID :
+			scan->xs_heap_continue ? INDEX_SCAN_ENTRY_UNKNOWN :
+			INDEX_SCAN_ENTRY_INVALID;
+	}
+	if (result && versioned)
+		ts->returned = true;
+
+	if (result &&
+		(forget_verdict == FORGET_VERDICT_ALL ||
+		 (forget_verdict == FORGET_VERDICT_IOS && scan->xs_want_itup)))
+		scan->xs_entry_verdict = INDEX_SCAN_ENTRY_UNKNOWN;
+	if (result && index_can_version(scan->indexRelation))
+	{
+		tv_check_tag(scan->heapRelation, &tid, scan->xs_heaptag,
+					 "index scan");
+		tv_count(scan->xs_heaptag != InvalidIndexVersionTag ?
+				 TVC_SCAN_TAGGED : TVC_SCAN_UNTAGGED);
+	}
+	else if (result && scan->xs_heaptag != InvalidIndexVersionTag)
+		elog(ERROR, "index scan: index \"%s\" stores no tags, but returned tag %u",
+			 RelationGetRelationName(scan->indexRelation), scan->xs_heaptag);
+	return result;
+}
+
+static void
+tvh_index_scan_begin(IndexScanDesc scan, uint32 flags)
+{
+	TvhScanState *ts = palloc_object(TvhScanState);
+
+	heapam_index_scan_begin(scan, flags);
+	ts->heap_opaque = scan->xs_table_opaque;
+	ts->heap_getnext = scan->xs_getnext_slot;
+	ts->returned = false;
+	scan->xs_table_opaque = ts;
+	scan->xs_getnext_slot = tvh_index_getnext_slot;
+}
+
+static void
+tvh_index_scan_reset(IndexScanDesc scan)
+{
+	TvhScanState *ts = (TvhScanState *) scan->xs_table_opaque;
+
+	scan->xs_table_opaque = ts->heap_opaque;
+	heapam_index_scan_reset(scan);
+	scan->xs_table_opaque = ts;
+	ts->returned = false;
+}
+
+static void
+tvh_index_scan_end(IndexScanDesc scan)
+{
+	TvhScanState *ts = (TvhScanState *) scan->xs_table_opaque;
+
+	scan->xs_table_opaque = ts->heap_opaque;
+	heapam_index_scan_end(scan);
+	pfree(ts);
+}
+
+/* --- constraint fetch --- */
+
+static bool
+tvh_fetch_tid_version(Relation rel, ItemPointer tid, IndexVersionTag tag,
+					  Relation index, Snapshot snapshot, bool *all_dead)
+{
+	if (index_can_version(index))
+	{
+		tv_count(tag != InvalidIndexVersionTag ?
+				 TVC_FETCH_TAGGED : TVC_FETCH_UNTAGGED);
+		if (!tv_entry_valid(rel, index, tid, tag, NULL))
+		{
+			if (all_dead)
+				*all_dead = false;
+			return false;
+		}
+		tv_check_tag(rel, tid, tag, "fetch_tid_version");
+		if (tv_history_inplace(rel, tid) &&
+			tv_index_reads(index, tv_history_column(rel, tid)))
+		{
+			if (all_dead)
+				*all_dead = false;
+			return tv_fetch_valid_version(rel, tid, tag,
+										  tv_history_column(rel, tid),
+										  snapshot);
+		}
+	}
+	else if (tag != InvalidIndexVersionTag)
+		elog(ERROR, "fetch_tid_version: index \"%s\" stores no tags, but got tag %u",
+			 RelationGetRelationName(index), tag);
+
+	/* every version a TID reaches has the entry's key; see file header */
+	return heapam_fetch_tid(rel, tid, snapshot, all_dead);
+}
+
+/* --- index deletion --- */
+
+/*
+ * Check every (TID, tag) and answer stale entries deletable (tv_tag_stale),
+ * then let heap decide the rest by TID.  heap requires each TID once, but an
+ * index that stores tags offers a TID once per entry: hand heap the first of
+ * each TID, and give the others its answer, unless they are stale.
+ */
+static TransactionId
+tvh_index_delete_tuples(Relation rel, TM_IndexDeleteOp *delstate)
+{
+	TM_IndexDelete *all = palloc_array(TM_IndexDelete, delstate->ndeltids);
+	int			nall = delstate->ndeltids;
+	int			nheap = 0;
+	int			nstale = 0;
+	TransactionId horizon = InvalidTransactionId;
+
+	memcpy(all, delstate->deltids, nall * sizeof(TM_IndexDelete));
+	for (int i = 0; i < nall; i++)
+	{
+		TM_IndexStatus *status = &delstate->status[all[i].id];
+		bool		dup = false;
+
+		if (tv_tag_stale(rel, &all[i].tid, status->tag))
+		{
+			status->knowndeletable = status->knowndeletable ||
+				stale_tags == STALE_TAGS_DEAD;
+			tv_count(TVC_DELETE_STALE);
+			nstale++;
+			continue;
+		}
+		tv_check_tag(rel, &all[i].tid, status->tag, "index_delete_tuples");
+		tv_count(TVC_DELETE_STATUS);
+		for (int j = 0; j < nheap && !dup; j++)
+		{
+			dup = ItemPointerEquals(&delstate->deltids[j].tid, &all[i].tid);
+			/* a mark says the TID's chain is dead: every entry's */
+			if (dup && status->knowndeletable)
+				delstate->status[delstate->deltids[j].id].knowndeletable = true;
+		}
+		if (!dup)
+			delstate->deltids[nheap++] = all[i];
+	}
+	delstate->ndeltids = nheap;
+
+	/* simple deletion needs a known-deletable TID of heap's; see tableam.h */
+	if (!delstate->bottomup)
+	{
+		bool		anyknown = false;
+
+		for (int j = 0; j < nheap; j++)
+			anyknown = anyknown ||
+				delstate->status[delstate->deltids[j].id].knowndeletable;
+		if (!anyknown)
+			nheap = delstate->ndeltids = 0;
+	}
+	if (nheap > 0)
+		horizon = heap_index_delete_tuples(rel, delstate);
+
+	/* heap's answer for a TID holds for each of its entries */
+	for (int i = 0; i < nall; i++)
+	{
+		TM_IndexStatus *status = &delstate->status[all[i].id];
+
+		for (int j = 0; j < delstate->ndeltids && !status->knowndeletable; j++)
+			if (ItemPointerEquals(&delstate->deltids[j].tid, &all[i].tid) &&
+				delstate->status[delstate->deltids[j].id].knowndeletable)
+				status->knowndeletable = true;
+	}
+
+	/* the deletable entries, for the index AM to read back */
+	delstate->ndeltids = 0;
+	for (int i = 0; i < nall; i++)
+		if (delstate->status[all[i].id].knowndeletable)
+			delstate->deltids[delstate->ndeltids++] = all[i];
+	pfree(all);
+	(void) nstale;
+	return horizon;
+}
+
+/* --- update --- */
+
+/*
+ * keep_locator = inplace (see the file header): heap_update with HOT allowed
+ * whatever changed, as heapam_tuple_update calls it otherwise.  A heap-only
+ * new version keeps the row's locator, its chain's root, and the row gets a
+ * history in the first changed indexed column; a version that did not fit
+ * on the page moved the row, as any update does.
+ */
+static TM_Result
+tvh_update_inplace(Relation rel, ItemPointer otid, TupleTableSlot *slot,
+				   CommandId cid, uint32 options, Snapshot crosscheck,
+				   bool wait, TM_FailureData *tmfd, LockTupleMode *lockmode,
+				   const Bitmapset *modified_idx_attrs,
+				   TU_UpdateIndexes *update_indexes,
+				   IndexVersionTag *version_tag)
+{
+	bool		shouldFree = true;
+	HeapTuple	tuple = ExecFetchSlotHeapTuple(slot, true, &shouldFree);
+	HeapTupleFailureData hfd;
+	TM_Result	result;
+	int			attidx = bms_next_member(modified_idx_attrs, -1);
+
+	tmfd->retargeted = false;
+	*version_tag = InvalidIndexVersionTag;
+	*update_indexes = TU_None;
+	*lockmode = HeapUpdateDetermineLockmode(rel, modified_idx_attrs);
+	slot->tts_tableOid = RelationGetRelid(rel);
+	tuple->t_tableOid = slot->tts_tableOid;
+	result = heap_update(rel, otid, tuple, cid, options, crosscheck, wait,
+						 &hfd, *lockmode, modified_idx_attrs, true);
+	tmfd->modified_by_same_command = false;
+	tmfd->modified_by_current_transaction = false;
+	tmfd->moved_partitions = false;
+	if (result == TM_SelfModified)
+	{
+		tmfd->modified_by_same_command = hfd.cmax == cid;
+		tmfd->modified_by_current_transaction =
+			TransactionIdIsCurrentTransactionId(hfd.xmax);
+	}
+	else if (result == TM_Updated)
+		tmfd->moved_partitions = ItemPointerIndicatesMovedPartitions(&hfd.ctid);
+	ItemPointerCopy(&tuple->t_self, &slot->tts_tid);
+
+	if (result == TM_Ok)
+	{
+		*version_tag = (IndexVersionTag) GetCurrentTransactionId();
+		if (!HeapTupleIsHeapOnly(tuple))
+			*update_indexes = TU_All;
+		else if (attidx >= 0)
+		{
+			slot->tts_tid = tv_root_tid(rel, &tuple->t_self);
+			tv_record(RelationGetRelid(rel), &slot->tts_tid,
+					  (IndexVersionTag) (attidx + FirstLowInvalidHeapAttributeNumber) |
+					  TV_MARK_INPLACE);
+			*update_indexes = TU_Affected;
+			tv_count(TVC_UPDATE_KEPT);
+		}
+	}
+	if (shouldFree)
+		pfree(tuple);
+	return result;
+}
+
+static TM_Result
+tvh_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot,
+				 CommandId cid, uint32 options, Snapshot snapshot,
+				 Snapshot crosscheck, bool wait, TM_FailureData *tmfd,
+				 LockTupleMode *lockmode,
+				 const Bitmapset *modified_idx_attrs,
+				 TU_UpdateIndexes *update_indexes,
+				 IndexVersionTag *version_tag)
+{
+	TM_Result	result;
+
+	if (keep_locator == KEEP_LOCATOR_INPLACE &&
+		(options & TABLE_UPDATE_MAY_KEEP_LOCATOR))
+		return tvh_update_inplace(rel, otid, slot, cid, options, crosscheck,
+								  wait, tmfd, lockmode, modified_idx_attrs,
+								  update_indexes, version_tag);
+
+	result = GetHeapamTableAmRoutine()->tuple_update(rel, otid, slot, cid,
+													 options, snapshot,
+													 crosscheck, wait, tmfd,
+													 lockmode,
+													 modified_idx_attrs,
+													 update_indexes,
+													 version_tag);
+	if (result != TM_Ok)
+		return result;
+
+	/* tag every new version with its xmin, the current transaction */
+	*version_tag = (IndexVersionTag) GetCurrentTransactionId();
+
+	/* see the file header */
+	if (keep_locator != KEEP_LOCATOR_OFF &&
+		(options & TABLE_UPDATE_MAY_KEEP_LOCATOR) &&
+		*update_indexes == TU_All)
+	{
+		*update_indexes = TU_Affected;
+		if (keep_locator == KEEP_LOCATOR_UNTAGGED)
+			*version_tag = InvalidIndexVersionTag;
+		tv_count(TVC_UPDATE_KEPT);
+	}
+	return result;
+}
+
+/* --- build, validation --- */
+
+typedef struct TvhBuildState
+{
+	IndexBuildCallback callback;
+	void	   *callback_state;
+	IndexInfo  *indexInfo;
+	Relation	heap;
+} TvhBuildState;
+
+/*
+ * Tag each row handed to a test_versioned_btree index with the xmin of the
+ * tuple at its TID.  heap hands a heap-only tuple under its chain root's
+ * TID, and the entry names the root, so that is the tuple whose xmin the
+ * other checks compare against.  (No row has history, so leaving rows
+ * untagged would be as valid; tagging them makes build tags reach scans.)
+ */
+static void
+tvh_build_callback(Relation index, ItemPointer tid, Datum *values,
+				   bool *isnull, bool tupleIsAlive, void *state)
+{
+	TvhBuildState *bs = (TvhBuildState *) state;
+	Buffer		buf;
+	HeapTupleData tuple;
+
+	bs->indexInfo->ii_VersionTag = InvalidIndexVersionTag;
+	tuple.t_self = *tid;
+	if (heap_fetch(bs->heap, SnapshotAny, &tuple, &buf, true))
+	{
+		/*
+		 * Tag every row, as rows with history must be (see file header), or
+		 * with build_tag_percent < 100 only that share of them, chosen by
+		 * TID, which no row here needs since none has history.
+		 */
+		if ((ItemPointerGetBlockNumber(tid) * 7 +
+			 ItemPointerGetOffsetNumber(tid)) % 100 < build_tag_percent)
+		{
+			bs->indexInfo->ii_VersionTag = tv_tag_of(&tuple);
+			Assert(bs->indexInfo->ii_VersionTag != InvalidIndexVersionTag);
+		}
+		ReleaseBuffer(buf);
+	}
+	else if (BufferIsValid(buf))
+		ReleaseBuffer(buf);
+
+	/*
+	 * build_history = n hands a tagged row n more times first, as not alive,
+	 * with the tags xmin - n .. xmin - 1: the row's older versions of the
+	 * same key, each with its own tag, that an AM which updates in place
+	 * indexes when a key changed and changed back while the locator stayed.
+	 * heap_versioned moves rows, so it has no such history; this gives a
+	 * build the runs of entries equal on key and TID that the load must not
+	 * cut where it can avoid it.  The extra tags are stale (tv_tag_stale), so
+	 * tests that use this set stale_tags = live.  Only an index AM that
+	 * stores tags itself gets them: nbtree refuses a TID twice.
+	 */
+	if (bs->indexInfo->ii_VersionTag != InvalidIndexVersionTag &&
+		index->rd_indam->aminsert != tvb_insert)
+	{
+		IndexVersionTag tag = bs->indexInfo->ii_VersionTag;
+
+		for (int i = build_history; i > 0; i--)
+		{
+			bs->indexInfo->ii_VersionTag = tag - (IndexVersionTag) i;
+			if (bs->indexInfo->ii_VersionTag == InvalidIndexVersionTag)
+				elog(ERROR, "history tag would be 0");
+			bs->callback(index, tid, values, isnull, false,
+						 bs->callback_state);
+		}
+		bs->indexInfo->ii_VersionTag = tag;
+	}
+	bs->callback(index, tid, values, isnull, tupleIsAlive,
+				 bs->callback_state);
+	/* an index AM that stores tags itself (bark) needs no record */
+	if (index->rd_indam->aminsert == tvb_insert)
+		tvb_build_record(index, tid, bs->indexInfo);
+}
+
+static double
+tvh_index_build_range_scan(Relation table_rel, Relation index_rel,
+						   IndexInfo *index_info, bool allow_sync,
+						   bool anyvisible, bool progress,
+						   BlockNumber start_blockno, BlockNumber numblocks,
+						   IndexBuildCallback callback, void *callback_state,
+						   TableScanDesc scan)
+{
+	volatile double result = 0;
+	TvhBuildState bs;
+
+	bs.callback = callback;
+	bs.callback_state = callback_state;
+	bs.indexInfo = index_info;
+	bs.heap = table_rel;
+
+	/* other indexes' entries are untagged */
+	if (!index_can_version(index_rel))
+		bs.callback = NULL;
+
+	AS_HEAP(table_rel,
+			result = table_rel->rd_tableam->index_build_range_scan(table_rel, index_rel,
+																   index_info, allow_sync,
+																   anyvisible, progress,
+																   start_blockno, numblocks,
+																   bs.callback ? tvh_build_callback : callback,
+																   bs.callback ? (void *) &bs : callback_state,
+																   scan));
+	index_info->ii_VersionTag = InvalidIndexVersionTag;
+	return result;
+}
+
+/*
+ * Validation with (TID, tag) pairs: check every collected pair, then hand
+ * heap's validate scan the TIDs.  Since rows move, a TID alone tells whether
+ * the version it names is indexed, which is what heap's scan relies on.
+ * Rows it inserts are tagged by tvh_validate_insert.
+ */
+static void
+tvh_index_validate_scan(Relation table_rel, Relation index_rel,
+						IndexInfo *index_info, Snapshot snapshot,
+						ValidateIndexState *state)
+{
+	ValidateIndexState heapstate;
+	TupleTableSlot *slot;
+
+	if (!state->versioned)
+	{
+		AS_HEAP(table_rel,
+				table_rel->rd_tableam->index_validate_scan(table_rel, index_rel,
+														   index_info, snapshot,
+														   state));
+		return;
+	}
+
+	heapstate = *state;
+	heapstate.versioned = false;
+	heapstate.tupdesc = NULL;
+	heapstate.tuplesort = tuplesort_begin_datum(INT8OID, Int8LessOperator,
+												InvalidOid, false,
+												maintenance_work_mem,
+												NULL, TUPLESORT_NONE);
+	slot = MakeSingleTupleTableSlot(state->tupdesc, &TTSOpsMinimalTuple);
+	while (tuplesort_gettupleslot(state->tuplesort, true, false, slot, NULL))
+	{
+		bool		isnull;
+		int64		encoded = DatumGetInt64(slot_getattr(slot, 1, &isnull));
+		IndexVersionTag tag = (IndexVersionTag) DatumGetInt64(slot_getattr(slot, 2, &isnull));
+		ItemPointerData tid;
+
+		itemptr_decode(&tid, encoded);
+		tv_check_tag(table_rel, &tid, tag, "index_validate_scan");
+		tv_count(tag != InvalidIndexVersionTag ?
+				 TVC_VALIDATE_TAGGED : TVC_VALIDATE_UNTAGGED);
+		tuplesort_putdatum(heapstate.tuplesort, Int64GetDatum(encoded), false);
+	}
+	ExecDropSingleTupleTableSlot(slot);
+	tuplesort_performsort(heapstate.tuplesort);
+
+	/* heap's scan inserts with index_insert; tvb_insert reads the tag */
+	index_info->ii_VersionTag = InvalidIndexVersionTag;
+	AS_HEAP(table_rel,
+			table_rel->rd_tableam->index_validate_scan(table_rel, index_rel,
+													   index_info, snapshot,
+													   &heapstate));
+	tuplesort_end(heapstate.tuplesort);
+	state->htups = heapstate.htups;
+	state->tups_inserted = heapstate.tups_inserted;
+}
+
+/* --- bitmap scans --- */
+
+static bool
+tvh_scan_bitmap_next_tuple(TableScanDesc scan, TupleTableSlot *slot,
+						   bool *recheck, uint64 *lossy_pages,
+						   uint64 *exact_pages)
+{
+	if (!GetHeapamTableAmRoutine()->scan_bitmap_next_tuple(scan, slot, recheck,
+														   lossy_pages,
+														   exact_pages))
+		return false;
+
+	/*
+	 * A bitmap holds TIDs only.  Every entry still names the version at its
+	 * TID (rows move), so there is nothing to recheck, except for a row with
+	 * history: a stale entry may have put it in the bitmap, so the qual is
+	 * rechecked on the visible version, as an AM that updates in place must
+	 * (see DESIGN-split-and-hot's bitmap rule).  Count the rows.
+	 */
+	if (tv_history_column(scan->rs_rd, &slot->tts_tid) != InvalidAttrNumber)
+		*recheck = true;
+	tv_count(TVC_BITMAP_ROWS);
+	return true;
+}
+
+/* --- VACUUM --- */
+
+typedef struct TvhVacuumState
+{
+	Relation	heap;
+	Relation	index;
+} TvhVacuumState;
+
+static IndexEntryVerdict
+tvh_version_callback(ItemPointer tid, IndexVersionTag tag, void *state)
+{
+	TvhVacuumState *vs = (TvhVacuumState *) state;
+
+	/*
+	 * shortcut: a marked row is never untagged, since the mark does not
+	 * record the row's base, so an untagged entry of it would turn invalid;
+	 * record the base in the mark when a rule U test needs to untag one.
+	 */
+	if (tv_history_column(vs->heap, tid) != InvalidAttrNumber &&
+		tv_index_reads(vs->index, tv_history_column(vs->heap, tid)))
+	{
+		if (tv_entry_valid(vs->heap, vs->index, tid, tag, NULL))
+		{
+			tv_count(TVC_VACUUM_LIVE);
+			return INDEX_ENTRY_LIVE;
+		}
+		if (stale_tags == STALE_TAGS_DEAD)
+		{
+			tv_count(TVC_VACUUM_DEAD);
+			return INDEX_ENTRY_DEAD;
+		}
+		tv_count(TVC_VACUUM_LIVE);
+		return INDEX_ENTRY_LIVE;
+	}
+	if (tv_tag_stale(vs->heap, tid, tag))
+	{
+		bool		dead = stale_tags == STALE_TAGS_DEAD ||
+			(stale_dead_min >= 0 && tag >= (IndexVersionTag) stale_dead_min &&
+			 tag <= (IndexVersionTag) stale_dead_max);
+
+		if (dead)
+		{
+			tv_count(TVC_VACUUM_DEAD);
+			return INDEX_ENTRY_DEAD;
+		}
+		if (untag_tag >= 0 ? tag == (IndexVersionTag) untag_tag :
+			stale_tags == STALE_TAGS_UNTAG)
+		{
+			tv_count(TVC_VACUUM_UNTAG);
+			return INDEX_ENTRY_LIVE_UNTAG;
+		}
+		tv_count(TVC_VACUUM_LIVE);
+		return INDEX_ENTRY_LIVE;
+	}
+	if (!tv_check_tag(vs->heap, tid, tag, "vacuum version callback"))
+	{
+		tv_count(TVC_VACUUM_DEAD);
+		return INDEX_ENTRY_DEAD;
+	}
+	if (tag != InvalidIndexVersionTag &&
+		(untag_tag < 0 || tag == (IndexVersionTag) untag_tag))
+	{
+		tv_count(TVC_VACUUM_UNTAG);
+		return INDEX_ENTRY_LIVE_UNTAG;
+	}
+	tv_count(TVC_VACUUM_LIVE);
+	return INDEX_ENTRY_LIVE;
+}
+
+/*
+ * Heap's VACUUM, then an extra pass over each test_versioned_btree index.
+ * Heap's pass has already removed the entries of dead tuples and made their
+ * line pointers unused, so the extra pass finds them gone; the DEAD verdict
+ * is for line pointers whose tuple has no storage, which a heap pass that
+ * skipped index vacuuming (INDEX_CLEANUP off) leaves behind.
+ */
+static void
+tvh_relation_vacuum(Relation rel, const VacuumParams *params,
+					BufferAccessStrategy bstrategy)
+{
+	Relation   *indrels;
+	int			nindexes;
+
+	heap_vacuum_rel(rel, params, bstrategy);
+
+	vac_open_indexes(rel, RowExclusiveLock, &nindexes, &indrels);
+	for (int i = 0; i < nindexes; i++)
+	{
+		IndexVacuumInfo ivinfo;
+		TvhVacuumState vs;
+		IndexBulkDeleteResult *stats;
+
+		if (!index_can_version(indrels[i]))
+			continue;
+
+		memset(&ivinfo, 0, sizeof(ivinfo));
+		ivinfo.index = indrels[i];
+		ivinfo.heaprel = rel;
+		ivinfo.message_level = DEBUG2;
+		ivinfo.num_heap_tuples = rel->rd_rel->reltuples;
+		ivinfo.estimated_count = true;
+		ivinfo.strategy = bstrategy;
+		vs.heap = rel;
+		vs.index = indrels[i];
+		ivinfo.version_callback = tvh_version_callback;
+		ivinfo.version_state = &vs;
+
+		stats = index_bulk_delete(&ivinfo, NULL, NULL, NULL);
+		stats = index_vacuum_cleanup(&ivinfo, stats);
+		if (stats)
+			pfree(stats);
+	}
+	vac_close_indexes(nindexes, indrels, NoLock);
+}
+
+PG_FUNCTION_INFO_V1(heap_versioned_handler);
+Datum
+heap_versioned_handler(PG_FUNCTION_ARGS)
+{
+	if (tvh_routine.type == 0)
+	{
+		TableAmRoutine routine = *GetHeapamTableAmRoutine();
+
+		routine.relation_locator = tvh_relation_locator;
+		routine.index_implementation = tvh_index_implementation;
+		routine.relation_toast_am = tvh_relation_toast_am;
+		routine.index_scan_begin = tvh_index_scan_begin;
+		routine.index_scan_reset = tvh_index_scan_reset;
+		routine.index_scan_end = tvh_index_scan_end;
+		routine.fetch_tid_version = tvh_fetch_tid_version;
+		routine.index_delete_tuples = tvh_index_delete_tuples;
+		routine.tuple_update = tvh_tuple_update;
+		routine.index_build_range_scan = tvh_index_build_range_scan;
+		routine.index_validate_scan = tvh_index_validate_scan;
+		routine.scan_bitmap_next_tuple = tvh_scan_bitmap_next_tuple;
+		routine.relation_vacuum = tvh_relation_vacuum;
+		tvh_routine = routine;
+	}
+	PG_RETURN_POINTER(&tvh_routine);
+}
+
+/* ------------------------------------------------------------------------
+ * SQL-callable helpers
+ * ------------------------------------------------------------------------
+ */
+
+/* the recorded tag of (index, tid), or NULL */
+PG_FUNCTION_INFO_V1(test_versioned_tag);
+Datum
+test_versioned_tag(PG_FUNCTION_ARGS)
+{
+	Oid			indexoid = PG_GETARG_OID(0);
+	ItemPointer tid = PG_GETARG_ITEMPOINTER(1);
+	TagKey		key = tv_key(indexoid, tid);
+	TagEntry   *entry;
+	int64		tag;
+
+	tv_attach();
+	entry = dshash_find(tv_tags, &key, false);
+	if (entry == NULL)
+		PG_RETURN_NULL();
+	tag = entry->tag;
+	dshash_release_lock(tv_tags, entry);
+	PG_RETURN_INT64(tag);
+}
+
+/*
+ * table_fetch_tid_version() for (index, tid) with its recorded tag, or with
+ * the tag given as a third argument
+ */
+PG_FUNCTION_INFO_V1(test_versioned_fetch);
+Datum
+test_versioned_fetch(PG_FUNCTION_ARGS)
+{
+	Oid			indexoid = PG_GETARG_OID(0);
+	ItemPointerData tid = *PG_GETARG_ITEMPOINTER(1);
+	Relation	index = index_open(indexoid, AccessShareLock);
+	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
+	IndexVersionTag tag = PG_NARGS() > 2 ? (IndexVersionTag) PG_GETARG_INT64(2) :
+		tv_lookup(indexoid, &tid);
+	bool		all_dead;
+	bool		found;
+
+	found = table_fetch_tid_version(heap, &tid, tag, index,
+									GetActiveSnapshot(), &all_dead);
+	table_close(heap, AccessShareLock);
+	index_close(index, AccessShareLock);
+	PG_RETURN_BOOL(found);
+}
+
+/*
+ * Insert one entry into `index` for the row version at `tid`, with its
+ * current key and tag `tag`, as a table AM that updates in place would
+ * insert the entry of a new version of the row: for tests that need an
+ * entry at a TID the index already has entries for.  The row's key is read
+ * from the tuple at `tid` (SnapshotAny).  heap_versioned's checks then hold
+ * the tag to that tuple's xmin.  Tag -n (n <= 1000) makes a stale entry:
+ * tagged with that xmin - n, valid for no version, which index deletion and
+ * VACUUM remove (tv_tag_stale).  A fourth argument, for a row with history
+ * (test_versioned_mark_history), replaces the marked column's value with
+ * the given text, so that the entry is one an older version of the row had.
+ */
+PG_FUNCTION_INFO_V1(test_versioned_insert_entry);
+Datum
+test_versioned_insert_entry(PG_FUNCTION_ARGS)
+{
+	Oid			indexoid = PG_GETARG_OID(0);
+	ItemPointerData tid = *PG_GETARG_ITEMPOINTER(1);
+	int64		tag = PG_GETARG_INT64(2);
+	Relation	index = index_open(indexoid, RowExclusiveLock);
+	Relation	heap = table_open(index->rd_index->indrelid, RowExclusiveLock);
+	IndexInfo  *indexInfo = BuildIndexInfo(index);
+	EState	   *estate = CreateExecutorState();
+	ExprContext *econtext = GetPerTupleExprContext(estate);
+	TupleTableSlot *slot = table_slot_create(heap, NULL);
+	Datum		values[INDEX_MAX_KEYS];
+	bool		isnull[INDEX_MAX_KEYS];
+
+	if (tag < -1000 || tag > PG_UINT32_MAX)
+		elog(ERROR, "tag %lld is out of range", (long long) tag);
+	/* as an UPDATE would: its commit then flushes the insert's WAL */
+	(void) GetCurrentTransactionId();
+	if (!table_tuple_fetch_row_version(heap, &tid, SnapshotAny, slot))
+		elog(ERROR, "no tuple at (%u,%u)", ItemPointerGetBlockNumber(&tid),
+			 ItemPointerGetOffsetNumber(&tid));
+	/* -n: a stale tag, xmin - n, valid for no version (see tv_tag_stale) */
+	if (tag < 0)
+	{
+		bool		isnull1;
+		Datum		xmin = slot_getsysattr(slot, MinTransactionIdAttributeNumber,
+										   &isnull1);
+
+		tag = (int64) (uint32) (DatumGetTransactionId(xmin) + (int32) tag);
+		if (tag == 0)
+			elog(ERROR, "stale tag would be 0");
+	}
+	econtext->ecxt_scantuple = slot;
+	if (PG_NARGS() > 3)
+	{
+		AttrNumber	attno = tv_history_column(heap, &tid);
+		TupleDesc	desc = RelationGetDescr(heap);
+		TupleTableSlot *old = MakeSingleTupleTableSlot(desc, &TTSOpsVirtual);
+		Oid			typinput;
+		Oid			typioparam;
+
+		if (attno == InvalidAttrNumber)
+			elog(ERROR, "row (%u,%u) has no history mark",
+				 ItemPointerGetBlockNumber(&tid), ItemPointerGetOffsetNumber(&tid));
+		slot_getallattrs(slot);
+		ExecClearTuple(old);
+		memcpy(old->tts_values, slot->tts_values, desc->natts * sizeof(Datum));
+		memcpy(old->tts_isnull, slot->tts_isnull, desc->natts * sizeof(bool));
+		getTypeInputInfo(TupleDescAttr(desc, attno - 1)->atttypid,
+						 &typinput, &typioparam);
+		old->tts_values[attno - 1] =
+			OidInputFunctionCall(typinput, text_to_cstring(PG_GETARG_TEXT_PP(3)),
+								 typioparam, TupleDescAttr(desc, attno - 1)->atttypmod);
+		old->tts_isnull[attno - 1] = false;
+		ExecStoreVirtualTuple(old);
+		econtext->ecxt_scantuple = old;
+	}
+	FormIndexDatum(indexInfo, econtext->ecxt_scantuple, estate, values, isnull);
+	indexInfo->ii_VersionTag = (IndexVersionTag) tag;
+	index_insert(index, values, isnull, &tid, heap, UNIQUE_CHECK_NO, false,
+				 indexInfo);
+	index_insert_cleanup(index, indexInfo);
+	if (econtext->ecxt_scantuple != slot)
+		ExecDropSingleTupleTableSlot(econtext->ecxt_scantuple);
+	ExecDropSingleTupleTableSlot(slot);
+	FreeExecutorState(estate);
+	table_close(heap, RowExclusiveLock);
+	index_close(index, RowExclusiveLock);
+	PG_RETURN_VOID();
+}
+
+/*
+ * Make an existing index the index of an exclusion constraint using operator
+ * op on every key column, as DocumentDB's collMod prepareUnique does: the
+ * constraint by index_constraint_create on the existing index, with the
+ * table locked only for reading.  As there, the caller then sets
+ * pg_index.indisexclusion itself, which index_constraint_create does not.
+ */
+PG_FUNCTION_INFO_V1(test_versioned_add_exclusion);
+Datum
+test_versioned_add_exclusion(PG_FUNCTION_ARGS)
+{
+	Oid			indexoid = PG_GETARG_OID(0);
+	Oid			opno = PG_GETARG_OID(1);
+	Relation	index = index_open(indexoid, AccessShareLock);
+	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
+	IndexInfo  *indexInfo = BuildIndexInfo(index);
+	int			nkeys = indexInfo->ii_NumIndexKeyAttrs;
+
+	indexInfo->ii_ExclusionOps = palloc_array(Oid, nkeys);
+	indexInfo->ii_ExclusionProcs = palloc_array(Oid, nkeys);
+	indexInfo->ii_ExclusionStrats = palloc0_array(uint16, nkeys);
+	for (int i = 0; i < nkeys; i++)
+	{
+		indexInfo->ii_ExclusionOps[i] = opno;
+		indexInfo->ii_ExclusionProcs[i] = get_opcode(opno);
+	}
+	(void) index_constraint_create(heap, indexoid, InvalidOid, indexInfo,
+								   RelationGetRelationName(index),
+								   CONSTRAINT_EXCLUSION,
+								   INDEX_CONSTR_CREATE_UPDATE_INDEX,
+								   false, false);
+	table_close(heap, AccessShareLock);
+	index_close(index, AccessShareLock);
+	PG_RETURN_VOID();
+}
+
+/*
+ * Give the row at tid a history in column attname (see tv_history_column),
+ * or with a NULL attname take it away.
+ */
+PG_FUNCTION_INFO_V1(test_versioned_mark_history);
+Datum
+test_versioned_mark_history(PG_FUNCTION_ARGS)
+{
+	Oid			heapoid = PG_GETARG_OID(0);
+	ItemPointer tid = PG_GETARG_ITEMPOINTER(1);
+	AttrNumber	attno;
+
+	if (PG_ARGISNULL(2))
+	{
+		tv_forget(heapoid, tid);
+		PG_RETURN_VOID();
+	}
+	attno = get_attnum(heapoid, NameStr(*PG_GETARG_NAME(2)));
+	if (attno <= 0)
+		elog(ERROR, "no column \"%s\"", NameStr(*PG_GETARG_NAME(2)));
+	tv_record(heapoid, tid, (IndexVersionTag) attno);
+	PG_RETURN_VOID();
+}
+
+/*
+ * The versions a scan of `index` under a dirty snapshot, as a constraint
+ * check makes, returns for the key `value` with operator op on the index's
+ * first column: each one's TID, the TID of its version and its xmin, and
+ * whether the scan said to recheck it.
+ */
+PG_FUNCTION_INFO_V1(test_versioned_dirty_scan);
+Datum
+test_versioned_dirty_scan(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	Oid			indexoid = PG_GETARG_OID(0);
+	Oid			opno = PG_GETARG_OID(1);
+	Datum		value = PG_GETARG_DATUM(2);
+	Relation	index;
+	Relation	heap;
+	SnapshotData dirty;
+	IndexScanDesc scan;
+	TupleTableSlot *slot;
+	ScanKeyData key;
+	Oid			opfamily;
+	int			strategy;
+	Oid			lefttype;
+	Oid			righttype;
+
+	InitMaterializedSRF(fcinfo, 0);
+	index = index_open(indexoid, AccessShareLock);
+	heap = table_open(index->rd_index->indrelid, AccessShareLock);
+	opfamily = index->rd_opfamily[0];
+	get_op_opfamily_properties(opno, opfamily, false, &strategy, &lefttype,
+							   &righttype);
+	ScanKeyEntryInitialize(&key, 0, 1, strategy, InvalidOid,
+						   index->rd_indcollation[0], get_opcode(opno), value);
+	InitDirtySnapshot(dirty);
+	slot = table_slot_create(heap, NULL);
+	scan = index_beginscan(heap, index, false, &dirty, NULL, 1, 0, SO_NONE);
+	index_rescan(scan, &key, 1, NULL, 0);
+	while (table_index_getnext_slot(scan, ForwardScanDirection, slot))
+	{
+		Datum		values[4];
+		bool		nulls[4] = {false, false, false, false};
+		bool		isnull;
+		ItemPointerData version = slot->tts_tid;
+		ItemPointerData *root = palloc_object(ItemPointerData);
+		ItemPointerData *vp = palloc_object(ItemPointerData);
+
+		*root = tv_root_tid(heap, &version);
+		*vp = version;
+		values[0] = ItemPointerGetDatum(root);
+		values[1] = ItemPointerGetDatum(vp);
+		values[2] = Int64GetDatum((int64) DatumGetTransactionId(slot_getsysattr(slot,
+																				MinTransactionIdAttributeNumber,
+																				&isnull)));
+		values[3] = BoolGetDatum(scan->xs_recheck);
+		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
+	}
+	index_endscan(scan);
+	ExecDropSingleTupleTableSlot(slot);
+	table_close(heap, AccessShareLock);
+	index_close(index, AccessShareLock);
+	return (Datum) 0;
+}
+
+PG_FUNCTION_INFO_V1(test_versioned_counts);
+Datum
+test_versioned_counts(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+
+	InitMaterializedSRF(fcinfo, 0);
+	tv_attach();
+	for (int i = 0; i < NUM_TVC; i++)
+	{
+		Datum		values[2];
+		bool		nulls[2] = {false, false};
+
+		values[0] = CStringGetTextDatum(tvc_names[i]);
+		values[1] = Int64GetDatum((int64) pg_atomic_read_u64(&tv_shared->counters[i]));
+		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
+	}
+	return (Datum) 0;
+}
+
+PG_FUNCTION_INFO_V1(test_versioned_reset);
+Datum
+test_versioned_reset(PG_FUNCTION_ARGS)
+{
+	tv_attach();
+	for (int i = 0; i < NUM_TVC; i++)
+		pg_atomic_write_u64(&tv_shared->counters[i], 0);
+	PG_RETURN_VOID();
+}
+
+void
+_PG_init(void)
+{
+	DefineCustomEnumVariable("test_versioned_tableam.keep_locator",
+							 "Makes heap_versioned pretend it kept a moved row's locator.",
+							 NULL,
+							 &keep_locator,
+							 KEEP_LOCATOR_OFF,
+							 keep_locator_options,
+							 PGC_USERSET,
+							 0,
+							 NULL, NULL, NULL);
+	DefineCustomIntVariable("test_versioned_tableam.build_tag_percent",
+							"Percentage of rows heap_versioned's index build scan tags.",
+							NULL,
+							&build_tag_percent,
+							100, 0, 100,
+							PGC_USERSET,
+							0,
+							NULL, NULL, NULL);
+	DefineCustomIntVariable("test_versioned_tableam.build_history",
+							"Older versions heap_versioned's index build scan hands for each row it tags.",
+							NULL,
+							&build_history,
+							0, 0, 10000,
+							PGC_USERSET,
+							0,
+							NULL, NULL, NULL);
+	DefineCustomEnumVariable("test_versioned_tableam.stale_tags",
+							 "How heap_versioned judges stale index entries.",
+							 NULL,
+							 &stale_tags,
+							 STALE_TAGS_DEAD,
+							 stale_tags_options,
+							 PGC_USERSET,
+							 0,
+							 NULL, NULL, NULL);
+	DefineCustomIntVariable("test_versioned_tableam.stale_dead_min",
+							"Stale index entries with a tag in [min, max] are dead.",
+							NULL, &stale_dead_min, -1, -1, INT_MAX,
+							PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable("test_versioned_tableam.stale_dead_max",
+							"Stale index entries with a tag in [min, max] are dead.",
+							NULL, &stale_dead_max, -1, -1, INT_MAX,
+							PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable("test_versioned_tableam.untag_tag",
+							"VACUUM answers LIVE_UNTAG only for entries of this tag.",
+							NULL, &untag_tag, -1, -1, INT_MAX,
+							PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomStringVariable("test_versioned_tableam.invalid_untagged",
+							   "Index scans treat the untagged entry at this TID as invalid.",
+							   NULL, &invalid_untagged, "",
+							   PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomEnumVariable("test_versioned_tableam.forget_verdict",
+							 "Makes heap_versioned leave its verdict on returned index entries unset.",
+							 NULL,
+							 &forget_verdict,
+							 FORGET_VERDICT_OFF,
+							 forget_verdict_options,
+							 PGC_USERSET,
+							 0,
+							 NULL, NULL, NULL);
+	MarkGUCPrefixReserved("test_versioned_tableam");
+}
