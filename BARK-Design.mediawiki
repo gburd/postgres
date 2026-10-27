@@ -403,6 +403,58 @@ about once per parent fan-out of tagged bounds; lowering it at the upper
 levels too would clear every tag, if a table AM needs that
 (xid-wraparound). V2: versioned multikey indexes.
 
+''V2 conversion (a tagged multikey index made unique or exclusion after its
+build).'' The design is section 12.1 of the V2 design report; README
+"Conversion" has the as-built rules. Item by item:
+* Item 5, done (this commit): until the conversion settles, a non-MVCC
+  scan of such an index (a constraint check) keeps no row per locator but
+  the one this backend inserted last, and rechecks every row, so it meets
+  every version an in-progress in-place update left at a locator. Tests:
+  isolation <code>bark_mk_convert</code> (T12b; a duplicate committed
+  before), <code>bark_mk_versioned</code> (T12c and the dirty-scan cases).
+  Limit: a check of a row other than the last inserted can raise "found
+  self tuple multiple times"; an amapi hint carrying the self TID would
+  lift it.
+* Items 1-2, done (this commit): meta bits <code>BARK_META_CONVERTING</code>
+  (1 << 3) and <code>BARK_META_SETTLED</code> (1 << 4). The first BARK call
+  that sees MKTAGS and a unique or exclusion rd_index sets CONVERTING
+  (<code>bark_note_conversion</code>: insert, a constraint check's rescan,
+  VACUUM), logged as a meta page image; never in recovery. Item 3 as
+  built: CONVERTING makes <code>amindexmaykeeplocator</code> false even
+  after the constraint is dropped; <code>amindexcanversion</code> stays
+  MKTAGS (the design had it drop with CONVERTING), since an update that
+  began before the conversion and keeps its locator must still get tagged
+  entries. amcheck and the validator (primary and redo) report CONVERTING
+  without MKTAGS and SETTLED without CONVERTING (T12f in
+  <code>008_bark_mktags.pl</code>). The bits are checked again under the
+  meta page's lock: isolation <code>bark_mk_convert_race</code> stops a
+  caller before it (another insert set CONVERTING; a VACUUM completed the
+  conversion while a dirty scan waited).
+* Items 4 and 7, done (this commit), with the amendment approved by the
+  lead (2026-10-27): after SETTLED, BARK stores new entries of the index
+  untagged (every writer then moves rows, and a new locator has no
+  history), and a barrier that sets SETTLED waits once more, as does every
+  later VACUUM before it counts, so that a writer that read the meta page
+  before SETTLED was set is outwaited too. The item as written ("no tag
+  added after SETTLED") did not hold: <code>amindexcanversion</code> stays
+  MKTAGS, and the executor tags every entry of such an index, moved row or
+  not. The barrier: <code>WaitForLockers</code>(table, ShareLock) in
+  bulkdelete, or in cleanup when no bulkdelete of this transaction tried
+  it; a parallel worker skips it; autovacuum uses
+  <code>GetLockConflicts</code> and does not wait. The false answer of
+  CONVERTING is read again in every transaction (the bit sends no
+  invalidation). Completion: a pass after the barrier counts the tagged
+  leaf entries it leaves (exactly: a deleting pass, cycle IDs); zero clears
+  MKTAGS, CONVERTING and SETTLED and invalidates the relcache entry. Tagged
+  pivots may remain and are accepted (a pivot tag needs only
+  <code>BARK_META_VERSIONED</code>). Item 5's rule ends at SETTLED. Tests:
+  T12a (<code>bark_mk_versioned</code>), T12b's VACUUM permutation,
+  T12e (<code>009_bark_convert.pl</code>, wal_consistency_checking and a
+  standby). Limits: an entry kept tagged (its page's lower bound, or a row
+  the table AM never untags) keeps the conversion open; a table that always
+  has a writer settles only under a manual VACUUM.
+* Item 6 (per-leaf conversion): open.
+
 === C-MVCC: visibility, SSI, and the index-only / recheck path ===
 
 BARK entries obey the same visibility rules as nbtree. Four obligations:
