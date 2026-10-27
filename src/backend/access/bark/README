@@ -829,19 +829,53 @@ planner would assume (pathkeys, merge joins, KNN); get_relation_info then
 clears amhasgettuple.  barkcostestimate makes the whole index cost startup
 cost.  The scan calls extractQuery, turns its keys into point boundaries (a
 partial-match key into a range filtered and ended by comparePartial), and
-reads each boundary into a stream of distinct TIDs in TID order: a point
-of a column that leads the index already comes out in that order (H1),
-anything else is sorted once.  bark_mk_gin_key merges the streams with a
-binary heap, as ginget.c merges posting lists, and calls triConsistent, or
-consistent, once per TID on the per-key presence vector, adding the TID
-with its recheck flag.  With triConsistent, the streams are tried rarest
-first until a vector with them FALSE and the rest MAYBE gives FALSE
-(startScanKey's required entries); only those feed the heap, and the
-others are searched forward (bark_gin_stream_seek) at each candidate TID,
-so a rare key with a frequent one costs about as many consistent calls as
-the rare key has rows.  Every stream is still read to its end: the scan
-has one leaf position, so the frequent key's leaf pages are read even when
-few of its TIDs are needed.
+reads each boundary into a stream (BarkGinStream): a TIDBitmap of its own,
+bounded by work_mem and lossy beyond it, as ginget.c's collectMatchBitmap
+reads a partial match, iterated in heap block order.  A bitmap needs no
+sort, absorbs a row's repeats within a boundary (a row with several keys
+in a partial-match range), and whatever the boundary's order: a point of a
+later column, whose TIDs restart at each value of the columns before, is
+no different from one of the leading column.  bark_mk_gin_key merges the
+streams a heap page at a time with a binary heap on their page numbers, as
+ginget.c's keyGetItem merges its entries' streams, and calls
+triConsistent, or consistent, once per row on the per-key presence
+vector, adding the row with its recheck flag.  A stream that holds the
+page lossy is MAYBE in that vector; as in keyGetItem, the page is first
+tried whole with the lossy streams MAYBE and the others FALSE, and goes in
+lossy when that can match, else each exact offset on it is decided.
+Without triConsistent the MAYBE vectors go through consistent as
+ginlogic.c's shim does: every combination of up to four MAYBE entries,
+MAYBE beyond.  With triConsistent, the streams are tried rarest first (by
+the TIDs read into each) until a vector with them FALSE and the rest MAYBE
+gives FALSE (startScanKey's required entries); only those feed the heap,
+and the others are moved forward to each page it gives
+(bark_gin_stream_seek), so a rare key with a frequent one costs about as
+many consistent calls as the rare key has rows.  Every boundary is still
+read to its end into its bitmap, so the frequent key's leaf pages are read
+even when few of its rows are needed.
+
+The memory of such a scan does not grow with its result.  Before, each
+stream was an exact array of 12 bytes per TID, allocated huge and doubled,
+and a scan with several keys merged their results into further such
+arrays: 134 MB for one stream over 10M rows, and a partial match over a
+path could hold every TID of the column.  Now each stream, and each key's
+result, is a TIDBitmap: exact, it costs about 64 bytes per heap page it
+holds; past work_mem it goes lossy, a page per bit run, and the heap
+recheck decides those rows.  The streams of one key are freed before the
+next key is read (each key runs in a context reset after it), so at most
+the streams of one key plus one bitmap per key on the column are live.
+Several keys on the column are intersected with tbm_intersect, the
+elements of a ScalarArrayOp unioned in one bitmap, and the result copied
+into the executor's bitmap (or the index scan's gintbm).  Apart from the
+bitmaps, which are core's, the scan allocates nothing above 8 kB that it
+did not before: the per-stream state (BarkGinStream, 600 bytes), the
+per-page vectors and the batch.  No stream holds a leaf position: each
+boundary is read with the scan's one position, in turn, with no pin kept
+between boundaries, so the reads follow the ordinary scan rules ("Scans")
+and a concurrent split or VACUUM between two boundaries' reads changes
+nothing they have read (bark_multikey_gin_concurrent stops a scan between
+two boundaries while another session splits leaves, deletes and
+vacuums).
 
 A bitmap scan whose key is the union of its boundaries skips the streams
 (bark_mk_gin_union decides it): when consistent accepts every non-empty
@@ -853,10 +887,10 @@ and so does every key of a vector that needs a recheck when none of its
 keys has one already.  That is the common shape of a partial match over a
 whole path (DocumentDB's $regex, $size, $exists): there is no stream, no
 sort and no merge, and memory is the bitmap's, bounded by work_mem and
-lossy beyond it, where a stream is exact and unbounded (12 bytes a TID).
-Only a single key on the column (or each element of its ScalarArrayOp,
-whose union the bitmap is) takes this path; several keys are intersected
-through the streams as before.
+lossy beyond it.  Each key on the column (or each element of its
+ScalarArrayOp, whose union the key's bitmap is) can take this path; with
+several keys each key fills a bitmap of its own, intersected with the
+others'.
 
 A read of an open-ended partial-match boundary pays procedure 12 on every
 entry, and used to pay the column comparator against the boundary's start
