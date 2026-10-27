@@ -241,9 +241,9 @@ RESET enable_bitmapscan;
 SELECT bark_index_check('lpdo_k', true);
 -- An insert that would split the leaf finds only marked OVERSIZED entries,
 -- which simple deletion does not offer, so it splits.
-SELECT pg_relation_size('lpdo_k') / 8192 AS pages_before;
+SELECT pg_relation_size('lpdo_k') / current_setting('block_size')::int AS pages_before;
 INSERT INTO lpdo SELECT g, 'small' || g FROM generate_series(1, 300) g;
-SELECT pg_relation_size('lpdo_k') / 8192 > 2 AS split;
+SELECT pg_relation_size('lpdo_k') / current_setting('block_size')::int > 2 AS split;
 SELECT * FROM lpd_count('SELECT * FROM lpdo WHERE k > ''''');
 VACUUM lpdo;
 -- VACUUM removed every marked entry: none is left on any leaf
