@@ -2647,7 +2647,9 @@ Invariants
     tuple.  Overflow pages carry no items and are skipped by the leaf scans
     (vacuum, cleanup) and by amcheck's per-page checks.
   * bark_page_id is BARK_PAGE_ID on every BARK page.
-  * No leaf entry is larger than BarkMaxItemSize.
+  * No leaf entry is larger than BarkMaxItemSize: a third of the page, but no
+    more than an index tuple's size field holds (INDEX_SIZE_MASK), which
+    bounds it with 32 kB blocks.
   * A high key is a pivot with between one and all of the index's key
     attributes, and no INCLUDE attributes, and a heap TID only with all of
     them.  Every key on its page is less than or equal to it, and strictly

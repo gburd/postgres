@@ -424,12 +424,17 @@ BarkPageGetItem(Page page, OffsetNumber off, BarkItemBuf *buf)
  * this bounds a single entry to roughly a third of the usable page so at
  * least three entries fit, keeping the tree from degenerating.  A LIST or
  * POSTING entry that would exceed this is divided, or a LIST becomes a
- * POSTING entry; see bark_entry_add_tid and bark_entry_swap_tid.
+ * POSTING entry; see bark_entry_add_tid and bark_entry_swap_tid.  An index
+ * tuple's size field holds at most INDEX_SIZE_MASK, which a third of a
+ * 32 kB page exceeds, so the bound is the smaller of the two (nbtree caps
+ * its posting lists the same way, and errors on a key it cannot store,
+ * where BARK moves the key to an overflow chain).
  */
 #define BarkMaxItemSize \
-	MAXALIGN_DOWN((BLCKSZ - \
-				   MAXALIGN(SizeOfPageHeaderData + 3 * sizeof(ItemIdData)) - \
-				   MAXALIGN(sizeof(BarkPageOpaqueData))) / 3)
+	Min(MAXALIGN_DOWN((BLCKSZ - \
+					   MAXALIGN(SizeOfPageHeaderData + 3 * sizeof(ItemIdData)) - \
+					   MAXALIGN(sizeof(BarkPageOpaqueData))) / 3), \
+		MAXALIGN_DOWN(INDEX_SIZE_MASK))
 
 /*
  * The bytes a pivot's suffix adds to its MAXALIGNed key: the heap TID a pivot
