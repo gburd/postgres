@@ -410,7 +410,7 @@ $node->safe_psql(
 	  WITH e AS (
 	    SELECT b, i.itemoffset AS off, i.shape, i.ntids, i.itemlen, i.htid, i.tag,
 	           coalesce(i.tids[i.ntids], i.htid) AS last
-	      FROM generate_series(1, pg_relation_size(idx) / 8192 - 1) b,
+	      FROM generate_series(1, pg_relation_size(idx) / current_setting('block_size')::int - 1) b,
 	           LATERAL bark_page_stats(idx::text, b) s,
 	           LATERAL bark_page_items(idx::text, b) i
 	     WHERE s.type = 'leaf' AND i.shape IN ('SINGLE', 'LIST', 'POSTING'))
@@ -542,7 +542,7 @@ SKIP:
 # Crash recovery replays all of it; the standby checked every record.
 my $twinsig = q{SELECT md5(string_agg(c.relname || ' ' || b || ' ' || i.itemoffset || ' ' || i.shape || ' ' ||
   coalesce(i.htid::text, '') || ' ' || coalesce(i.tag::text, '') || ' ' || i.data, ',' ORDER BY c.relname, b, i.itemoffset))
-  FROM pg_class c, generate_series(1, pg_relation_size(c.oid) / 8192 - 1) b, LATERAL bark_page_items(c.relname, b) i
+  FROM pg_class c, generate_series(1, pg_relation_size(c.oid) / current_setting('block_size')::int - 1) b, LATERAL bark_page_items(c.relname, b) i
   WHERE c.relname IN ('td_a_k', 'td_l_k', 'td_c_k', 'td_p_k', 'td_n_k')
     AND (SELECT type FROM bark_page_stats(c.relname, b)) = 'leaf'};
 my $twinbefore = $node->safe_psql('postgres', $twinsig);
