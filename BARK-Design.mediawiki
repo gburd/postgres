@@ -1062,17 +1062,6 @@ Not implemented:
   16 kB as nbtree's (64 kB before), and isolation/horizons matches nbtree's
   with <code>default_btree_implementation = bark</code>.  See "Dead-entry
   hints and simple deletion" in the README.''
-* '''R1''' -- root contention on many-core machines.  Every descent pins and
-  share-locks the root, so its buffer header (pin count and content lock in
-  one state word) is written by every lookup; measured on m7i.metal-48xl
-  (2 sockets) it tops the <code>perf c2c</code> table and throughput falls
-  past one socket.  Re-pinning it through <code>ReadRecentBuffer</code> made
-  that worse (0.89-0.94x).  ''As built (L1CACHE):'' a per-backend table of
-  level-1 pages and their low keys, filled from level-2 downlinks as
-  descents pass, lets a read descent start below the root.  Safe because an
-  internal page is never deleted and its low key never changes, so moving
-  right from a cached page reaches the page the root would have chosen.
-  Write descents keep starting at the root (they need the parent path).
 * '''RT''' -- three recommendations of the RethinkDB review
   (<code>/scratch/postgres-idxam/scratch-rethink/RETHINKDB-REVIEW.md</code>,
   R3.1, R1 and R5), done before phase 5b of the versioned-entry design:
