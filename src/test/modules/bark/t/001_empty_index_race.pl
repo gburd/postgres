@@ -36,7 +36,7 @@ CREATE UNIQUE INDEX bark_empty_idx ON bark_empty USING bark (i);
 $node->stop('immediate');
 $node->start;
 is( $node->safe_psql(
-		'postgres', "SELECT pg_relation_size('bark_empty_idx') / 8192"),
+		'postgres', "SELECT pg_relation_size('bark_empty_idx') / current_setting('block_size')::int"),
 	'1',
 	'index reset to a meta page with no root');
 
