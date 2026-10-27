@@ -34,6 +34,7 @@ $node->safe_psql(
 	'postgres', q[
 CREATE EXTENSION amcheck;
 CREATE EXTENSION bark_multikey;
+CREATE EXTENSION pageinspect;
 CREATE TABLE t (id int, a int4[]);
 INSERT INTO t SELECT g, ARRAY[g] FROM generate_series(1, 1000) g;
 CREATE INDEX t_a ON t USING bark (a bark_int4_array_ops);
@@ -42,13 +43,21 @@ CREATE INDEX t_a ON t USING bark (a bark_int4_array_ops);
 ## 1: a crash between two keys of a row
 SKIP:
 {
-	skip 'Injection points not supported by this build', 8
+	skip 'Injection points not supported by this build', 9
 	  unless $ENV{enable_injection_points} eq 'yes';
 
 	$node->safe_psql('postgres', 'CREATE EXTENSION injection_points');
 
-	# Keys 5 and 900 are on different leaves, so the second key descends
-	# again, where the injection point waits.
+	# Keys 5 and 1000 are on the first and the last of three leaves or more
+	# (how many depends on the platform's entry size), so the second key is
+	# not on key 5's leaf or the right sibling the insert would step to, and
+	# it descends again, where the injection point waits.
+	cmp_ok(
+		$node->safe_psql(
+			'postgres', q[
+SELECT count(*) FROM generate_series(1, pg_relation_size('t_a') / 8192 - 1) b,
+       bark_page_stats('t_a', b) s WHERE s.type = 'leaf']),
+		'>=', 3, 'the index has three leaves or more');
 	my $s1 = $node->background_psql('postgres', on_error_stop => 0);
 	$s1->query_safe(
 		q[
@@ -58,7 +67,7 @@ SELECT injection_points_attach('bark-insert-redescend', 'wait');
 	$s1->query_until(
 		qr/starting_insert/, q[
 \echo starting_insert
-INSERT INTO t VALUES (2000, '{5,900}');
+INSERT INTO t VALUES (2000, '{5,1000}');
 ]);
 	$node->wait_for_event('client backend', 'bark-insert-redescend');
 
@@ -85,7 +94,7 @@ INSERT INTO t VALUES (2000, '{5,900}');
 		'', 'bark_index_check accepts the index after the crash');
 	is( $node->safe_psql(
 			'postgres',
-			"SELECT count(*) FROM bark_multikey_entries('t_a') WHERE key IN (5, 900)"),
+			"SELECT count(*) FROM bark_multikey_entries('t_a') WHERE key IN (5, 1000)"),
 		'3',
 		'the first key survived the crash, the second was never written');
 	is( $node->safe_psql(
