@@ -993,19 +993,20 @@ SELECT i, (SELECT count(*) FROM (SELECT key::text, tid, marker FROM wc_index_key
  wc_numb_doc |          0 |         0
 (2 rows)
 
-SELECT i, shape, count(*) AS entries, sum(ntids) AS tids
+-- (Where a built run of equal keys turns from LIST to POSTING depends on
+-- the platform's alignment, so the two count together.)
+SELECT i, CASE WHEN shape IN ('LIST', 'POSTING') THEN 'LIST or POSTING' ELSE shape END AS shape,
+       count(*) AS entries, sum(ntids) AS tids
   FROM unnest(ARRAY['wc_num_doc', 'wc_numb_doc']) i, bark_page_items(i, 1)
- GROUP BY i, shape ORDER BY i, shape;
-      i      |  shape  | entries | tids 
--------------+---------+---------+------
- wc_num_doc  | LIST    |       4 | 1000
- wc_num_doc  | POSTING |       1 |  800
- wc_num_doc  | SINGLE  |       1 |    1
- wc_numb_doc | LIST    |       8 |  856
- wc_numb_doc | POSTING |       2 |  944
- wc_numb_doc | PREFIX  |       1 |     
- wc_numb_doc | SINGLE  |       1 |    1
-(7 rows)
+ GROUP BY 1, 2 ORDER BY 1, 2;
+      i      |      shape      | entries | tids 
+-------------+-----------------+---------+------
+ wc_num_doc  | LIST or POSTING |       5 | 1800
+ wc_num_doc  | SINGLE          |       1 |    1
+ wc_numb_doc | LIST or POSTING |      10 | 1800
+ wc_numb_doc | PREFIX          |       1 |     
+ wc_numb_doc | SINGLE          |       1 |    1
+(5 rows)
 
 -- An ordered scan reads each row once, nondecreasing, with |<|'s value.
 SET enable_seqscan = off;

@@ -502,9 +502,12 @@ SELECT i, (SELECT count(*) FROM (SELECT key::text, tid, marker FROM wc_index_key
                               EXCEPT ALL
                               SELECT key::text, tid, marker FROM wc_index_keys(i::regclass)) x) AS heap_only
   FROM (VALUES ('wc_num_doc', 'wc_num'), ('wc_numb_doc', 'wc_numb')) v(i, t) ORDER BY i;
-SELECT i, shape, count(*) AS entries, sum(ntids) AS tids
+-- (Where a built run of equal keys turns from LIST to POSTING depends on
+-- the platform's alignment, so the two count together.)
+SELECT i, CASE WHEN shape IN ('LIST', 'POSTING') THEN 'LIST or POSTING' ELSE shape END AS shape,
+       count(*) AS entries, sum(ntids) AS tids
   FROM unnest(ARRAY['wc_num_doc', 'wc_numb_doc']) i, bark_page_items(i, 1)
- GROUP BY i, shape ORDER BY i, shape;
+ GROUP BY 1, 2 ORDER BY 1, 2;
 -- An ordered scan reads each row once, nondecreasing, with |<|'s value.
 SET enable_seqscan = off;
 SET enable_bitmapscan = off;
