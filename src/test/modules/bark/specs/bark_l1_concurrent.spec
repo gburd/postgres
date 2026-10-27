@@ -36,22 +36,29 @@ setup
 	CREATE TABLE l1s (k text COLLATE "C", n int) WITH (autovacuum_enabled = off);
 	INSERT INTO l1s SELECT l1k(g), g FROM generate_series(0, 7999, 2) g;
 	CREATE INDEX l1s_idx ON l1s USING bark (k);
-	-- rows the index returns for each probe must equal a sequential scan's
+	-- rows the index returns for each probe must equal those of a copy of
+	-- l1s read by a sequential scan, probed through a btree index (a
+	-- sequential scan per probe is the same oracle, but slow)
 	CREATE FUNCTION l1s_ok() RETURNS bigint LANGUAGE plpgsql AS $$
 	DECLARE bad bigint := 0; a text; b text;
 	BEGIN
+		PERFORM set_config('enable_seqscan', 'on', true);
+		PERFORM set_config('enable_indexscan', 'off', true);
+		PERFORM set_config('enable_indexonlyscan', 'off', true);
+		PERFORM set_config('enable_bitmapscan', 'off', true);
+		CREATE TEMP TABLE l1s_copy AS SELECT k, n FROM l1s;
+		CREATE INDEX ON l1s_copy USING btree (k);
+		PERFORM set_config('enable_seqscan', 'off', true);
+		PERFORM set_config('enable_indexscan', 'on', true);
+		PERFORM set_config('enable_indexonlyscan', 'on', true);
 		FOR g IN 0..7999 BY 3 LOOP
-			PERFORM set_config('enable_seqscan', 'off', true);
-			PERFORM set_config('enable_bitmapscan', 'off', true);
 			SELECT coalesce(string_agg(n::text, ',' ORDER BY n), '') INTO a FROM l1s
 				WHERE k >= l1k(g) AND k < l1k(g + 2);
-			PERFORM set_config('enable_seqscan', 'on', true);
-			PERFORM set_config('enable_indexscan', 'off', true);
-			SELECT coalesce(string_agg(n::text, ',' ORDER BY n), '') INTO b FROM l1s
+			SELECT coalesce(string_agg(n::text, ',' ORDER BY n), '') INTO b FROM l1s_copy
 				WHERE k >= l1k(g) AND k < l1k(g + 2);
-			PERFORM set_config('enable_indexscan', 'on', true);
 			IF a IS DISTINCT FROM b THEN bad := bad + 1; END IF;
 		END LOOP;
+		DROP TABLE l1s_copy;
 		RETURN bad;
 	END $$;
 }
