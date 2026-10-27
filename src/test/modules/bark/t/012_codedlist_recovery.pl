@@ -82,7 +82,7 @@ my $redo = sub {
 
 ok( $node->safe_psql(
 		'postgres', q[
-SELECT count(*) FILTER (WHERE itemlen < 16 + 6 * ntids) > 0
+SELECT count(*) FILTER (WHERE itemlen < (SELECT ((8 + 4 + max_data_alignment - 1) / max_data_alignment) * max_data_alignment FROM pg_control_init()) + 6 * ntids) > 0
   FROM generate_series(1, pg_relation_size('cl_k') / 8192 - 1) b,
        bark_page_items('cl_k', b) WHERE shape = 'LIST']) eq 't',
 	'the index has coded LIST entries');
