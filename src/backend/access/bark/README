@@ -657,7 +657,7 @@ Multikey keys
 -------------
 
 An index column whose operator class extracts several keys from one value
-(procedure 7; "M1: multikey keys" in BARK-Design.mediawiki) is an extracted
+(procedure 7; "Multikey keys" in BARK-Design.mediawiki) is an extracted
 column, and an index has at most one.  A row has one entry per distinct key
 of that column, each with the row's other columns and heap TID; heap TID
 order makes (key, TID) name one entry member.  bark_extract_row_keys runs
