@@ -1255,7 +1255,7 @@ place of an inverted AM, without changing the scalar design above.
   wildcard column) keeps (fixed columns, path, value). Unique wildcard
   indexes are unique indexes over multikey keys. Nothing in it changes
   the on-disk format; "Wildcard indexes as the check" under "Multikey keys"
-  design. ''(in progress. M5a, the test module bark_wildcard, is built:
+  is its design. As built, the test module bark_wildcard:
   procedure 7 emits [path, value] keys, one per array element, with
   markers [path] for paths that hold an array and member names escaped;
   procedure 5 takes include or exclude; the operators #&lt; #&lt;= #= #&gt;=
