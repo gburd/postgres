@@ -157,6 +157,18 @@ RESET max_parallel_maintenance_workers;
 RESET maintenance_work_mem;
 DROP TABLE bark_par_tab;
 
+-- Run a check, and show its error with the TID of the row it names replaced
+-- by the row's name: where a row lands in the heap depends on the platform's
+-- alignment and the block size.
+CREATE FUNCTION bark_check_err(call text, tid tid, name text) RETURNS text
+LANGUAGE plpgsql AS $$
+BEGIN
+  EXECUTE 'SELECT ' || call;
+  RETURN 'no error';
+EXCEPTION WHEN OTHERS THEN
+  RETURN replace(SQLERRM, tid::text, '(' || name || ')');
+END $$;
+
 -- heapallindexed finds a heap tuple with no entry.  With indisready off,
 -- inserts skip the index, as they do for an index that CREATE INDEX
 -- CONCURRENTLY has not yet made ready; turning it back on leaves the index
@@ -174,17 +186,17 @@ UPDATE pg_index SET indisready = false
   WHERE indexrelid IN ('bark_check_missing_idx'::regclass,
                        'bark_check_missing_inc'::regclass,
                        'bark_check_missing_bt'::regclass);
-INSERT INTO bark_check_missing VALUES (5001, 'row 5001');
+INSERT INTO bark_check_missing VALUES (5001, 'row 5001') RETURNING ctid AS missing \gset
 UPDATE pg_index SET indisready = true
   WHERE indexrelid IN ('bark_check_missing_idx'::regclass,
                        'bark_check_missing_inc'::regclass,
                        'bark_check_missing_bt'::regclass);
 SELECT bark_index_check('bark_check_missing_idx');
 SELECT bark_index_parent_check('bark_check_missing_idx');
-SELECT bark_index_check('bark_check_missing_idx', true);
-SELECT bark_index_parent_check('bark_check_missing_idx', true);
-SELECT bark_index_check('bark_check_missing_inc', true);
-SELECT bt_index_check('bark_check_missing_bt', true);
+SELECT bark_check_err('bark_index_check(''bark_check_missing_idx'', true)', :'missing', 'row 5001');
+SELECT bark_check_err('bark_index_parent_check(''bark_check_missing_idx'', true)', :'missing', 'row 5001');
+SELECT bark_check_err('bark_index_check(''bark_check_missing_inc'', true)', :'missing', 'row 5001');
+SELECT bark_check_err('bt_index_check(''bark_check_missing_bt'', true)', :'missing', 'row 5001');
 -- REINDEX repairs it.
 REINDEX INDEX bark_check_missing_idx;
 SELECT bark_index_check('bark_check_missing_idx', true);
@@ -200,11 +212,12 @@ CREATE INDEX bark_check_missing2_idx ON bark_check_missing2 USING bark (k);
 SELECT bark_index_check('bark_check_missing2_idx', true);
 UPDATE pg_index SET indisready = false
   WHERE indexrelid = 'bark_check_missing2_idx'::regclass;
-INSERT INTO bark_check_missing2 VALUES (1);
+INSERT INTO bark_check_missing2 VALUES (1) RETURNING ctid AS missing \gset
 UPDATE pg_index SET indisready = true
   WHERE indexrelid = 'bark_check_missing2_idx'::regclass;
-SELECT bark_index_check('bark_check_missing2_idx', true);
+SELECT bark_check_err('bark_index_check(''bark_check_missing2_idx'', true)', :'missing', 'the last row');
 DROP TABLE bark_check_missing2;
+DROP FUNCTION bark_check_err(text, tid, text);
 
 -- An empty index passes every check, and the 1.6 one-argument form still
 -- works after an update from 1.6.
