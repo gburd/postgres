@@ -230,7 +230,7 @@ is( $node->safe_psql(
 	'1', 'one run: row 300\'s entry is untagged, on the same page');
 check_index('t2_k', 'one run, untag in place');
 
-# What the rule prevents (R3.2): with it off, VACUUM untags the flagged
+# What the rule prevents: with it off, VACUUM untags the flagged
 # page's first entry in place, and the page then holds an entry below its
 # lower bound.
 SKIP:
