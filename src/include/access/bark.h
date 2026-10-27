@@ -566,7 +566,7 @@ typedef struct BarkOptions
  * 10-13 GIN's extractQuery, consistent, comparePartial and triConsistent
  * (its 3-6), 14 GiST's fetch, and 15 GiST's translate-cmptype (its 12),
  * which names the class's overlap operator, the conflict operator of a
- * unique index ("M4" in BARK-Design.mediawiki).  Procedure 15 is registered
+ * unique index (BARK-Design.mediawiki).  Procedure 15 is registered
  * under ("any", "any"), as GiST's is, since it is looked up by operator
  * family alone.  amsupport covers all fifteen, and amstrategies is 0, so a
  * BARK family's operators may carry any strategy number; the number only
