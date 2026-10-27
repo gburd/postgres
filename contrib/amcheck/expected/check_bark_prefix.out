@@ -40,10 +40,10 @@ LANGUAGE plpgsql AS $$
 BEGIN
   DROP INDEX IF EXISTS bark_pfx_idx;
   EXECUTE format('CREATE INDEX bark_pfx_idx ON bark_pfx USING bark %s WITH (prefix_compression = off)', def);
-  off_pages := pg_relation_size('bark_pfx_idx'::regclass) / 8192;
+  off_pages := pg_relation_size('bark_pfx_idx'::regclass) / current_setting('block_size')::int;
   DROP INDEX bark_pfx_idx;
   EXECUTE format('CREATE INDEX bark_pfx_idx ON bark_pfx USING bark %s WITH (prefix_compression = on)', def);
-  on_pages := pg_relation_size('bark_pfx_idx'::regclass) / 8192;
+  on_pages := pg_relation_size('bark_pfx_idx'::regclass) / current_setting('block_size')::int;
   PERFORM bark_index_check('bark_pfx_idx'::regclass);
 END $$;
 -- A collation other than C: ICU's root locale where ICU is available.

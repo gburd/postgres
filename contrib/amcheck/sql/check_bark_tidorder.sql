@@ -227,7 +227,7 @@ BEGIN
       FROM generate_series(1, 63) g;
   END LOOP;
 END $$;
-SELECT pg_relation_size('bark_hku_idx') / 8192 > 2 AS spans_leaves;
+SELECT pg_relation_size('bark_hku_idx') / current_setting('block_size')::int > 2 AS spans_leaves;
 INSERT INTO bark_hku VALUES (1, 'y');	-- fails
 INSERT INTO bark_hku VALUES (1, 'y') ON CONFLICT DO NOTHING;
 SELECT count(*) FROM bark_hku WHERE k = 1;
@@ -307,7 +307,7 @@ INSERT INTO bark_sk_big SELECT 'K' || g / 250 ||
   FROM generate_series(0, 499) g;
 CREATE INDEX bark_sk_big_idx ON bark_sk_big USING bark (k, n);
 VACUUM ANALYZE bark_sk_big;
-SELECT pg_relation_size('bark_sk_big_idx') / 8192 > 500 AS oversized;
+SELECT pg_relation_size('bark_sk_big_idx') / current_setting('block_size')::int > 500 AS oversized;
 SELECT bark_sk_check('SELECT n FROM bark_sk_big WHERE k >= ''K0'' AND n > 100 AND n < 450 ORDER BY k, n');
 SELECT bark_sk_check('SELECT n FROM bark_sk_big WHERE k >= ''K0'' AND n > 100 AND n < 450 ORDER BY k DESC, n DESC');
 SELECT bark_index_check('bark_sk_big_idx');

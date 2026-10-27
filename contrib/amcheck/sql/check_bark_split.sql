@@ -123,7 +123,7 @@ INSERT INTO bark_ff_wide
          (SELECT string_agg(md5(g::text || i::text), '') FROM generate_series(1, 30) i)
   FROM generate_series(1, 200) g;
 CREATE INDEX bark_ff_wide_idx ON bark_ff_wide USING bark (t) WITH (fillfactor = 10);
-SELECT pg_relation_size('bark_ff_wide_idx') / 8192 < 200 AS two_per_page;
+SELECT pg_relation_size('bark_ff_wide_idx') / current_setting('block_size')::int < 200 AS two_per_page;
 SELECT bark_index_check('bark_ff_wide_idx');
 SET enable_seqscan = off;
 SET enable_bitmapscan = off;

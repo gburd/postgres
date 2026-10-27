@@ -124,7 +124,7 @@ INSERT INTO bark_mj_wide
 CREATE INDEX bark_mj_wide_idx ON bark_mj_wide USING bark (k) INCLUDE (p);
 VACUUM ANALYZE bark_mj_o, bark_mj_list, bark_mj_post, bark_mj_misc, bark_mj_desc,
   bark_mj_wide;
-SELECT pg_relation_size('bark_mj_wide_idx') / 8192 > 40 AS wide_run_spans_leaves;
+SELECT pg_relation_size('bark_mj_wide_idx') / current_setting('block_size')::int > 40 AS wide_run_spans_leaves;
 
 -- The inner BARK scans need no Materialize: neither an index scan nor an
 -- index-only scan.

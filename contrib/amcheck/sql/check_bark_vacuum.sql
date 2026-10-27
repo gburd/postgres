@@ -51,7 +51,7 @@ CREATE TEMP TABLE bark_vgrow_cnt (k text, n bigint);
 CREATE TEMP TABLE bark_vgrow_pages (k text, before bigint, after bigint);
 CREATE FUNCTION bark_vgrow_counts(tag text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
-  UPDATE bark_vgrow_pages SET after = pg_relation_size('bark_vgrow_idx') / 8192
+  UPDATE bark_vgrow_pages SET after = pg_relation_size('bark_vgrow_idx') / current_setting('block_size')::int
     WHERE k = tag;
   SET LOCAL enable_seqscan = off;
   SET LOCAL enable_bitmapscan = off;
@@ -71,13 +71,13 @@ END $$;
 -- "failed to shrink BARK leaf entry during vacuum".
 INSERT INTO bark_vgrow SELECT 1, g FROM generate_series(1, 60000) g;
 WITH p AS (INSERT INTO bark_vgrow_pages
-           VALUES ('60000/10 vac1', pg_relation_size('bark_vgrow_idx') / 8192))
+           VALUES ('60000/10 vac1', pg_relation_size('bark_vgrow_idx') / current_setting('block_size')::int))
 DELETE FROM bark_vgrow WHERE b % 10 = 0;
 VACUUM bark_vgrow;
 SELECT bark_index_check('bark_vgrow_idx');
 SELECT bark_vgrow_counts('60000/10 vac1');
 WITH p AS (INSERT INTO bark_vgrow_pages
-           VALUES ('60000/10 vac2', pg_relation_size('bark_vgrow_idx') / 8192))
+           VALUES ('60000/10 vac2', pg_relation_size('bark_vgrow_idx') / current_setting('block_size')::int))
 DELETE FROM bark_vgrow WHERE b % 10 = 5;
 VACUUM bark_vgrow;
 SELECT bark_index_check('bark_vgrow_idx');
@@ -87,13 +87,13 @@ SELECT bark_vgrow_counts('60000/10 vac2');
 TRUNCATE bark_vgrow;
 INSERT INTO bark_vgrow SELECT 1, g FROM generate_series(1, 20000) g;
 WITH p AS (INSERT INTO bark_vgrow_pages
-           VALUES ('20000/2 vac1', pg_relation_size('bark_vgrow_idx') / 8192))
+           VALUES ('20000/2 vac1', pg_relation_size('bark_vgrow_idx') / current_setting('block_size')::int))
 DELETE FROM bark_vgrow WHERE b % 2 = 0;
 VACUUM bark_vgrow;
 SELECT bark_index_check('bark_vgrow_idx');
 SELECT bark_vgrow_counts('20000/2 vac1');
 WITH p AS (INSERT INTO bark_vgrow_pages
-           VALUES ('20000/2 vac2', pg_relation_size('bark_vgrow_idx') / 8192))
+           VALUES ('20000/2 vac2', pg_relation_size('bark_vgrow_idx') / current_setting('block_size')::int))
 DELETE FROM bark_vgrow WHERE b % 4 = 1;
 VACUUM bark_vgrow;
 SELECT bark_index_check('bark_vgrow_idx');
@@ -104,13 +104,13 @@ SELECT bark_vgrow_counts('20000/2 vac2');
 TRUNCATE bark_vgrow;
 INSERT INTO bark_vgrow SELECT 1, g FROM generate_series(1, 120000) g;
 WITH p AS (INSERT INTO bark_vgrow_pages
-           VALUES ('120000/2 vac1', pg_relation_size('bark_vgrow_idx') / 8192))
+           VALUES ('120000/2 vac1', pg_relation_size('bark_vgrow_idx') / current_setting('block_size')::int))
 DELETE FROM bark_vgrow WHERE b % 2 = 0;
 VACUUM bark_vgrow;
 SELECT bark_index_check('bark_vgrow_idx');
 SELECT bark_vgrow_counts('120000/2 vac1');
 WITH p AS (INSERT INTO bark_vgrow_pages
-           VALUES ('120000/2 vac2', pg_relation_size('bark_vgrow_idx') / 8192))
+           VALUES ('120000/2 vac2', pg_relation_size('bark_vgrow_idx') / current_setting('block_size')::int))
 DELETE FROM bark_vgrow WHERE b % 4 = 1;
 VACUUM bark_vgrow;
 SELECT bark_index_check('bark_vgrow_idx');
@@ -157,7 +157,7 @@ CREATE TEMP TABLE bark_dpg (a int);
 CREATE INDEX bark_dpg_idx ON bark_dpg USING bark (a);
 INSERT INTO bark_dpg SELECT g FROM generate_series(1, 6000) g;
 CREATE TEMP TABLE bark_dpg_sz AS
-  SELECT pg_relation_size('bark_dpg_idx') / 8192 AS built_pages;
+  SELECT pg_relation_size('bark_dpg_idx') / current_setting('block_size')::int AS built_pages;
 DELETE FROM bark_dpg WHERE a BETWEEN 1500 AND 4500;
 VACUUM bark_dpg;
 SELECT bark_index_check('bark_dpg_idx');
@@ -183,7 +183,7 @@ SELECT pg_current_xact_id() > '0'::xid8 AS xid_assigned;
 VACUUM bark_dpg;
 INSERT INTO bark_dpg SELECT g FROM generate_series(1500, 4500) g;
 SELECT bark_index_check('bark_dpg_idx');
-SELECT pg_relation_size('bark_dpg_idx') / 8192 < built_pages + 10
+SELECT pg_relation_size('bark_dpg_idx') / current_setting('block_size')::int < built_pages + 10
          AS refill_reused_pages
   FROM bark_dpg_sz;
 SELECT count(*) AS live_count FROM bark_dpg;

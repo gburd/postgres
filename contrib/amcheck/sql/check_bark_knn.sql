@@ -180,7 +180,7 @@ INSERT INTO bark_knn_post SELECT k * 2 + 1 FROM generate_series(0, 29) k,
   generate_series(1, 3) g;
 VACUUM ANALYZE bark_knn_post;
 -- As LIST entries the 9090 TIDs alone would fill more than 6 leaves.
-SELECT pg_relation_size('bark_knn_post_idx') / 8192 < 8 AS post_has_posting;
+SELECT pg_relation_size('bark_knn_post_idx') / current_setting('block_size')::int < 8 AS post_has_posting;
 INSERT INTO bark_knn_q (tbl, expr, c, lim) VALUES
   ('bark_knn_post', 'a', 30, 1000), ('bark_knn_post', 'a', 31, 1000),
   ('bark_knn_post', 'a', 31, 100000), ('bark_knn_post', 'a', -5, 1000),
@@ -229,7 +229,7 @@ INSERT INTO bark_knn_big
     FROM generate_series(1, 400) g;
 CREATE INDEX bark_knn_big_idx ON bark_knn_big USING bark (a) INCLUDE (p);
 VACUUM ANALYZE bark_knn_big;
-SELECT pg_relation_size('bark_knn_big_idx') / 8192 > 200 AS big_has_overflow;
+SELECT pg_relation_size('bark_knn_big_idx') / current_setting('block_size')::int > 200 AS big_has_overflow;
 INSERT INTO bark_knn_q (tbl, expr, c, lim) VALUES
   ('bark_knn_big', 'a', 200, 50), ('bark_knn_big', 'a', 200, 100000),
   ('bark_knn_big', 'a || '':'' || md5(p)', 200, 50),
@@ -276,7 +276,7 @@ VACUUM ANALYZE bark_knn_rd;
 SELECT bark_knn_buffers('SELECT a FROM bark_knn_rd ORDER BY a <~> 5000 LIMIT 10') <= 6
          AS knn_limit_reads_few_pages,
        bark_knn_buffers('SELECT a FROM bark_knn_rd ORDER BY a <~> 5000') >=
-         pg_relation_size('bark_knn_rd_idx') / 8192 - 2 AS knn_whole_scan_reads_all;
+         pg_relation_size('bark_knn_rd_idx') / current_setting('block_size')::int - 2 AS knn_whole_scan_reads_all;
 DROP FUNCTION bark_knn_buffers(text);
 DROP FUNCTION bark_knn_check(text, text, int, int, bool, bool);
 DROP TABLE bark_knn_q, bark_knn_post, bark_knn_desc, bark_knn_del, bark_knn_big,
