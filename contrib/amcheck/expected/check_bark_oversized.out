@@ -254,5 +254,56 @@ SELECT count(*) AS idx_remaining FROM bark_inc_big WHERE k BETWEEN 1 AND 15;
 (1 row)
 
 RESET enable_seqscan;
+-- The widest keys that stay inline coalesce as any other: rows of one key
+-- make a LIST (forming one tries the coded form first), and a thousand
+-- LIST or POSTING entries (which, depends on the block size), each with
+-- the whole key as its key part.  The key
+-- is a quarter of a page, up to 6000 bytes, so that with 32 kB blocks the
+-- entry's body starts past 4095 bytes.
+CREATE EXTENSION IF NOT EXISTS pageinspect;
+CREATE TABLE bark_wide_dup (k text, n int);
+CREATE INDEX bark_wide_dup_k ON bark_wide_dup USING bark (k);
+CREATE FUNCTION bark_wide_key(s int) RETURNS text LANGUAGE sql AS
+$$ SELECT bark_bigstr(s, least(current_setting('block_size')::int / 4, 6000)) $$;
+CREATE FUNCTION bark_wide_shapes() RETURNS text[] LANGUAGE sql AS $$
+  SELECT array_agg(DISTINCT i.shape ORDER BY i.shape)
+    FROM bark_multi_page_stats('bark_wide_dup_k', 1, -1) p,
+         LATERAL bark_page_items('bark_wide_dup_k', p.blkno) i
+   WHERE p.type IN ('leaf', 'root') AND i.shape <> 'PIVOT' $$;
+INSERT INTO bark_wide_dup SELECT bark_wide_key(1), g FROM generate_series(1, 2) g;
+SELECT bark_wide_shapes() AS two_rows;
+ two_rows 
+----------
+ {LIST}
+(1 row)
+
+INSERT INTO bark_wide_dup SELECT bark_wide_key(1), g FROM generate_series(3, 20) g;
+INSERT INTO bark_wide_dup SELECT bark_wide_key(2), g FROM generate_series(1, 1000) g;
+SELECT bark_wide_shapes() <@ '{LIST,POSTING}' AS coalesced;
+ coalesced 
+-----------
+ t
+(1 row)
+
+SELECT bark_index_check('bark_wide_dup_k', true);
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT k = bark_wide_key(1) AS k1, count(*) FROM bark_wide_dup
+ WHERE k IN (bark_wide_key(1), bark_wide_key(2)) GROUP BY 1 ORDER BY 1;
+ k1 | count 
+----+-------
+ f  |  1000
+ t  |    20
+(2 rows)
+
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+DROP TABLE bark_wide_dup;
+DROP FUNCTION bark_wide_key(int), bark_wide_shapes();
 DROP TABLE bark_big, bark_pfx, bark_huge, bark_uniq, bark_inc_big;
 DROP FUNCTION bark_bigstr(int, int);
