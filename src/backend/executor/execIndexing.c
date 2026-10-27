@@ -459,7 +459,7 @@ ExecUpdateMayKeepLocator(ResultRelInfo *resultRelInfo,
 			!IndexNeedsEntry(indexRelation, modified_idx_attrs))
 			continue;
 
-		if (!index_can_version(indexRelation))
+		if (!index_may_keep_locator(indexRelation))
 			return false;
 
 		/*
