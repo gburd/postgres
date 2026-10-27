@@ -84,11 +84,14 @@
 #include "lib/stringinfo.h"
 #include "miscadmin.h"
 #include "funcapi.h"
+#include "nodes/makefuncs.h"
+#include "optimizer/pathnode.h"
 #include "nodes/primnodes.h"
 #include "storage/bufmgr.h"
 #include "utils/builtins.h"
 #include "utils/catcache.h"
 #include "utils/lsyscache.h"
+#include "utils/memutils.h"
 #include "utils/selfuncs.h"
 #include "utils/syscache.h"
 #include "utils/tuplestore.h"
@@ -115,6 +118,8 @@ PG_FUNCTION_INFO_V1(bark_wildcard_boundaries);
 PG_FUNCTION_INFO_V1(bark_wildcard_in_boundaries);
 PG_FUNCTION_INFO_V1(bark_wildcard_entries);
 PG_FUNCTION_INFO_V1(bark_wildcard_sel);
+PG_FUNCTION_INFO_V1(bark_wildcard_cxt_size);
+PG_FUNCTION_INFO_V1(bark_wildcard_hypothetical);
 
 /* The operators' strategy numbers: btree's for the comparisons. */
 #define BARK_WC_LT		BTLessStrategyNumber	/* #< */
@@ -1435,14 +1440,15 @@ bark_wildcard_strategy(Oid operator)
  * at 0.25 to 0.68 ms against GIN's 0.04 to 0.08, almost all of it this
  * per-row cost.
  *
- * So estimate without touching the sample: a fixed selectivity per
- * strategy, equality the most selective, a range the least, path existence
- * in between, each the default the planner uses for its kind, scaled down
- * by the column's NULL fraction.  The estimate is coarse, but these
- * queries drive the index-vs-seqscan choice the same way the sample-based
- * estimate did (equality and existence stay selective enough for an index
- * or bitmap scan, a range stays below a seqscan's cost), and planning no
- * longer scans the sample.
+ * So estimate without touching the sample.  When the column has a BARK
+ * index of this operator's family, the index answers: its separator keys
+ * and, for a narrow query, its leaves, give the fraction of the rows that
+ * have keys in the query's range (bark_estimate_qual_selectivity), which
+ * already leaves the NULL documents out, as they have no keys there.
+ * Otherwise, or when that index cannot say (one leaf, a hypothetical
+ * index), a fixed selectivity per strategy: equality the most selective, a
+ * range the least, path existence in between, each the default the planner
+ * uses for its kind, scaled down by the column's NULL fraction.
  */
 Datum
 bark_wildcard_sel(PG_FUNCTION_ARGS)
@@ -1480,6 +1486,42 @@ bark_wildcard_sel(PG_FUNCTION_ARGS)
 		PG_RETURN_FLOAT8(DEFAULT_MATCHING_SEL);
 	}
 
+	/*
+	 * A BARK index of the operator's family on the column, not a partial one.
+	 * The estimate compares stored keys with the column's procedure 1 and
+	 * counts the rows of each value, which a user who may not read every row
+	 * must not learn: as for pg_statistic, it is used only when
+	 * statistic_proc_security_check allows that procedure.
+	 */
+	if (varonleft && vardata.rel != NULL && IsA(vardata.var, Var))
+	{
+		Expr	   *clause = NULL;
+
+		foreach_node(IndexOptInfo, index, vardata.rel->indexlist)
+		{
+			if (index->relam != BARK_AM_OID || index->indpred != NIL ||
+				index->indexkeys[0] != ((Var *) vardata.var)->varattno ||
+				!op_in_opfamily(operator, index->opfamily[0]) ||
+				!statistic_proc_security_check(&vardata,
+											   get_opfamily_proc(index->opfamily[0],
+																 index->opcintype[0],
+																 index->opcintype[0],
+																 BARK_ORDER_PROC)))
+				continue;
+			if (clause == NULL)
+				clause = make_opclause(operator, BOOLOID, false,
+									   (Expr *) vardata.var, (Expr *) other,
+									   InvalidOid, InvalidOid);
+			selec = bark_estimate_qual_selectivity(index, 0, clause);
+			if (selec >= 0)
+			{
+				ReleaseVariableStats(vardata);
+				CLAMP_PROBABILITY(selec);
+				PG_RETURN_FLOAT8((float8) selec);
+			}
+		}
+	}
+
 	/* The documents that are NULL match nothing, so discount them. */
 	if (HeapTupleIsValid(vardata.statsTuple))
 		nullfrac = ((Form_pg_statistic) GETSTRUCT(vardata.statsTuple))->stanullfrac;
@@ -1512,4 +1554,51 @@ bark_wildcard_sel(PG_FUNCTION_ARGS)
 
 	CLAMP_PROBABILITY(selec);
 	PG_RETURN_FLOAT8((float8) selec);
+}
+
+/*
+ * bark_wildcard_cxt_size(index regclass) -> int8: the bytes this backend's
+ * relcache entry for the index holds in rd_indexcxt and its children, where
+ * BARK keeps the planner's separator sample, for a test that repeated
+ * invalidations do not grow it.
+ */
+Datum
+bark_wildcard_cxt_size(PG_FUNCTION_ARGS)
+{
+	Relation	rel = index_open(PG_GETARG_OID(0), AccessShareLock);
+	int64		size = (int64) MemoryContextMemAllocated(rel->rd_indexcxt, true);
+
+	index_close(rel, AccessShareLock);
+	PG_RETURN_INT64(size);
+}
+
+/*
+ * bark_wildcard_hypothetical(on bool): while on, every index the planner
+ * sees is marked hypothetical, as an index adviser's would be, so a test
+ * can check the estimate a hypothetical BARK index gets.
+ */
+static bool bark_wildcard_hypo = false;
+static build_simple_rel_hook_type prev_build_simple_rel_hook = NULL;
+
+static void
+bark_wildcard_simple_rel(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
+{
+	if (prev_build_simple_rel_hook)
+		prev_build_simple_rel_hook(root, rel, rte);
+	if (bark_wildcard_hypo)
+		foreach_node(IndexOptInfo, index, rel->indexlist)
+			index->hypothetical = true;
+}
+
+Datum
+bark_wildcard_hypothetical(PG_FUNCTION_ARGS)
+{
+	if (prev_build_simple_rel_hook == NULL &&
+		build_simple_rel_hook != bark_wildcard_simple_rel)
+	{
+		prev_build_simple_rel_hook = build_simple_rel_hook;
+		build_simple_rel_hook = bark_wildcard_simple_rel;
+	}
+	bark_wildcard_hypo = PG_GETARG_BOOL(0);
+	PG_RETURN_VOID();
 }
