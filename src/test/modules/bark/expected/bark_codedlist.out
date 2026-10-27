@@ -375,30 +375,34 @@ DROP TABLE v6m;
 -- descending and scattered inside its range, before its first TID (which
 -- does not join the entry), and after its last.  Key 3 is three adjacent
 -- rows, coded 32 bytes against 40 plain; a fourth makes 40 either way, so
--- the entry turns plain.
+-- the entry turns plain; where MAXALIGN is 4 (12-byte key part) the
+-- sizes are 28 and 30 coded against 30 and 36 plain, so it stays coded.  The
+-- entries show their member count, whether they are coded, and whether they
+-- are no larger than the plain form, which every entry is.
 CREATE TABLE v6o (g int, k int) WITH (fillfactor = 50, autovacuum_enabled = off);
 INSERT INTO v6o SELECT g, CASE WHEN g BETWEEN 1001 AND 2000 AND g % 10 = 0 THEN 1
                                WHEN g BETWEEN 2501 AND 2503 THEN 3 ELSE 2 END
   FROM generate_series(1, 3000) g;
 CREATE INDEX v6o_k ON v6o USING bark (k);
-CREATE FUNCTION v6o_entries(key int) RETURNS TABLE (ntids int, itemlen int, coded bool)
+CREATE FUNCTION v6o_entries(key int) RETURNS TABLE (ntids int, coded bool, smaller bool)
   LANGUAGE sql AS $$
-  SELECT i.ntids, i.itemlen, i.shape = 'LIST' AND i.itemlen < v6_plain_len(i.ntids)
+  SELECT i.ntids, i.shape = 'LIST' AND i.itemlen < v6_plain_len(i.ntids),
+         i.itemlen <= v6_plain_len(i.ntids)
     FROM generate_series(1, pg_relation_size('v6o_k') / 8192 - 1) b,
          bark_page_items('v6o_k', b) i
    WHERE i.shape IN ('SINGLE', 'LIST', 'POSTING')
      AND i.tids <@ (SELECT array_agg(ctid) FROM v6o WHERE k = key)
    ORDER BY i.tids[1] $$;
 SELECT * FROM v6o_entries(1);
- ntids | itemlen | coded 
--------+---------+-------
-   100 |     144 | t
+ ntids | coded | smaller 
+-------+-------+---------
+   100 | t     | t
 (1 row)
 
 SELECT * FROM v6o_entries(3);
- ntids | itemlen | coded 
--------+---------+-------
-     3 |      32 | t
+ ntids | coded | smaller 
+-------+-------+---------
+     3 | t     | t
 (1 row)
 
 UPDATE v6o SET k = 1 WHERE g IN (1105, 1205, 1305);
@@ -435,17 +439,18 @@ UPDATE v6o SET k = 1 WHERE g = 105
 INSERT INTO v6o VALUES (3001, 1), (3002, 1);
 UPDATE v6o SET k = 3 WHERE g = 2504;
 -- Key 1 is still one coded LIST of everything inside or after its range,
--- with the rows before it in entries of their own; key 3 is plain.
+-- with the rows before it in entries of their own; key 3 is one LIST of 4,
+-- in whichever form is smaller.
 SELECT * FROM v6o_entries(1);
- ntids | itemlen | coded 
--------+---------+-------
-   126 |     168 | t
+ ntids | coded | smaller 
+-------+-------+---------
+   126 | t     | t
 (1 row)
 
-SELECT * FROM v6o_entries(3);
- ntids | itemlen | coded 
--------+---------+-------
-     4 |      40 | f
+SELECT ntids, coded = (v6_plain_len(4) < 40) AS coded_where_smaller FROM v6o_entries(3);
+ ntids | coded_where_smaller 
+-------+---------------------
+     4 | t
 (1 row)
 
 SELECT bark_index_check('v6o_k', true);
