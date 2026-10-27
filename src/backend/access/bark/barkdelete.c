@@ -616,7 +616,7 @@ bark_bottomup_delete(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 }
 
 /*
- * Pre-split cleanup of version tags (R3.3 of the RethinkDB review) on the
+ * Pre-split cleanup of version tags (an idea from RethinkDB's B-tree) on the
  * exclusive-locked leaf `buf` of an index that stores tags, which an insert
  * of `newitem` would split after simple and bottom-up deletion: offer every
  * tagged SINGLE on the page to the table AM, each with its tag

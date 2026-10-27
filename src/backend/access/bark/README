@@ -2640,8 +2640,8 @@ TM_IndexStatus, and offer a TID once per entry: the table AM's verdict is
 about the entry.  Before a leaf of an index that stores tags splits, and
 after simple and bottom-up deletion, bark_tagged_delete offers the page's
 tagged SINGLEs to table_index_delete_tuples, as a bottom-up pass in which
-all are promising, so stale entries of live rows go (R3.3 of the RethinkDB
-review).
+all are promising, so stale entries of live rows go (an idea from
+RethinkDB's B-tree).
 
 Version 2.  An index without BARK_META_VERSIONED, every version 2 index
 among them, answers false to amindexcanversion, so the executor moves the
