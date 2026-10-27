@@ -10,7 +10,7 @@ QUERY PLAN
 Result                                             
   One-Time Filter: (pg_backend_pid() <> 0)         
   ->  Index Only Scan Backward using bwl_idx on bwl
-        Filter: ((col % 1000) = 0)                 
+        Filter: ((col % '1000'::bigint) = 0)       
 (4 rows)
 
 step s1_attach: 

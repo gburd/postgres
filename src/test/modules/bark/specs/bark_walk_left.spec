@@ -20,7 +20,7 @@ setup
 {
 	CREATE EXTENSION injection_points;
 	CREATE EXTENSION amcheck;
-	CREATE TABLE bwl (col int4) WITH (autovacuum_enabled = off);
+	CREATE TABLE bwl (col int8) WITH (autovacuum_enabled = off);
 	INSERT INTO bwl SELECT 10 * i FROM generate_series(0, 2000) i;
 	CREATE INDEX bwl_idx ON bwl USING bark (col);
 
