@@ -221,7 +221,7 @@ table whose locator is fixed-width and fits in 6 bytes; a larger
 <code>max_offset</code> (up to <code>MaxOffsetNumber</code>) is indexed, with
 the mappings laid out for it. <code>ginbuild()</code> refuses such a table.
 
-''As built (2026-10-20, TID stride).'' Phase 2 first refused, in
+''As built (TID stride).'' The first version refused, in
 <code>bark_build()</code>, a table whose <code>max_offset</code> exceeds
 <code>MaxHeapTuplesPerPage</code>; the refusal is gone. CREATE INDEX stores
 the table's <code>max_offset</code> as the index's TID stride in what was
