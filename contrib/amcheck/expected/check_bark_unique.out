@@ -330,11 +330,29 @@ SELECT bark_index_check('bcu_mk_a');
  
 (1 row)
 
-SELECT bark_index_check('bcu_mk_a', true);
-ERROR:  heap tuple (25,4) from table "bcu_mk" lacks matching index tuple within index "bcu_mk_a"
-HINT:  Retrying verification using the function bark_index_parent_check() might provide a more specific error.
-SELECT bark_index_parent_check('bcu_mk_a', true);
-ERROR:  heap tuple (25,4) from table "bcu_mk" lacks matching index tuple within index "bcu_mk_a"
+-- The error names the row's heap TID, which depends on the platform and
+-- the block size: show it as the row's id.
+CREATE FUNCTION bcu_mk_err(call text) RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+  EXECUTE 'SELECT ' || call;
+  RETURN 'no error';
+EXCEPTION WHEN OTHERS THEN
+  RETURN replace(SQLERRM, (SELECT ctid::text FROM bcu_mk WHERE id = 3004),
+                 '(row 3004)');
+END $$;
+SELECT bcu_mk_err('bark_index_check(''bcu_mk_a'', true)');
+                                          bcu_mk_err                                          
+----------------------------------------------------------------------------------------------
+ heap tuple (row 3004) from table "bcu_mk" lacks matching index tuple within index "bcu_mk_a"
+(1 row)
+
+SELECT bcu_mk_err('bark_index_parent_check(''bcu_mk_a'', true)');
+                                          bcu_mk_err                                          
+----------------------------------------------------------------------------------------------
+ heap tuple (row 3004) from table "bcu_mk" lacks matching index tuple within index "bcu_mk_a"
+(1 row)
+
+DROP FUNCTION bcu_mk_err(text);
 REINDEX INDEX bcu_mk_a;
 SELECT bark_index_check('bcu_mk_a', true);
  bark_index_check 
