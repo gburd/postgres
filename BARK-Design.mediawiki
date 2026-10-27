@@ -1482,8 +1482,8 @@ POSTING key, seven queries (prefix, POSTING key, no match, = ANY, two keys)
 equal to a seqscan at work_mem 64kB (lossy) and 64MB (exact);
 bark_multikey_ginmerge adds weighted tsqueries (recheck per vector).
 
-'''As built (2026-10-15, index scan bound).''' An index scan of a
-GIN-interface column (M2c) kept its whole result as an array of
+'''As built, index scan bound.''' An index scan of a
+GIN-interface column kept its whole result as an array of
 (TID, recheck) items, exact and unbounded. It now builds the same TIDBitmap
 a bitmap scan does, bounded by work_mem, in its own context, and walks it
 with a private iterator: the place is (page in iteration order, offset), a
