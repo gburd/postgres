@@ -415,6 +415,11 @@ sub waldump_count
 {
 	my ($start, $end, $type) = @_;
 	return 0 if $start eq $end;
+	# $end is an insert position, which WAL a background process wrote
+	# after the last commit can put past what is flushed, and pg_waldump
+	# cannot read unflushed WAL: commit a transaction with an xid, whose
+	# commit flushes everything before it.
+	$node_primary->safe_psql($db, 'SELECT pg_current_xact_id()');
 	my ($stdout, $stderr) = run_command(
 		[
 			'pg_waldump', '--rmgr=Bark',
