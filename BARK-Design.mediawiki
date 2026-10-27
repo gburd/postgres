@@ -1349,8 +1349,8 @@ column of every BARK index, scalar ones included.
   which asks the scan to read the NULL entries too (a NULL value, an empty
   value or a NULL element), at the position the column's NULLS option gives
   them, and to return those rows with <code>xs_recheck</code> set, as
-  GIN's INCLUDE_EMPTY search mode does. Fields are only appended. M5b
-  appends <code>oneentry</code>, which procedure 8 sets to say that a row
+  GIN's INCLUDE_EMPTY search mode does. Fields are only appended. The
+  wildcard class's needs appended <code>oneentry</code>, which procedure 8 sets to say that a row
   matches these boundaries through at most one entry, so the scan needs no
   seen set, and <code>index</code>, which BARK sets (NULL when no index is
   open) so procedure 8 can read the index's markers with
@@ -2147,7 +2147,7 @@ What that needs, and where the design provides it:
   array"). A query on a path without its marker is known to match each row
   at most once, and a class can then plan an index-only scan or an ordered
   scan with no Sort. Telling the AM "this scan needs no seen set" is an
-  extension of procedure 8. M1 stores, caches and reads the markers. M5b's
+  extension of procedure 8. BARK stores, caches and reads the markers. The
   extension: procedure 8 cannot see the index from its arguments, so BARK
   passes the open index in <code>BarkQueryFlags.index</code> rather than
   checking a class's markers itself (only the class knows which marker
