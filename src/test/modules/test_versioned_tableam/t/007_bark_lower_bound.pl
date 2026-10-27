@@ -432,12 +432,19 @@ $vac->query_until(qr/start/, qq{
 $node->wait_for_event('client backend', 'bark-bulkdelete-after-page');
 $node->safe_psql('postgres',
 	q{SELECT injection_points_attach('bark-leave-leaf-split-incomplete', 'wait')});
+# Enough entries to split P2 whatever an entry's size on this platform:
+# twice as many as its free space holds, but no tag at or above the row's
+# xmin, which its own entry has (the run sorts below it).
+my $nsplit = $node->safe_psql('postgres', qq{
+	SELECT least(2 * free_size / (avg_item_size + 4),
+	             ((SELECT xmin::text::int FROM te WHERE id = 1) - $first - 2) / 2)
+	  FROM bark_page_stats('te_k', $p2)});
 $ins = $node->background_psql('postgres', on_error_stop => 0);
 $ins->query_until(qr/start/, qq{
 	SET test_versioned_tableam.stale_tags = live;
 	\\echo start
 	SELECT count(test_versioned_insert_entry('te_k', ctid, g))
-	  FROM te, generate_series($first + 1, $first + 401, 2) g WHERE id = 1;
+	  FROM te, generate_series($first + 1, $first + 1 + 2 * $nsplit, 2) g WHERE id = 1;
 });
 $node->wait_for_event('client backend', 'bark-leave-leaf-split-incomplete');
 $node->safe_psql('postgres', q{
