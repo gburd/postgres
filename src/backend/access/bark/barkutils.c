@@ -37,6 +37,7 @@
 #include "access/table.h"
 #include "access/tableam.h"
 #include "access/toast_internals.h"
+#include "access/xlog.h"
 #include "access/xloginsert.h"
 #include "catalog/pg_amop.h"
 #include "catalog/pg_type.h"
@@ -47,6 +48,7 @@
 #include "nodes/execnodes.h"
 #include "storage/bufmgr.h"
 #include "storage/indexfsm.h"
+#include "storage/proc.h"
 #include "utils/builtins.h"
 #include "utils/datum.h"
 #include "utils/fmgroids.h"
@@ -642,7 +644,7 @@ bark_build_mktags(Relation index, bool versioned)
  * amindexcanversion: does the index store version tags?  Only an index
  * built for them (BARK_META_VERSIONED, so never a version 2 index), and,
  * if it has an extracted column, built for tags on its key entries
- * (BARK_META_MKTAGS).  Its scans then settle each entry of a row by the
+ * (BARK_META_MKTAGS), until a conversion completes and clears that.  Its scans then settle each entry of a row by the
  * table AM's verdict ("Versioned multikey scans" in the README).  Every
  * other multikey index returns each row once by TID (the seen set, and a
  * GIN-interface scan's TIDBitmap), which is right only while no row has
@@ -665,16 +667,153 @@ bark_indexcanversion(Relation index)
  * build, as DocumentDB's collMod prepareUnique adds one): a check under a
  * dirty snapshot could meet two versions at one locator.  Read at run
  * time, from rd_index, which a writer whose statement began after the
- * change has.  The index keeps BARK_META_MKTAGS, so its tagged entries are
- * still judged, and its scans keep rule D.  Every other index that stores
- * tags lets the locator be kept.
+ * change has, and from BARK_META_CONVERTING, which outlives a later DROP of
+ * the constraint: once the conversion has begun, no update may add a tagged
+ * entry that VACUUM's barrier did not wait for.  The index keeps
+ * BARK_META_MKTAGS until the conversion is complete, so its tagged entries
+ * are still judged, and its scans keep rule D.  Every other index that
+ * stores tags lets the locator be kept.
  */
 bool
 bark_indexmaykeeplocator(Relation index)
 {
 	if (bark_index_extracted_column(index) == 0)
 		return true;
-	return !index->rd_index->indisunique && !index->rd_index->indisexclusion;
+	if (index->rd_index->indisunique || index->rd_index->indisexclusion)
+		return false;
+	return !bark_index_converting(index);
+}
+
+/*
+ * The meta page's BARK_META_MKTAGS, BARK_META_CONVERTING and
+ * BARK_META_SETTLED, read now under its share lock, of an index whose
+ * cached flags say MKTAGS (bark_index_mktags), so its meta page has
+ * bark_flags.  MKTAGS alone while CREATE INDEX has not written the meta page
+ * yet (an index CREATE INDEX CONCURRENTLY has not built), which builds an
+ * index with MKTAGS that is not converting.  The conversion changes the bits
+ * while the index is open, so a caller that relies on SETTLED reads it here,
+ * not from a cache.
+ */
+uint32
+bark_index_conversion_flags(Relation index)
+{
+	Buffer		metabuf;
+	uint32		flags;
+
+	if (RelationGetNumberOfBlocks(index) == 0)
+		return BARK_META_MKTAGS;
+	metabuf = ReadBuffer(index, BARK_METAPAGE);
+	LockBuffer(metabuf, BUFFER_LOCK_SHARE);
+	flags = BarkPageGetMeta(BufferGetPage(metabuf))->bark_flags &
+		(BARK_META_MKTAGS | BARK_META_CONVERTING | BARK_META_SETTLED);
+	UnlockReleaseBuffer(metabuf);
+	return flags;
+}
+
+/*
+ * Change the conversion bits of the meta page under its exclusive lock: if
+ * its flags have every bit of `need`, set those of `set` and clear those of
+ * `clear`, logging the page whole, as bark_set_multikey does (each change
+ * happens once per conversion).  Returns the flags as bark_index_conversion_flags
+ * would read them after.
+ */
+uint32
+bark_change_conversion_flags(Relation index, uint32 need, uint32 set,
+							 uint32 clear)
+{
+	Buffer		metabuf = ReadBuffer(index, BARK_METAPAGE);
+	Page		metapage;
+	BarkMetaPageData *meta;
+	uint32		flags;
+
+	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
+	metapage = BufferGetPage(metabuf);
+	meta = BarkPageGetMeta(metapage);
+	if ((meta->bark_flags & need) == need &&
+		(meta->bark_flags & (set | clear)) != set)
+	{
+		START_CRIT_SECTION();
+
+		bark_meta_cover(metapage);
+		meta->bark_flags = (meta->bark_flags & ~clear) | set;
+		MarkBufferDirty(metabuf);
+		if (RelationNeedsWAL(index))
+			log_newpage_buffer(metabuf, true);
+		else
+			PageSetLSN(metapage, XLogGetFakeLSN(index));
+
+		END_CRIT_SECTION();
+
+		bark_verify_page_change(index, metabuf);
+	}
+	flags = meta->bark_flags &
+		(BARK_META_MKTAGS | BARK_META_CONVERTING | BARK_META_SETTLED);
+	UnlockReleaseBuffer(metabuf);
+	return flags;
+}
+
+/*
+ * Has the conversion of this index, which stores tags on its keys
+ * (bark_indexmaykeeplocator asks only for an index that can store tags), begun:
+ * BARK_META_CONVERTING, or BARK_META_MKTAGS gone from the meta page since
+ * the cache read it, which only a finished conversion does?  The answer is
+ * read once per transaction (one meta page read per transaction that updates
+ * the index's column).  That is what VACUUM's barrier needs: a
+ * transaction that read false before the bit was set already held its lock
+ * on the table, which the barrier waits out, and one that reads it later
+ * refuses to keep a locator.  The bit sends no invalidation (it is set
+ * outside any catalog change, by whichever backend notices first), so a
+ * false answer kept longer could outlive a constraint dropped meanwhile and
+ * let a later transaction keep a locator after the barrier passed.
+ */
+bool
+bark_index_converting(Relation index)
+{
+	BarkAmCache *cache = bark_get_amcache(index);
+
+	if (cache->convlxid != MyProc->vxid.lxid)
+	{
+		uint32		flags = bark_index_conversion_flags(index);
+
+		cache->converting =
+			(flags & (BARK_META_MKTAGS | BARK_META_CONVERTING)) != BARK_META_MKTAGS;
+		cache->convlxid = MyProc->vxid.lxid;
+	}
+	return cache->converting > 0;
+}
+
+/*
+ * Begin the conversion of the index if it needs it ("Conversion" in the
+ * README): set BARK_META_CONVERTING when the index stores tags on its keys
+ * (BARK_META_MKTAGS) and the catalog now says it is unique or exclusion, a
+ * constraint added after its build.  The first writer that sees the change
+ * does it: an insert, a constraint check's scan, or VACUUM.  The caller
+ * holds no page lock.  Returns the conversion bits as they are then
+ * (bark_index_conversion_flags), or 0 for an index without MKTAGS.  A bit
+ * set by a transaction whose catalog change then aborts stays: the
+ * conversion finishes anyway, and the index ends untagged, as after a
+ * constraint dropped mid-way.  In recovery nothing is written: a standby's
+ * scans are right whatever the bit says, and its constraint checks do not
+ * run.
+ */
+uint32
+bark_note_conversion(Relation index)
+{
+	uint32		flags;
+
+	if (bark_index_extracted_column(index) == 0 || !bark_index_mktags(index))
+		return 0;
+	flags = bark_index_conversion_flags(index);
+	if ((flags & (BARK_META_MKTAGS | BARK_META_CONVERTING)) != BARK_META_MKTAGS ||
+		(!index->rd_index->indisunique && !index->rd_index->indisexclusion) ||
+		RecoveryInProgress())
+		return flags;
+
+	flags = bark_change_conversion_flags(index, BARK_META_MKTAGS,
+										 BARK_META_CONVERTING, 0);
+	/* this transaction may have read the bit clear before */
+	bark_get_amcache(index)->converting = 1;
+	return flags;
 }
 
 /* Is an index of `heap` built to hold tags (BARK_META_VERSIONED)? */
