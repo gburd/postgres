@@ -319,7 +319,7 @@ $node->safe_psql(
 	DO $$
 	DECLARE g int := 100;
 	BEGIN
-	  WHILE pg_relation_size('t5_k') / 8192 < 3 AND g < 5000 LOOP
+	  WHILE pg_relation_size('t5_k') / current_setting('block_size')::int < 3 AND g < 5000 LOOP
 	    INSERT INTO t5 SELECT n, n FROM generate_series(g + 1, g + 10) n;
 	    g := g + 10;
 	  END LOOP;
