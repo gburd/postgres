@@ -64,7 +64,7 @@ sub check
 			'postgres', q[
 SELECT count(*) FROM (SELECT ctid FROM cl
                       EXCEPT
-                      SELECT t FROM generate_series(1, pg_relation_size('cl_k') / 8192 - 1) b,
+                      SELECT t FROM generate_series(1, pg_relation_size('cl_k') / current_setting('block_size')::int - 1) b,
                                     bark_page_items('cl_k', b) i, unnest(i.tids) t
                        WHERE i.shape IN ('LIST', 'POSTING', 'SINGLE')) x]),
 		'0',
@@ -83,7 +83,7 @@ my $redo = sub {
 ok( $node->safe_psql(
 		'postgres', q[
 SELECT count(*) FILTER (WHERE itemlen < (SELECT ((8 + 4 + max_data_alignment - 1) / max_data_alignment) * max_data_alignment FROM pg_control_init()) + 6 * ntids) > 0
-  FROM generate_series(1, pg_relation_size('cl_k') / 8192 - 1) b,
+  FROM generate_series(1, pg_relation_size('cl_k') / current_setting('block_size')::int - 1) b,
        bark_page_items('cl_k', b) WHERE shape = 'LIST']) eq 't',
 	'the index has coded LIST entries');
 

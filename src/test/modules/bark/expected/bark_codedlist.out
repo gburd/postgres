@@ -151,7 +151,7 @@ CREATE TABLE v6h (k int, v int) WITH (fillfactor = 50, autovacuum_enabled = off)
 INSERT INTO v6h SELECT g % 40, g FROM generate_series(1, 40000) g;
 CREATE INDEX v6h_k ON v6h USING bark (k);
 SELECT count(*) FILTER (WHERE itemlen < v6_plain_len(ntids)) > 0 AS has_coded
-  FROM generate_series(1, pg_relation_size('v6h_k') / 8192 - 1) b,
+  FROM generate_series(1, pg_relation_size('v6h_k') / current_setting('block_size')::int - 1) b,
        bark_page_items('v6h_k', b) WHERE shape = 'LIST';
  has_coded 
 -----------
