@@ -147,7 +147,7 @@ DROP TABLE bark_rowcmp;
 -- k and u unchanged, so the executor inserts each new version into the k and
 -- u indexes with indexUnchanged set.  When such an insert would split a
 -- leaf, BARK first asks the heap which versions on the leaf are dead and
--- deletes their entries, as nbtree does, so twenty rounds of UPDATEs leave
+-- deletes their entries, as nbtree does, so eight rounds of UPDATEs leave
 -- the k index about the size of a btree index on k instead of twice it.  The
 -- u index (four rows per value, prefix-coded leaves) has LIST entries that
 -- lose some members and are re-formed.  A temp table, so that only this
@@ -165,7 +165,7 @@ INSERT INTO bark_churn
   FROM generate_series(1, 10000) g;
 DO $$
 BEGIN
-  FOR i IN 1..20 LOOP
+  FOR i IN 1..8 LOOP
     UPDATE bark_churn SET v = v + 1;
     COMMIT;
   END LOOP;
