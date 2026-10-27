@@ -44,6 +44,7 @@
 #include "executor/executor.h"
 #include "fmgr.h"
 #include "funcapi.h"
+#include "lib/sbm.h"
 #include "lib/qunique.h"
 #include "lib/stringinfo.h"
 #include "miscadmin.h"
@@ -1519,6 +1520,7 @@ mapping_result(ReturnSetInfo *rsinfo, const char *name, bool ok, int64 n)
  *   its TIDs, equals bark_form_list_best of the grown set byte for byte;
  * - seen_set: the scan seen set's window (key >> 6, bit key & 63) of every
  *   TID is distinct.
+ * - huge_count: a POSTING entry claiming 2^30 members is refused.
  * - heap_coding: at stride MaxHeapTuplesPerPage, a coded LIST's bytes are
  *   GIN's (offset in the low 11 bits): the first delta of (0,1), (0,2) is 1,
  *   and of (0,1), (1,1) is 2048.
@@ -1858,6 +1860,60 @@ bark_test_tid_mappings(PG_FUNCTION_ARGS)
 		d = BarkListIsCoded(entry) ? BarkCodedListGetDeltas(entry) : NULL;
 		ok = ok && d != NULL && d[0] == 0x80 && d[1] == 0x10;
 		mapping_result(rsinfo, "heap_coding", ok, 16);
+	}
+
+	/*
+	 * huge_count: a POSTING entry whose sbm claims more members than any
+	 * array of locators can hold (a corrupt entry: one run of 2^30) is
+	 * refused, by its count and by reading its members, rather than sized
+	 * from a wrapped count.
+	 */
+	{
+		Sbm		   *map = sbm_create(0);
+		Size		keysz = IndexTupleSize(key);
+		Size		serialized;
+		IndexTuple	entry;
+		int			nerr = 0;
+
+		ok = sbm_add_range(map, 0, ((uint64) 1 << 30) - 1);
+		serialized = sbm_serialized_size(map);
+		entry = (IndexTuple) palloc0(MAXALIGN(keysz) + MAXALIGN(sizeof(uint16) + serialized));
+		memcpy(entry, key, keysz);
+		entry->t_info = (key->t_info & ~INDEX_SIZE_MASK) | INDEX_AM_RESERVED_BIT |
+			(uint16) (MAXALIGN(keysz) + MAXALIGN(sizeof(uint16) + serialized));
+		ItemPointerSetOffsetNumber(&entry->t_tid, (OffsetNumber) BARK_IS_POSTING);
+		BarkEntrySetBodyOffset(entry, (uint16) MAXALIGN(keysz));
+		*(uint16 *) ((char *) entry + MAXALIGN(keysz)) = (uint16) serialized;
+		ok = ok && sbm_serialize(map, BarkPostingGetData(entry), serialized) == serialized;
+		sbm_free(map);
+		for (int i = 0; ok && i < 2; i++)
+		{
+			MemoryContext oldcxt = CurrentMemoryContext;
+
+			PG_TRY();
+			{
+				if (i == 0)
+					(void) bark_entry_count_tids(entry);
+				else
+				{
+					ItemPointer out = NULL;
+					int			outalloc = 0;
+
+					(void) bark_posting_body_get_tids(BarkPostingGetData(entry),
+													  BarkPostingGetDataSize(entry),
+													  &out, &outalloc,
+													  CurrentMemoryContext, stride);
+				}
+			}
+			PG_CATCH();
+			{
+				MemoryContextSwitchTo(oldcxt);
+				FlushErrorState();
+				nerr++;
+			}
+			PG_END_TRY();
+		}
+		mapping_result(rsinfo, "huge_count", ok && nerr == 2, 2);
 	}
 
 	return (Datum) 0;

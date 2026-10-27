@@ -106,7 +106,8 @@ SELECT * FROM bark_test_tid_mappings(291);
  add_tid       | t  |     8
  coded_add     | t  |    49
  heap_coding   | t  |    16
-(7 rows)
+ huge_count    | t  |     2
+(8 rows)
 
 SELECT * FROM bark_test_tid_mappings(0);
   check_name   | ok | ntids 
@@ -117,7 +118,8 @@ SELECT * FROM bark_test_tid_mappings(0);
  posting_entry | t  | 12660
  add_tid       | t  |    16
  coded_add     | t  |    49
-(6 rows)
+ huge_count    | t  |     2
+(7 rows)
 
 SELECT bark_test_tid_mappings(100);
 ERROR:  stride must be 0 or between 291 and 2048
