@@ -256,18 +256,17 @@ BEGIN
 END $$;
 SELECT * FROM agrees();
 
--- REPACK on an implemented index, by sorting and by scanning it.  Terse,
--- to leave out the timing DETAIL.
-\set VERBOSITY terse
-SET client_min_messages = info;
+-- REPACK on an implemented index, by sorting and by scanning it: only the
+-- second scans the index, through its code.
 SET enable_indexscan = off;
-REPACK (VERBOSE) t USING INDEX t_a;
+SELECT test_index_impl_reset();
+REPACK t USING INDEX t_a;
+SELECT test_index_impl_scans() AS sort_scans;
 RESET enable_indexscan;
 SET enable_sort = off;
-REPACK (VERBOSE) t USING INDEX t_a;
+REPACK t USING INDEX t_a;
+SELECT test_index_impl_scans() > 0 AS index_scanned;
 RESET enable_sort;
-RESET client_min_messages;
-\set VERBOSITY default
 SELECT count(*), sum(a) FROM t;
 SELECT * FROM agrees();
 SELECT * FROM changed();

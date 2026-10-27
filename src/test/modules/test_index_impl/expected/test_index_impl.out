@@ -537,22 +537,32 @@ SELECT * FROM agrees();
  bitmap | t    | t
 (2 rows)
 
--- REPACK on an implemented index, by sorting and by scanning it.  Terse,
--- to leave out the timing DETAIL.
-\set VERBOSITY terse
-SET client_min_messages = info;
+-- REPACK on an implemented index, by sorting and by scanning it: only the
+-- second scans the index, through its code.
 SET enable_indexscan = off;
-REPACK (VERBOSE) t USING INDEX t_a;
-INFO:  repacking "public.t" using sequential scan and sort
-INFO:  "public.t": found 0 removable, 1000 nonremovable row versions in 7 pages
+SELECT test_index_impl_reset();
+ test_index_impl_reset 
+-----------------------
+ 
+(1 row)
+
+REPACK t USING INDEX t_a;
+SELECT test_index_impl_scans() AS sort_scans;
+ sort_scans 
+------------
+          0
+(1 row)
+
 RESET enable_indexscan;
 SET enable_sort = off;
-REPACK (VERBOSE) t USING INDEX t_a;
-INFO:  repacking "public.t" using index scan on "t_a"
-INFO:  "public.t": found 0 removable, 1000 nonremovable row versions in 7 pages
+REPACK t USING INDEX t_a;
+SELECT test_index_impl_scans() > 0 AS index_scanned;
+ index_scanned 
+---------------
+ t
+(1 row)
+
 RESET enable_sort;
-RESET client_min_messages;
-\set VERBOSITY default
 SELECT count(*), sum(a) FROM t;
  count |  sum   
 -------+--------
