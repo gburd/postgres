@@ -424,10 +424,38 @@ FOR TYPE int4[] USING bark FAMILY bark_int4_array_sim11_ops AS
                                              internal),
     STORAGE int4;
 
--- Heap declaring offsets up to MaxOffsetNumber, only to reach BARK's refusal
--- of such a table (bark_locator.sql).
+-- Heap declaring offsets up to MaxOffsetNumber, whose real offsets stay
+-- heap's (bark_locator.sql).
 CREATE FUNCTION bark_test_bigoffset_handler(internal)
 RETURNS table_am_handler
 AS 'MODULE_PATHNAME' LANGUAGE C;
 CREATE ACCESS METHOD bark_test_bigoffset TYPE TABLE
     HANDLER bark_test_bigoffset_handler;
+
+-- Heap with every TID translated so that seven heap blocks make one block
+-- and offsets reach 7 * MaxHeapTuplesPerPage (bark_wideblock.c).
+CREATE FUNCTION bark_test_wideblock_handler(internal)
+RETURNS table_am_handler
+AS 'MODULE_PATHNAME' LANGUAGE C;
+CREATE ACCESS METHOD bark_test_wideblock TYPE TABLE
+    HANDLER bark_test_wideblock_handler;
+
+-- A BARK index's TID stride (bark_index_tid_stride), and the meta page's
+-- field as stored, 0 for an index built before it existed.
+CREATE FUNCTION bark_test_tid_stride(text) RETURNS int4
+AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
+CREATE FUNCTION bark_test_meta_stride(text) RETURNS int4
+AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
+
+-- Round trips of BARK's TID mappings at TID stride stride (0: MaxOffsetNumber)
+-- for synthetic TIDs: each check, whether it held, and how many TIDs it ran.
+CREATE FUNCTION bark_test_tid_mappings(stride int4,
+    OUT check_name text, OUT ok bool, OUT ntids int8)
+RETURNS SETOF record
+AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
+
+-- aminsert of (key) at tid into a BARK index on one int4 column, as a table
+-- AM whose locators changed under the index would.
+CREATE FUNCTION bark_test_insert_tid(index regclass, key int4, tid tid)
+RETURNS void
+AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
