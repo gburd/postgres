@@ -69,7 +69,7 @@ CREATE FUNCTION sm_entries(OUT k int, OUT shape text, OUT ntids int, OUT dead bo
 RETURNS SETOF record LANGUAGE sql AS $$
   SELECT CASE WHEN i.shape <> 'PIVOT' THEN
            (SELECT s.k FROM sm s WHERE s.ctid = coalesce(i.htid, i.tids[1])) END,
-         CASE WHEN i.shape = 'LIST' AND i.itemlen < 16 + 6 * i.ntids
+         CASE WHEN i.shape = 'LIST' AND i.itemlen < (SELECT ((8 + 4 + max_data_alignment - 1) / max_data_alignment) * max_data_alignment FROM pg_control_init()) + 6 * i.ntids
               THEN 'LIST coded' ELSE i.shape END, i.ntids, h.lp_flags = 3
     FROM generate_series(1, pg_relation_size('sm_k') / 8192 - 1) b,
          LATERAL bark_page_stats('sm_k', b) p,
