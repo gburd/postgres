@@ -402,8 +402,8 @@ sub twin_case
 $node->safe_psql(
 	'postgres', q{
 	-- the entry before the tagged entry of `l`, as "shape count holds-l",
-	-- a LIST as plain or coded (an int4 key's plain LIST is 16 bytes and 6
-	-- a locator), and the tagged entry's tag
+	-- a LIST as plain or coded (an int4 key's plain LIST is 16 bytes, 12
+	-- where MAXALIGN is 4, and 6 a locator), and the tagged entry's tag
 	CREATE FUNCTION twin(idx regclass, l tid) RETURNS text LANGUAGE sql AS $$
 	  WITH e AS (
 	    SELECT b, i.itemoffset AS off, i.shape, i.ntids, i.itemlen, i.htid, i.tag,
@@ -413,8 +413,9 @@ $node->safe_psql(
 	           LATERAL bark_page_items(idx::text, b) i
 	     WHERE s.type = 'leaf' AND i.shape IN ('SINGLE', 'LIST', 'POSTING'))
 	  SELECT coalesce(max(p.shape ||
-	           CASE WHEN p.shape <> 'LIST' THEN ''
-	                WHEN p.itemlen = 16 + 6 * p.ntids THEN ' plain' ELSE ' coded' END ||
+	           CASE WHEN p.shape <> 'LIST' OR p.ntids = 4 THEN ''
+	                WHEN p.itemlen = (SELECT ((8 + 4 + max_data_alignment - 1) / max_data_alignment) * max_data_alignment FROM pg_control_init()) + 6 * p.ntids
+	                THEN ' plain' ELSE ' coded' END ||
 	           ' ' || p.ntids || ' ' || (p.last = l) || ' tag ' || t.tag), 'no tagged entry')
 	    FROM e t JOIN e p ON p.b = t.b AND p.off = t.off - 1
 	   WHERE t.htid = l AND t.tag IS NOT NULL $$;
@@ -423,7 +424,9 @@ my $xminq = q{SELECT xmin FROM %s WHERE id = %d};
 my %twins = (
 	# (a) the row's own SINGLE: distinct keys
 	td_a => [ '', 'NULL', 'CASE WHEN g <= 20 THEN 10 * g END', 7 ],
-	# a plain LIST: four rows of key 5, one to a heap page
+	# a LIST of rows on four heap pages: plain where MAXALIGN is 8, coded
+	# where it is 4 (MAXALIGN rounds the coded form below the plain one), so
+	# its form is not shown
 	td_l => [ 'WITH (fillfactor = 10)', "repeat('x', 700)",
 		'CASE WHEN g <= 4 THEN 5 END', 4 ],
 	# a coded LIST: twenty consecutive rows
@@ -432,7 +435,7 @@ my %twins = (
 	td_p => [ '', 'NULL', '5', 400 ]);
 my %twinwant = (
 	td_a => 'SINGLE 1 true',
-	td_l => 'LIST plain 4 true',
+	td_l => 'LIST 4 true',
 	td_c => 'LIST coded 20 true',
 	td_p => 'POSTING 400 true');
 my %l;
