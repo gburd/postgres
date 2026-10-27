@@ -3889,7 +3889,7 @@ bark_form_oversized_entry(ItemPointer locator, Size fulllen,
 	IndexTuple	entry;
 	BarkOverflowRef *ref;
 
-	Assert(bodyoff <= BARK_OFFSET_MASK);
+	Assert(bodyoff <= PG_UINT16_MAX);
 	Assert(total <= INDEX_SIZE_MASK);
 	Assert(fulllen <= PG_UINT32_MAX);
 
