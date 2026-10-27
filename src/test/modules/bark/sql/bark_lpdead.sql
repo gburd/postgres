@@ -338,7 +338,7 @@ DECLARE c CURSOR FOR SELECT a FROM lpdk WHERE a > 0;
 FETCH 1 FROM c;
 SELECT * FROM lpd_count('SELECT * FROM lpdk WHERE a > 0');
 SELECT count(*) AS dead FROM lpd_dead('lpdk_a', 1);
-FETCH ALL FROM c \g /dev/null
+MOVE ALL FROM c;
 COMMIT;
 SELECT count(*) AS dead FROM lpd_dead('lpdk_a', 1);
 DROP TABLE lpdk;
@@ -355,7 +355,7 @@ SET LOCAL enable_bitmapscan = off;
 DECLARE c CURSOR FOR SELECT a FROM lpds WHERE a > 0;
 FETCH 1 FROM c;
 INSERT INTO lpds SELECT g FROM generate_series(301, 500) g;
-FETCH ALL FROM c \g /dev/null
+MOVE ALL FROM c;
 COMMIT;
 SELECT pg_relation_size('lpds_a') / 8192 > 2 AS split,
        (SELECT count(*) FROM lpd_dead('lpds_a', 1)) AS dead;
@@ -376,10 +376,10 @@ BEGIN;
 SET LOCAL enable_seqscan = off;
 SET LOCAL enable_bitmapscan = off;
 DECLARE c CURSOR FOR SELECT a FROM lpdv WHERE a > 0;
-FETCH 280 FROM c \g /dev/null
+MOVE 280 FROM c;
 INSERT INTO lpdv SELECT g FROM generate_series(1001, 1020) g;
 SELECT * FROM lpd_page('lpdv_a', 1);
-FETCH ALL FROM c \g /dev/null
+MOVE ALL FROM c;
 COMMIT;
 SELECT * FROM lpd_page('lpdv_a', 1);
 SELECT * FROM lpd_count('SELECT * FROM lpdv WHERE a > 0');
@@ -398,7 +398,7 @@ SET LOCAL enable_bitmapscan = off;
 DECLARE c CURSOR FOR SELECT a FROM lpdg WHERE a > 0 ORDER BY a DESC;
 FETCH 1 FROM c;
 INSERT INTO lpdg VALUES (999);
-FETCH ALL FROM c \g /dev/null
+MOVE ALL FROM c;
 COMMIT;
 SELECT shape, ntids FROM bark_page_items('lpdg_a', 1) WHERE itemoffset > 100;
 SELECT count(*) AS dead FROM lpd_dead('lpdg_a', 1);
