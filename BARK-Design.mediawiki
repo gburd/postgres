@@ -1507,7 +1507,7 @@ Tests (bark_multikey_gin.sql): the 60000-row prefix table's seven queries
 by index scan at work_mem 64kB (recheck removes rows) and 64MB (none),
 equal to a seqscan.
 
-'''As built (RXSIZE, start latch).''' A read of an open-ended
+'''As built, start latch.''' A read of an open-ended
 partial-match boundary on the leading, ascending column stops comparing
 each key with the boundary's start once one key is inside it (startlatch
 and instart in BarkMkScanState, set by bark_mk_gin_first, honoured by
