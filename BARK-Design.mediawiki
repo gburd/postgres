@@ -1271,7 +1271,7 @@ place of an inverted AM, without changing the scalar design above.
   writes every number with its scale trimmed, so keys that jsonb_cmp finds
   equal are equal bytes, and the class declares equalimage (btequalimage):
   its equal keys coalesce into LIST and POSTING entries. Not yet: a
-  comparison with GIN's jsonb_path_ops)''
+  with GIN's jsonb_path_ops.
 
 === Multikey keys ===
 
@@ -2174,7 +2174,7 @@ What that needs, and where the design provides it:
   <code>BarkQueryFlags.orderrest</code>, and after the range the scan
   reads the rest of the column (every key and the NULL entries) by a second
   positioning, returning the rows it has not returned yet with a NULL
-  order value, last, with the seen set. ''As built (M5b part 2): the test
+  order value, last, with the seen set. ''As built: the test
   module's <code>doc |&lt;| 'path'</code> returns the smallest key
   [path, value], FOR ORDER BY jsonb_ops; a path the projection drops is
   refused at scan start. The range's entries are read twice.''
