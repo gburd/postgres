@@ -65,8 +65,7 @@ filter. Skip scan runs forward only and over one column; that waits on
 and REPACK read through a BARK index rather than sorting
 (<code>tuplesort_begin_cluster</code> asserts btree). The RI trigger fast
 path is btree-only. A multikey index cannot be scanned backward after a
-forward start, in parallel when it needs a seen set, or in the order of an
-operator on its extracted column, until M1d.
+forward start, or in parallel when it needs a seen set.
 
 '''Performance.''' Release build (<code>-O3</code>, no assertions), EC2
 c7i.4xlarge (16 vCPU), Debian 12, shared_buffers 4GB, autovacuum off; 5
@@ -1868,7 +1867,7 @@ value; M1c found the NULL key ambiguous, and the lead dropped it: MongoDB
 does not cover queries on a multikey path either.) Fixed columns are
 returned as now, with the seen set.
 
-'''As built (M1c).''' The scan follows this section, with these choices the
+'''As built.''' The scan follows this section, with these choices the
 section left open or that differ from it:
 
 * The keys on the extracted column are moved after the scan's other keys at
@@ -1884,7 +1883,7 @@ section left open or that differ from it:
 * Procedure 9 runs before the seen set, so a rejected entry never enters
   it. A scan with no procedure 9 whose procedure 8 asks for a recheck is
   an error, as is a key on the column of a class without procedure 8.
-* The boundaries are the last required key of A2's odometer
+* The boundaries are the last required key of the equality-array odometer
   (<code>BarkArrayKeyState.mk</code>), so they position, re-descend and end
   the scan with the code that walks equality arrays; no third cursor kind.
 * The seen set is filled as a page is read, so a page's copied items are
@@ -1893,10 +1892,10 @@ section left open or that differ from it:
   set is not emptied for a new group of the fixed columns (a merge join
   re-reads across groups), so it can then hold more than one group's rows.
 * The single-point shortcut applies under an MVCC snapshot only; any other
-  snapshot always uses the set, as the card for M1c asked.
-* Until M1d gives the planner per-index answers, the scan refuses rather
-  than answers wrong: a change of direction with the set in use, a
-  parallel scan that needs the set, and an ordering key on the extracted
+  snapshot always uses the set.
+* For callers that did not ask the planner, the scan refuses rather than
+  answers wrong: a change of direction with the set in use, a parallel
+  scan that needs the set, and an ordering key on the extracted column
   column raise errors. bark_canreturn answers false for the extracted
   column (an index-only scan would otherwise return keys as values).
 

@@ -357,7 +357,7 @@ bark_free_array_keys(BarkScanOpaque so)
 
 /*
  * ---------------------------------------------------------------------------
- * Multikey scans ("Scans" under "M1: multikey keys" in BARK-Design.mediawiki)
+ * Multikey scans ("Scans" under "Multikey keys" in BARK-Design.mediawiki)
  *
  * In an index with an extracted column, a row has one entry per key of the
  * column's value, and the class's operators are not btree comparisons, so

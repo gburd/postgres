@@ -946,7 +946,7 @@ restarts its keys at each value of the columns before, and a DESC column's
 lower side is its end, so neither latches.  The end of the range is still
 procedure 12's to say.
 
-Scans of an index with an extracted column ("Scans" under "M1: multikey
+Scans of an index with an extracted column ("Scans" under "Multikey
 keys" in the design document) keep the btree-style key code away from the
 column's keys, whose operators are not btree comparisons:
 bark_mk_partition_keys moves them after so->numberOfKeys, the count every
