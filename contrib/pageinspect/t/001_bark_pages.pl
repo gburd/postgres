@@ -51,18 +51,30 @@ my @leaves = split /\n/,
   );
 my $nblocks = $node->safe_psql('postgres',
 	"SELECT pg_relation_size('t_idx') / $blksz");
+my $segblks = $node->safe_psql('postgres',
+	"SELECT setting FROM pg_settings WHERE name = 'segment_size'");
 is(scalar @leaves, 2, 't_idx has two leaves to patch');
 
 $node->stop;
 
+# The file holding a block of the index, and the block's offset in it:
+# --with-segsize-blocks can make a relation file only a few blocks long.
+sub seg
+{
+	my ($blk) = @_;
+	my $segno = int($blk / $segblks);
+	return ($segno ? "$path.$segno" : $path, ($blk % $segblks) * $blksz);
+}
+
 sub patch
 {
 	my ($blk, $f) = @_;
-	open(my $fh, '+<:raw', $path) or die "open $path: $!";
-	seek($fh, $blk * $blksz, 0) or die "seek: $!";
-	read($fh, my $p, $blksz) == $blksz or die "short read of $path";
+	my ($file, $off) = seg($blk);
+	open(my $fh, '+<:raw', $file) or die "open $file: $!";
+	seek($fh, $off, 0) or die "seek: $!";
+	read($fh, my $p, $blksz) == $blksz or die "short read of $file";
 	$f->(\$p);
-	seek($fh, $blk * $blksz, 0) or die "seek: $!";
+	seek($fh, $off, 0) or die "seek: $!";
 	print $fh $p;
 	close $fh;
 }
@@ -92,7 +104,7 @@ patch(
 	});
 
 # A block the relation was extended by but nothing initialized.
-open(my $fh, '>>:raw', $path) or die "open $path: $!";
+open(my $fh, '>>:raw', (seg($nblocks))[0]) or die "open: $!";
 print $fh "\0" x $blksz;
 close $fh;
 
