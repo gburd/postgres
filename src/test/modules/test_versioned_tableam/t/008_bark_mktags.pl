@@ -179,7 +179,7 @@ like(amcheck_err('tm_g2'),
 	qr/with version tags on its keys but answers scans through GIN's interface/,
 	'amcheck: MKTAGS on a GIN-interface index');
 
-# T12f ("Conversion" in the README): a conversion runs only on an index with
+# "Conversion" in the README: a conversion runs only on an index with
 # MKTAGS (8 = CONVERTING) and settles only after it began (16 = SETTLED).
 $node->safe_psql(
 	'postgres', q{
@@ -256,7 +256,7 @@ SKIP:
 	like($err,
 		qr/ERROR:  BARK index "tq3_k" has a meta page 0 with version tags on its keys but no extracted column/,
 		'validator: MKTAGS on a scalar index');
-	# T12f: the conversion bits, planted in the meta page VACUUM writes,
+	# The conversion bits, planted in the meta page VACUUM writes,
 	# each in an index of its own (a planted fault stays in the page)
 	foreach my $c (
 		[ 'converting', 'converting an index without version tags on its keys',
@@ -305,7 +305,7 @@ SKIP:
 		'redo: the standby PANICs on MKTAGS without VERSIONED');
 	$standby->stop('immediate', fail_ok => 1);
 
-	# T12f in redo: a standby that replays a meta page with SETTLED and no
+	# The same in redo: a standby that replays a meta page with SETTLED and no
 	# CONVERTING, or CONVERTING and no MKTAGS, PANICs.  One standby each,
 	# with the fault planted as above, in the meta page of a root's first
 	# split.

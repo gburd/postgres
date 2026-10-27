@@ -405,17 +405,17 @@ build).'' README "Conversion" has the as-built rules.
   Limit: a check of a row other than the last inserted can raise "found
   self tuple multiple times"; an amapi hint carrying the self TID would
   lift it.
-* Items 1-2, done (this commit): meta bits <code>BARK_META_CONVERTING</code>
+* Meta bits <code>BARK_META_CONVERTING</code>
   (1 << 3) and <code>BARK_META_SETTLED</code> (1 << 4). The first BARK call
   that sees MKTAGS and a unique or exclusion rd_index sets CONVERTING
   (<code>bark_note_conversion</code>: insert, a constraint check's rescan,
-  VACUUM), logged as a meta page image; never in recovery. Item 3 as
-  built: CONVERTING makes <code>amindexmaykeeplocator</code> false even
+  VACUUM), logged as a meta page image; never in recovery.
+  CONVERTING makes <code>amindexmaykeeplocator</code> false even
   after the constraint is dropped; <code>amindexcanversion</code> stays
-  MKTAGS (the design had it drop with CONVERTING), since an update that
+  MKTAGS, since an update that
   began before the conversion and keeps its locator must still get tagged
   entries. amcheck and the validator (primary and redo) report CONVERTING
-  without MKTAGS and SETTLED without CONVERTING (T12f in
+  without MKTAGS and SETTLED without CONVERTING (tested in
   <code>008_bark_mktags.pl</code>). The bits are checked again under the
   meta page's lock: isolation <code>bark_mk_convert_race</code> stops a
   caller before it (another insert set CONVERTING; a VACUUM completed the
