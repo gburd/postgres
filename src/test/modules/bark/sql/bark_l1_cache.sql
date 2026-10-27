@@ -18,14 +18,40 @@ SELECT injection_points_set_local();
 create function l1k(int) returns text language sql immutable as
   $$ select lpad($1::text, 8, '0') || repeat('x', 380) $$;
 create table l1 (k text collate "C", n int) with (autovacuum_enabled = off);
+-- The oracle: a btree-indexed copy of l1, kept by statement triggers from
+-- the rows each statement inserted or deleted, so that it never reads l1's
+-- index.  (A sequential scan of l1 per lookup is the same oracle, but it
+-- took most of this file's run time.)  Every delete here is by n.
+create table l1_t (k text collate "C", n int) with (autovacuum_enabled = off);
+create index l1_t_k on l1_t using btree (k);
+create index l1_t_k8 on l1_t using btree (substr(k, 1, 8), n);
+create index l1_t_n on l1_t using btree (n);
+create function l1_sync() returns trigger language plpgsql as $$
+begin
+  if tg_op = 'INSERT' then
+    insert into l1_t select * from l1_new;
+  elsif tg_op = 'DELETE' then
+    delete from l1_t t using l1_old o where t.n = o.n;
+  else
+    truncate l1_t;
+  end if;
+  return null;
+end $$;
+create trigger l1_ins after insert on l1 referencing new table as l1_new
+  for each statement execute function l1_sync();
+create trigger l1_del after delete on l1 referencing old table as l1_old
+  for each statement execute function l1_sync();
+create trigger l1_trunc after truncate on l1
+  for each statement execute function l1_sync();
 -- Runs of equal keys (every value 3 times), so that some runs span a
 -- level-1 boundary.
 insert into l1 select l1k(g / 3), g from generate_series(0, 23999) g;
 create index l1_idx on l1 using bark (k);
 select level >= 2 as tall from bark_metap('l1_idx');
 
--- The rows a predicate returns through the index (index and bitmap scans
--- off, then on) and through a sequential scan must be the same.
+-- The rows a predicate returns through l1's index (sequential and bitmap
+-- scans off) and from the btree copy must be the same; a subquery on l1 in
+-- the predicate reads the copy too.
 create function l1_check(pred text) returns table(idx bigint, seq bigint, same bool)
 language plpgsql as $$
 declare a text; b text;
@@ -33,10 +59,7 @@ begin
   perform set_config('enable_seqscan', 'off', true);
   perform set_config('enable_bitmapscan', 'off', true);
   execute format('select count(*) || '':'' || coalesce(md5(string_agg(n::text, '','' order by n)), '''') from l1 where %s', pred) into a;
-  perform set_config('enable_seqscan', 'on', true);
-  perform set_config('enable_indexscan', 'off', true);
-  execute format('select count(*) || '':'' || coalesce(md5(string_agg(n::text, '','' order by n)), '''') from l1 where %s', pred) into b;
-  perform set_config('enable_indexscan', 'on', true);
+  execute format('select count(*) || '':'' || coalesce(md5(string_agg(n::text, '','' order by n)), '''') from l1_t where %s', replace(pred, 'from l1 ', 'from l1_t ')) into b;
   idx := split_part(a, ':', 1)::bigint; seq := split_part(b, ':', 1)::bigint; same := a = b;
   return next;
 end $$;
@@ -188,23 +211,23 @@ insert into l1r select l1k(g), g from generate_series(1, 2999, 2) g;
 insert into l1r select l1k(g) || 'z', 10000 + g from generate_series(0, 2999) g;
 select level as level_after from bark_metap('l1r_idx');
 reset enable_seqscan; reset enable_bitmapscan;
+-- The oracle: a btree-indexed copy, as l1_t above.
+create table l1r_t as select * from l1r;
+create index l1r_t_k on l1r_t using btree (k);
 create function l1r_same(pred text) returns bool language plpgsql as $$
 declare a text; b text;
 begin
   perform set_config('enable_seqscan', 'off', true);
   perform set_config('enable_bitmapscan', 'off', true);
   execute format('select coalesce(md5(string_agg(n::text, '','' order by n)), '''') from l1r where %s', pred) into a;
-  perform set_config('enable_seqscan', 'on', true);
-  perform set_config('enable_indexscan', 'off', true);
-  execute format('select coalesce(md5(string_agg(n::text, '','' order by n)), '''') from l1r where %s', pred) into b;
-  perform set_config('enable_indexscan', 'on', true);
+  execute format('select coalesce(md5(string_agg(n::text, '','' order by n)), '''') from l1r_t where %s', pred) into b;
   return a = b;
 end $$;
 select count(*) filter (where not l1r_same(format('k = %L or k = %L', l1k(g), l1k(g) || 'z'))) as mismatches,
        count(*) as checks
 from generate_series(0, 2999, 3) g;
 select bark_index_check('l1r_idx', true);
-drop table l1r;
+drop table l1r, l1r_t;
 drop function l1r_same(text);
 
 -- A two-column index: its pivots are truncated to the first column where
@@ -217,10 +240,7 @@ begin
   perform set_config('enable_seqscan', 'off', true);
   perform set_config('enable_bitmapscan', 'off', true);
   execute format('select coalesce(md5(string_agg(n::text, '','' order by n)), '''') from l1 where %s', pred) into a;
-  perform set_config('enable_seqscan', 'on', true);
-  perform set_config('enable_indexscan', 'off', true);
-  execute format('select coalesce(md5(string_agg(n::text, '','' order by n)), '''') from l1 where %s', pred) into b;
-  perform set_config('enable_indexscan', 'on', true);
+  execute format('select coalesce(md5(string_agg(n::text, '','' order by n)), '''') from l1_t where %s', pred) into b;
   return a = b;
 end $$;
 select count(*) filter (where not l1_check2(format('substr(k, 1, 8) = %L', lpad(g::text, 8, '0')))) as mismatches,
@@ -239,8 +259,8 @@ from (select g from l1_keys where g % 29 = 0) s,
      l1_check(format('k <= %L and k > %L', l1k(g), l1k(g - 4))) c;
 select * from l1_check('k is null');
 
-drop table l1, l1_keys;
-drop function l1k(int), l1_check(text), l1_check2(text);
+drop table l1, l1_t, l1_keys;
+drop function l1k(int), l1_check(text), l1_check2(text), l1_sync();
 
 -- The table's cap: wide keys and enough of them that the level-1 pages'
 -- low keys outgrow 256 kB, so the table is thinned to half and refilled
@@ -252,19 +272,19 @@ alter table l1w alter column k set storage plain;
 insert into l1w select l1w(g), g from generate_series(0, 39999) g;
 create index l1w_idx on l1w using bark (k);
 select level >= 2 as tall from bark_metap('l1w_idx');
+-- The oracle: a btree-indexed copy, as l1_t above.
+create table l1w_t as select * from l1w;
+create index l1w_t_k on l1w_t using btree (k);
 create function l1w_same(pred text) returns bool language plpgsql as $$
 declare a text; b text;
 begin
   perform set_config('enable_seqscan', 'off', true);
   perform set_config('enable_bitmapscan', 'off', true);
   execute format('select coalesce(md5(string_agg(n::text, '','' order by n)), '''') from l1w where %s', pred) into a;
-  perform set_config('enable_seqscan', 'on', true);
-  perform set_config('enable_indexscan', 'off', true);
-  execute format('select coalesce(md5(string_agg(n::text, '','' order by n)), '''') from l1w where %s', pred) into b;
-  perform set_config('enable_indexscan', 'on', true);
+  execute format('select coalesce(md5(string_agg(n::text, '','' order by n)), '''') from l1w_t where %s', pred) into b;
   return a = b;
 end $$;
 select count(*) filter (where not l1w_same(format('k = %L', l1w(g)))) as mismatches, count(*) as checks
 from generate_series(0, 39999, 131) g;
-drop table l1w;
+drop table l1w, l1w_t;
 drop function l1w(int), l1w_same(text);
