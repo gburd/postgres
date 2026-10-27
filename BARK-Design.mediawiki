@@ -1217,7 +1217,6 @@ place of an inverted AM, without changing the scalar design above.
   pg_extended_btree interface (procedures 7-9) in every scan; GIN's query
   interface (procedures 10-13, partial match included) in bitmap and index
   scans, "As built" under "Which interface first."; RUM's addon ordering
-  "Which interface first.", P1, merging its TID streams with required
   keys, "As built (P1)" there, P2, coalescing its keys by GIN's rule,
   "As built (P2)", and M2c, index scans of such a column, "As built (M2c)"
   there. M2b part 1, RUM's addon ordering (an
@@ -1387,8 +1386,8 @@ or 10 and 11 or 13, or both; one written for pg_extended_btree ports by
 renumbering 101-103 as 7-9.
 
 '''As built.''' A column whose class has procedure 10 and not 8
-(bark_index_gin_query) is read by bitmap scans only (M2c, below, adds index
-scans when the column leads the index): bark_property answers
+(bark_index_gin_query) is read by bitmap scans only ("As built, index scans" below adds
+index scans when the column leads the index): bark_property answers
 <code>index_scan</code> false, get_relation_info asks amproperty for
 AMPROP_INDEX_SCAN and clears <code>amhasgettuple</code>, so the planner
 builds no index scan path, and bark_gettuple refuses a direct caller. The
@@ -1464,7 +1463,7 @@ the array, or with INCLUDE, keeps SINGLE entries; 47 queries equal to a
 seqscan and a GIN index on three indexes before and after DELETE, INSERT,
 VACUUM and bottom-up deletion; amcheck's checks pass.
 
-'''As built (M2c).''' A GIN-interface column that leads its index has
+'''As built, index scans.''' A GIN-interface column that leads its index has
 index scans too. bark_mk_gin_items, factored out of the bitmap scan,
 computes the scan's rows (TID order, with recheck flags) as before; the
 bitmap scan adds them to its bitmap, and bark_mk_gin_gettuple keeps them in

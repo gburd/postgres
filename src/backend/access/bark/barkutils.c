@@ -344,7 +344,7 @@ bark_column_is_extracted(Relation index, int attno)
  * Does index answer the scan keys on its extracted column through GIN's
  * query interface, its class having procedure 10 and not 8?  A scan with
  * keys on such a column computes its whole result in TID order before the
- * first row ("As built (M2c)" in BARK-Design.mediawiki).
+ * first row ("Which interface first." in BARK-Design.mediawiki).
  */
 bool
 bark_index_gin_query(Relation index)

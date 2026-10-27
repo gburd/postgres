@@ -803,7 +803,7 @@ operator family is not btree's, and build_index_pathkeys stops there.
 
 A column whose class has GIN's query interface (procedures 10 and 11 or
 13, and 12 for partial match) and no procedure 8 (bark_index_gin_query;
-"As built (M2a)" and "As built (M2c)" in the design document) is answered
+"Which interface first." in the design document) is answered
 row by row from all of a row's entries, so a scan computes its whole
 result, in TID order, before its first row (bark_mk_gin_items), into a
 TIDBitmap.  A bitmap scan's is the executor's; an index scan
