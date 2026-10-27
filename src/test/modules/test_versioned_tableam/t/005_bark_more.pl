@@ -39,7 +39,7 @@ $node->safe_psql(
 	  RETURNS TABLE (blk int, off int, shape text, htid tid, tag int8)
 	  LANGUAGE sql AS $$
 	  SELECT b::int, i.itemoffset, i.shape, i.htid, i.tag
-	    FROM generate_series(1, pg_relation_size(idx) / 8192 - 1) b,
+	    FROM generate_series(1, pg_relation_size(idx) / current_setting('block_size')::int - 1) b,
 	         LATERAL bark_page_items(idx::text, b) i
 	   WHERE (SELECT type FROM bark_page_stats(idx::text, b)) = 'leaf' $$;
 });
@@ -117,7 +117,7 @@ $node->safe_psql(
 });
 my $pivots = $node->safe_psql(
 	'postgres', q{
-	SELECT count(*) FROM generate_series(1, pg_relation_size('tpv_k') / 8192 - 1) b,
+	SELECT count(*) FROM generate_series(1, pg_relation_size('tpv_k') / current_setting('block_size')::int - 1) b,
 	       LATERAL bark_page_items('tpv_k', b) i
 	 WHERE i.shape = 'PIVOT' AND i.tag IS NOT NULL AND i.htid = '(0,1)'});
 cmp_ok($pivots, '>=', 2, "tagged pivot: pageinspect shows tagged pivots ($pivots)");
@@ -141,7 +141,7 @@ $node->safe_psql(
 	UPDATE tcr SET k = k + 10000 WHERE id % 7 = 0;
 });
 my $flagged = q{
-	SELECT count(*) FROM generate_series(1, pg_relation_size('tcr_k') / 8192 - 1) b,
+	SELECT count(*) FROM generate_series(1, pg_relation_size('tcr_k') / current_setting('block_size')::int - 1) b,
 	       LATERAL bark_page_stats('tcr_k', b) s WHERE 'lowbound_tagged' = ANY (s.flags)};
 my $before = $node->safe_psql('postgres', $flagged);
 cmp_ok($before, '>', 0, 'crash: leaves with BARK_LOWBOUND_TAGGED');
