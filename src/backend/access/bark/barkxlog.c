@@ -19,6 +19,7 @@
 #include "access/bark.h"
 #include "access/barkxlog.h"
 #include "access/bufmask.h"
+#include "access/htup_details.h"
 #include "access/xlogutils.h"
 #include "storage/standby.h"
 
@@ -84,6 +85,8 @@ bark_xlog_restore_meta(XLogReaderState *record, uint8 block_id)
 
 		PageSetLSN(metapage, lsn);
 		MarkBufferDirty(metabuf);
+		bark_verify_redo(record, block_id, metabuf, InvalidOffsetNumber,
+						 InvalidOffsetNumber);
 	}
 	if (BufferIsValid(metabuf))
 		UnlockReleaseBuffer(metabuf);
@@ -110,6 +113,8 @@ bark_xlog_clear_incomplete_split(XLogReaderState *record, uint8 block_id)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		bark_verify_redo(record, block_id, buffer, InvalidOffsetNumber,
+						 InvalidOffsetNumber);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -147,6 +152,7 @@ bark_xlog_insert(bool isleaf, XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		bark_verify_redo(record, 0, buffer, xlrec->offnum, xlrec->offnum);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -187,6 +193,8 @@ bark_xlog_insert_multi(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		bark_verify_redo(record, 0, buffer, offsets[0],
+						 offsets[xlrec->nentries - 1]);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -299,6 +307,15 @@ bark_xlog_split(XLogReaderState *record)
 		MarkBufferDirty(sbuf);
 	}
 
+	bark_verify_redo(record, 1, rbuf, InvalidOffsetNumber,
+					 InvalidOffsetNumber);
+	if (BufferIsValid(lbuf))
+		bark_verify_redo(record, 0, lbuf, InvalidOffsetNumber,
+						 InvalidOffsetNumber);
+	if (BufferIsValid(sbuf))
+		bark_verify_redo(record, 2, sbuf, InvalidOffsetNumber,
+						 InvalidOffsetNumber);
+
 	if (BufferIsValid(sbuf))
 		UnlockReleaseBuffer(sbuf);
 	UnlockReleaseBuffer(rbuf);
@@ -332,6 +349,8 @@ bark_xlog_newroot(XLogReaderState *record)
 
 	bark_xlog_restore_meta(record, 2);
 
+	bark_verify_redo(record, 0, rootbuf, InvalidOffsetNumber,
+					 InvalidOffsetNumber);
 	UnlockReleaseBuffer(rootbuf);
 }
 
@@ -359,6 +378,8 @@ bark_xlog_overflow(XLogReaderState *record)
 								link.next);
 		PageSetLSN(BufferGetPage(buf), lsn);
 		MarkBufferDirty(buf);
+		bark_verify_redo(record, block_id, buf, InvalidOffsetNumber,
+						 InvalidOffsetNumber);
 		UnlockReleaseBuffer(buf);
 	}
 }
@@ -381,6 +402,8 @@ bark_xlog_create_root(XLogReaderState *record)
 
 	bark_xlog_restore_meta(record, 1);
 
+	bark_verify_redo(record, 0, leafbuf, InvalidOffsetNumber,
+					 InvalidOffsetNumber);
 	UnlockReleaseBuffer(leafbuf);
 }
 
@@ -400,11 +423,12 @@ bark_xlog_overwrite(XLogReaderState *record)
 		Size		datalen;
 		char	   *datapos = XLogRecGetBlockData(record, 0, &datalen);
 
-		if (!PageIndexTupleOverwrite(page, xlrec->offnum, datapos, datalen))
+		if (!BarkPageOverwriteEntry(page, xlrec->offnum, datapos, datalen))
 			elog(PANIC, "failed to replace BARK leaf entry during replay");
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		bark_verify_redo(record, 0, buffer, xlrec->offnum, xlrec->offnum);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -436,13 +460,16 @@ bark_redo_delitems(XLogReaderState *record, Page page, uint16 ndeleted,
 	{
 		Size		itemsz = IndexTupleSize((IndexTuple) itup);
 
-		if (!PageIndexTupleOverwrite(page, updatedoffsets[i], itup, itemsz))
+		if (!BarkPageOverwriteEntry(page, updatedoffsets[i], itup, itemsz))
 			elog(PANIC, "failed to rewrite BARK leaf entry during replay");
 		itup += MAXALIGN(itemsz);
 	}
 
 	if (!deletefirst && ndeleted > 0)
 		PageIndexMultiDelete(page, deleted, ndeleted);
+
+	/* The primary clears the hint too; bark_mask masks it either way. */
+	BarkPageGetOpaque(page)->bark_flags &= ~BARK_HAS_GARBAGE;
 }
 
 /*
@@ -475,6 +502,8 @@ bark_xlog_vacuum(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		bark_verify_redo(record, 0, buffer, InvalidOffsetNumber,
+						 InvalidOffsetNumber);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -512,6 +541,8 @@ bark_xlog_delete(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		bark_verify_redo(record, 0, buffer, InvalidOffsetNumber,
+						 InvalidOffsetNumber);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -539,6 +570,8 @@ bark_xlog_merge(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		bark_verify_redo(record, 0, buffer, InvalidOffsetNumber,
+						 InvalidOffsetNumber);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -613,6 +646,15 @@ bark_xlog_unlink_page(XLogReaderState *record)
 		MarkBufferDirty(parentbuf);
 	}
 
+	bark_verify_redo(record, 1, leftbuf, InvalidOffsetNumber,
+					 InvalidOffsetNumber);
+	bark_verify_redo(record, 0, target, InvalidOffsetNumber,
+					 InvalidOffsetNumber);
+	bark_verify_redo(record, 2, rightbuf, InvalidOffsetNumber,
+					 InvalidOffsetNumber);
+	bark_verify_redo(record, 3, parentbuf, InvalidOffsetNumber,
+					 InvalidOffsetNumber);
+
 	if (BufferIsValid(leftbuf))
 		UnlockReleaseBuffer(leftbuf);
 	UnlockReleaseBuffer(target);
@@ -638,6 +680,8 @@ bark_xlog_mark_deleted(XLogReaderState *record)
 	BarkPageSetDeleted(page, BARK_P_NONE, xlrec->next, xlrec->safexid);
 	PageSetLSN(page, lsn);
 	MarkBufferDirty(buffer);
+	bark_verify_redo(record, 0, buffer, InvalidOffsetNumber,
+					 InvalidOffsetNumber);
 	UnlockReleaseBuffer(buffer);
 }
 
@@ -658,6 +702,24 @@ bark_xlog_reuse_page(XLogReaderState *record)
 		ResolveRecoveryConflictWithSnapshotFullXid(xlrec->snapshotConflictHorizon,
 												   xlrec->isCatalogRel,
 												   xlrec->locator);
+}
+
+/*
+ * The TID stride of an ADD_TID or INSERT_SWAP record's index: the uint16
+ * after the record's struct, or MaxHeapTuplesPerPage when there is none
+ * (see xl_bark_add_tid).  Both structs have the same size.
+ */
+static uint16
+bark_xlog_tid_stride(XLogReaderState *record)
+{
+	uint16		stride = MaxHeapTuplesPerPage;
+
+	StaticAssertStmt(SizeOfBarkAddTid == SizeOfBarkInsertSwap,
+					 "ADD_TID and INSERT_SWAP records differ in size");
+	if (XLogRecGetDataLen(record) >= SizeOfBarkAddTid + sizeof(uint16))
+		memcpy(&stride, XLogRecGetData(record) + SizeOfBarkAddTid,
+			   sizeof(uint16));
+	return stride;
 }
 
 /*
@@ -683,12 +745,13 @@ bark_xlog_add_tid(XLogReaderState *record)
 		IndexTuple	coded;
 
 		entry = BarkPageGetItem(page, xlrec->offnum, &ibuf);
-		ext = bark_entry_add_tid(entry, &xlrec->tid, BarkMaxItemSize);
+		ext = bark_entry_add_tid(entry, &xlrec->tid, BarkMaxItemSize,
+								 bark_xlog_tid_stride(record));
 		if (ext == NULL)
 			elog(PANIC, "failed to add a TID to a BARK entry during replay");
 		coded = bark_prefix_encode(page, ext);
-		if (!PageIndexTupleOverwrite(page, xlrec->offnum, coded,
-									 IndexTupleSize(coded)))
+		if (!BarkPageOverwriteEntry(page, xlrec->offnum, coded,
+									IndexTupleSize(coded)))
 			elog(PANIC, "failed to add a TID to a BARK entry during replay");
 		if (coded != ext)
 			pfree(coded);
@@ -696,6 +759,11 @@ bark_xlog_add_tid(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		/* The page validator's tests corrupt the entry here (barkverify.c). */
+#ifdef USE_INJECTION_POINTS
+		bark_verify_plant_fault(page, xlrec->offnum);
+#endif
+		bark_verify_redo(record, 0, buffer, xlrec->offnum, xlrec->offnum);
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -723,11 +791,12 @@ bark_xlog_insert_swap(XLogReaderState *record)
 		IndexTuple	rcoded;
 
 		bark_entry_swap_tid(BarkPageGetItem(page, xlrec->offnum, &ibuf),
-							&xlrec->tid, &left, &right);
+							&xlrec->tid, &left, &right,
+							bark_xlog_tid_stride(record));
 		lcoded = bark_prefix_encode(page, left);
 		rcoded = bark_prefix_encode(page, right);
-		if (!PageIndexTupleOverwrite(page, xlrec->offnum, lcoded,
-									 IndexTupleSize(lcoded)) ||
+		if (!BarkPageOverwriteEntry(page, xlrec->offnum, lcoded,
+									IndexTupleSize(lcoded)) ||
 			PageAddItem(page, rcoded, IndexTupleSize(rcoded),
 						OffsetNumberNext(xlrec->offnum), false, false) ==
 			InvalidOffsetNumber)
@@ -741,6 +810,8 @@ bark_xlog_insert_swap(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
+		bark_verify_redo(record, 0, buffer, xlrec->offnum,
+						 OffsetNumberNext(xlrec->offnum));
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
@@ -809,17 +880,26 @@ bark_redo(XLogReaderState *record)
 /*
  * Mask a BARK page before performing consistency checks on it.
  *
- * BARK makes no unlogged changes to its pages: it sets no LP_DEAD bits, and
- * it logs the clearing of the vacuum cycle ID, which nbtree treats as a hint
- * and masks (see "WAL" in the README).  So only the standard fields need
- * masking.
+ * BARK's only unlogged changes are hints, as nbtree's are: scans and the
+ * unique check mark leaf entries LP_DEAD, and set BARK_HAS_GARBAGE, without
+ * WAL (bark_killitems), so a leaf's line pointer flags and that page flag
+ * are masked, as btree_mask masks them.  BARK logs the clearing of the
+ * vacuum cycle ID, which nbtree treats as a hint and masks (see "WAL" in the
+ * README), so the cycle ID is not masked.  Only a leaf has line pointers to
+ * mask: an overflow page's pd_lower covers raw bytes of an oversized value.
  */
 void
 bark_mask(char *pagedata, BlockNumber blkno)
 {
 	Page		page = (Page) pagedata;
+	BarkPageOpaque opaque;
 
 	mask_page_lsn_and_checksum(page);
 	mask_page_hint_bits(page);
 	mask_unused_space(page);
+
+	opaque = BarkPageGetOpaque(page);
+	if (BarkPageIsLeaf(opaque))
+		mask_lp_flags(page);
+	opaque->bark_flags &= ~BARK_HAS_GARBAGE;
 }
