@@ -32,8 +32,8 @@
 #ifdef USE_XTC_CARRIER
 /*
  * Record the current xtc fiber (if any) as the latch's fiber owner, so a later
- * cross-thread SetLatch can xtc_proc_wake() it.  Called wherever the owning
- * process takes/refreshes ownership of a latch it will wait on.  Outside a
+ * SetLatch can xtc_proc_wake() it.  Called wherever the owning process
+ * takes/refreshes ownership of a latch it will wait on.  Outside a
  * fiber (process mode or a dedicated thread carrier) this clears the fiber
  * owner, leaving the fd/thread wake path in charge.
  */
@@ -481,6 +481,15 @@ SetLatch(Latch *latch)
 		return;
 	else if (owner_pid == MyProcPid)
 	{
+#ifdef USE_XTC_CARRIER
+		/*
+		 * Fibers sharing a thread have distinct self-pipes; owner_thread can
+		 * also predate migration.  Always use the fiber owner's wakeup fd.
+		 */
+		if (latch->owner_fiber_valid && owner_wakeup_fd >= 0)
+			WakeupOtherProcFd(owner_wakeup_fd);
+		else
+#endif
 		if (!same_owner_thread && owner_wakeup_fd >= 0)
 			WakeupOtherProcFd(owner_wakeup_fd);
 		else if (!same_owner_thread && owner_thread_valid)
@@ -490,21 +499,19 @@ SetLatch(Latch *latch)
 
 #ifdef USE_XTC_CARRIER
 		/*
-		 * If the owner is an xtc fiber on another carrier loop of THIS process,
-		 * the self-pipe write / SIGURG above makes the watched condition true
-		 * but does not reliably wake a loop parked in xtc_proc_wait_fd on that
-		 * fd (the cross-thread fd/latch wake miss).  Explicitly poke the owner
-		 * loop with xtc_proc_wake() (libxtc >= v1.8.0) so the parked fiber
-		 * re-checks.  It delivers no message and a spurious wake is always safe;
-		 * harmless if the fiber is not parked, already runnable, or gone.  Only
-		 * reachable when the setter is IN THIS PROCESS (owner_pid == MyProcPid);
+		 * Explicitly wake the owner fiber even when it shares our thread: thread
+		 * identity does not identify the waiting fiber.  Pair the fd wake above
+		 * with xtc_proc_wake() so the parked fiber re-checks.  It delivers no
+		 * message; spurious wakes, including self-wakes, are harmless when the
+		 * fiber is not parked, already runnable, or gone.  Only reachable when
+		 * the setter is IN THIS PROCESS (owner_pid == MyProcPid);
 		 * a forked server-owned worker in another address space takes the
 		 * cross-process WakeupOtherProc() path below and cannot poke this
 		 * process's loops -- that case (e.g. a forked io worker completing a
 		 * fiber backend's AIO) is why such completers must run in-process as
 		 * thread carriers, not forks.
 		 */
-		if (!same_owner_thread && latch->owner_fiber_valid)
+		if (latch->owner_fiber_valid)
 		{
 			xtc_pid_t	owner_fiber;
 

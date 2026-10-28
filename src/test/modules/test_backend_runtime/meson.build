@@ -74,6 +74,7 @@ tests += {
       't/015_phase_c_concurrent_startup_storm.pl',
       't/016_worker_fiber_pool_sizing.pl',
       't/018_dead_end_backend.pl',
+      't/019_same_loop_latch.pl',
     ],
   },
 }
