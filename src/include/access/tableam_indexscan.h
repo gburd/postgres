@@ -44,6 +44,8 @@ tableam_index_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	/* Reset kill flag immediately for safety */
 	scan->kill_prior_tuple = false;
 	scan->xs_heap_continue = false;
+	/* the new entry, if any, is not judged yet */
+	scan->xs_entry_verdict = INDEX_SCAN_ENTRY_UNKNOWN;
 
 	/* If we're out of index entries, we're done */
 	if (!found)

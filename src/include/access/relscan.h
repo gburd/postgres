@@ -128,6 +128,19 @@ struct IndexScanInstrumentation;
  * and amgetbitmap-based index scans.  Some fields are only relevant in
  * amgettuple-based scans.
  */
+/*
+ * The table AM's verdict on the index entry that gave xs_heaptid, for an
+ * index that can store version tags; see "Versioned locators" in
+ * amlocator.h.
+ */
+typedef enum IndexScanEntryVerdict
+{
+	INDEX_SCAN_ENTRY_UNKNOWN = 0,	/* not judged yet */
+	INDEX_SCAN_ENTRY_VALID,		/* a row was returned through the entry */
+	INDEX_SCAN_ENTRY_INVALID,	/* the entry reached no visible version it is
+								 * valid for */
+}			IndexScanEntryVerdict;
+
 typedef struct IndexScanDescData
 {
 	/* scan parameters */
@@ -177,6 +190,15 @@ typedef struct IndexScanDescData
 	 * xs_getnext_slot reads it.
 	 */
 	IndexVersionTag xs_heaptag;
+
+	/*
+	 * The table AM's verdict on that entry.  Reset to UNKNOWN after each
+	 * amgettuple call; the table AM's xs_getnext_slot sets it before it next
+	 * asks for a TID, so the index AM can read it at the start of its next
+	 * amgettuple call.  An index AM that returns several entries of one row
+	 * uses it to know whether a later entry of that row may be skipped.
+	 */
+	IndexScanEntryVerdict xs_entry_verdict;
 	bool		xs_heap_continue;	/* T if must keep walking, potential
 									 * further results */
 	bool		xs_recheck;		/* T means scan keys must be rechecked */
