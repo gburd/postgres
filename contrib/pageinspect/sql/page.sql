@@ -123,3 +123,19 @@ create sequence test_sequence start 72057594037927937;
 select tuple_data_split('test_sequence'::regclass, t_data, t_infomask, t_infomask2, t_bits)
   from heap_page_items(get_raw_page('test_sequence', 0));
 drop sequence test_sequence;
+
+-- JIT inlining must not pull in references to functions that aren't
+-- exported from pageinspect's library, like get_page_from_raw().  Without
+-- JIT support this passes trivially.
+CREATE TEMP TABLE test_jit (a int);
+INSERT INTO test_jit VALUES (1);
+SET jit = on;
+SET jit_above_cost = 0;
+SET jit_inline_above_cost = 0;
+SET jit_optimize_above_cost = -1;
+SELECT page_checksum(get_raw_page('test_jit', 0), 0) IS NOT NULL AS jit_inline_test;
+RESET jit;
+RESET jit_above_cost;
+RESET jit_inline_above_cost;
+RESET jit_optimize_above_cost;
+DROP TABLE test_jit;
