@@ -7837,9 +7837,11 @@ read_nondefault_variables(void)
 		 * because doing so can replace/free strings owned by the postmaster's
 		 * GUC context.  Still replay backend/session/user settings so logical
 		 * backends see the same effective configuration as forked children.
+		 * Exec children have fresh globals and must replay every setting.
 		 */
 		if (multithreaded &&
 			IsUnderPostmaster &&
+			!pg_backend_was_forkexeced &&
 			(record->context == PGC_POSTMASTER ||
 			 record->context == PGC_INTERNAL))
 		{
