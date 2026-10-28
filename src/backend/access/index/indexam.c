@@ -742,6 +742,25 @@ index_can_version(Relation indexRelation)
 }
 
 /* ----------------
+ *		index_may_keep_locator
+ *
+ *		May an update that needs a new entry in the index keep the row's
+ *		locator?  Only if the index stores version tags and, if its access
+ *		method has amindexmaykeeplocator, that says so; see "Versioned
+ *		locators" in amlocator.h.  Unlike index_can_version(), the answer may
+ *		change during the life of the index.
+ * ----------------
+ */
+bool
+index_may_keep_locator(Relation indexRelation)
+{
+	if (!index_can_version(indexRelation))
+		return false;
+	return indexRelation->rd_indam->amindexmaykeeplocator == NULL ||
+		indexRelation->rd_indam->amindexmaykeeplocator(indexRelation);
+}
+
+/* ----------------
  *		index_getprocid
  *
  *		Index access methods typically require support routines that are
