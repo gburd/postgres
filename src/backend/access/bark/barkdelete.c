@@ -44,10 +44,13 @@
  * old one's place.  A POSTING entry is sized for the removal bound of its set
  * (see bark_form_posting), which no subset exceeds; a LIST of fewer locators
  * is shorter; a LIST is chosen over the POSTING only when it is the smaller;
- * and a SINGLE is smaller than either.  On a BARK_PREFIX page the key codes
- * as the old entry's did, so the coded entry shrinks with the plain one.
- * VACUUM and bottom-up deletion both rely on this; the check below turns a
- * violation into an error before the caller enters its critical section.
+ * and a SINGLE is smaller than either.  A coded LIST re-forms to a coded LIST
+ * (bark_reform_list), whose survivors never code larger than the whole, so it
+ * fits where a plain or POSTING re-form of the same survivors might not.  On
+ * a BARK_PREFIX page the key codes as the old entry's did, so the coded entry
+ * shrinks with the plain one.  VACUUM and bottom-up deletion both rely on
+ * this; the check below turns a violation into an error before the caller
+ * enters its critical section.
  */
 IndexTuple
 bark_reform_entry(Relation index, Buffer buf, OffsetNumber off,
@@ -55,6 +58,8 @@ bark_reform_entry(Relation index, Buffer buf, OffsetNumber off,
 {
 	Page		page = BufferGetPage(buf);
 	ItemId		iid = PageGetItemId(page, off);
+	bool		wascoded = (BarkEntryGetShape(itup) == BARK_SHAPE_LIST &&
+							BarkListIsCoded(itup));
 	IndexTuple	key = bark_single_from_list(index, itup, NULL);
 	IndexTuple	newentry;
 	IndexTuple	posting;
@@ -67,6 +72,17 @@ bark_reform_entry(Relation index, Buffer buf, OffsetNumber off,
 		newentry = key;
 		newentry->t_tid = tids[0];
 	}
+	else if (wascoded)
+	{
+		/*
+		 * A coded LIST re-forms to a coded LIST of its survivors, which is no
+		 * larger than the old entry (bark_reform_list): trying a POSTING or a
+		 * plain LIST here could pick a form larger than the old coded slot.
+		 */
+		newentry = bark_reform_list(RelationGetDescr(index), key, tids, nlive,
+									true);
+		pfree(key);
+	}
 	else if ((posting = bark_form_posting(RelationGetDescr(index),
 										  key, tids, nlive)) != NULL)
 	{
@@ -75,7 +91,7 @@ bark_reform_entry(Relation index, Buffer buf, OffsetNumber off,
 	}
 	else
 	{
-		newentry = bark_form_list(RelationGetDescr(index), key, tids, nlive);
+		newentry = bark_form_list_best(RelationGetDescr(index), key, tids, nlive);
 		pfree(key);
 	}
 
@@ -197,6 +213,19 @@ bark_delitems_delete(Relation index, Buffer buf, bool merge,
 		pfree(updatedbuf);
 }
 
+/* qsort comparator: TM_IndexDelete by TID, then by id (stable order). */
+static int
+bark_deltid_cmp(const void *a, const void *b)
+{
+	const TM_IndexDelete *da = (const TM_IndexDelete *) a;
+	const TM_IndexDelete *db = (const TM_IndexDelete *) b;
+	int			c = ItemPointerCompare(&da->tid, &db->tid);
+
+	if (c != 0)
+		return c;
+	return (da->id > db->id) - (da->id < db->id);
+}
+
 /*
  * Bottom-up deletion pass over the exclusive-locked leaf `buf`, as nbtree's
  * _bt_bottomupdel_pass and _bt_delitems_delete_check.  bark_insert calls this
@@ -239,6 +268,7 @@ bark_bottomup_delete(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 	OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
 	TM_IndexDeleteOp delstate;
 	ItemPointer tids;			/* every candidate TID, indexed by id */
+	int		   *dupof;			/* per id: the id offered for its TID, or -1 */
 	int			ntids = 0;
 	int			tidsalloc = MaxIndexTuplesPerPage;
 	int		   *firstid;		/* per offset: id of its first TID */
@@ -270,7 +300,9 @@ bark_bottomup_delete(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 		IndexTuple	itup = BarkPageGetItem(page, off, &ibuf);
 		int			n;
 
-		if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED)
+		/* A marker's TID names no row to offer the table AM. */
+		if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED ||
+			BarkEntryIsMarker(itup))
 			continue;
 		n = bark_entry_count_tids(itup);
 		if (ntids + n > PG_INT16_MAX)
@@ -338,6 +370,45 @@ bark_bottomup_delete(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 	delstate.ndeltids = ntids;
 
 	/*
+	 * The table AM requires each TID at most once (heapam's sort asserts that
+	 * no two are equal), but a row of an index with an extracted column has
+	 * an entry per key, and several of them may be on this leaf.  Offer each
+	 * TID once: sort by TID, keep the first of each run, and remember the
+	 * others in dupof[] so that the answer for the one offered applies to
+	 * all.  A TID offered more than once is promising if any of its entries
+	 * is, and frees the space of all of them.
+	 */
+	dupof = palloc_array(int, ntids);
+	for (int i = 0; i < ntids; i++)
+		dupof[i] = -1;
+	if (bark_index_extracted_column(index) > 0 && ntids > 1)
+	{
+		int			nkept = 0;
+
+		qsort(delstate.deltids, ntids, sizeof(TM_IndexDelete),
+			  bark_deltid_cmp);
+		for (int i = 0; i < ntids; i++)
+		{
+			TM_IndexDelete *d = &delstate.deltids[i];
+
+			if (nkept > 0 &&
+				ItemPointerEquals(&delstate.deltids[nkept - 1].tid, &d->tid))
+			{
+				TM_IndexStatus *keep = &delstate.status[delstate.deltids[nkept - 1].id];
+				TM_IndexStatus *dup = &delstate.status[d->id];
+
+				dupof[d->id] = delstate.deltids[nkept - 1].id;
+				keep->promising = keep->promising || dup->promising;
+				keep->freespace = Min(PG_INT16_MAX,
+									  (int) keep->freespace + dup->freespace);
+				continue;
+			}
+			delstate.deltids[nkept++] = *d;
+		}
+		delstate.ndeltids = nkept;
+	}
+
+	/*
 	 * Ask the table AM.  It sorts and shrinks deltids, so read its answer
 	 * back through the ids, which are the indexes into tids[].
 	 */
@@ -351,6 +422,11 @@ bark_bottomup_delete(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 	{
 		if (delstate.status[delstate.deltids[i].id].knowndeletable)
 			dead[delstate.deltids[i].id] = true;
+	}
+	for (int i = 0; i < ntids; i++)
+	{
+		if (dupof[i] >= 0)
+			dead[i] = dead[dupof[i]];
 	}
 
 	/* Decide each entry's fate, then make the changes in one record */
@@ -386,6 +462,7 @@ bark_bottomup_delete(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 	for (int i = 0; i < nupdated; i++)
 		pfree(updated[i]);
 	pfree(dead);
+	pfree(dupof);
 	pfree(delstate.deltids);
 	pfree(delstate.status);
 	pfree(tids);
@@ -429,7 +506,7 @@ bark_merge_form(Page page, IndexTuple key, ItemPointer tids, int n)
  * goes into an existing entry, which may itself be merged).  Returns true if
  * the page now has room for `newitemsz` bytes and a line pointer
  * (bark_leaf_free_space).  Only for an index whose entries coalesce (see
- * bark_allequalimage).
+ * bark_index_may_coalesce).
  *
  * Entries are taken in page order.  A group starts at an entry and absorbs
  * the next while that one has the same key and the merged entry, in the
@@ -437,7 +514,7 @@ bark_merge_form(Page page, IndexTuple key, ItemPointer tids, int n)
  * entry that does not fit starts the next group.  Equal-key entries are in
  * heap TID order with disjoint ranges, so the members of a group, read in
  * order, are already ascending.  SINGLE entries fold in like the rest;
- * OVERSIZED ones are left alone, and end a group.  A group never spans
+ * OVERSIZED ones and markers are left alone, and end a group.  A group never spans
  * newitemoff: the merged entry's TID range would then hold the new TID, and
  * the new entry could not go next to it.  A group that would save nothing (a
  * single entry, or alignment eating the gain) is left as it is.  The pass
@@ -493,7 +570,8 @@ bark_merge_page(Relation index, BarkKeyInfo *keyinfo, Buffer buf,
 		int			groupsz;
 
 		off = OffsetNumberNext(off);
-		if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED)
+		if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED ||
+			BarkEntryIsMarker(itup))
 			continue;
 
 		/*
@@ -504,6 +582,7 @@ bark_merge_page(Relation index, BarkKeyInfo *keyinfo, Buffer buf,
 			continue;
 		next = BarkPageGetItem(page, off, &nbuf);
 		if (BarkEntryGetShape(next) == BARK_SHAPE_OVERSIZED ||
+			BarkEntryIsMarker(next) ||
 			bark_compare_itups(keyinfo, index, itup, next) != 0)
 			continue;
 
@@ -526,6 +605,7 @@ bark_merge_page(Relation index, BarkKeyInfo *keyinfo, Buffer buf,
 			IndexTuple	candidate;
 
 			if (BarkEntryGetShape(cur) == BARK_SHAPE_OVERSIZED ||
+				BarkEntryIsMarker(cur) ||
 				bark_compare_itups(keyinfo, index, key, cur) != 0)
 				break;
 			n = bark_entry_count_tids(cur);

@@ -4,6 +4,7 @@
 <title>Built-in Index Access Methods</title>
 
 &btree;
+&bark;
 &gist;
 &spgist;
 &gin;

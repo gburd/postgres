@@ -73,7 +73,6 @@ Datum		pgstatginindex_internal(Oid relid, FunctionCallInfo fcinfo);
 #define IS_BTREE(r) IndexIsNbtree(r)
 #define IS_GIN(r) ((r)->rd_rel->relam == GIN_AM_OID)
 #define IS_HASH(r) ((r)->rd_rel->relam == HASH_AM_OID)
-#define IS_BARK(r) ((r)->rd_rel->relam == BARK_AM_OID)
 
 /* ------------------------------------------------
  * A structure for a whole btree index statistics
@@ -872,7 +871,7 @@ pgstatbarkindex(PG_FUNCTION_ARGS)
 	/* As in pgstathashindex, relation_open refuses partitioned indexes. */
 	rel = relation_open(relid, AccessShareLock);
 
-	if (!IS_INDEX(rel) || !IS_BARK(rel))
+	if (!bark_relation_is_bark(rel))
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				 errmsg("relation \"%s\" is not a bark index",
