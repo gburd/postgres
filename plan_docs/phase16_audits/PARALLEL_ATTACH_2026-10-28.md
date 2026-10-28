@@ -65,19 +65,24 @@ an external deadline and launch-log evidence to reject serial fallback.
 | Core process regression after repair | 239/239 |
 | Backend-runtime regression | pass |
 | TAP 019, same-loop latch wake | 13/13 |
+| Full four-loop fiber/sync, first completed run | 236/239; guc, select_distinct, union differ |
+| Full four-loop fiber/sync, second completed run | 238/239; guc differs |
 
 Independent source review found no blocker in notification ordering, worker
 failure handling, sender detachment, generation checks or process callers.
-All builds/tests ran on EC2; no local build was used. Full threaded regression
-is still being collected and is not green at this checkpoint. Early collection
-reached actual EXPLAIN output differences rather than the old attachment stall;
-those differences remain failures until evaluated, not waived by this fix.
+All builds/tests ran on EC2; no local build was used. Both completed full runs
+finished in about 16 seconds with no stall or crash; database and btree_index
+passed. Both differ in guc's PL/pgSQL reserved-prefix test: ERROR before LOAD
+instead of WARNING at LOAD. The first also has EXPLAIN differences. These are
+still gate failures. An earlier incomplete run stopped on actual select_distinct
+and subselect EXPLAIN differences; its results and capture remain retained.
 
 Raw evidence and scripts are under
 `/scratch/postgres-xtc/baseline-20261028/`. Focused identity archive SHA256:
 `de7e04c46218ac06e8ec4f2460675c23fd142cc19ac00e6bfa5a2f800c57bdc4`.
 Authoritative old TAP evidence is `evidence-parallel-tap-red`, run `red2`
 (5 ms live-identity polling captured both postmasters; the first run missed the
-brief fork process). Startup-publication, hard wait-error handling and remaining
-ownership failures are still open. No performance acceptance or model cutover
-is claimed.
+brief fork process). Completed-run evidence is recorded in `parallel-candidate/RESULT.md`, archive
+SHA256 `f750430ab1aa12d1bca08dff91a2411d7219c47bc2404e8ea6ed83a267fdaed9`.
+Startup-publication, hard wait-error handling and remaining ownership failures
+are still open. No performance acceptance or model cutover is claimed.
