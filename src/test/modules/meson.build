@@ -1,6 +1,7 @@
 # Copyright (c) 2022-2026, PostgreSQL Global Development Group
 
 subdir('bark')
+subdir('bark_multikey')
 subdir('brin')
 subdir('commit_ts')
 subdir('delay_execution')

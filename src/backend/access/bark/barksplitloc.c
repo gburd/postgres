@@ -24,7 +24,9 @@
  *   one run of equal keys, the split moves to the edge of the run if the
  *   page has one (nbtree's "many duplicates" strategy).
  * - A leaf that holds a single key value is split so the left page is left
- *   BARK_SINGLEVAL_FILLFACTOR full (nbtree's "single value" strategy).
+ *   BARK_SINGLEVAL_FILLFACTOR full (nbtree's "single value" strategy).  When
+ *   the incoming item goes after its last entry, that entry is first cut to
+ *   make the fill reachable (bark_singleval_cut).
  *
  * nbtree's "split after new item" heuristic for composite keys is not
  * ported, and an internal page is always split at the point closest to the
@@ -61,11 +63,11 @@ typedef struct BarkSplitPoint
  */
 #define BARK_LEAF_SPLIT_DISTANCE	0.050
 
-/* Bytes an item takes on a page, line pointer included. */
+/* Bytes an item of (MAXALIGNed) size `sz` takes, line pointer included. */
 static inline int
-bark_split_itemsz(IndexTuple itup)
+bark_split_itemsz(Size sz)
 {
-	return MAXALIGN(IndexTupleSize(itup)) + sizeof(ItemIdData);
+	return sz + sizeof(ItemIdData);
 }
 
 /*
@@ -80,7 +82,8 @@ bark_split_itemsz(IndexTuple itup)
  * it.  The one case where the high key can be larger than the item is an
  * oversized leaf key in an index of more than one column: without the
  * INCLUDE columns, or truncated to its leading key attributes, the key may
- * fit inline, at up to BarkMaxItemSize.
+ * fit inline, at up to BarkMaxItemSize.  As in nbtree, a leaf high key is
+ * assumed to keep a heap TID.
  */
 static int
 bark_split_hikeysz(Relation index, IndexTuple firstright)
@@ -88,11 +91,18 @@ bark_split_hikeysz(Relation index, IndexTuple firstright)
 	BarkEntryShape shape = BarkEntryGetShape(firstright);
 	Size		sz = IndexTupleSize(firstright);
 
-	if (shape == BARK_SHAPE_LIST || shape == BARK_SHAPE_POSTING)
-		sz = BarkEntryGetBodyOffset(firstright);
-	else if (shape == BARK_SHAPE_OVERSIZED && BarkOverflowIsLeaf(firstright) &&
-			 IndexRelationGetNumberOfAttributes(index) > 1)
-		sz = BarkMaxItemSize;
+	if (shape == BARK_SHAPE_OVERSIZED)
+	{
+		if (BarkOverflowIsLeaf(firstright) &&
+			IndexRelationGetNumberOfAttributes(index) > 1)
+			sz = BarkMaxItemSize;
+	}
+	else if (shape != BARK_SHAPE_PIVOT)
+	{
+		if (shape == BARK_SHAPE_LIST || shape == BARK_SHAPE_POSTING)
+			sz = BarkEntryGetBodyOffset(firstright);
+		sz = MAXALIGN(sz) + MAXALIGN(sizeof(ItemPointerData));
+	}
 	return MAXALIGN(sz) + sizeof(ItemIdData);
 }
 
@@ -153,16 +163,20 @@ bark_split_interval(BarkSplitPoint *splits, int nsplits, int databytes)
  * Choose where to split a full page.
  *
  * `items` holds the page's n data items in key order, the incoming item
- * among them at `newitemidx`.  `orighikey` is the page's high key, which the
- * new right page keeps; NULL when the page is the rightmost on its level.
- * The left page gets a new high key formed from the right page's first item.
+ * among them at `newitemidx`, and `sizes` the MAXALIGNed space each takes on
+ * a page (less than its own size when it is stored prefix-coded); each half
+ * also gives up `reserve` bytes, for a PREFIX item.  `orighikey` is the
+ * page's high key, which the new right page keeps; NULL when the page is the
+ * rightmost on its level.  The left page gets a new high key formed from the
+ * right page's first item.
  *
  * Returns the index of the first item that goes to the right page, in
  * [1, n-1].
  */
 int
 bark_findsplitloc(Relation index, BarkKeyInfo *keyinfo, IndexTuple *items,
-				  int n, int newitemidx, bool isleaf, IndexTuple orighikey)
+				  const Size *sizes, Size reserve, int n, int newitemidx,
+				  bool isleaf, IndexTuple orighikey)
 {
 	bool		rightmost = (orighikey == NULL);
 	int			nkeyatts = IndexRelationGetNumberOfKeyAttributes(index);
@@ -189,12 +203,12 @@ bark_findsplitloc(Relation index, BarkKeyInfo *keyinfo, IndexTuple *items,
 
 	/* Room for items on an empty page; the right page keeps the high key. */
 	leftspace = rightspace = BLCKSZ - SizeOfPageHeaderData -
-		MAXALIGN(sizeof(BarkPageOpaqueData));
+		MAXALIGN(sizeof(BarkPageOpaqueData)) - reserve;
 	if (!rightmost)
-		rightspace -= bark_split_itemsz(orighikey);
+		rightspace -= bark_split_itemsz(MAXALIGN(IndexTupleSize(orighikey)));
 
 	for (int i = 0; i < n; i++)
-		totalbytes += bark_split_itemsz(items[i]);
+		totalbytes += bark_split_itemsz(sizes[i]);
 
 	/*
 	 * Record every split point at which both halves fit, in key order.  The
@@ -207,7 +221,7 @@ bark_findsplitloc(Relation index, BarkKeyInfo *keyinfo, IndexTuple *items,
 		int			leftfree;
 		int			rightfree;
 
-		leftbytes += bark_split_itemsz(items[i - 1]);
+		leftbytes += bark_split_itemsz(sizes[i - 1]);
 		leftfree = leftspace - leftbytes - bark_split_hikeysz(index, items[i]);
 		rightfree = rightspace - (totalbytes - leftbytes);
 		if (leftfree < 0 || rightfree < 0)
@@ -326,4 +340,93 @@ bark_findsplitloc(Relation index, BarkKeyInfo *keyinfo, IndexTuple *items,
 	firstright = splits[best].firstright;
 	pfree(splits);
 	return firstright;
+}
+
+/*
+ * Prepare the split of a full leaf that holds a single key and is the last
+ * page of the key's run, when the incoming heap TID, newitem's, sorts after
+ * every entry on it: the case bark_findsplitloc gives its single-value
+ * strategy, which leaves the left page BARK_SINGLEVAL_FILLFACTOR full.  A
+ * split point falls between entries, and a LIST or POSTING entry can take up
+ * to a third of the page, so without help the left page keeps every entry
+ * that fits and ends nearly full: later inserts into the space VACUUM frees
+ * there then split it again, evenly.  Instead the last entry is cut
+ * (bark_entry_cut) so that its lower part leaves the left page at the fill
+ * factor, and its upper part, with newitem's TID, goes to the right page.
+ * nbtree gets the same result by capping the size of the last posting list
+ * it forms on such a page (_bt_singleval_fillfactor).
+ *
+ * `off` is newitem's insert offset on `page`.  Returns true, with *left to
+ * replace the entry at off - 1 and *right to go at off in the split (both
+ * palloc'd), when the cut applies; false when the page should be split as
+ * it is.  Only for an index whose entries coalesce.
+ */
+bool
+bark_singleval_cut(Relation index, BarkKeyInfo *keyinfo, Page page,
+				   OffsetNumber off, IndexTuple newitem, IndexTuple *left,
+				   IndexTuple *right)
+{
+	BarkPageOpaque opaque = BarkPageGetOpaque(page);
+	PageHeader	hdr = (PageHeader) page;
+	OffsetNumber firstdata = BarkPageFirstDataKey(opaque);
+	OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
+	BarkItemBuf ibuf;
+	IndexTuple	last;
+	ItemPointerData lo;
+	ItemPointerData hi;
+	int			leftspace;
+	int			used;
+	int			leftmax;
+
+	Assert(BarkPageIsLeaf(opaque));
+
+	/* newitem goes after the last entry, a LIST or POSTING of its key ... */
+	if (off <= maxoff || maxoff <= firstdata)
+		return false;
+	last = BarkPageGetItem(page, maxoff, &ibuf);
+	if ((BarkEntryGetShape(last) != BARK_SHAPE_LIST &&
+		 BarkEntryGetShape(last) != BARK_SHAPE_POSTING) ||
+		bark_compare_itups(keyinfo, index, newitem, last) != 0)
+		return false;
+	bark_entry_tid_range(last, &lo, &hi);
+	if (ItemPointerCompare(&newitem->t_tid, &hi) <= 0)
+		return false;
+
+	/* ... the page holds no other key ... */
+	{
+		BarkItemBuf fbuf;
+
+		if (bark_compare_itups(keyinfo, index, newitem,
+							   BarkPageGetItem(page, firstdata, &fbuf)) != 0)
+			return false;
+	}
+
+	/* ... and no later page does. */
+	if (!BarkPageRightmost(opaque) &&
+		bark_compare_itups(keyinfo, index,
+						   (IndexTuple) PageGetItem(page,
+													PageGetItemId(page, BARK_P_HIKEY)),
+						   newitem) == 0)
+		return false;
+
+	/*
+	 * The bytes the left page will hold besides the last entry's lower part:
+	 * every other item now on the page (with a PREFIX item, if any) but the
+	 * high key, and the new high key, sized as bark_findsplitloc sizes it.
+	 * The lower part gets what is left of the page short of the fill factor.
+	 */
+	leftspace = BLCKSZ - SizeOfPageHeaderData -
+		MAXALIGN(sizeof(BarkPageOpaqueData));
+	used = (hdr->pd_special - hdr->pd_upper) +
+		(hdr->pd_lower - SizeOfPageHeaderData) -
+		bark_split_itemsz(MAXALIGN(ItemIdGetLength(PageGetItemId(page, maxoff))));
+	if (!BarkPageRightmost(opaque))
+		used -= bark_split_itemsz(MAXALIGN(ItemIdGetLength(PageGetItemId(page,
+																		 BARK_P_HIKEY))));
+	leftmax = leftspace - leftspace * (100 - BARK_SINGLEVAL_FILLFACTOR) / 100 -
+		used - bark_split_hikeysz(index, last) - (int) sizeof(ItemIdData);
+	if (leftmax <= 0)
+		return false;
+
+	return bark_entry_cut(last, &newitem->t_tid, leftmax, left, right);
 }
