@@ -1618,6 +1618,7 @@ typedef struct PgSessionGUCState
 	struct config_generic_state *variable_states;
 	int			num_variables;
 	HTAB	   *hash_table;
+	List	   *reserved_prefixes;
 	dlist_head	nondef_list;
 	slist_head	stack_list;
 	slist_head	report_list;

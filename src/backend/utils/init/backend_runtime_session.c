@@ -1017,6 +1017,7 @@ PgSessionInitializeGUCState(PgSessionGUCState *guc)
 	guc->variable_states = NULL;
 	guc->num_variables = 0;
 	guc->hash_table = NULL;
+	guc->reserved_prefixes = NIL;
 	dlist_init(&guc->nondef_list);
 	slist_init(&guc->stack_list);
 	slist_init(&guc->report_list);

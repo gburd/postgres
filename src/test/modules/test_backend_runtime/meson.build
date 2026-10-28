@@ -39,6 +39,12 @@ test_backend_runtime_threaded = shared_module('test_backend_runtime_threaded',
 )
 test_install_libs += test_backend_runtime_threaded
 
+test_backend_runtime_prefix = shared_module('test_backend_runtime_prefix',
+  files('test_backend_runtime_prefix.c'),
+  kwargs: pg_test_mod_args,
+)
+test_install_libs += test_backend_runtime_prefix
+
 test_install_data += files(
   'test_backend_runtime.control',
   'test_backend_runtime--1.0.sql',
@@ -77,6 +83,7 @@ tests += {
       't/019_same_loop_latch.pl',
       't/020_parallel_attach.pl',
       't/021_session_guc_owners.pl',
+      't/022_guc_prefix.pl',
     ],
   },
 }

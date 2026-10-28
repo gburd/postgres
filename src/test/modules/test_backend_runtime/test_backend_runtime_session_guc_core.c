@@ -1678,6 +1678,8 @@ test_session_guc_state_is_session_local(PG_FUNCTION_ARGS)
 	slist_node	stack2;
 	slist_node	report1;
 	slist_node	report2;
+	List	   *prefixes1;
+	List	   *prefixes2;
 	bool		ok = true;
 
 	saved_session = CurrentPgSession;
@@ -1692,6 +1694,7 @@ test_session_guc_state_is_session_local(PG_FUNCTION_ARGS)
 			(struct config_generic *) &fake_session1;
 		*PgCurrentNumGUCVariablesRef() = 11;
 		*PgCurrentGUCHashTableRef() = (HTAB *) &fake_session1;
+		PgCurrentSessionGUCState()->reserved_prefixes = (List *) &fake_session1;
 		dlist_push_head(PgCurrentGUCNondefListRef(), &nondef1);
 		slist_push_head(PgCurrentGUCStackListRef(), &stack1);
 		slist_push_head(PgCurrentGUCReportListRef(), &report1);
@@ -1705,6 +1708,8 @@ test_session_guc_state_is_session_local(PG_FUNCTION_ARGS)
 			(struct config_generic *) &fake_session1;
 		ok = ok && fake_session1.guc.num_variables == 11;
 		ok = ok && fake_session1.guc.hash_table == (HTAB *) &fake_session1;
+		ok = ok && fake_session1.guc.reserved_prefixes == (List *) &fake_session1;
+		ok = ok && PgCurrentSessionGUCState()->reserved_prefixes == NIL;
 		ok = ok && !dlist_is_empty(&fake_session1.guc.nondef_list);
 		ok = ok && dlist_head_node(&fake_session1.guc.nondef_list) ==
 			&nondef1;
@@ -1725,6 +1730,7 @@ test_session_guc_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentGUCVariablesRef() == NULL;
 		ok = ok && *PgCurrentNumGUCVariablesRef() == 0;
 		ok = ok && *PgCurrentGUCHashTableRef() == NULL;
+		ok = ok && PgCurrentSessionGUCState()->reserved_prefixes == NIL;
 		ok = ok && dlist_is_empty(PgCurrentGUCNondefListRef());
 		ok = ok && slist_is_empty(PgCurrentGUCStackListRef());
 		ok = ok && slist_is_empty(PgCurrentGUCReportListRef());
@@ -1769,6 +1775,69 @@ test_session_guc_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentGUCNestLevelRef() == 4;
 
 		PgSetCurrentSession(saved_session);
+
+		/* Discard sentinel pointers without freeing them; use real GUC contexts. */
+		MemSet(&fake_session1, 0, sizeof(fake_session1));
+		MemSet(&fake_session2, 0, sizeof(fake_session2));
+		/* Full reset must not delete the live session's authentication context. */
+		test_copy_current_user_identity(&fake_session1);
+		fake_session1.user_identity.system_user_context = NULL;
+		fake_session1.user_identity.system_user = NULL;
+		test_copy_current_user_identity(&fake_session2);
+		fake_session2.user_identity.system_user_context = NULL;
+		fake_session2.user_identity.system_user = NULL;
+		ok = ok && fake_session1.guc.reserved_prefixes == NIL;
+		ok = ok && fake_session2.guc.reserved_prefixes == NIL;
+
+		PgSetCurrentSession(&fake_session1);
+		MarkGUCPrefixReserved("test_runtime_prefix");
+		ok = ok && fake_session2.guc.reserved_prefixes == NIL;
+		PgSetCurrentSession(&fake_session2);
+		MarkGUCPrefixReserved("test_runtime_prefix");
+		prefixes1 = fake_session1.guc.reserved_prefixes;
+		prefixes2 = fake_session2.guc.reserved_prefixes;
+		if (list_length(prefixes1) != 1 || list_length(prefixes2) != 1)
+			elog(ERROR, "session GUC prefix lists were not independently initialized");
+		ok = ok && fake_session1.guc.memory_context !=
+			fake_session2.guc.memory_context;
+		ok = ok && prefixes1 != prefixes2;
+		ok = ok && prefixes1->elements != prefixes2->elements;
+		ok = ok && linitial(prefixes1) != linitial(prefixes2);
+		ok = ok && GetMemoryChunkContext(prefixes1) ==
+			fake_session1.guc.memory_context;
+		ok = ok && GetMemoryChunkContext(prefixes2) ==
+			fake_session2.guc.memory_context;
+		/* Inline cells share the header allocation; enlarged lists do not. */
+		if (prefixes1->elements != prefixes1->initial_elements)
+			ok = ok && GetMemoryChunkContext(prefixes1->elements) ==
+				fake_session1.guc.memory_context;
+		if (prefixes2->elements != prefixes2->initial_elements)
+			ok = ok && GetMemoryChunkContext(prefixes2->elements) ==
+				fake_session2.guc.memory_context;
+		ok = ok && GetMemoryChunkContext(linitial(prefixes1)) ==
+			fake_session1.guc.memory_context;
+		ok = ok && GetMemoryChunkContext(linitial(prefixes2)) ==
+			fake_session2.guc.memory_context;
+
+		if (!ok)
+			elog(ERROR, "session GUC prefix allocations have incorrect owners");
+
+		/* Synchronous reset deletes A's GUC context before B uses its list. */
+		PgSetCurrentSession(saved_session);
+		PgSessionResetClosedState(&fake_session1);
+		ok = ok && fake_session1.guc.memory_context == NULL;
+		ok = ok && fake_session1.guc.reserved_prefixes == NIL;
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && strcmp(linitial(prefixes2), "test_runtime_prefix") == 0;
+		ok = ok && find_option("test_runtime_prefix.typo", true, true, ERROR) == NULL;
+		SetConfigOption("test_runtime_other.value", "survives",
+						PGC_USERSET, PGC_S_SESSION);
+		ok = ok && strcmp(GetConfigOption("test_runtime_other.value", false, false),
+						  "survives") == 0;
+		PgSetCurrentSession(saved_session);
+		PgSessionResetClosedState(&fake_session2);
+		ok = ok && fake_session2.guc.memory_context == NULL;
+		ok = ok && fake_session2.guc.reserved_prefixes == NIL;
 	}
 	PG_CATCH();
 	{
