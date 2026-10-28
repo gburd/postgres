@@ -459,7 +459,7 @@ ExecUpdateMayKeepLocator(ResultRelInfo *resultRelInfo,
 			!IndexNeedsEntry(indexRelation, modified_idx_attrs))
 			continue;
 
-		if (!indexRelation->rd_indam->amcanversion)
+		if (!index_can_version(indexRelation))
 			return false;
 
 		/*
@@ -483,7 +483,8 @@ ExecUpdateMayKeepLocator(ResultRelInfo *resultRelInfo,
  *		As ExecInsertIndexTuples() with EIIT_IS_UPDATE, for the new version
  *		of an UPDATE, whose table_tuple_update() returned version_tag and
  *		whose modified indexed attributes are modified_idx_attrs.  The new
- *		entries carry version_tag.
+ *		entries of every index that can store tags (index_can_version())
+ *		carry version_tag; those of the others are untagged.
  *
  *		EIIT_ONLY_AFFECTED, for TU_Affected, says the table AM kept the
  *		row's locator (see TABLE_UPDATE_MAY_KEEP_LOCATOR): the old entry of
@@ -549,7 +550,7 @@ IndexNeedsEntry(Relation indexRelation, const Bitmapset *modified_idx_attrs)
 
 /*
  * Workhorse of ExecInsertIndexTuples() and ExecUpdateIndexTuples().  The new
- * entries carry version_tag.  With EIIT_ONLY_AFFECTED, of the
+ * entries of an index that can store tags carry version_tag.  With EIIT_ONLY_AFFECTED, of the
  * non-summarizing indexes only those that IndexNeedsEntry() get one.
  */
 static List *
@@ -641,7 +642,9 @@ InsertIndexTuples(ResultRelInfo *resultRelInfo,
 								  slot, estate, values, isnull))
 			continue;
 
-		indexInfo->ii_VersionTag = version_tag;
+		/* Only an index that stores tags gets one; see amlocator.h. */
+		indexInfo->ii_VersionTag = index_can_version(indexRelation) ?
+			version_tag : InvalidIndexVersionTag;
 
 		/* Check whether to apply noDupErr to this index */
 		applyNoDupErr = (flags & EIIT_NO_DUPE_ERROR) &&
