@@ -30,9 +30,13 @@ AC_DEFUN([PGAC_LLVM_SUPPORT],
   fi
   AC_MSG_NOTICE([using llvm $pgac_llvm_version])
 
-  # need clang to create some bitcode files
+  # need clang to create some bitcode files.  Prefer the one belonging to the
+  # LLVM installation found above, like meson does, as LLVM can't read
+  # bitcode produced by a newer clang, and an older one isn't guaranteed to
+  # work either.
   AC_ARG_VAR(CLANG, [path to clang compiler to generate bitcode])
-  PGAC_PATH_PROGS(CLANG, clang)
+  LLVM_BINPATH=`$LLVM_CONFIG --bindir`
+  PGAC_PATH_PROGS(CLANG, clang, [], [$LLVM_BINPATH$PATH_SEPARATOR$PATH])
   if test -z "$CLANG"; then
     AC_MSG_ERROR([clang not found, but required when compiling --with-llvm, specify with CLANG=])
   fi
@@ -90,8 +94,6 @@ AC_DEFUN([PGAC_LLVM_SUPPORT],
       -l*) LLVM_LIBS="$LLVM_LIBS $pgac_option";;
     esac
   done
-
-  LLVM_BINPATH=`$LLVM_CONFIG --bindir`
 
 dnl LLVM_CONFIG, CLANG are already output via AC_ARG_VAR
   AC_SUBST(LLVM_LIBS)
