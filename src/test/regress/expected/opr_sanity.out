@@ -1978,7 +1978,6 @@ WHERE NOT ((a1.amoppurpose = 's' AND a1.amopsortfamily = 0) OR
 ------------+--------------
 (0 rows)
 
--- amopmethod must match owning opfamily's opfmethod
 -- amopmethod must match owning opfamily's opfmethod, except that a
 -- btree-compatible access method may add its own ORDER BY (KNN) operators to
 -- a btree operator family it shares (the ambtreeopfamilies capability): such
