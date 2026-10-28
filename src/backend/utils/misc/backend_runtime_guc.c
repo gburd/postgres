@@ -491,6 +491,12 @@ PgCurrentThreadedDfmgrMutexDepthRef(void)
 	return &PgCurrentCarrierState()->threaded_dfmgr_mutex_depth;
 }
 
+char **
+PgCurrentOutputPluginLibrariesStringRef(void)
+{
+	return &PgCurrentSessionReplicationGUCState()->output_plugin_libraries_string_value;
+}
+
 int *
 PgCurrentWalSenderTimeoutRef(void)
 {
@@ -978,6 +984,12 @@ bool *
 PgCurrentEnableIncrementalSortRef(void)
 {
 	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentSessionPlannerMethodState)->enable_incremental_sort_value;
+}
+
+bool *
+PgCurrentEnableGroupaggRef(void)
+{
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentSessionPlannerMethodState)->enable_groupagg_value;
 }
 
 bool *

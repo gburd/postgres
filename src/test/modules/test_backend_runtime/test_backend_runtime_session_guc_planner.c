@@ -12,6 +12,8 @@
  */
 #include "test_backend_runtime.h"
 
+#include "utils/guc_tables.h"
+
 typedef struct TestBoolGUCSetting
 {
 	const char *name;
@@ -898,10 +900,15 @@ test_session_planner_method_state_is_session_local(PG_FUNCTION_ARGS)
 	char	   *saved_bool_values[lengthof(bool_settings)];
 	char	   *saved_int_values[lengthof(int_settings)];
 	char	   *saved_real_values[lengthof(real_settings)];
+	char	   *saved_enable_groupagg;
+	bool	   *groupagg_ref1;
+	int			guc_index;
 	bool		ok = true;
 	int			i;
 
 	saved_session = CurrentPgSession;
+	saved_enable_groupagg =
+		pstrdup(GetConfigOption("enable_groupagg", false, false));
 	MemSet(&fake_session1, 0, sizeof(fake_session1));
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
 	test_copy_current_user_identity(&fake_session1);
@@ -920,6 +927,15 @@ test_session_planner_method_state_is_session_local(PG_FUNCTION_ARGS)
 	PG_TRY();
 	{
 		PgSetCurrentSession(&fake_session1);
+		guc_index = find_option("enable_groupagg", false, false, ERROR) -
+			*PgCurrentGUCVariablesRef();
+		groupagg_ref1 = &enable_groupagg;
+		ok = ok && (*PgCurrentGUCVariableStatesRef())[guc_index].
+			variable.boolvar == &enable_groupagg;
+		ok = ok && enable_groupagg;
+		SetConfigOption("enable_groupagg", "off",
+						PGC_USERSET, PGC_S_SESSION);
+		ok = ok && !enable_groupagg;
 		for (i = 0; i < lengthof(bool_settings); i++)
 		{
 			ok = ok && *bool_settings[i].ref() ==
@@ -954,6 +970,13 @@ test_session_planner_method_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && Geqo_planner_extension_id == 17;
 
 		PgSetCurrentSession(&fake_session2);
+		ok = ok && &enable_groupagg != groupagg_ref1;
+		ok = ok && (*PgCurrentGUCVariableStatesRef())[guc_index].
+			variable.boolvar == &enable_groupagg;
+		ok = ok && enable_groupagg;
+		SetConfigOption("enable_groupagg", "on",
+						PGC_USERSET, PGC_S_SESSION);
+		ok = ok && enable_groupagg;
 		for (i = 0; i < lengthof(bool_settings); i++)
 		{
 			ok = ok && *bool_settings[i].ref() ==
@@ -988,6 +1011,8 @@ test_session_planner_method_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && Geqo_planner_extension_id == 23;
 
 		PgSetCurrentSession(&fake_session1);
+		ok = ok && &enable_groupagg == groupagg_ref1;
+		ok = ok && !enable_groupagg;
 		for (i = 0; i < lengthof(bool_settings); i++)
 			ok = ok && *bool_settings[i].ref() ==
 				bool_settings[i].session1_expected;
@@ -1000,6 +1025,8 @@ test_session_planner_method_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && Geqo_planner_extension_id == 17;
 
 		PgSetCurrentSession(saved_session);
+		SetConfigOption("enable_groupagg", saved_enable_groupagg,
+						PGC_USERSET, PGC_S_SESSION);
 		for (i = 0; i < lengthof(bool_settings); i++)
 			SetConfigOption(bool_settings[i].name, saved_bool_values[i],
 							PGC_USERSET, PGC_S_SESSION);
@@ -1013,6 +1040,8 @@ test_session_planner_method_state_is_session_local(PG_FUNCTION_ARGS)
 	PG_CATCH();
 	{
 		PgSetCurrentSession(saved_session);
+		SetConfigOption("enable_groupagg", saved_enable_groupagg,
+						PGC_USERSET, PGC_S_SESSION);
 		for (i = 0; i < lengthof(bool_settings); i++)
 			SetConfigOption(bool_settings[i].name, saved_bool_values[i],
 							PGC_USERSET, PGC_S_SESSION);
@@ -1025,6 +1054,9 @@ test_session_planner_method_state_is_session_local(PG_FUNCTION_ARGS)
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
+
+	MemoryContextDelete(fake_session1.guc.memory_context);
+	MemoryContextDelete(fake_session2.guc.memory_context);
 
 	if (!ok)
 		elog(ERROR, "session planner method GUC state was not session-local");

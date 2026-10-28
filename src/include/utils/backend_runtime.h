@@ -1581,6 +1581,7 @@ typedef struct PgSessionLoggingState
 	char	   *event_source_value;
 	bool		log_duration_value;
 	int			log_error_verbosity_value;
+	int			log_statement_max_length_value;
 	int			log_parameter_max_length_value;
 	int			log_parameter_max_length_on_error_value;
 	int			log_min_error_statement_value;
@@ -1696,6 +1697,7 @@ typedef struct PgSessionReplicationGUCState
 	int			wal_receiver_timeout_ms;
 	int			logical_decoding_work_mem_kb;
 	int			debug_logical_replication_streaming_value;
+	char	   *output_plugin_libraries_string_value;
 } PgSessionReplicationGUCState;
 
 typedef struct PgSessionLogicalReplicationState
@@ -1826,6 +1828,7 @@ typedef struct PgSessionPlannerMethodState
 	bool		enable_tidscan_value;
 	bool		enable_sort_value;
 	bool		enable_incremental_sort_value;
+	bool		enable_groupagg_value;
 	bool		enable_hashagg_value;
 	bool		enable_nestloop_value;
 	bool		enable_material_value;
@@ -2665,6 +2668,7 @@ extern bool *PgCurrentLogBtreeBuildStatsRef(void);
 extern char **PgCurrentEventSourceRef(void);
 extern bool *PgCurrentLogDurationRef(void);
 extern int *PgCurrentLogErrorVerbosityRef(void);
+extern int *PgCurrentLogStatementMaxLengthRef(void);
 extern int *PgCurrentLogParameterMaxLengthRef(void);
 extern int *PgCurrentLogParameterMaxLengthOnErrorRef(void);
 extern int *PgCurrentLogMinErrorStatementRef(void);
@@ -2792,6 +2796,7 @@ extern bool *PgCurrentCreateRoleSelfGrantOptionsSetRef(void);
 extern int *PgCurrentSessionReplicationRoleRef(void);
 extern bool *PgCurrentEventTriggersRef(void);
 extern bool *PgCurrentTraceNotifyRef(void);
+extern char **PgCurrentOutputPluginLibrariesStringRef(void);
 extern int *PgCurrentWalSenderTimeoutRef(void);
 extern int *PgCurrentWalSenderShutdownTimeoutRef(void);
 extern bool *PgCurrentLogReplicationCommandsRef(void);

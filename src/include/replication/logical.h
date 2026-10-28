@@ -155,7 +155,10 @@ extern XLogRecPtr LogicalSlotAdvanceAndCheckSnapState(XLogRecPtr moveto,
 													  bool *found_consistent_snapshot);
 
 /* GUCs */
-extern PGDLLIMPORT char *output_plugin_libraries_string;
+#ifndef PgCurrentOutputPluginLibrariesStringRef
+extern char **PgCurrentOutputPluginLibrariesStringRef(void);
+#endif
+#define output_plugin_libraries_string (*PgCurrentOutputPluginLibrariesStringRef())
 
 
 /*

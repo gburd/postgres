@@ -12,6 +12,9 @@
  */
 #include "test_backend_runtime.h"
 
+#include "replication/logical.h"
+#include "utils/guc_tables.h"
+
 PG_FUNCTION_INFO_V1(test_session_pgstat_state_is_session_local);
 Datum
 test_session_pgstat_state_is_session_local(PG_FUNCTION_ARGS)
@@ -650,9 +653,14 @@ test_session_replication_guc_state_is_session_local(PG_FUNCTION_ARGS)
 	char	   *saved_wal_receiver_timeout;
 	char	   *saved_logical_decoding_work_mem;
 	char	   *saved_debug_logical_replication_streaming;
+	char	   *saved_output_plugin_libraries;
+	char	  **output_plugins_ref1;
+	int			guc_index;
 	bool		ok = true;
 
 	saved_session = CurrentPgSession;
+	saved_output_plugin_libraries =
+		pstrdup(GetConfigOption("output_plugin_libraries", false, false));
 	saved_wal_sender_timeout =
 		pstrdup(GetConfigOption("wal_sender_timeout", false, false));
 	saved_wal_sender_shutdown_timeout =
@@ -674,6 +682,16 @@ test_session_replication_guc_state_is_session_local(PG_FUNCTION_ARGS)
 	PG_TRY();
 	{
 		PgSetCurrentSession(&fake_session1);
+		guc_index = find_option("output_plugin_libraries", false, false, ERROR) -
+			*PgCurrentGUCVariablesRef();
+		output_plugins_ref1 = &output_plugin_libraries_string;
+		ok = ok && (*PgCurrentGUCVariableStatesRef())[guc_index].
+			variable.stringvar == &output_plugin_libraries_string;
+		ok = ok && strcmp(output_plugin_libraries_string,
+							  "pgoutput, test_decoding") == 0;
+		SetConfigOption("output_plugin_libraries", "pgoutput",
+						PGC_SUSET, PGC_S_SESSION);
+		ok = ok && strcmp(output_plugin_libraries_string, "pgoutput") == 0;
 		ok = ok && wal_sender_timeout == 60 * 1000;
 		ok = ok && wal_sender_shutdown_timeout == -1;
 		ok = ok && !log_replication_commands;
@@ -703,6 +721,14 @@ test_session_replication_guc_state_is_session_local(PG_FUNCTION_ARGS)
 			DEBUG_LOGICAL_REP_STREAMING_IMMEDIATE;
 
 		PgSetCurrentSession(&fake_session2);
+		ok = ok && &output_plugin_libraries_string != output_plugins_ref1;
+		ok = ok && (*PgCurrentGUCVariableStatesRef())[guc_index].
+			variable.stringvar == &output_plugin_libraries_string;
+		ok = ok && strcmp(output_plugin_libraries_string,
+							  "pgoutput, test_decoding") == 0;
+		SetConfigOption("output_plugin_libraries", "test_decoding",
+						PGC_SUSET, PGC_S_SESSION);
+		ok = ok && strcmp(output_plugin_libraries_string, "test_decoding") == 0;
 		ok = ok && wal_sender_timeout == 60 * 1000;
 		ok = ok && wal_sender_shutdown_timeout == -1;
 		ok = ok && !log_replication_commands;
@@ -731,6 +757,8 @@ test_session_replication_guc_state_is_session_local(PG_FUNCTION_ARGS)
 			DEBUG_LOGICAL_REP_STREAMING_BUFFERED;
 
 		PgSetCurrentSession(&fake_session1);
+		ok = ok && &output_plugin_libraries_string == output_plugins_ref1;
+		ok = ok && strcmp(output_plugin_libraries_string, "pgoutput") == 0;
 		ok = ok && wal_sender_timeout == 7000;
 		ok = ok && wal_sender_shutdown_timeout == 8000;
 		ok = ok && log_replication_commands;
@@ -748,7 +776,14 @@ test_session_replication_guc_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && debug_logical_replication_streaming ==
 			DEBUG_LOGICAL_REP_STREAMING_BUFFERED;
 
+		ResetGUCStateAtBackendExit();
+		ok = ok && output_plugin_libraries_string == NULL;
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && strcmp(output_plugin_libraries_string, "pgoutput") == 0;
+
 		PgSetCurrentSession(saved_session);
+		SetConfigOption("output_plugin_libraries", saved_output_plugin_libraries,
+						PGC_SUSET, PGC_S_SESSION);
 		SetConfigOption("debug_logical_replication_streaming",
 						saved_debug_logical_replication_streaming,
 						PGC_USERSET, PGC_S_SESSION);
@@ -769,6 +804,8 @@ test_session_replication_guc_state_is_session_local(PG_FUNCTION_ARGS)
 	PG_CATCH();
 	{
 		PgSetCurrentSession(saved_session);
+		SetConfigOption("output_plugin_libraries", saved_output_plugin_libraries,
+						PGC_SUSET, PGC_S_SESSION);
 		SetConfigOption("debug_logical_replication_streaming",
 						saved_debug_logical_replication_streaming,
 						PGC_USERSET, PGC_S_SESSION);
@@ -788,6 +825,9 @@ test_session_replication_guc_state_is_session_local(PG_FUNCTION_ARGS)
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
+
+	MemoryContextDelete(fake_session1.guc.memory_context);
+	MemoryContextDelete(fake_session2.guc.memory_context);
 
 	if (!ok)
 		elog(ERROR, "session replication GUC state was not session-local");

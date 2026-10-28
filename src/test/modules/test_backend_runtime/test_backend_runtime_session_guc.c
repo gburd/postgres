@@ -12,6 +12,8 @@
  */
 #include "test_backend_runtime.h"
 
+#include "utils/guc_tables.h"
+
 PG_FUNCTION_INFO_V1(test_runtime_server_guc_state_is_runtime_local);
 Datum
 test_runtime_server_guc_state_is_runtime_local(PG_FUNCTION_ARGS)
@@ -1383,6 +1385,8 @@ test_session_logging_state_is_session_local(PG_FUNCTION_ARGS)
 #endif
 	char	   *saved_log_duration;
 	char	   *saved_log_error_verbosity;
+	char	   *saved_log_statement_max_length;
+	int		   *statement_length_ref1;
 	char	   *saved_log_parameter_max_length;
 	char	   *saved_log_parameter_max_length_on_error;
 	char	   *saved_log_min_error_statement;
@@ -1394,6 +1398,7 @@ test_session_logging_state_is_session_local(PG_FUNCTION_ARGS)
 	char	   *saved_log_statement_sample_rate;
 	char	   *saved_log_transaction_sample_rate;
 	char	   *saved_backtrace_functions;
+	int			guc_index;
 	bool		ok = true;
 
 	saved_session = CurrentPgSession;
@@ -1423,6 +1428,8 @@ test_session_logging_state_is_session_local(PG_FUNCTION_ARGS)
 		pstrdup(GetConfigOption("log_duration", false, false));
 	saved_log_error_verbosity =
 		pstrdup(GetConfigOption("log_error_verbosity", false, false));
+	saved_log_statement_max_length =
+		pstrdup(GetConfigOption("log_statement_max_length", false, false));
 	saved_log_parameter_max_length =
 		pstrdup(GetConfigOption("log_parameter_max_length", false, false));
 	saved_log_parameter_max_length_on_error =
@@ -1454,6 +1461,15 @@ test_session_logging_state_is_session_local(PG_FUNCTION_ARGS)
 	PG_TRY();
 	{
 		PgSetCurrentSession(&fake_session1);
+		guc_index = find_option("log_statement_max_length", false, false, ERROR) -
+			*PgCurrentGUCVariablesRef();
+		statement_length_ref1 = &log_statement_max_length;
+		ok = ok && (*PgCurrentGUCVariableStatesRef())[guc_index].
+			variable.intvar == &log_statement_max_length;
+		ok = ok && log_statement_max_length == -1;
+		SetConfigOption("log_statement_max_length", "31",
+						PGC_SUSET, PGC_S_SESSION);
+		ok = ok && log_statement_max_length == 31;
 		ok = ok && !Debug_print_plan;
 		ok = ok && !Debug_print_parse;
 		ok = ok && !Debug_print_raw_parse;
@@ -1555,6 +1571,13 @@ test_session_logging_state_is_session_local(PG_FUNCTION_ARGS)
 			strcmp(backtrace_functions, "errstart") == 0;
 
 		PgSetCurrentSession(&fake_session2);
+		ok = ok && &log_statement_max_length != statement_length_ref1;
+		ok = ok && (*PgCurrentGUCVariableStatesRef())[guc_index].
+			variable.intvar == &log_statement_max_length;
+		ok = ok && log_statement_max_length == -1;
+		SetConfigOption("log_statement_max_length", "63",
+						PGC_SUSET, PGC_S_SESSION);
+		ok = ok && log_statement_max_length == 63;
 		ok = ok && !Debug_print_plan;
 		ok = ok && !Debug_print_parse;
 		ok = ok && !Debug_print_raw_parse;
@@ -1637,6 +1660,8 @@ test_session_logging_state_is_session_local(PG_FUNCTION_ARGS)
 			strcmp(backtrace_functions, "errmsg") == 0;
 
 		PgSetCurrentSession(&fake_session1);
+		ok = ok && &log_statement_max_length == statement_length_ref1;
+		ok = ok && log_statement_max_length == 31;
 		ok = ok && !Debug_pretty_print;
 		ok = ok && Debug_print_parse;
 		ok = ok && Debug_print_plan;
@@ -1659,6 +1684,8 @@ test_session_logging_state_is_session_local(PG_FUNCTION_ARGS)
 			strcmp(backtrace_functions, "errmsg") == 0;
 
 		PgSetCurrentSession(saved_session);
+		SetConfigOption("log_statement_max_length", saved_log_statement_max_length,
+						PGC_SUSET, PGC_S_SESSION);
 		SetConfigOption("log_statement_stats", "off",
 						PGC_SUSET, PGC_S_SESSION);
 		SetConfigOption("log_parser_stats", "off",
@@ -1726,6 +1753,8 @@ test_session_logging_state_is_session_local(PG_FUNCTION_ARGS)
 	PG_CATCH();
 	{
 		PgSetCurrentSession(saved_session);
+		SetConfigOption("log_statement_max_length", saved_log_statement_max_length,
+						PGC_SUSET, PGC_S_SESSION);
 		SetConfigOption("log_statement_stats", "off",
 						PGC_SUSET, PGC_S_SESSION);
 		SetConfigOption("log_parser_stats", "off",
@@ -1792,6 +1821,9 @@ test_session_logging_state_is_session_local(PG_FUNCTION_ARGS)
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
+
+	MemoryContextDelete(fake_session1.guc.memory_context);
+	MemoryContextDelete(fake_session2.guc.memory_context);
 
 	if (!ok)
 		elog(ERROR, "session logging GUC state was not session-local");

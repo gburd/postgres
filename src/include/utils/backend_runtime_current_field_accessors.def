@@ -368,6 +368,9 @@
 #define PgCurrentEnableGroupByReorderingRef() \
 	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentEnableGroupByReorderingRef, \
 									 enable_group_by_reordering_value)
+#define PgCurrentEnableGroupaggRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentEnableGroupaggRef, \
+									 enable_groupagg_value)
 #define PgCurrentEnableHashaggRef() \
 	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentEnableHashaggRef, \
 									 enable_hashagg_value)
@@ -779,6 +782,9 @@
 #define PgCurrentLogPlannerStatsRef() \
 	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLoggingRuntimeState, PgCurrentLogPlannerStatsRef, \
 									 log_planner_stats_value)
+#define PgCurrentLogStatementMaxLengthRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLoggingRuntimeState, PgCurrentLogStatementMaxLengthRef, \
+									 log_statement_max_length_value)
 #define PgCurrentLogStatementSampleRateRef() \
 	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLoggingRuntimeState, PgCurrentLogStatementSampleRateRef, \
 									 log_statement_sample_rate_value)

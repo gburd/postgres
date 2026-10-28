@@ -106,6 +106,7 @@ extern int * PgCurrentNumTempBuffersRef(void);
 extern int * PgCurrentNumTempTableSpacesRef(void);
 extern HTAB ** PgCurrentOprProofCacheHashRef(void);
 extern bool * PgCurrentOptimizeBoundedSortRef(void);
+extern char ** PgCurrentOutputPluginLibrariesStringRef(void);
 extern void ** PgCurrentPLTclCurrentCallStateRef(void);
 extern void ** PgCurrentPLTclHoldInterpRef(void);
 extern void ** PgCurrentPLTclInterpHashRef(void);

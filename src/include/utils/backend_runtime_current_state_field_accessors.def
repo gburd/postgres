@@ -276,6 +276,8 @@
 	(&PgCurrentSessionCommandGUCState()->event_triggers_value)
 #define PgCurrentTraceNotifyRef() \
 	(&PgCurrentSessionCommandGUCState()->trace_notify_value)
+#define PgCurrentOutputPluginLibrariesStringRef() \
+	(&PgCurrentSessionReplicationGUCState()->output_plugin_libraries_string_value)
 #define PgCurrentWalSenderTimeoutRef() \
 	(&PgCurrentSessionReplicationGUCState()->wal_sender_timeout_ms)
 #define PgCurrentWalSenderShutdownTimeoutRef() \

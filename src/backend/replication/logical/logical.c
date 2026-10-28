@@ -57,9 +57,6 @@ typedef struct LogicalErrorCallbackState
 	XLogRecPtr	report_location;
 } LogicalErrorCallbackState;
 
-/* GUC variables */
-char	   *output_plugin_libraries_string;
-
 /* wrappers around output plugin callbacks */
 static void output_plugin_error_callback(void *arg);
 static void startup_cb_wrapper(LogicalDecodingContext *ctx, OutputPluginOptions *opt,

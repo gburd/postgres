@@ -74,6 +74,9 @@ extern bool *PgCurrentEnableSortRef(void);
 #ifndef PgCurrentEnableIncrementalSortRef
 extern bool *PgCurrentEnableIncrementalSortRef(void);
 #endif
+#ifndef PgCurrentEnableGroupaggRef
+extern bool *PgCurrentEnableGroupaggRef(void);
+#endif
 #ifndef PgCurrentEnableHashaggRef
 extern bool *PgCurrentEnableHashaggRef(void);
 #endif
@@ -156,6 +159,7 @@ extern int *PgCurrentConstraintExclusionRef(void);
 	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentEnableIncrementalSortHotRef, \
 									   CurrentPgSession, \
 									   PgCurrentEnableIncrementalSortRef))
+#define enable_groupagg (*PgCurrentEnableGroupaggRef())
 #define enable_hashagg \
 	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentEnableHashaggHotRef, \
 									   CurrentPgSession, \
@@ -216,15 +220,6 @@ extern int *PgCurrentConstraintExclusionRef(void);
 	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentConstraintExclusionHotRef, \
 									   CurrentPgSession, \
 									   PgCurrentConstraintExclusionRef))
-
-/*
- * enable_groupagg is a new upstream GUC (merged from heikki/master, commit
- * e01b23b84e4).  It is not yet relocated to a per-session PgCurrent...Ref
- * accessor like the enable_* GUCs above; left as a plain global for now.
- * ponytail: threaded-relocate it with the rest of the planner enable_* GUCs in
- * a Phase 16 GUC pass if it proves to matter under concurrent sessions.
- */
-extern PGDLLIMPORT bool enable_groupagg;
 
 extern double index_pages_fetched(double tuples_fetched, BlockNumber pages,
 								  double index_pages, PlannerInfo *root);

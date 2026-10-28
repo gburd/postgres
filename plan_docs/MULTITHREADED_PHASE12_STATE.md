@@ -1,3 +1,17 @@
+## Three Session GUC Owners (2026-10-28)
+
+Required lifecycle preflight: enable_groupagg, log_statement_max_length and
+output_plugin_libraries_string move to PgSession.planner_method, logging and
+replication_guc. Reuse their existing PG_SESSION_BUCKET rows and
+PG_RUNTIME_DEFINE_ADOPT_EARLY_INITIALIZED helpers for whole-bucket adoption and
+fallback reset; no new lifecycle primitive. Initialized bucket selectors keep
+early access valid. Scalar defaults are true/-1; the string starts NULL and GUC
+initialization supplies "pgoutput, test_decoding". ResetGUCStateAtBackendExit
+owns string cleanup; no bucket free. Accessors stay in backend_runtime_guc.c
+and backend_runtime_error.c. The parent confirmed two-session isolation reds
+on b597f695 (one/two fiber loops), with clean fork controls, in authoritative
+run guc-fail-first3-20261028. Fixed-source tests and gates await EC2 validation.
+
 ## Runtime Current Field Macro Hygiene
 
 Lifecycle/preflight note:

@@ -312,6 +312,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSession early_session_fallback = {
 		.event_source_value = NULL,
 		.log_duration_value = false,
 		.log_error_verbosity_value = PGERROR_DEFAULT,
+		.log_statement_max_length_value = -1,
 		.log_parameter_max_length_value = -1,
 		.log_parameter_max_length_on_error_value = 0,
 		.log_min_error_statement_value = ERROR,
@@ -489,6 +490,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSession early_session_fallback = {
 		.enable_tidscan_value = true,
 		.enable_sort_value = true,
 		.enable_incremental_sort_value = true,
+		.enable_groupagg_value = true,
 		.enable_hashagg_value = true,
 		.enable_nestloop_value = true,
 		.enable_material_value = true,
@@ -961,6 +963,7 @@ PgSessionInitializeLoggingState(PgSessionLoggingState *logging)
 	logging->event_source_value = NULL;
 	logging->log_duration_value = false;
 	logging->log_error_verbosity_value = PGERROR_DEFAULT;
+	logging->log_statement_max_length_value = -1;
 	logging->log_parameter_max_length_value = -1;
 	logging->log_parameter_max_length_on_error_value = 0;
 	logging->log_min_error_statement_value = ERROR;
@@ -1157,6 +1160,7 @@ PgSessionInitializeReplicationGUCState(PgSessionReplicationGUCState *replication
 	Assert(replication_guc != NULL);
 
 	replication_guc->initialized = true;
+	replication_guc->output_plugin_libraries_string_value = NULL;
 	replication_guc->wal_sender_timeout_ms = 60 * 1000;
 	replication_guc->wal_sender_shutdown_timeout_ms = -1;
 	replication_guc->log_replication_commands_value = false;
@@ -1421,6 +1425,7 @@ PgSessionInitializePlannerMethodState(PgSessionPlannerMethodState *planner_metho
 	planner_method->enable_tidscan_value = true;
 	planner_method->enable_sort_value = true;
 	planner_method->enable_incremental_sort_value = true;
+	planner_method->enable_groupagg_value = true;
 	planner_method->enable_hashagg_value = true;
 	planner_method->enable_nestloop_value = true;
 	planner_method->enable_material_value = true;

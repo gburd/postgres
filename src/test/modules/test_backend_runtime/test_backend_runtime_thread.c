@@ -20,7 +20,10 @@ test_pg_thread_routine(void *arg)
 {
 	pg_atomic_uint32 *ran = (pg_atomic_uint32 *) arg;
 
-	pg_atomic_write_u32(ran, 1);
+	/* Check pristine fallback defaults before installing any session. */
+	pg_atomic_write_u32(ran,
+						CurrentPgSession == NULL &&
+						enable_groupagg && log_statement_max_length == -1);
 }
 
 static void
@@ -57,7 +60,7 @@ test_backend_thread_create_join(PG_FUNCTION_ARGS)
 	}
 
 	if (pg_atomic_read_u32(&ran) != 1)
-		elog(ERROR, "thread routine did not run");
+		elog(ERROR, "thread routine did not observe session GUC fallback defaults");
 
 	PG_RETURN_BOOL(true);
 }

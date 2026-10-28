@@ -188,6 +188,12 @@ PgCurrentLogErrorVerbosityRef(void)
 }
 
 int *
+PgCurrentLogStatementMaxLengthRef(void)
+{
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionLoggingRuntimeState, PgCurrentSessionLoggingState)->log_statement_max_length_value;
+}
+
+int *
 PgCurrentLogParameterMaxLengthRef(void)
 {
 	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionLoggingRuntimeState, PgCurrentSessionLoggingState)->log_parameter_max_length_value;

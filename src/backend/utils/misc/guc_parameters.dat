@@ -960,6 +960,7 @@
   short_desc => 'Enables the planner\'s use of sort-based grouping and aggregation plans.',
   flags => 'GUC_EXPLAIN',
   variable => 'enable_groupagg',
+  threaded_accessor => 'PgCurrentEnableGroupaggRef',
   boot_val => 'true',
 },
 
@@ -2022,6 +2023,7 @@
   long_desc => '-1 means log statements in full. 0 means log only an ellipsis.',
   flags => 'GUC_UNIT_BYTE',
   variable => 'log_statement_max_length',
+  threaded_accessor => 'PgCurrentLogStatementMaxLengthRef',
   boot_val => '-1',
   min => '-1',
   max => 'INT_MAX / 2',
@@ -2496,6 +2498,7 @@
   # Note that src/bin/pg_upgrade/check.c assumes GUC_LIST_QUOTE here.
   flags => 'GUC_LIST_INPUT | GUC_LIST_QUOTE | GUC_SUPERUSER_ONLY',
   variable => 'output_plugin_libraries_string',
+  threaded_accessor => 'PgCurrentOutputPluginLibrariesStringRef',
   boot_val => '"pgoutput, test_decoding"',
 },
 
