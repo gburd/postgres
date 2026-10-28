@@ -5044,11 +5044,11 @@ StartBackgroundWorker(RegisteredBgWorker *rw)
 
 	/*
 	 * Process-backed workers are visible to dynamic waiters as soon as fork
-	 * succeeds.  Thread-backed workers publish that visibility from the
-	 * worker's explicit startup-complete boundary, after the startup path can
-	 * safely accept termination.
+	 * succeeds.  Logical workers, including fibers, publish that visibility
+	 * from the worker's explicit startup-complete boundary.  The private PID
+	 * and logical signal target remain available for termination before then.
 	 */
-	if (!PostmasterChildIsThread(bn))
+	if (!PostmasterChildHasLogicalBackendPublication(bn))
 		ReportBackgroundWorkerPID(rw);
 	return true;
 }
