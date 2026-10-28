@@ -365,6 +365,7 @@ create_toast_table(Relation rel, Oid toastOid, Oid toastIndexOid,
 	indexInfo->ii_BrokenHotChain = false;
 	indexInfo->ii_ParallelWorkers = 0;
 	indexInfo->ii_Am = BTREE_AM_OID;
+	indexInfo->ii_ImplAm = InvalidOid;
 	indexInfo->ii_AmCache = NULL;
 	indexInfo->ii_Context = CurrentMemoryContext;
 

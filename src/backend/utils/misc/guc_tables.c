@@ -29,6 +29,7 @@
 #include <syslog.h>
 #endif
 
+#include "access/amapi.h"
 #include "access/commit_ts.h"
 #include "access/gin.h"
 #include "access/slru.h"

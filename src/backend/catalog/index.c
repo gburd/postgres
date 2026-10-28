@@ -298,8 +298,14 @@ ConstructTupleDescriptor(Relation heapRelation,
 	int			natts;			/* #atts in heap rel --- for error checks */
 	int			i;
 
-	/* We need access to the index AM's API struct */
+	/*
+	 * We need access to the index AM's API struct.  The tuple descriptor is
+	 * the logical AM's business; an implementation stores the same keys.
+	 */
 	amroutine = GetIndexAmRoutineByAmId(accessMethodId, false);
+	Assert(!OidIsValid(indexInfo->ii_ImplAm) ||
+		   GetIndexAmRoutineByAmId(indexInfo->ii_ImplAm, false)->amkeytype ==
+		   amroutine->amkeytype);
 
 	/* ... and to the table's tuple descriptor */
 	heapTupDesc = RelationGetDescr(heapRelation);
@@ -652,6 +658,7 @@ UpdateIndexRelation(Oid indexoid,
 	values[Anum_pg_index_indisready - 1] = BoolGetDatum(isready);
 	values[Anum_pg_index_indislive - 1] = BoolGetDatum(true);
 	values[Anum_pg_index_indisreplident - 1] = BoolGetDatum(false);
+	values[Anum_pg_index_indimplam - 1] = ObjectIdGetDatum(indexInfo->ii_ImplAm);
 	values[Anum_pg_index_indkey - 1] = PointerGetDatum(indkey);
 	values[Anum_pg_index_indcollation - 1] = PointerGetDatum(indcollation);
 	values[Anum_pg_index_indclass - 1] = PointerGetDatum(indclass);
@@ -895,7 +902,9 @@ index_create(Relation heapRelation,
 	 * checks its own locator.
 	 */
 	if (heapRelation->rd_tableam != NULL)
-		index_check_locator(heapRelation, accessMethodId);
+		index_check_locator(heapRelation,
+							OidIsValid(indexInfo->ii_ImplAm) ?
+							indexInfo->ii_ImplAm : accessMethodId);
 
 	/*
 	 * Concurrent index build on a system catalog is unsafe because we tend to
@@ -1242,6 +1251,14 @@ index_create(Relation heapRelation,
 			add_exact_object_address(&referenced, addrs);
 		}
 
+		/* Store dependency on the implementing access method, if any */
+		if (OidIsValid(indexInfo->ii_ImplAm))
+		{
+			ObjectAddressSet(referenced, AccessMethodRelationId,
+							 indexInfo->ii_ImplAm);
+			add_exact_object_address(&referenced, addrs);
+		}
+
 		record_object_address_dependencies(&myself, addrs, DEPENDENCY_NORMAL);
 		free_object_addresses(addrs);
 
@@ -1460,6 +1477,9 @@ index_create_copy(Relation heapRelation, uint16 flags,
 							concurrently,	/* concurrent */
 							indexRelation->rd_indam->amsummarizing,
 							oldInfo->ii_WithoutOverlaps);
+
+	/* The copy is implemented by the same code as the original. */
+	newInfo->ii_ImplAm = oldInfo->ii_ImplAm;
 
 	/* fetch exclusion constraint info if any */
 	if (indexRelation->rd_index->indisexclusion)
@@ -2528,6 +2548,7 @@ BuildIndexInfo(Relation index)
 					   false,
 					   index->rd_indam->amsummarizing,
 					   indexStruct->indisexclusion && indexStruct->indisunique);
+	ii->ii_ImplAm = indexStruct->indimplam;
 
 	/* fill in attribute numbers */
 	for (i = 0; i < numAtts; i++)
@@ -2588,6 +2609,7 @@ BuildDummyIndexInfo(Relation index)
 					   false,
 					   index->rd_indam->amsummarizing,
 					   indexStruct->indisexclusion && indexStruct->indisunique);
+	ii->ii_ImplAm = indexStruct->indimplam;
 
 	/* fill in attribute numbers */
 	for (i = 0; i < numAtts; i++)
@@ -2622,7 +2644,11 @@ CompareIndexInfo(const IndexInfo *info1, const IndexInfo *info2,
 	if (info1->ii_NullsNotDistinct != info2->ii_NullsNotDistinct)
 		return false;
 
-	/* indexes are only equivalent if they have the same access method */
+	/*
+	 * Indexes are only equivalent if they have the same access method.  The
+	 * implementation need not match: each partition's index is implemented as
+	 * its own table chooses.
+	 */
 	if (info1->ii_Am != info2->ii_Am)
 		return false;
 
@@ -3196,7 +3222,7 @@ index_build(Relation heapRelation,
 	Assert(indexRelation->rd_indam->ambuild);
 	Assert(indexRelation->rd_indam->ambuildempty);
 
-	index_check_locator(heapRelation, indexRelation->rd_rel->relam);
+	index_check_locator(heapRelation, IndexRelationGetImplAm(indexRelation));
 
 	/*
 	 * Determine worker process details for parallel CREATE INDEX.  Currently,
@@ -3876,7 +3902,7 @@ reindex_index(const ReindexStmt *stmt, Oid indexId,
 
 	if (progress)
 		pgstat_progress_update_param(PROGRESS_CREATEIDX_ACCESS_METHOD_OID,
-									 iRel->rd_rel->relam);
+									 IndexRelationGetImplAm(iRel));
 
 	/*
 	 * If a statement is available, telling that this comes from a REINDEX
