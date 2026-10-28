@@ -294,6 +294,8 @@ Boot_DeclareIndexStmt:
 					stmt->oldNumber = InvalidRelFileNumber;
 					stmt->oldCreateSubid = InvalidSubTransactionId;
 					stmt->oldFirstRelfilelocatorSubid = InvalidSubTransactionId;
+					stmt->oldImplRels = NIL;
+					stmt->oldImplAms = NIL;
 					stmt->unique = false;
 					stmt->primary = false;
 					stmt->isconstraint = false;
@@ -348,6 +350,8 @@ Boot_DeclareUniqueIndexStmt:
 					stmt->oldNumber = InvalidRelFileNumber;
 					stmt->oldCreateSubid = InvalidSubTransactionId;
 					stmt->oldFirstRelfilelocatorSubid = InvalidSubTransactionId;
+					stmt->oldImplRels = NIL;
+					stmt->oldImplAms = NIL;
 					stmt->unique = true;
 					stmt->primary = false;
 					stmt->isconstraint = false;

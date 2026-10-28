@@ -805,6 +805,8 @@
 #search_path = '"$user", public'        # schema names
 #row_security = on
 #default_table_access_method = 'heap'
+#default_btree_implementation = ''     # index AM implementing new btree
+                                        # indexes; '' uses btree itself
 #default_tablespace = ''                # a tablespace name, '' uses the default
 #default_toast_compression = pglz       # pglz or lz4
 #temp_tablespaces = ''                  # a list of tablespace names, '' uses
