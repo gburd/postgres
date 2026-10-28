@@ -563,20 +563,29 @@ typedef struct ApplySubXactData
 	SubXactInfo *subxacts;
 } ApplySubXactData;
 
-typedef struct ApplyErrorCallbackArg
+/*
+ * Context describing the remote transaction whose changes are currently being
+ * applied, and the change within it.  Upstream calls this ApplyRemoteCtx and
+ * keeps it in a file-static in worker.c; it is per-apply-worker state, so it
+ * lives in the worker's session state here.  Field-for-field identical to
+ * upstream's struct, with the type deps kept loose (int / struct tag) so this
+ * header does not have to pull in the logical-replication headers.
+ */
+typedef struct ApplyRemoteCtx
 {
-	int			command;
+	int			command;		/* LogicalRepMsgType; 0 if invalid */
 	struct LogicalRepRelMapEntry *rel;
-	int			remote_attnum;
+	int			remote_attnum;	/* -1 if invalid */
 	TransactionId remote_xid;
 	XLogRecPtr	finish_lsn;
+	TimestampTz commit_ts;		/* remote commit ts; 0 if unknown */
 	char	   *origin_name;
-} ApplyErrorCallbackArg;
+} ApplyRemoteCtx;
 
 typedef struct PgBackendLogicalReplicationState
 {
 	dlist_head	lsn_mapping;
-	ApplyErrorCallbackArg apply_error_callback_arg;
+	ApplyRemoteCtx remote_ctx;
 	ApplySubXactData subxact_data;
 	MemoryContext apply_context;
 	ParallelApplyWorkerShared *my_parallel_shared;
@@ -587,7 +596,6 @@ typedef struct PgBackendLogicalReplicationState
 	LogicalRepWorker *my_logical_rep_worker;
 	List	   *on_commit_wakeup_workers_subids;
 	bool		in_remote_transaction;
-	XLogRecPtr	remote_final_lsn;
 	bool		in_streamed_transaction;
 	TransactionId stream_xid;
 	uint32		parallel_stream_nchanges;
@@ -637,7 +645,6 @@ typedef struct PgBackendXLogState
 	XLogSegNo	open_log_seg_no;
 	TimeLineID	open_log_tli;
 	XLogRecPtr	local_min_recovery_point;
-	TimeLineID	local_min_recovery_point_tli;
 	bool		update_min_recovery_point;
 	ChecksumStateType local_data_checksum_state;
 	int			my_lock_no;
@@ -1420,6 +1427,7 @@ typedef struct PgSessionBinaryUpgradeState
 	RelFileNumber binary_upgrade_next_index_pg_class_relfilenumber_value;
 	Oid			binary_upgrade_next_toast_pg_class_oid_value;
 	RelFileNumber binary_upgrade_next_toast_pg_class_relfilenumber_value;
+	Oid			binary_upgrade_next_toast_chunk_id_typoid_value;
 	Oid			binary_upgrade_next_pg_enum_oid_value;
 	Oid			binary_upgrade_next_pg_authid_oid_value;
 	bool		binary_upgrade_record_init_privs_value;
@@ -2880,6 +2888,7 @@ extern RelFileNumber *PgCurrentBinaryUpgradeNextHeapPgClassRelfilenumberRef(void
 extern Oid *PgCurrentBinaryUpgradeNextIndexPgClassOidRef(void);
 extern RelFileNumber *PgCurrentBinaryUpgradeNextIndexPgClassRelfilenumberRef(void);
 extern Oid *PgCurrentBinaryUpgradeNextToastPgClassOidRef(void);
+extern Oid *PgCurrentBinaryUpgradeNextToastChunkIdTypoidRef(void);
 extern RelFileNumber *PgCurrentBinaryUpgradeNextToastPgClassRelfilenumberRef(void);
 extern Oid *PgCurrentBinaryUpgradeNextPgEnumOidRef(void);
 extern Oid *PgCurrentBinaryUpgradeNextPgAuthidOidRef(void);

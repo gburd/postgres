@@ -370,7 +370,7 @@ pgstat_attach_shmem(void)
 void
 pgstat_ensure_shmem_attached(void)
 {
-	if (pgStatLocal.dsa != NULL)
+	if (pgStatLocal.num_var_hashes > 0)
 		return;
 	if (!pgstat_is_initialized || pgstat_is_shutdown)
 		return;
@@ -421,7 +421,7 @@ pgstat_detach_shmem(void)
 void
 pgstat_detach_idle_memory(void)
 {
-	if (pgStatLocal.dsa == NULL)
+	if (pgStatLocal.num_var_hashes == 0)
 		return;
 
 	pgstat_detach_shmem();

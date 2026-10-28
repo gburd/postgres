@@ -76,11 +76,10 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackend early_backend_fallback = {
 		.walreceiver_primary_has_standby_xmin = true
 	},
 	.logical_replication = {
-		.apply_error_callback_arg.remote_attnum = -1,
-		.apply_error_callback_arg.remote_xid = InvalidTransactionId,
-		.apply_error_callback_arg.finish_lsn = InvalidXLogRecPtr,
+		.remote_ctx.remote_attnum = -1,
+		.remote_ctx.remote_xid = InvalidTransactionId,
+		.remote_ctx.finish_lsn = InvalidXLogRecPtr,
 		.subxact_data.subxact_last = InvalidTransactionId,
-		.remote_final_lsn = InvalidXLogRecPtr,
 		.stream_xid = InvalidTransactionId,
 		.skip_xact_finish_lsn = InvalidXLogRecPtr,
 		.last_flushpos = InvalidXLogRecPtr,
@@ -995,11 +994,10 @@ PgBackendInitializeLogicalReplicationState(PgBackendLogicalReplicationState *log
 
 	MemSet(logical_replication, 0, sizeof(*logical_replication));
 	dlist_init(&logical_replication->lsn_mapping);
-	logical_replication->apply_error_callback_arg.remote_attnum = -1;
-	logical_replication->apply_error_callback_arg.remote_xid = InvalidTransactionId;
-	logical_replication->apply_error_callback_arg.finish_lsn = InvalidXLogRecPtr;
+	logical_replication->remote_ctx.remote_attnum = -1;
+	logical_replication->remote_ctx.remote_xid = InvalidTransactionId;
+	logical_replication->remote_ctx.finish_lsn = InvalidXLogRecPtr;
 	logical_replication->subxact_data.subxact_last = InvalidTransactionId;
-	logical_replication->remote_final_lsn = InvalidXLogRecPtr;
 	logical_replication->stream_xid = InvalidTransactionId;
 	logical_replication->skip_xact_finish_lsn = InvalidXLogRecPtr;
 	logical_replication->last_flushpos = InvalidXLogRecPtr;
@@ -1011,9 +1009,9 @@ PgBackendAdoptEarlyLogicalReplicationState(PgBackend *backend)
 {
 	Assert(backend != NULL);
 	Assert(dlist_is_empty(&early_backend_logical_replication.lsn_mapping));
-	Assert(early_backend_logical_replication.apply_error_callback_arg.rel ==
+	Assert(early_backend_logical_replication.remote_ctx.rel ==
 		   NULL);
-	Assert(early_backend_logical_replication.apply_error_callback_arg.origin_name
+	Assert(early_backend_logical_replication.remote_ctx.origin_name
 		   == NULL);
 	Assert(early_backend_logical_replication.subxact_data.subxacts == NULL);
 	Assert(early_backend_logical_replication.apply_context == NULL);

@@ -171,8 +171,12 @@ PgBackendResetPgStatPendingClosedState(PgBackendPgStatPendingState *pgstat_pendi
 	Assert(dlist_is_empty(&pgstat_pending->pending));
 	if (pgstat_pending->local != NULL)
 	{
-		Assert(pgstat_pending->local->shared_hash == NULL);
-		Assert(pgstat_pending->local->dsa == NULL);
+		Assert(pgstat_pending->local->num_var_hashes == 0);
+		for (PgStat_Kind kind = PGSTAT_KIND_MIN; kind <= PGSTAT_KIND_MAX; kind++)
+		{
+			Assert(pgstat_pending->local->kind_hash[kind] == NULL);
+			Assert(pgstat_pending->local->kind_dsa[kind] == NULL);
+		}
 	}
 
 	/*
@@ -563,15 +567,15 @@ PgBackendResetLogicalReplicationClosedState(PgBackendLogicalReplicationState *lo
 	logical_replication->subxact_data.nsubxacts_max = 0;
 	logical_replication->subxact_data.subxact_last = InvalidTransactionId;
 
-	if (logical_replication->apply_error_callback_arg.origin_name != NULL)
+	if (logical_replication->remote_ctx.origin_name != NULL)
 	{
-		pfree(logical_replication->apply_error_callback_arg.origin_name);
-		logical_replication->apply_error_callback_arg.origin_name = NULL;
+		pfree(logical_replication->remote_ctx.origin_name);
+		logical_replication->remote_ctx.origin_name = NULL;
 	}
-	logical_replication->apply_error_callback_arg.rel = NULL;
-	logical_replication->apply_error_callback_arg.remote_attnum = -1;
-	logical_replication->apply_error_callback_arg.remote_xid = InvalidTransactionId;
-	logical_replication->apply_error_callback_arg.finish_lsn = InvalidXLogRecPtr;
+	logical_replication->remote_ctx.rel = NULL;
+	logical_replication->remote_ctx.remote_attnum = -1;
+	logical_replication->remote_ctx.remote_xid = InvalidTransactionId;
+	logical_replication->remote_ctx.finish_lsn = InvalidXLogRecPtr;
 
 	if (logical_replication->slotsync_observed_primary_conninfo != NULL)
 	{

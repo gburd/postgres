@@ -105,8 +105,10 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 		PendingBackendStats.pending_io.counts[IOOBJECT_RELATION][IOCONTEXT_NORMAL][IOOP_WRITE] = 20;
 		backend_has_iostats = true;
 		pgStatLocal.shmem = (PgStat_ShmemControl *) &fake_backend1;
-		pgStatLocal.dsa = (dsa_area *) &fake_backend1;
-		pgStatLocal.shared_hash = (dshash_table *) &fake_backend1;
+		pgStatLocal.kind_dsa[PGSTAT_KIND_RELATION] = (dsa_area *) &fake_backend1;
+		pgStatLocal.kind_hash[PGSTAT_KIND_RELATION] = (dshash_table *) &fake_backend1;
+		pgStatLocal.var_hashes[0] = (dshash_table *) &fake_backend1;
+		pgStatLocal.num_var_hashes = 1;
 		pgStatSnapshot.mode = PGSTAT_FETCH_CONSISTENCY_CACHE;
 		*PgCurrentPgStatPendingContextRef() = (MemoryContext) &fake_backend1;
 		prevBackendWalUsage.wal_records = 21;
@@ -142,8 +144,10 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 			PendingBackendStats.pending_io.counts[IOOBJECT_RELATION][IOCONTEXT_NORMAL][IOOP_WRITE] == 0;
 		ok = ok && !backend_has_iostats;
 		ok = ok && pgStatLocal.shmem == NULL;
-		ok = ok && pgStatLocal.dsa == NULL;
-		ok = ok && pgStatLocal.shared_hash == NULL;
+		ok = ok && pgStatLocal.kind_dsa[PGSTAT_KIND_RELATION] == NULL;
+		ok = ok && pgStatLocal.kind_hash[PGSTAT_KIND_RELATION] == NULL;
+		ok = ok && pgStatLocal.var_hashes[0] == NULL;
+		ok = ok && pgStatLocal.num_var_hashes == 0;
 		ok = ok && pgStatSnapshot.mode == PGSTAT_FETCH_CONSISTENCY_NONE;
 		ok = ok && *PgCurrentPgStatPendingContextRef() == NULL;
 		ok = ok && PgCurrentPgStatPendingListRef() == &fake_backend2.pgstat_pending.pending;
@@ -178,8 +182,10 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 		PendingBackendStats.pending_io.counts[IOOBJECT_RELATION][IOCONTEXT_NORMAL][IOOP_WRITE] = 30;
 		backend_has_iostats = true;
 		pgStatLocal.shmem = (PgStat_ShmemControl *) &fake_backend2;
-		pgStatLocal.dsa = (dsa_area *) &fake_backend2;
-		pgStatLocal.shared_hash = (dshash_table *) &fake_backend2;
+		pgStatLocal.kind_dsa[PGSTAT_KIND_RELATION] = (dsa_area *) &fake_backend2;
+		pgStatLocal.kind_hash[PGSTAT_KIND_RELATION] = (dshash_table *) &fake_backend2;
+		pgStatLocal.var_hashes[0] = (dshash_table *) &fake_backend2;
+		pgStatLocal.num_var_hashes = 2;
 		pgStatSnapshot.mode = PGSTAT_FETCH_CONSISTENCY_SNAPSHOT;
 		*PgCurrentPgStatPendingContextRef() = (MemoryContext) &fake_backend2;
 		prevBackendWalUsage.wal_records = 31;
@@ -215,8 +221,10 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 			PendingBackendStats.pending_io.counts[IOOBJECT_RELATION][IOCONTEXT_NORMAL][IOOP_WRITE] == 20;
 		ok = ok && backend_has_iostats;
 		ok = ok && pgStatLocal.shmem == (PgStat_ShmemControl *) &fake_backend1;
-		ok = ok && pgStatLocal.dsa == (dsa_area *) &fake_backend1;
-		ok = ok && pgStatLocal.shared_hash == (dshash_table *) &fake_backend1;
+		ok = ok && pgStatLocal.kind_dsa[PGSTAT_KIND_RELATION] == (dsa_area *) &fake_backend1;
+		ok = ok && pgStatLocal.kind_hash[PGSTAT_KIND_RELATION] == (dshash_table *) &fake_backend1;
+		ok = ok && pgStatLocal.var_hashes[0] == (dshash_table *) &fake_backend1;
+		ok = ok && pgStatLocal.num_var_hashes == 1;
 		ok = ok && pgStatSnapshot.mode == PGSTAT_FETCH_CONSISTENCY_CACHE;
 		ok = ok && *PgCurrentPgStatPendingContextRef() == (MemoryContext) &fake_backend1;
 		ok = ok && PgCurrentPgStatPendingListRef() == &fake_backend1.pgstat_pending.pending;
@@ -254,8 +262,10 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 			PendingBackendStats.pending_io.counts[IOOBJECT_RELATION][IOCONTEXT_NORMAL][IOOP_WRITE] == 30;
 		ok = ok && backend_has_iostats;
 		ok = ok && pgStatLocal.shmem == (PgStat_ShmemControl *) &fake_backend2;
-		ok = ok && pgStatLocal.dsa == (dsa_area *) &fake_backend2;
-		ok = ok && pgStatLocal.shared_hash == (dshash_table *) &fake_backend2;
+		ok = ok && pgStatLocal.kind_dsa[PGSTAT_KIND_RELATION] == (dsa_area *) &fake_backend2;
+		ok = ok && pgStatLocal.kind_hash[PGSTAT_KIND_RELATION] == (dshash_table *) &fake_backend2;
+		ok = ok && pgStatLocal.var_hashes[0] == (dshash_table *) &fake_backend2;
+		ok = ok && pgStatLocal.num_var_hashes == 2;
 		ok = ok && pgStatSnapshot.mode == PGSTAT_FETCH_CONSISTENCY_SNAPSHOT;
 		ok = ok && *PgCurrentPgStatPendingContextRef() == (MemoryContext) &fake_backend2;
 		ok = ok && PgCurrentPgStatPendingListRef() == &fake_backend2.pgstat_pending.pending;
@@ -838,13 +848,13 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 		AllocSetContextCreate(TopMemoryContext,
 							  "test apply context",
 							  ALLOCSET_SMALL_SIZES);
-	logical_replication->apply_error_callback_arg.rel =
+	logical_replication->remote_ctx.rel =
 		(struct LogicalRepRelMapEntry *) &fake_backend;
-	logical_replication->apply_error_callback_arg.remote_attnum = 10;
-	logical_replication->apply_error_callback_arg.remote_xid =
+	logical_replication->remote_ctx.remote_attnum = 10;
+	logical_replication->remote_ctx.remote_xid =
 		FirstNormalTransactionId;
-	logical_replication->apply_error_callback_arg.finish_lsn = 42;
-	logical_replication->apply_error_callback_arg.origin_name =
+	logical_replication->remote_ctx.finish_lsn = 42;
+	logical_replication->remote_ctx.origin_name =
 		pstrdup("origin");
 	logical_replication->my_parallel_shared =
 		(ParallelApplyWorkerShared *) &fake_backend;
@@ -1302,13 +1312,13 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && logical_replication->subxact_data.subxact_last ==
 		InvalidTransactionId;
 	ok = ok && logical_replication->apply_context == NULL;
-	ok = ok && logical_replication->apply_error_callback_arg.rel == NULL;
-	ok = ok && logical_replication->apply_error_callback_arg.remote_attnum == -1;
-	ok = ok && logical_replication->apply_error_callback_arg.remote_xid ==
+	ok = ok && logical_replication->remote_ctx.rel == NULL;
+	ok = ok && logical_replication->remote_ctx.remote_attnum == -1;
+	ok = ok && logical_replication->remote_ctx.remote_xid ==
 		InvalidTransactionId;
-	ok = ok && logical_replication->apply_error_callback_arg.finish_lsn ==
+	ok = ok && logical_replication->remote_ctx.finish_lsn ==
 		InvalidXLogRecPtr;
-	ok = ok && logical_replication->apply_error_callback_arg.origin_name ==
+	ok = ok && logical_replication->remote_ctx.origin_name ==
 		NULL;
 	ok = ok && logical_replication->my_parallel_shared == NULL;
 	ok = ok && locks->fast_path_local_use_counts == NULL;

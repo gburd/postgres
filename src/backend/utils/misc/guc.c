@@ -7521,12 +7521,14 @@ ShowGUCOptionInternal(const struct config_generic *record, bool use_units)
 				}
 				else if (record->flags & GUC_SHOW_IN_OCTAL)
 				{
-					snprintf(buffer, sizeof(buffer), "0%03o", *conf->variable);
+					snprintf(buffer, sizeof(buffer), "0%03o",
+							 *GUC_VARIABLE_INT(record));
 					val = buffer;
 				}
 				else
 				{
-					snprintf(buffer, sizeof(buffer), "%d", *conf->variable);
+					snprintf(buffer, sizeof(buffer), "%d",
+							 *GUC_VARIABLE_INT(record));
 					val = buffer;
 				}
 			}
