@@ -24,6 +24,8 @@ my $blksz = int($node->safe_psql('postgres', 'SHOW block_size'));
 # Blocks per relation file (--with-segsize-blocks can make it small).
 my $segblks = int($node->safe_psql('postgres',
 	"SELECT setting FROM pg_settings WHERE name = 'segment_size'"));
+# The server runs on this machine, so its pages are in Perl's byte order.
+my $little_endian = pack('L', 1) eq pack('V', 1);
 
 $node->safe_psql(
 	'postgres', q(
@@ -33,6 +35,7 @@ $node->safe_psql(
 	  $$ SELECT substr(string_agg(md5(s::text || g::text), ''), 1, n)
 	     FROM generate_series(1, (n + 31) / 32) g $$;
 	CREATE TABLE t_small (a int);
+	CREATE TABLE t_vac (a int);
 	CREATE TABLE t_multi (a int);
 	CREATE TABLE t_list (a int);
 	CREATE TABLE t_post (a int);
@@ -45,11 +48,11 @@ $node->safe_psql(
 # name => table, column
 my %idx = (
 	i_order => 't_small', i_marker => 't_small', i_version => 't_small',
-	i_noroot => 't_small',
+	i_noroot => 't_small', i_vacmany => 't_vac',
 	map({ $_ => 't_multi' }
-		qw(i_hikey i_rlink i_llink i_leftmost i_level i_incomplete i_deleted
+		qw(i_hikey i_rlink i_rlinkbad i_llink i_leftmost i_level i_incomplete i_deleted
 		  i_hknotpivot i_hknatts i_rfirst i_dlbad i_dlswap i_dlskip i_dlkey
-		  i_metaroot i_rootflag)),
+		  i_dlmany i_metaroot i_rootflag)),
 	i_list_order => 't_list', i_list_count => 't_list',
 	i_post_len => 't_post', i_post_size => 't_post',
 	map({ $_ => 't_big' }
@@ -67,6 +70,7 @@ for my $i (sort keys %idx)
 $node->safe_psql(
 	'postgres', q(
 	INSERT INTO t_small SELECT g FROM generate_series(1, 10) g;
+	INSERT INTO t_vac SELECT g FROM generate_series(1, 10) g;
 	INSERT INTO t_multi SELECT g FROM generate_series(1, 3000) g;
 	INSERT INTO t_list SELECT g % 20 FROM generate_series(1, 200) g;
 	INSERT INTO t_post SELECT g / 1000 FROM generate_series(0, 4999) g;
@@ -160,8 +164,14 @@ sub g32 { unpack('L', substr(${ $_[0] }, $_[1], 4)) }
 sub s32 { substr(${ $_[0] }, $_[1], 4) = pack('L', $_[2]) }
 sub gi32 { unpack('l', substr(${ $_[0] }, $_[1], 4)) }
 sub si32 { substr(${ $_[0] }, $_[1], 4) = pack('l', $_[2]) }
-# Byte offset of item $off (ItemIdData lp_off: low 15 bits).
-sub item { g32($_[0], 24 + 4 * ($_[1] - 1)) & 0x7fff }
+# Byte offset of item $off: ItemIdData's lp_off, its first 15 bits, which
+# are the word's low bits on a little-endian machine and its high bits on a
+# big-endian one.
+sub item
+{
+	my $w = g32($_[0], 24 + 4 * ($_[1] - 1));
+	return $little_endian ? $w & 0x7fff : $w >> 17;
+}
 sub maxoff { (g16($_[0], 12) - 24) / 4 }
 # BarkPageOpaqueData: prev 0, next 4, level 8, cycleid 10, flags 12.
 sub opq { g16($_[0], 16) + $_[1] }
@@ -189,6 +199,8 @@ patch('i_hikey', $info{i_hikey}{kids}[0],
 	sub { key_bump($_[0], item($_[0], maxoff($_[0])), 2000000000) });
 patch('i_rlink', $info{i_rlink}{kids}[0],
 	sub { s32($_[0], opq($_[0], 4), $info{i_rlink}{kids}[2]) });
+patch('i_rlinkbad', $info{i_rlinkbad}{kids}[0],
+	sub { s32($_[0], opq($_[0], 4), 999999) });
 patch('i_llink', $info{i_llink}{kids}[1],
 	sub { s32($_[0], opq($_[0], 0), $info{i_llink}{kids}[2]) });
 patch('i_leftmost', $info{i_leftmost}{kids}[0],
@@ -220,6 +232,24 @@ patch('i_dlkey', $info{i_dlkey}{root},
 	sub { my $it = item($_[0], 2); key_bump($_[0], $it, gi32($_[0], $it + 8) - 1) });
 patch('i_rootflag', $info{i_rootflag}{root},
 	sub { s16($_[0], opq($_[0], 12), g16($_[0], opq($_[0], 12)) & ~0x02) });
+# More line pointers than MaxIndexTuplesPerPage, at its largest (a 4-byte
+# MAXALIGN): copies of the last downlink's, which pass the page's own checks.
+my $dlmany = int(($blksz - 24) / (12 + 4)) + 1;
+patch('i_dlmany', $info{i_dlmany}{root},
+	sub {
+		my $n = maxoff($_[0]);
+		my $lp = substr(${ $_[0] }, 24 + 4 * ($n - 1), 4);
+		substr(${ $_[0] }, 24 + 4 * $n, 4 * ($dlmany - $n)) = $lp x ($dlmany - $n);
+		s16($_[0], 12, 24 + 4 * $dlmany);
+	});
+# The same on a leaf, for VACUUM.
+patch('i_vacmany', $info{i_vacmany}{root},
+	sub {
+		my $n = maxoff($_[0]);
+		my $lp = substr(${ $_[0] }, 24 + 4 * ($n - 1), 4);
+		substr(${ $_[0] }, 24 + 4 * $n, 4 * ($dlmany - $n)) = $lp x ($dlmany - $n);
+		s16($_[0], 12, 24 + 4 * $dlmany);
+	});
 
 # LIST: count in the low 12 bits of posid; locators at the body offset,
 # which the t_tid block field holds.
@@ -291,6 +321,7 @@ parent_only('i_noroot', 'has no root but has 1 tree pages');
 parent_only('i_metaroot', 'has a meta page naming invalid root block 999999');
 both('i_hikey', "has a key past the high key on page $L0 at offset \\d+");
 both('i_rlink', "broken sibling link: page ${L0}'s right sibling $L2 does not link back");
+both('i_rlinkbad', "has a right link on page $L0 to invalid block 999999");
 both('i_llink', "broken sibling link: page ${L0}'s right sibling $L1 does not link back");
 parent_only('i_leftmost', "has page $L0 at level 0 whose left link does not match its place in the level");
 both('i_level',
@@ -308,6 +339,13 @@ parent_only('i_dlskip',
 parent_only('i_dlkey',
 	"has a downlink on page $mroot at offset 2 that is not the high key of the page to its child's left");
 parent_only('i_rootflag', "has page $mroot flagged as root inconsistently");
+both('i_dlmany', "has more than \\d+ items on page $mroot");
+# VACUUM sizes its arrays of a leaf's entries by the same bound.
+my ($vrc, $vout, $verr) =
+  $node->psql('postgres', 'VACUUM (INDEX_CLEANUP ON) t_vac');
+like($verr,
+	qr/index "i_vacmany" has more than \d+ items on page $info{i_vacmany}{root}/,
+	'VACUUM reports a leaf with too many items');
 both('i_list_order', "has out-of-order list locators on page $lroot at offset $loff");
 both('i_list_count', "has a list entry with 1 locators on page $lroot at offset $loff");
 # The entry's shape is checked before anything reads its TIDs, so a corrupt
