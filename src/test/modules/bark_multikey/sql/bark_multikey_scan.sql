@@ -1,0 +1,1358 @@
+-- Scans of BARK indexes with an extracted column.  Every query below is
+-- answered by a BARK index and compared with a sequential scan and, where
+-- GIN's array_ops has the operator, with a GIN index over the same rows:
+-- the count, the number of distinct rows and an md5 of their ids must all
+-- agree, so a row returned twice, a row missing or a wrong row shows up.
+CREATE EXTENSION bark_multikey;
+
+-- The same rows in several tables, each with one index, so each query can
+-- be forced onto one index.  NULL arrays, empty arrays, NULL elements and
+-- repeated elements are among them.
+CREATE FUNCTION mk_rows() RETURNS TABLE (id int, tenant int, a int4[])
+LANGUAGE sql AS $$
+  SELECT g, g % 7,
+    CASE WHEN g % 50 = 0 THEN NULL
+         WHEN g % 51 = 0 THEN '{}'::int4[]
+         WHEN g % 53 = 0 THEN '{NULL,3}'::int4[]
+         WHEN g % 59 = 0 THEN '{7,7,NULL}'::int4[]
+         ELSE ARRAY(SELECT (g * 37 + i * i * 11) % 300
+                    FROM generate_series(1, 1 + g % 9) i) END
+  FROM generate_series(1, 20000) g
+$$;
+CREATE TABLE mk_seq AS SELECT * FROM mk_rows();
+CREATE TABLE mk_gin AS SELECT * FROM mk_rows();
+CREATE INDEX ON mk_gin USING gin (a);
+CREATE TABLE mk_b1 AS SELECT * FROM mk_rows();
+CREATE INDEX mk_b1_a ON mk_b1 USING bark (a bark_int4_array_ops);
+CREATE TABLE mk_b2 AS SELECT * FROM mk_rows();
+CREATE INDEX mk_b2_ta ON mk_b2 USING bark (tenant, a bark_int4_array_ops);
+-- A DESC NULLS LAST extracted column after the fixed one, with the range
+-- class, whose boundaries are ranges as well as points.
+CREATE TABLE mk_bd AS SELECT * FROM mk_rows();
+CREATE INDEX mk_bd_ta ON mk_bd USING bark
+  (tenant, a bark_int4_array_range_ops DESC NULLS LAST);
+-- A DESC extracted column, whose NULL entries sort first.
+CREATE TABLE mk_bn AS SELECT * FROM mk_rows();
+CREATE INDEX mk_bn_ta ON mk_bn USING bark (tenant, a bark_int4_array_ops DESC);
+CREATE TABLE mk_rn AS SELECT * FROM mk_rows();
+CREATE INDEX mk_rn_a ON mk_rn USING bark (a bark_int4_array_range_ops NULLS FIRST);
+CREATE TABLE mk_r1 AS SELECT * FROM mk_rows();
+CREATE INDEX mk_r1_a ON mk_r1 USING bark (a bark_int4_array_range_ops);
+-- The rows again, inserted rather than built.
+CREATE TABLE mk_ins (id int, tenant int, a int4[]);
+CREATE INDEX mk_ins_ta ON mk_ins USING bark (tenant, a bark_int4_array_ops);
+INSERT INTO mk_ins SELECT * FROM mk_rows();
+ANALYZE mk_seq, mk_gin, mk_b1, mk_b2, mk_bd, mk_bn, mk_rn, mk_r1, mk_ins;
+SELECT bark_index_check('mk_b1_a'), bark_index_check('mk_b2_ta'),
+       bark_index_check('mk_bd_ta'), bark_index_check('mk_ins_ta');
+
+-- mk_run(table, qual, mode): count, distinct ids and md5 of the ids of the
+-- rows of table that satisfy qual, read by a sequential scan ('seq'), an
+-- index scan ('index') or a bitmap scan ('bitmap').  'wrong plan' when the
+-- plan does not read the way asked.
+CREATE FUNCTION mk_run(tbl text, qual text, mode text) RETURNS text
+LANGUAGE plpgsql AS $$
+DECLARE
+  sql text := format('SELECT count(*) || '':'' || count(DISTINCT id) || '':'' ||
+                        coalesce(md5(string_agg(id::text, '','' ORDER BY id)), ''-'')
+                      FROM (SELECT id FROM %I WHERE %s) s', tbl, qual);
+  plan text;
+  r text;
+BEGIN
+  PERFORM set_config('enable_seqscan', (mode = 'seq')::text, true);
+  PERFORM set_config('enable_indexscan', (mode = 'index')::text, true);
+  PERFORM set_config('enable_indexonlyscan', 'off', true);
+  PERFORM set_config('enable_bitmapscan', (mode = 'bitmap')::text, true);
+  FOR plan IN EXECUTE 'EXPLAIN (COSTS OFF) ' || sql LOOP
+    IF (mode = 'seq' AND plan LIKE '%Seq Scan%') OR
+       (mode = 'index' AND plan LIKE '%Index Scan%') OR
+       (mode = 'bitmap' AND plan LIKE '%Bitmap Index Scan%') THEN
+      EXECUTE sql INTO r;
+      RETURN r;
+    END IF;
+  END LOOP;
+  RETURN 'wrong plan';
+END $$;
+
+-- mk_compare(qual, tables): run qual on mk_seq and on each table, by index
+-- and bitmap scans; show the sequential scan's answer, and every answer
+-- that differs from it (NULL when none does).
+CREATE FUNCTION mk_compare(qual text, tables text[], OUT seq text,
+                           OUT mismatches text)
+LANGUAGE plpgsql AS $$
+DECLARE
+  t text;
+  m text;
+  r text;
+BEGIN
+  seq := mk_run('mk_seq', qual, 'seq');
+  FOREACH t IN ARRAY tables LOOP
+    FOREACH m IN ARRAY CASE WHEN t = 'mk_gin' THEN ARRAY['bitmap']
+                            ELSE ARRAY['index', 'bitmap'] END LOOP
+      r := mk_run(t, qual, m);
+      IF r IS DISTINCT FROM seq THEN
+        mismatches := concat_ws(' ', mismatches, t || '/' || m || '=' || r);
+      END IF;
+    END LOOP;
+  END LOOP;
+END $$;
+
+-- Operators GIN's array_ops has, on the extracted column alone and after
+-- an equality (or IN-list) on the fixed one; empty queries, which read the
+-- NULL entries (searchnulls); two keys on the column (a row may satisfy
+-- them through different keys); IN-lists of arrays; IS [NOT] NULL.
+CREATE TABLE mk_quals (n serial, q text, gin bool DEFAULT true);
+INSERT INTO mk_quals (q) VALUES
+  ('a && ''{1,5,77}'''), ('a && ''{2}'''), ('a && ''{}'''),
+  ('a && ''{NULL,3}'''), ('a @> ''{28,80}'''), ('a @> ''{40}'''),
+  ('a @> ''{}'''), ('a @> ''{NULL}'''), ('a <@ ''{1,2,3,4,5,6,7,8,9,10,11}'''),
+  ('a <@ ''{}'''), ('a <@ ''{3,NULL}'''), ('a = ''{44}'''), ('a = ''{3,NULL}'''), ('a = ''{}'''),
+  ('a = ''{7,7,NULL}'''), ('a = ''{213,180}'''),
+  ('a && ''{198}'' AND a && ''{234}'''), ('a && ''{1,2}'' AND a @> ''{2}'''),
+  ('a IN (''{44}''::int4[], ''{3}'', ''{213,180}'')'),
+  ('tenant = 3 AND a && ''{1,5,77}'''), ('tenant = 3 AND a @> ''{9}'''),
+  ('tenant = 3 AND a <@ ''{1,2,3,4,5,6,7,8,9,10,11}'''),
+  ('tenant = 6 AND a = ''{}'''), ('tenant = 0 AND a @> ''{}'''),
+  ('tenant IN (2, 4) AND a && ''{10,20,30}'''),
+  ('tenant IN (1, 5) AND a IN (''{44}''::int4[], ''{110}'', ''{180,213}'')'),
+  ('tenant = 2 AND a && ''{198}'' AND a && ''{234}'''),
+  ('tenant > 4 AND a && ''{1,5,77}'''), ('tenant < 2 AND a <@ ''{}''');
+INSERT INTO mk_quals (q, gin) VALUES
+  ('a IS NULL', false), ('a IS NOT NULL', false),
+  ('tenant = 4 AND a IS NULL', false), ('tenant = 4 AND a IS NOT NULL', false),
+  ('tenant = 5', false), ('tenant IN (1, 6)', false), ('tenant >= 5', false),
+  ('a && ''{1,5,77}'' AND id < 5000', false);
+SELECT n, q, c.*
+  FROM mk_quals, mk_compare(q, CASE WHEN gin
+    THEN '{mk_gin,mk_b1,mk_b2,mk_bn,mk_ins}'::text[]
+    WHEN q LIKE '%a %' THEN '{mk_b1,mk_b2,mk_bn,mk_ins}'
+    ELSE '{mk_b2,mk_bn,mk_ins}' END) c ORDER BY n;
+
+-- The range class: boundaries that are half-bounded, strict, closed below
+-- and open above, unions of ranges (a ScalarArrayOp), and points that
+-- procedure 9 accepts or drops, ascending and descending.
+CREATE TABLE mk_rquals (n serial, q text);
+INSERT INTO mk_rquals (q) VALUES
+  ('a |>| 295'), ('a |<=| 3'), ('a |><| ''{100,103}'''), ('a |><| ''{100,100}'''),
+  ('a |><| ''{5,NULL}'''), ('a |><| ''{103,100}'''), ('a |%| ''{1,2,3,4,100,101}'''), ('a |=| 7'),
+  ('a |=| ANY (ARRAY[5, 9, 299, 9, NULL])'),
+  ('a |=| ANY (ARRAY[]::int4[])'), ('a |=| ANY (NULL::int4[])'),
+  ('a |>| ANY (ARRAY[5, 3, 100])'), ('a |<=| ANY (ARRAY[NULL::int4])'),
+  ('a |<=| ANY (ARRAY[3, 10])'), ('a |>| ANY (ARRAY[290, 295])'),
+  ('a |>| 290 AND a |<=| 20'), ('a |=| 198 AND a && ''{234}'''),
+  ('tenant = 2 AND a |>| 280'), ('tenant = 2 AND a |<=| 10'),
+  ('tenant = 2 AND a |=| 7'), ('tenant IN (1, 3) AND a |><| ''{200,260}'''),
+  ('tenant = 4 AND a |%| ''{2,3,4,5,6,7,8}'''),
+  ('tenant IN (0, 4) AND a |=| ANY (ARRAY[299, 1, 150])'),
+  ('tenant = 1 AND a |<=| ANY (ARRAY[3, 10])'),
+  ('tenant = 3 AND a |>| 290 AND a && ''{1,2,3}'''),
+  ('a |?| 10'), ('tenant = 2 AND a |?| 40'), ('a |<>| 7'), ('tenant = 2 AND a |<>| 100'),
+  ('a |~| 1000'), ('a |~| 1001'), ('a |~| 1002'), ('a |~| 1003'),
+  ('tenant = 5 AND a |~| 503'), ('a |~| ANY (ARRAY[1000, 1040, 1063])'),
+  ('a |~| ANY (ARRAY[1003, 1043])'), ('a |~| ANY (ARRAY[1001, 1040])'),
+  ('a |~| ANY (ARRAY[1002, 1040])'), ('a |~| ANY (ARRAY[1003, 1030, 1050])'),
+  ('a |~| ANY (ARRAY[1000, 1010])'), ('a |>| ANY (ARRAY[5, 3])'),
+  ('a |<=| ANY (ARRAY[5, 3])'), ('a |?| ANY (ARRAY[5, 3])'),
+  ('a |=| ANY (ARRAY[3, 5]) AND a |=| 7'),
+  ('tenant IN (2, 3) AND a |?| ANY (ARRAY[30, 3])'),
+  ('a |~| 1004'), ('a |~| ANY (ARRAY[1004, 1050])'),
+  ('a |~| ANY (ARRAY[1000, 1003])'), ('a |~| ANY (ARRAY[1002, 1001])');
+SELECT n, q, c.* FROM mk_rquals, mk_compare(q, '{mk_r1,mk_rn,mk_bd}') c ORDER BY n;
+
+-- NULLs in the fixed column form a group of their own.
+CREATE TABLE mk_nulls (id int, tenant int, a int4[]);
+INSERT INTO mk_nulls SELECT g, CASE WHEN g % 3 = 0 THEN NULL ELSE g % 4 END,
+  ARRAY[g % 10, g % 7, g % 5] FROM generate_series(1, 3000) g;
+CREATE INDEX mk_nulls_ta ON mk_nulls USING bark (tenant, a bark_int4_array_ops);
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*), count(DISTINCT id), md5(string_agg(id::text, ',' ORDER BY id))
+  FROM mk_nulls WHERE a && '{1,2,3}';
+SELECT count(*), count(DISTINCT id), md5(string_agg(id::text, ',' ORDER BY id))
+  FROM mk_nulls WHERE tenant IS NULL AND a && '{1,2,3}';
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SET enable_indexscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*), count(DISTINCT id), md5(string_agg(id::text, ',' ORDER BY id))
+  FROM mk_nulls WHERE a && '{1,2,3}';
+SELECT count(*), count(DISTINCT id), md5(string_agg(id::text, ',' ORDER BY id))
+  FROM mk_nulls WHERE tenant IS NULL AND a && '{1,2,3}';
+RESET enable_indexscan;
+RESET enable_bitmapscan;
+
+-- A procedure 8 declared with six arguments, as pg_extended_btree's are,
+-- gets no BarkQueryFlags; a class without procedure 8 can be scanned for
+-- NULLs only; one whose procedure 8 asks for a recheck needs procedure 9.
+CREATE FUNCTION mk_query6(int4[], int2, internal, internal, internal, internal)
+  RETURNS void AS '$libdir/bark_multikey', 'bark_multikey_extract_query'
+  LANGUAGE C IMMUTABLE STRICT;
+CREATE OPERATOR FAMILY mk_six_ops USING bark;
+CREATE OPERATOR CLASS mk_six_ops FOR TYPE int4[] USING bark
+  FAMILY mk_six_ops AS
+    OPERATOR 1 && (anyarray, anyarray),
+    OPERATOR 2 @> (anyarray, anyarray),
+    FUNCTION 1 (int4[], int4[]) btint4cmp(int4, int4),
+    FUNCTION 7 bark_multikey_extract_value(int4[], internal, internal),
+    FUNCTION 8 mk_query6(int4[], int2, internal, internal, internal, internal),
+    STORAGE int4;
+CREATE OPERATOR FAMILY mk_noquery_ops USING bark;
+CREATE OPERATOR CLASS mk_noquery_ops FOR TYPE int4[] USING bark
+  FAMILY mk_noquery_ops AS
+    OPERATOR 1 && (anyarray, anyarray),
+    FUNCTION 1 (int4[], int4[]) btint4cmp(int4, int4),
+    FUNCTION 7 bark_multikey_extract_value(int4[], internal, internal),
+    STORAGE int4;
+CREATE TABLE mk_six AS SELECT * FROM mk_rows() WHERE id <= 2000;
+CREATE INDEX mk_six_a ON mk_six USING bark (a mk_six_ops);
+CREATE TABLE mk_noquery AS SELECT * FROM mk_rows() WHERE id <= 2000;
+CREATE INDEX mk_noquery_a ON mk_noquery USING bark (a mk_noquery_ops);
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*), md5(string_agg(id::text, ',' ORDER BY id))
+  FROM mk_six WHERE a && '{1,5,77}';
+SELECT count(*), md5(string_agg(id::text, ',' ORDER BY id))
+  FROM mk_noquery WHERE a IS NULL;
+SELECT count(*) FROM mk_noquery WHERE a && '{1}';
+SELECT count(*) FROM mk_six WHERE a @> '{1}';
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SELECT count(*), md5(string_agg(id::text, ',' ORDER BY id))
+  FROM mk_seq WHERE id <= 2000 AND a && '{1,5,77}';
+SELECT count(*), md5(string_agg(id::text, ',' ORDER BY id))
+  FROM mk_seq WHERE id <= 2000 AND a IS NULL;
+DROP TABLE mk_six, mk_noquery;
+DROP OPERATOR CLASS mk_six_ops USING bark CASCADE;
+DROP OPERATOR CLASS mk_noquery_ops USING bark CASCADE;
+DROP FUNCTION mk_query6(int4[], int2, internal, internal, internal, internal);
+
+-- A row whose keys meet the query several times is returned once, by an
+-- index scan, with and without a fixed column before the extracted one.
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+CREATE TABLE mk_once (id int, tenant int, a int4[]);
+INSERT INTO mk_once VALUES (1, 1, '{1,2,3,4,5}'), (2, 1, '{5,4,3}'),
+  (3, 2, '{1,1,1}'), (4, 1, '{6}'), (5, 1, NULL), (6, 1, '{}');
+CREATE INDEX mk_once_a ON mk_once USING bark (a bark_int4_array_ops);
+CREATE INDEX mk_once_ta ON mk_once USING bark (tenant, a bark_int4_array_ops);
+EXPLAIN (COSTS OFF) SELECT id FROM mk_once WHERE a && '{1,2,3,4,5}';
+SELECT id FROM mk_once WHERE a && '{1,2,3,4,5}' ORDER BY id;
+DROP INDEX mk_once_a;
+EXPLAIN (COSTS OFF) SELECT id FROM mk_once WHERE tenant = 1 AND a && '{1,2,3,4,5}';
+SELECT id FROM mk_once WHERE tenant = 1 AND a && '{1,2,3,4,5}' ORDER BY id;
+SELECT id FROM mk_once WHERE tenant = 1 ORDER BY id;
+SELECT id FROM mk_once WHERE a <@ '{1,2,3,4,5}' ORDER BY id;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+
+-- LIMIT, and a forward cursor read in pieces.
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*), count(DISTINCT id)
+  FROM (SELECT id FROM mk_b1 WHERE a && '{1,5,77}' LIMIT 150) s;
+SELECT count(*), count(DISTINCT id)
+  FROM (SELECT id FROM mk_b2 WHERE tenant IN (1, 2) AND a && '{1,5,77}' LIMIT 90) s;
+CREATE FUNCTION mk_cursor(qual text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+  c refcursor;
+  r record;
+  ids int[] := '{}';
+BEGIN
+  OPEN c NO SCROLL FOR EXECUTE 'SELECT id FROM mk_b2 WHERE ' || qual;
+  FOR i IN 1 .. 10 LOOP
+    FETCH c INTO r;
+    ids := ids || r.id;
+  END LOOP;
+  MOVE FORWARD 200 IN c;
+  LOOP
+    FETCH c INTO r;
+    EXIT WHEN NOT FOUND;
+    ids := ids || r.id;
+  END LOOP;
+  CLOSE c;
+  RETURN cardinality(ids) || ':' ||
+    (SELECT count(DISTINCT x) FROM unnest(ids) x);
+END $$;
+SELECT mk_cursor('a && ''{1,5,77}''');
+SELECT mk_cursor('tenant IN (1, 3, 5) AND a && ''{1,5,77}''');
+RESET enable_seqscan;
+SELECT mk_run('mk_seq', 'a && ''{1,5,77}''', 'seq'),
+       mk_run('mk_seq', 'tenant IN (1, 3, 5) AND a && ''{1,5,77}''', 'seq');
+SET enable_seqscan = off;
+-- The rows a scan with a seen set returned would be dropped if it walked
+-- back over them, so an index with an extracted column has no backward
+-- scans (backward_scan is false, from its operator classes, whatever the
+-- meta page says), and a scroll cursor over it reads through a Material
+-- node, as over a KNN scan.  A scalar BARK index scans backward itself.
+CREATE TABLE mk_prop (id int, tenant int, a int4[], t text);
+CREATE INDEX mk_prop_it ON mk_prop USING bark (id DESC, t NULLS FIRST)
+  INCLUDE (tenant);
+CREATE INDEX mk_prop_bt ON mk_prop USING btree (id DESC, t NULLS FIRST)
+  INCLUDE (tenant);
+CREATE INDEX mk_prop_ta ON mk_prop USING bark
+  (tenant DESC NULLS LAST, a bark_int4_array_ops) INCLUDE (t);
+CREATE INDEX mk_prop_a ON mk_prop USING bark (a bark_int4_array_ops DESC, id);
+CREATE INDEX mk_prop_tai ON mk_prop USING bark
+  (tenant, a bark_int4_array_ops NULLS FIRST, id DESC);
+CREATE INDEX mk_prop_t ON mk_prop USING bark (t);
+SELECT i::regclass, pg_index_has_property(i, 'backward_scan') AS backward,
+       pg_index_has_property(i, 'index_scan') AS index_scan,
+       pg_index_has_property(i, 'bitmap_scan') AS bitmap_scan
+  FROM unnest('{mk_prop_it,mk_prop_ta,mk_prop_a,mk_prop_tai,mk_b1_a}'::regclass[]) i;
+-- Column properties.  The extracted column and every key column after it
+-- have no order the planner can use (the index orders the column's keys,
+-- not its values), so they report orderable, asc, desc and the nulls
+-- properties false, as for a GIN column; an INCLUDE column and the columns
+-- before the extracted one get the generic answers.  The extracted column
+-- is not returnable (its entries hold keys).  distance_orderable needs an
+-- ordering operator on the leading column: int4's <~>, or the class's |<|
+-- and |>>| on an extracted column.
+CREATE FUNCTION mk_props(i regclass) RETURNS TABLE (c int, props text)
+LANGUAGE sql AS $$
+  SELECT c, string_agg(p || '=' ||
+           coalesce(pg_index_column_has_property(i, c, p)::text, 'null'),
+           ' ' ORDER BY o)
+    FROM generate_series(1, (SELECT indnatts FROM pg_index
+                              WHERE indexrelid = i)) c,
+         unnest('{orderable,asc,desc,nulls_first,nulls_last,distance_orderable,returnable,search_array,search_nulls}'::text[])
+           WITH ORDINALITY u(p, o)
+   GROUP BY c
+$$;
+SELECT i::regclass, c, props
+  FROM unnest('{mk_prop_it,mk_prop_ta,mk_prop_a,mk_prop_tai,mk_prop_t}'::regclass[]) i,
+       LATERAL mk_props(i)
+  ORDER BY 1, 2;
+-- A scalar BARK index answers as btree does, but for distance_orderable
+-- (btree has no ordering operators).
+SELECT b.c, b.props AS bark, t.props AS btree
+  FROM mk_props('mk_prop_it') b JOIN mk_props('mk_prop_bt') t USING (c)
+  WHERE b.props IS DISTINCT FROM t.props;
+DROP TABLE mk_prop;
+DROP FUNCTION mk_props(regclass);
+-- The order the planner reads from an index stops before the extracted
+-- column: ORDER BY tenant, a sorts within each tenant on top of the index.
+EXPLAIN (COSTS OFF)
+SELECT id FROM mk_b2 WHERE tenant IN (1, 2) AND a && '{5,77}' ORDER BY tenant, a;
+EXPLAIN (COSTS OFF)
+DECLARE c SCROLL CURSOR FOR SELECT id FROM mk_b1 WHERE a && '{1,5,77}';
+EXPLAIN (COSTS OFF)
+DECLARE c SCROLL CURSOR FOR SELECT tenant FROM mk_b2 WHERE tenant = 3;
+-- mk_scroll(qual): read a scroll cursor over mk_b1 forward 3 rows, back 1
+-- (the second row again), then to the end, then back to the start; the
+-- step back must repeat the second row, and both passes must return the
+-- sequential scan's rows.
+CREATE FUNCTION mk_scroll(qual text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+  c refcursor;
+  r record;
+  first int[] := '{}';
+  fwd int[] := '{}';
+  bwd int[] := '{}';
+  again int;
+BEGIN
+  OPEN c SCROLL FOR EXECUTE 'SELECT id FROM mk_b1 WHERE ' || qual;
+  FOR i IN 1 .. 3 LOOP
+    FETCH c INTO r;
+    first := first || r.id;
+  END LOOP;
+  FETCH PRIOR FROM c INTO r;
+  again := r.id;
+  MOVE ABSOLUTE 0 IN c;
+  LOOP
+    FETCH c INTO r;
+    EXIT WHEN NOT FOUND;
+    fwd := fwd || r.id;
+  END LOOP;
+  LOOP
+    FETCH PRIOR FROM c INTO r;
+    EXIT WHEN NOT FOUND;
+    bwd := bwd || r.id;
+  END LOOP;
+  CLOSE c;
+  RETURN (again = first[2]) || ':' ||
+    (SELECT count(*) || ':' || count(DISTINCT x) || ':' ||
+            md5(string_agg(x::text, ',' ORDER BY x)) FROM unnest(fwd) x) ||
+    ':' || (fwd = (SELECT array_agg(x ORDER BY o DESC)
+                     FROM unnest(bwd) WITH ORDINALITY u(x, o)));
+END $$;
+SELECT mk_scroll('a && ''{1,5,77}''');
+SELECT mk_scroll('a <@ ''{1,2,3,4,5,6,7,8,9,10,11}''');
+RESET enable_seqscan;
+SELECT 'true:' || mk_run('mk_seq', 'a && ''{1,5,77}''', 'seq') || ':true',
+       'true:' || mk_run('mk_seq', 'a <@ ''{1,2,3,4,5,6,7,8,9,10,11}''', 'seq') ||
+       ':true';
+SET enable_seqscan = off;
+-- A cursor not declared SCROLL is not made scrollable over such an index
+-- (PostgreSQL makes it so only when the plan can run backward without a
+-- Material node), so it fetches forward only, as over a GIN or KNN scan;
+-- declare it SCROLL to fetch backward.  An explicit NO SCROLL cursor too.
+EXPLAIN (COSTS OFF)
+DECLARE c CURSOR FOR SELECT id FROM mk_b1 WHERE a && '{1,5,77}';
+BEGIN;
+DECLARE c NO SCROLL CURSOR FOR SELECT id FROM mk_b1 WHERE a && '{1,5,77}';
+FETCH 2 FROM c;
+FETCH BACKWARD 1 FROM c;
+ROLLBACK;
+BEGIN;
+DECLARE c CURSOR FOR SELECT id FROM mk_b1 WHERE a && '{1,5,77}';
+FETCH 3 FROM c;
+FETCH BACKWARD 1 FROM c;
+ROLLBACK;
+-- A caller of the index AM that does not ask, and changes direction, gets
+-- an error from a scan that keeps a seen set, never wrong rows; a scan for
+-- one point keeps none and steps back.
+SELECT bark_multikey_reverse('mk_b1_a', '&&(anyarray,anyarray)',
+                             '{1,5,77}'::int4[], 3);
+SELECT bark_multikey_reverse('mk_b1_a', '&&(anyarray,anyarray)',
+                             '{5}'::int4[], 3);
+-- Likewise a direct parallel scan: one that needs the set is refused,
+-- never answered with a row twice; a scan for one point needs none.
+SELECT bark_multikey_parallel('mk_b1_a', '&&(anyarray,anyarray)',
+                              '{1,5,77}'::int4[]);
+SELECT bark_multikey_parallel('mk_b1_a', '&&(anyarray,anyarray)',
+                              '{5}'::int4[]);
+-- The AM must believe amrescan's nscankeys, not scan->numberOfKeys: a scan
+-- begun with two key slots but rescanned with one key (DocumentDB's
+-- composite-scan fold) reads the same TIDs as a plain one-key scan of the
+-- same qual, not a wrong set or an error from an uninitialized second slot.
+SELECT bark_multikey_rescan_fewer('mk_b1_a', '&&(anyarray,anyarray)',
+                                  '{5}'::int4[]) AS fewer_ok;
+-- A scan driven through the AM's routine alone, with no heap relation and
+-- no snapshot (DocumentDB's metadata probe), returns the same TIDs as an
+-- ordinary scan, also inside a serializable transaction, whose predicate
+-- locks need a snapshot.
+SELECT bark_multikey_bare_scan('mk_b1_a', '&&(anyarray,anyarray)', '{5}'::int4[]) =
+       (SELECT count(*) FROM mk_b1 WHERE a && '{5}') AS bare_ok;
+BEGIN ISOLATION LEVEL SERIALIZABLE;
+SELECT bark_multikey_bare_scan('mk_b1_a', '&&(anyarray,anyarray)', '{5}'::int4[]) =
+       (SELECT count(*) FROM mk_b1 WHERE a && '{5}') AS bare_serializable_ok;
+COMMIT;
+-- A scan that starts backward is fine.
+EXPLAIN (COSTS OFF)
+SELECT id FROM mk_b2 WHERE tenant IN (1, 3) AND a && '{1,5,77}'
+  ORDER BY tenant DESC;
+SELECT count(*), count(DISTINCT id), md5(string_agg(id::text, ',' ORDER BY id)),
+       bool_and(tenant <= prev) AS descending
+FROM (SELECT id, tenant, lag(tenant, 1, 7) OVER () AS prev
+        FROM (SELECT id, tenant FROM mk_b2
+               WHERE tenant IN (1, 3) AND a && '{1,5,77}'
+               ORDER BY tenant DESC) s) s;
+SELECT mk_run('mk_seq', 'tenant IN (1, 3) AND a && ''{1,5,77}''', 'seq');
+SELECT count(*), count(DISTINCT id), bool_and(tenant <= prev) AS descending
+FROM (SELECT id, tenant, lag(tenant, 1, 7) OVER () AS prev
+        FROM (SELECT id, tenant FROM mk_b2 ORDER BY tenant DESC) s) s;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+
+-- A merge join reads the index scan again from a mark: the rows after the
+-- mark come back after a restore, though they are in the seen set.
+SET enable_hashjoin = off;
+SET enable_nestloop = off;
+SET enable_sort = off;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+CREATE TABLE mk_outer (tenant int, k int);
+INSERT INTO mk_outer SELECT g % 7, g FROM generate_series(1, 30) g;
+CREATE INDEX ON mk_outer (tenant);
+EXPLAIN (COSTS OFF)
+SELECT count(*) FROM mk_outer o JOIN mk_b2 t ON t.tenant = o.tenant
+  WHERE t.a && '{1,2,3,4,5,6,7,8,9,10,11,12}';
+SELECT count(*), md5(string_agg(o.k || '/' || t.id, ',' ORDER BY o.k, t.id))
+  FROM mk_outer o JOIN mk_b2 t ON t.tenant = o.tenant
+  WHERE t.a && '{1,2,3,4,5,6,7,8,9,10,11,12}';
+SELECT count(*), md5(string_agg(o.k || '/' || t.id, ',' ORDER BY o.k, t.id))
+  FROM mk_outer o JOIN mk_b2 t ON t.tenant = o.tenant
+  WHERE t.tenant >= 0;
+RESET enable_hashjoin;
+RESET enable_nestloop;
+RESET enable_sort;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SELECT count(*), md5(string_agg(o.k || '/' || t.id, ',' ORDER BY o.k, t.id))
+  FROM mk_outer o JOIN mk_seq t ON t.tenant = o.tenant
+  WHERE t.a && '{1,2,3,4,5,6,7,8,9,10,11,12}';
+SELECT count(*), md5(string_agg(o.k || '/' || t.id, ',' ORDER BY o.k, t.id))
+  FROM mk_outer o JOIN mk_seq t ON t.tenant = o.tenant;
+
+-- Restoring a mark taken before the first row restarts the scan with an
+-- empty seen set; one taken later takes out of the set only the rows
+-- returned after it, on the marked page or on pages read since.
+SELECT m, r, bark_multikey_mark_restore('mk_b1_a', '&&(anyarray,anyarray)',
+                                        '{1,5,77}'::int4[], m, r)
+  FROM (VALUES (0, 0), (0, 500), (3, 2), (10, 600), (500, 300), (900, 100))
+       AS v(m, r);
+SELECT bark_multikey_mark_restore('mk_b1_a', '<@(anyarray,anyarray)',
+                                  '{1,2,3,4,5,6,7,8,9,10,11}'::int4[], 100, 200);
+
+-- A key on a column after the extracted one: inside a point boundary its
+-- bound positions the scan and ends each run of the point; inside a range
+-- it only filters.
+CREATE TABLE mk_3 AS SELECT * FROM mk_rows();
+CREATE INDEX mk_3_tai ON mk_3 USING bark
+  (tenant, a bark_int4_array_range_ops, id);
+SELECT q, c.* FROM (VALUES
+  ('tenant = 1 AND a && ''{5,77,150}'' AND id < 9000'),
+  ('tenant = 1 AND a && ''{5,77,150}'' AND id > 9000'),
+  ('tenant IN (1, 2) AND a |=| ANY (ARRAY[5, 77]) AND id BETWEEN 3000 AND 6000'),
+  ('tenant = 1 AND a |><| ''{5,40}'' AND id < 9000'),
+  ('tenant = 3 AND a |>| 250 AND id > 15000')) AS v(q),
+  mk_compare(q, '{mk_3}') c;
+
+-- Backward over ranges, strict ends and the NULL entries, on an ascending
+-- and a descending extracted column, and with a key after it.
+CREATE FUNCTION mk_backward(tbl text, qual text) RETURNS text
+LANGUAGE plpgsql AS $$
+DECLARE
+  r text;
+  plan text;
+  sql text := format('SELECT count(*) || '':'' || count(DISTINCT id) || '':'' ||
+                        coalesce(md5(string_agg(id::text, '','' ORDER BY id)), ''-'')
+                      FROM (SELECT id FROM %I WHERE %s ORDER BY tenant DESC) s',
+                     tbl, qual);
+BEGIN
+  PERFORM set_config('enable_sort', 'off', true);
+  PERFORM set_config('enable_seqscan', 'off', true);
+  PERFORM set_config('enable_indexscan', 'on', true);
+  PERFORM set_config('enable_bitmapscan', 'off', true);
+  PERFORM set_config('enable_indexonlyscan', 'off', true);
+  FOR plan IN EXECUTE 'EXPLAIN (COSTS OFF) ' || sql LOOP
+    IF plan LIKE '%Index Scan Backward%' THEN
+      EXECUTE sql INTO r;
+      RETURN r;
+    END IF;
+  END LOOP;
+  RETURN 'wrong plan';
+END $$;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SET enable_indexonlyscan = off;
+SELECT q, t, mk_backward(t, q) = mk_run('mk_seq', q, 'seq') AS same
+FROM (VALUES ('tenant IN (1, 3) AND a |><| ''{100,160}'''),
+             ('tenant IN (1, 3) AND a |?| 20'),
+             ('tenant IN (2, 5) AND a |<>| 150'),
+             ('tenant IN (2, 5) AND a |~| ANY (ARRAY[1003, 1043, 1004])'),
+             ('tenant IN (4, 5) AND a |>| 280'),
+             ('tenant IN (4, 5) AND a |<=| 5'),
+             ('tenant IN (0, 6) AND a IS NULL'),
+             ('tenant IN (0, 6) AND a IS NOT NULL')) AS v(q),
+     (VALUES ('mk_bd'), ('mk_3'), ('mk_bn')) AS w(t)
+WHERE t <> 'mk_bn' OR q !~ '\|'
+ORDER BY t COLLATE "C", q COLLATE "C";
+SELECT mk_backward('mk_3', 'tenant IN (1, 2) AND a |=| ANY (ARRAY[5, 77]) AND id BETWEEN 3000 AND 6000')
+  = mk_run('mk_seq', 'tenant IN (1, 2) AND a |=| ANY (ARRAY[5, 77]) AND id BETWEEN 3000 AND 6000', 'seq')
+  AS same;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+RESET enable_indexonlyscan;
+
+-- Entries too large for a page (OVERSIZED, read from their overflow chain)
+-- are filtered, rechecked and dropped as repeats like any other.
+CREATE TABLE mk_big (id int, a int4[], t text);
+INSERT INTO mk_big SELECT g, ARRAY[g % 5, g % 7, (g + 1) % 5],
+    CASE WHEN g % 3 = 0 THEN repeat(md5(g::text), 100) ELSE 'small' END
+  FROM generate_series(1, 300) g;
+CREATE INDEX mk_big_at ON mk_big USING bark (a bark_int4_array_range_ops, t);
+CREATE INDEX mk_big_ida ON mk_big USING bark (id, a bark_int4_array_range_ops, t);
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*), count(DISTINCT id), md5(string_agg(id::text, ',' ORDER BY id))
+  FROM mk_big WHERE a && '{1,2,3}';
+SELECT count(*), count(DISTINCT id), md5(string_agg(id::text, ',' ORDER BY id))
+  FROM mk_big WHERE a |%| '{1,2,3,4}';
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SET enable_indexscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*), count(DISTINCT id), md5(string_agg(id::text, ',' ORDER BY id))
+  FROM mk_big WHERE a && '{1,2,3}';
+SELECT count(*), count(DISTINCT id), md5(string_agg(id::text, ',' ORDER BY id))
+  FROM mk_big WHERE a |%| '{1,2,3,4}';
+RESET enable_indexscan;
+RESET enable_bitmapscan;
+-- ... and by a KNN scan on the fixed leading column.
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SET enable_sort = off;
+SELECT count(*), count(DISTINCT id), md5(string_agg(id::text, ',' ORDER BY id))
+  FROM (SELECT id FROM mk_big WHERE a |%| '{1,2,3,4}' ORDER BY id <~> 150) s;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+RESET enable_sort;
+
+-- An empty index.
+CREATE TABLE mk_empty (a int4[]);
+CREATE INDEX mk_empty_a ON mk_empty USING bark (a bark_int4_array_ops);
+SET enable_seqscan = off;
+SELECT count(*) FROM mk_empty WHERE a && '{1}';
+RESET enable_seqscan;
+
+-- A bitmap scan of the multikey index ANDed with another index's.
+CREATE INDEX mk_b1_id ON mk_b1 (id);
+SET enable_seqscan = off;
+SET enable_indexscan = off;
+EXPLAIN (COSTS OFF)
+SELECT count(*) FROM mk_b1 WHERE a && '{1,5,77}' AND id BETWEEN 1000 AND 9000;
+SELECT count(*), md5(string_agg(id::text, ',' ORDER BY id))
+  FROM mk_b1 WHERE a && '{1,5,77}' AND id BETWEEN 1000 AND 9000;
+RESET enable_seqscan;
+RESET enable_indexscan;
+SELECT count(*), md5(string_agg(id::text, ',' ORDER BY id))
+  FROM mk_seq WHERE a && '{1,5,77}' AND id BETWEEN 1000 AND 9000;
+DROP INDEX mk_b1_id;
+
+-- Index-only scans return the fixed columns, each row once; the extracted
+-- column holds keys, not values, so only a class with procedure 14 returns
+-- it.
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+EXPLAIN (COSTS OFF) SELECT tenant FROM mk_b2 WHERE tenant = 3;
+SELECT count(*), sum(tenant) FROM mk_b2 WHERE tenant = 3;
+EXPLAIN (COSTS OFF) SELECT tenant FROM mk_b2 WHERE tenant IN (3, 5);
+SELECT count(*), sum(tenant) FROM mk_b2 WHERE tenant IN (3, 5);
+EXPLAIN (COSTS OFF) SELECT a FROM mk_b1 WHERE a && '{1}';
+-- The extracted column again as an INCLUDE column holds its value, so an
+-- index-only scan returns it and rechecks the qual on it; each row once,
+-- and NULL and empty arrays come back as themselves.
+CREATE TABLE mk_cov (id int, a int4[]);
+INSERT INTO mk_cov SELECT g, CASE WHEN g % 97 = 0 THEN NULL WHEN g % 89 = 0 THEN '{}'
+                                  ELSE ARRAY[g % 50, g % 7 + 100] END
+  FROM generate_series(1, 6000) g;
+CREATE INDEX mk_cov_a ON mk_cov USING bark (a bark_int4_array_ops) INCLUDE (a, id);
+VACUUM ANALYZE mk_cov;
+EXPLAIN (COSTS OFF) SELECT id, a FROM mk_cov WHERE a && '{3,101}';
+CREATE TEMP TABLE mk_cov_ios AS SELECT id, a FROM mk_cov WHERE a && '{3,101}';
+CREATE TEMP TABLE mk_cov_ios2 AS SELECT id, a FROM mk_cov WHERE a @> '{3,101}';
+CREATE TEMP TABLE mk_cov_ios3 AS SELECT id, a FROM mk_cov WHERE a IS NULL;
+RESET enable_seqscan;
+SET enable_indexscan = off;
+SET enable_indexonlyscan = off;
+SELECT (SELECT count(*) FROM mk_cov_ios) AS n,
+       (SELECT array_agg(id || ':' || a::text ORDER BY id) FROM mk_cov_ios) =
+       (SELECT array_agg(id || ':' || a::text ORDER BY id) FROM mk_cov WHERE a && '{3,101}') AS overlap_ok,
+       (SELECT array_agg(id ORDER BY id) FROM mk_cov_ios2) =
+       (SELECT array_agg(id ORDER BY id) FROM mk_cov WHERE a @> '{3,101}') AS contains_ok,
+       (SELECT array_agg(id ORDER BY id) FROM mk_cov_ios3) =
+       (SELECT array_agg(id ORDER BY id) FROM mk_cov WHERE a IS NULL) AS isnull_ok;
+RESET enable_indexscan;
+RESET enable_indexonlyscan;
+DROP TABLE mk_cov, mk_cov_ios, mk_cov_ios2, mk_cov_ios3;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SELECT count(*), sum(tenant) FROM mk_seq WHERE tenant IN (3, 5);
+CREATE FUNCTION mk_fetch(int4) RETURNS int4[]
+  AS 'SELECT ARRAY[$1]' LANGUAGE sql IMMUTABLE STRICT;
+CREATE OPERATOR FAMILY mk_single_ops USING bark;
+CREATE OPERATOR CLASS mk_single_ops FOR TYPE int4[] USING bark
+  FAMILY mk_single_ops AS
+    OPERATOR 1 && (anyarray, anyarray),
+    OPERATOR 3 <@ (anyarray, anyarray),
+    FUNCTION 1 (int4[], int4[]) btint4cmp(int4, int4),
+    FUNCTION 7 bark_multikey_extract_value(int4[], internal, internal),
+    FUNCTION 8 bark_multikey_extract_query(int4[], int2, internal, internal,
+                                           internal, internal, internal),
+    FUNCTION 9 bark_multikey_recheck(int4, int2, internal),
+    FUNCTION 14 mk_fetch(int4),
+    STORAGE int4;
+CREATE TABLE mk_single (id int, a int4[], n name);
+INSERT INTO mk_single SELECT g, CASE WHEN g % 10 = 0 THEN NULL
+                                     ELSE ARRAY[g % 100] END, 'n' || g % 3
+  FROM generate_series(1, 5000) g;
+CREATE INDEX mk_single_a ON mk_single USING bark (a mk_single_ops, n, id);
+VACUUM ANALYZE mk_single;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+-- Procedure 14 is reserved and not used: an index-only scan never returns
+-- the multikey column (nor serves a query whose quals name it), since the
+-- NULL key stands for a NULL value, '{}' and '{NULL}' alike, and a row with
+-- several keys has an entry per key.  Rows with '{}', '{NULL}' and NULL
+-- (each one NULL entry, so the index stays single-key) show the values
+-- come from the heap.
+INSERT INTO mk_single VALUES (90001, '{}', 'n1'), (90002, '{NULL}', 'n1'),
+  (90003, NULL, 'n1');
+EXPLAIN (COSTS OFF) SELECT a, n, id FROM mk_single WHERE a && '{5,7}';
+SELECT count(*), md5(string_agg(a::text || n || id, ',' ORDER BY id))
+  FROM mk_single WHERE a && '{5,7}';
+SELECT id, a FROM mk_single WHERE id > 90000 AND a IS NOT DISTINCT FROM a
+  AND (a = '{}' OR a = '{NULL}' OR a IS NULL) ORDER BY id;
+-- With procedure 14 rebuilding values, an index-only scan here returned {5}
+-- for '{5,6}' and dropped '{}' (its NULL entry rebuilt as NULL fails the
+-- recheck); both must come from the heap.
+CREATE TABLE mk_fetchless (id int, a int4[]);
+INSERT INTO mk_fetchless VALUES (1, '{}'), (2, '{NULL}'), (3, NULL), (4, '{5}'),
+  (5, '{5,6}');
+CREATE INDEX mk_fetchless_a ON mk_fetchless USING bark (a mk_single_ops, id);
+VACUUM ANALYZE mk_fetchless;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+EXPLAIN (COSTS OFF) SELECT id, a FROM mk_fetchless WHERE a <@ '{5,6}';
+SELECT id, a FROM mk_fetchless WHERE a <@ '{5,6}' ORDER BY id;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+DROP TABLE mk_fetchless;
+SELECT count(*), md5(string_agg(coalesce(a::text, '-') || n || id, ',' ORDER BY id))
+  FROM mk_single WHERE id < 300;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SELECT count(*), md5(string_agg(a::text || n || id, ',' ORDER BY id))
+  FROM mk_single WHERE a && '{5,7}';
+SELECT count(*), md5(string_agg(coalesce(a::text, '-') || n || id, ',' ORDER BY id))
+  FROM mk_single WHERE id < 300;
+
+-- An index that has never held a row with two entries (every array of one
+-- element, NULL or empty) needs no seen set, nor does a scan for one point;
+-- every other scan uses one.  CLUSTER reads the index with a non-MVCC
+-- snapshot, which always uses the set, and so copies each row once.
+-- mk_seen_set reads a row of a cursor over q and looks at the scan's seen
+-- set context, which must be inside the cursor's portal (the scan's
+-- context) and has children once the set exists.
+CREATE FUNCTION mk_seen_set(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+  c refcursor := 'mk_seen_cur';
+  r record;
+  res text;
+BEGIN
+  OPEN c FOR EXECUTE q;
+  FETCH c INTO r;
+  WITH m AS MATERIALIZED
+    (SELECT name, ident, level, path FROM pg_backend_memory_contexts)
+  SELECT string_agg(CASE WHEN EXISTS
+                      (SELECT 1 FROM m k
+                        WHERE k.level = s.level + 1
+                          AND k.path[s.level] = s.path[s.level])
+                    THEN 'uses a seen set' ELSE 'needs no seen set' END, ',')
+    INTO res
+    FROM m s JOIN m p ON p.name = 'PortalContext' AND p.ident = 'mk_seen_cur'
+                     AND s.path[p.level] = p.path[p.level]
+   WHERE s.name = 'BARK seen set';
+  CLOSE c;
+  RETURN res;
+END $$;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*) FROM mk_single WHERE a && '{5,7}';
+SELECT count(*) FROM mk_b1 WHERE a && '{5}';
+SELECT count(*) FROM mk_b1 WHERE a && '{5,7}';
+SELECT mk_seen_set('SELECT id FROM mk_single WHERE a && ''{5,7}''');
+SELECT mk_seen_set('SELECT id FROM mk_b1 WHERE a && ''{5}''');
+SELECT mk_seen_set('SELECT id FROM mk_b1 WHERE a && ''{5,7}''');
+DROP FUNCTION mk_seen_set(text);
+SELECT multikey FROM bark_multikey_meta('mk_single_a');
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+CLUSTER mk_b2 USING mk_b2_ta;
+SELECT count(*), count(DISTINCT id), md5(string_agg(id::text, ',' ORDER BY id))
+  FROM mk_b2;
+SELECT count(*), count(DISTINCT id), md5(string_agg(id::text, ',' ORDER BY id))
+  FROM mk_seq;
+SELECT n, q, c.* FROM mk_quals, mk_compare(q, '{mk_b2}') c
+  WHERE q IN ('a && ''{1,5,77}''', 'tenant = 3 AND a && ''{1,5,77}''',
+              'tenant IN (2, 4) AND a && ''{10,20,30}''')
+  ORDER BY n;
+
+-- Ordered-operator (KNN) scans on the fixed leading column keep one seen
+-- set for the whole scan.
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SET enable_sort = off;
+EXPLAIN (COSTS OFF)
+SELECT id FROM mk_b2 WHERE a && '{1,5,77}' ORDER BY tenant <~> 3;
+SELECT count(*), count(DISTINCT id), md5(string_agg(id::text, ',' ORDER BY id)),
+       bool_and(d >= prev) AS ordered
+FROM (SELECT id, d, lag(d, 1, 0) OVER () AS prev
+        FROM (SELECT id, abs(tenant - 3) AS d FROM mk_b2
+               WHERE a && '{1,5,77}' ORDER BY tenant <~> 3) s) s;
+SELECT count(*), count(DISTINCT id)
+  FROM (SELECT id FROM mk_b2 ORDER BY tenant <~> 3) s;
+-- Index-only, and with entries procedure 9 drops.  The LIMIT takes the
+-- rows of tenants 2, 3 and 4 exactly, so ties at the cut do not matter.
+EXPLAIN (COSTS OFF)
+SELECT tenant FROM mk_b2 ORDER BY tenant <~> 3 LIMIT 8571;
+SELECT count(*), sum(tenant), bool_and(d >= prev) AS ordered
+FROM (SELECT tenant, d, lag(d, 1, 0) OVER () AS prev
+        FROM (SELECT tenant, abs(tenant - 3) AS d FROM mk_b2
+               ORDER BY tenant <~> 3 LIMIT 8571) s) s;
+SELECT count(*), sum(tenant) FROM mk_seq WHERE tenant BETWEEN 2 AND 4;
+SET enable_indexonlyscan = off;
+SELECT count(*), count(DISTINCT id), md5(string_agg(id::text, ',' ORDER BY id))
+  FROM (SELECT id FROM mk_bd WHERE a |%| '{2,3,4,5,6,7,8}'
+         ORDER BY tenant <~> 3) s;
+RESET enable_indexonlyscan;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+RESET enable_sort;
+SELECT mk_run('mk_seq', 'a |%| ''{2,3,4,5,6,7,8}''', 'seq');
+SELECT mk_run('mk_seq', 'a && ''{1,5,77}''', 'seq');
+
+-- An ordering operator on the extracted column, MongoDB's sort rule for
+-- arrays: |<| orders rows by their smallest element, and |>>| (sorted by
+-- >>>) by their largest, descending.  A row with no element (a NULL or
+-- empty array, or NULL elements only) has a NULL result and comes last.
+-- The index serves both without a Sort, returning each row once, at its
+-- first key, whatever the column's order and NULLS option, and a filter on
+-- the column does not change the order (the executor rechecks it).
+-- Compared with a Sort over unnest from a sequential scan: the sequence of
+-- ORDER BY values, and the (id, value) pairs.  (enable_sort is off because
+-- a selective filter would otherwise be planned as an Index Cond under a
+-- Sort, which is a different plan, not the one under test.)
+CREATE TABLE mk_onf AS SELECT * FROM mk_rows();
+CREATE INDEX mk_onf_a ON mk_onf USING bark (a bark_int4_array_ops NULLS FIRST);
+CREATE TABLE mk_od AS SELECT * FROM mk_rows();
+CREATE INDEX mk_od_a ON mk_od USING bark (a bark_int4_array_ops DESC);
+CREATE FUNCTION mk_order(tbl text, op text, filter text) RETURNS text
+LANGUAGE plpgsql AS $$
+DECLARE
+  q text := format('SELECT id, a %s 0 AS k FROM %I WHERE %s ORDER BY a %s 0 %s',
+                   op, tbl, filter, op,
+                   CASE op WHEN '|>>|' THEN 'USING >>>' ELSE '' END);
+  ref text := format('SELECT id, (SELECT %s(e) FROM unnest(a) e) AS k
+                        FROM mk_seq WHERE %s',
+                     CASE op WHEN '|<|' THEN 'min' ELSE 'max' END, filter);
+  plan text;
+  sorted bool := false;
+  indexed bool := false;
+  r record;
+  ids int[] := '{}';
+  ks int[] := '{}';
+  refseq text;
+  refpairs text;
+BEGIN
+  PERFORM set_config('enable_seqscan', 'off', true);
+  PERFORM set_config('enable_bitmapscan', 'off', true);
+  PERFORM set_config('enable_sort', 'off', true);
+  FOR plan IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+    sorted := sorted OR plan LIKE '%Sort%';
+    indexed := indexed OR plan LIKE '%Index Scan using%';
+  END LOOP;
+  IF sorted OR NOT indexed THEN
+    RETURN 'wrong plan';
+  END IF;
+  FOR r IN EXECUTE q LOOP
+    ids := array_append(ids, r.id);
+    ks := array_append(ks, r.k);
+  END LOOP;
+  PERFORM set_config('enable_seqscan', 'on', true);
+  EXECUTE format('SELECT md5(string_agg(coalesce(k::text, ''N''), '',''
+                                        ORDER BY k %s NULLS LAST)),
+                         md5(string_agg(id || '':'' || coalesce(k::text, ''N''),
+                                        '','' ORDER BY id))
+                    FROM (%s) s',
+                 CASE op WHEN '|<|' THEN 'ASC' ELSE 'DESC' END, ref)
+    INTO refseq, refpairs;
+  RETURN cardinality(ids) || ' rows, order ' ||
+    (md5(array_to_string(ks, ',', 'N')) IS NOT DISTINCT FROM refseq) ||
+    ', pairs ' ||
+    ((SELECT md5(string_agg(i || ':' || coalesce(k::text, 'N'), ',' ORDER BY i))
+        FROM unnest(ids, ks) u(i, k)) IS NOT DISTINCT FROM refpairs);
+END $$;
+SELECT t, op, f, mk_order(t, op, f)
+  FROM unnest('{mk_b1,mk_onf,mk_od}'::text[]) t,
+       unnest('{|<|,|>>|}'::text[]) op,
+       unnest(ARRAY['true', 'a && ''{1,5,77}''',
+                    'a <@ ''{1,2,3,4,5,6,7,8,9,10}''', 'a IS NOT NULL']) f
+  ORDER BY t COLLATE "C", op COLLATE "C", f COLLATE "C";
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+EXPLAIN (COSTS OFF)
+SELECT a |<| 0 FROM mk_b1 WHERE a && '{1,5,77}' ORDER BY a |<| 0 LIMIT 3;
+SELECT a |<| 0 FROM mk_b1 WHERE a && '{1,5,77}' ORDER BY a |<| 0 LIMIT 3;
+EXPLAIN (COSTS OFF)
+SELECT a |>>| 0 FROM mk_od ORDER BY a |>>| 0 USING >>> LIMIT 3;
+SELECT a |>>| 0 FROM mk_od ORDER BY a |>>| 0 USING >>> LIMIT 3;
+-- A NULL argument makes every result NULL: any order, but every row once.
+SET plan_cache_mode = force_generic_plan;
+PREPARE mk_onull(int) AS
+  SELECT count(*), count(DISTINCT id)
+    FROM (SELECT id FROM mk_onf ORDER BY a |<| $1) s;
+EXPLAIN (COSTS OFF) EXECUTE mk_onull(NULL);
+EXECUTE mk_onull(NULL);
+DEALLOCATE mk_onull;
+RESET plan_cache_mode;
+-- The scan reports a row's key as its ORDER BY value, so an ordering
+-- operator must return the key type: |<<| returns int8, and is refused,
+-- and distance_orderable says so.
+CREATE TABLE mk_o8 AS SELECT * FROM mk_rows() WHERE id <= 200;
+CREATE INDEX mk_o8_a ON mk_o8 USING bark (a bark_int4_array_range_ops);
+SET enable_sort = off;
+SELECT id FROM mk_o8 ORDER BY a |<<| 0 LIMIT 1;
+RESET enable_sort;
+SELECT i, pg_index_column_has_property(i, 1, 'distance_orderable')
+  FROM unnest('{mk_b1_a,mk_onf_a,mk_od_a,mk_o8_a}'::regclass[]) i;
+DROP TABLE mk_onf, mk_od, mk_o8;
+DROP FUNCTION mk_order;
+
+-- No parallel index scan of an index with an extracted column: the workers
+-- would read a row's entries on different leaves, and could not share the
+-- seen set.  The planner never offers one, even for a scan that needs no
+-- set (one point), or for an index-only scan of the fixed column.  A
+-- parallel bitmap heap scan is fine: one process builds the bitmap.
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_index_scan_size = 0;
+SET min_parallel_table_scan_size = 0;
+SET max_parallel_workers_per_gather = 2;
+SET random_page_cost = 1;
+ALTER TABLE mk_b1 SET (parallel_workers = 2);
+ALTER TABLE mk_b2 SET (parallel_workers = 2);
+EXPLAIN (COSTS OFF) SELECT count(*) FROM mk_b1 WHERE a @> '{}';
+SELECT count(*) FROM mk_b1 WHERE a @> '{}';
+SELECT mk_run('mk_seq', 'a @> ''{}''', 'seq');
+EXPLAIN (COSTS OFF) SELECT count(*) FROM mk_b1 WHERE a && '{5}';
+SELECT count(*) FROM mk_b1 WHERE a && '{5}';
+SELECT mk_run('mk_seq', 'a && ''{5}''', 'seq');
+EXPLAIN (COSTS OFF) SELECT count(*) FROM mk_b2 WHERE tenant > 2;
+SELECT count(*) FROM mk_b2 WHERE tenant > 2;
+SET enable_bitmapscan = on;
+EXPLAIN (COSTS OFF) SELECT count(*) FROM mk_b1 WHERE a && '{1,5,77}';
+SELECT count(*) FROM mk_b1 WHERE a && '{1,5,77}';
+SELECT mk_run('mk_seq', 'a && ''{1,5,77}''', 'seq');
+SELECT count(*) FROM mk_seq WHERE tenant > 2;
+ALTER TABLE mk_b1 RESET (parallel_workers);
+ALTER TABLE mk_b2 RESET (parallel_workers);
+RESET random_page_cost;
+RESET max_parallel_workers_per_gather;
+RESET min_parallel_table_scan_size;
+RESET min_parallel_index_scan_size;
+RESET parallel_tuple_cost;
+RESET parallel_setup_cost;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+
+-- A broken class: boundaries of one call that intersect, a search element
+-- whose strategy does not fit its side, and procedure 9 answers outside
+-- 0-2, are errors.
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*) FROM mk_r1 WHERE a |!| 5;
+SELECT count(*) FROM mk_r1 WHERE a |!| -5;
+SELECT count(*) FROM mk_r1 WHERE a |!| -500;
+SELECT count(*) FROM mk_r1 WHERE a |!| 0;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+
+-- Costing.  An index scan that needs the seen set is not planned when its
+-- rows per group of the fixed columns, at 16 bytes each, exceed work_mem
+-- times hash_mem_multiplier: at work_mem = 64 and a multiplier of 1 that is
+-- 4096 rows, below a tenant's 5000.  The heap is in tenant order, so at the
+-- default work_mem an index scan of one tenant wins.  Every row carries
+-- 1000, so a && '{1000}' is one point that selects the whole tenant; such a
+-- scan needs no seen set and keeps its index scan.  The range class makes
+-- |=| ANY a ScalarArrayOp on the extracted column.  A bitmap scan builds no
+-- set and takes over when the index scan is ruled out.  Each plan's answer
+-- must match the sequential scan's at the end.
+CREATE TABLE mk_cost AS
+  SELECT g AS id, g / 5000 AS tenant, ARRAY[g % 300, (g * 7) % 300, 1000] AS a
+  FROM generate_series(1, 200000) g;
+CREATE INDEX mk_cost_ta ON mk_cost USING bark (tenant, a bark_int4_array_range_ops);
+VACUUM ANALYZE mk_cost;
+CREATE VIEW mk_cost_q AS
+  SELECT 1 AS q, count(*) AS n, count(DISTINCT id) AS ndistinct, sum(id) AS total FROM mk_cost
+    WHERE tenant = 3
+  UNION ALL
+  SELECT 2, count(*) AS n, count(DISTINCT id) AS ndistinct, sum(id) AS total FROM mk_cost
+    WHERE tenant = 3 AND a && '{1,2,3}'
+  UNION ALL
+  SELECT 3, count(*) AS n, count(DISTINCT id) AS ndistinct, sum(id) AS total FROM mk_cost
+    WHERE tenant = 3 AND a && '{1000}'
+  UNION ALL
+  SELECT 4, count(*) AS n, count(DISTINCT id) AS ndistinct, sum(id) AS total FROM mk_cost
+    WHERE tenant = 3 AND a |=| ANY (ARRAY[1, 2, 3]);
+SET enable_bitmapscan = off;
+EXPLAIN (COSTS OFF) SELECT * FROM mk_cost_q;
+SELECT * FROM mk_cost_q;
+SET work_mem = 64;
+SET hash_mem_multiplier = 1;
+EXPLAIN (COSTS OFF) SELECT * FROM mk_cost_q;
+SELECT * FROM mk_cost_q;
+RESET enable_bitmapscan;
+EXPLAIN (COSTS OFF) SELECT * FROM mk_cost_q;
+SELECT * FROM mk_cost_q;
+RESET work_mem;
+RESET hash_mem_multiplier;
+SET enable_indexscan = off;
+SET enable_bitmapscan = off;
+EXPLAIN (COSTS OFF) SELECT * FROM mk_cost_q;
+SELECT * FROM mk_cost_q;
+RESET enable_indexscan;
+RESET enable_bitmapscan;
+DROP VIEW mk_cost_q;
+
+-- An ordered scan on the extracted column reads every entry, but fetches
+-- only the rows the fixed columns' quals pass.  With LIMIT it wins over a
+-- sort; a filter on the extracted column alone is only rechecked, so it
+-- does not make the ordered scan look cheap.  Answers match the seqscan.
+CREATE INDEX mk_cost_a ON mk_cost USING bark (a bark_int4_array_ops);
+EXPLAIN (COSTS OFF) SELECT id FROM mk_cost ORDER BY a |<| 0 LIMIT 5;
+WITH s AS (SELECT id, a, a |<| 0 AS k FROM mk_cost ORDER BY a |<| 0 LIMIT 300)
+SELECT count(*), count(DISTINCT id),
+       bool_and(k = (SELECT min(e) FROM unnest(a) e)) AS exact,
+       max(k) <= (SELECT k FROM (SELECT (SELECT min(e) FROM unnest(a) e) AS k
+                                   FROM mk_cost ORDER BY 1 OFFSET 299 LIMIT 1) r)
+         AS smallest
+  FROM s;
+-- Only the kind of plan is shown: the index or bitmap scan under the sort
+-- depends on ANALYZE's sample.
+CREATE FUNCTION mk_cost_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+  l text;
+  sorted bool := false;
+  ordered bool := false;
+BEGIN
+  FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+    sorted := sorted OR l ~ '^ *Sort$';
+    ordered := ordered OR l ~ 'Order By:';
+  END LOOP;
+  RETURN CASE WHEN ordered THEN 'ordered index scan'
+              WHEN sorted THEN 'sort' ELSE 'other' END;
+END $$;
+SELECT mk_cost_plan($q$SELECT id FROM mk_cost WHERE a && '{7}' ORDER BY a |<| 0$q$);
+DROP FUNCTION mk_cost_plan;
+DROP INDEX mk_cost_a;
+DROP TABLE mk_cost;
+
+DROP TABLE mk_3, mk_big, mk_empty;
+DROP TABLE mk_seq, mk_gin, mk_b1, mk_b2, mk_bd, mk_bn, mk_rn, mk_r1, mk_ins, mk_once,
+  mk_outer, mk_single, mk_quals, mk_rquals, mk_nulls;
+DROP OPERATOR CLASS mk_single_ops USING bark CASCADE;
+DROP FUNCTION mk_rows(), mk_run(text, text, text), mk_compare(text, text[]),
+  mk_fetch(int4), mk_cursor(text), mk_backward(text, text), mk_scroll(text);
+DROP EXTENSION bark_multikey;
+
+-- RUM's addon ordering: an ordering operator on the column after the
+-- extracted one, when the extracted column's qual is one point and every
+-- column before it has an equality.  The KNN scan runs inside that point's
+-- run.  Each answer is compared with a Sort over a sequential scan of the
+-- same rows: count, distinct ids, the exact distances in order, and the ids
+-- strictly inside the LIMIT's last distance (ties at the cut may differ),
+-- or every id without a LIMIT.  NULL created sorts last.
+CREATE EXTENSION bark_multikey;
+CREATE FUNCTION mk_ord_rows() RETURNS TABLE (id int, tenant int, tags int4[], created int)
+LANGUAGE sql AS $$
+  SELECT g, g % 3,
+         CASE WHEN g % 101 = 0 THEN '{}'::int4[] WHEN g % 103 = 0 THEN NULL
+              ELSE ARRAY[g % 10, 100 + g % 7] END,
+         CASE WHEN g % 97 = 0 THEN NULL ELSE (g * 7919) % 5000 END
+  FROM generate_series(1, 30000) g
+$$;
+CREATE TABLE mk_ord AS SELECT * FROM mk_ord_rows();
+CREATE INDEX mk_ord_ac ON mk_ord USING bark (tags bark_int4_array_ops, created);
+CREATE INDEX mk_ord_tac ON mk_ord USING bark (tenant, tags bark_int4_array_ops, created);
+CREATE TABLE mk_ord_seq AS SELECT * FROM mk_ord_rows();
+ANALYZE mk_ord, mk_ord_seq;
+SELECT bark_index_check('mk_ord_ac'), bark_index_check('mk_ord_tac');
+CREATE FUNCTION mk_ord_one(tbl text, qual text, ctr int, lim int) RETURNS text
+LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+  EXECUTE format($q$
+    SELECT count(*) || ':' || count(DISTINCT id) || ':' ||
+           md5(coalesce(string_agg(coalesce(d::text, 'N'), ',' ORDER BY n), '')) || ':' ||
+           md5(coalesce(string_agg(id::text, ',' ORDER BY id)
+                          FILTER (WHERE %s OR d < maxd), ''))
+      FROM (SELECT id, d, n, max(d) OVER () AS maxd
+              FROM (SELECT id, abs(created - %s) AS d, row_number() OVER () AS n
+                      FROM (SELECT id, created FROM %I WHERE %s
+                             ORDER BY created <~> %s LIMIT %s) s) s) s$q$,
+    (lim IS NULL)::text, ctr, tbl, qual, ctr, coalesce(lim::text, 'ALL')) INTO r;
+  RETURN r;
+END $$;
+CREATE FUNCTION mk_ord_cmp(qual text, ctr int, lim int) RETURNS text
+LANGUAGE plpgsql AS $$
+DECLARE
+  plan text;
+  a text;
+  b text;
+BEGIN
+  PERFORM set_config('enable_seqscan', 'off', true);
+  PERFORM set_config('enable_bitmapscan', 'off', true);
+  PERFORM set_config('enable_sort', 'off', true);
+  FOR plan IN EXECUTE format('EXPLAIN (COSTS OFF) SELECT id FROM mk_ord WHERE %s ORDER BY created <~> %s LIMIT %s',
+                 qual, ctr, coalesce(lim::text, 'ALL')) LOOP
+    IF plan ~ 'Order By' THEN a := 'knn'; END IF;
+  END LOOP;
+  b := coalesce(a, 'sort');
+  plan := b;
+  a := mk_ord_one('mk_ord', qual, ctr, lim);
+  PERFORM set_config('enable_seqscan', 'on', true);
+  PERFORM set_config('enable_bitmapscan', 'on', true);
+  PERFORM set_config('enable_sort', 'on', true);
+  b := mk_ord_one('mk_ord_seq', qual, ctr, lim);
+  RETURN CASE WHEN a <> b THEN 'DIFF index ' || a || ' seq ' || b
+              ELSE plan || ' ' || split_part(a, ':', 1) || ' rows' END;
+END $$;
+-- The plans: an index scan with the ordering operator and no Sort.
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+EXPLAIN (COSTS OFF)
+SELECT id FROM mk_ord WHERE tags && '{3}' ORDER BY created <~> 2500 LIMIT 10;
+EXPLAIN (COSTS OFF)
+SELECT id FROM mk_ord WHERE tenant = 1 AND tags @> '{103}' ORDER BY created <~> 700 LIMIT 10;
+-- Not one point, or not every earlier column fixed: a Sort.
+EXPLAIN (COSTS OFF)
+SELECT id FROM mk_ord WHERE tags && '{3,4}' ORDER BY created <~> 2500 LIMIT 10;
+EXPLAIN (COSTS OFF)
+SELECT id FROM mk_ord WHERE tags && '{3}' AND tags && '{103}' ORDER BY created <~> 2500 LIMIT 10;
+EXPLAIN (COSTS OFF)
+SELECT id FROM mk_ord WHERE tenant IN (1, 2) AND tags && '{3}' ORDER BY created <~> 2500 LIMIT 10;
+EXPLAIN (COSTS OFF)
+SELECT id FROM mk_ord WHERE tags @> '{3,103}' ORDER BY created <~> 2500 LIMIT 10;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+-- The answers.  The run of tag 3 is 3000 rows over many leaves; created
+-- repeats about six times, so there are ties; some created are NULL.
+SELECT q, ctr, lim, mk_ord_cmp(q, ctr, lim)
+  FROM (VALUES ('tags && ''{3}''', 2500, 10), ('tags && ''{3}''', 2500, 500),
+               ('tags && ''{3}''', 2500, NULL), ('tags && ''{3}''', 0, 7),
+               ('tags && ''{3}''', 4999, 13), ('tags && ''{3}''', -100, 40),
+               ('tags && ''{3}''', 100000, 25), ('tags && ''{0}''', 1234, NULL),
+               ('tags && ''{9}''', 2500, 3001), ('tags @> ''{103}''', 1, 50),
+               ('tags && ''{55}''', 2500, 10), ('tags && ''{55}''', 2500, NULL),
+               ('tenant = 1 AND tags && ''{3}''', 1000, 20),
+               ('tenant = 1 AND tags @> ''{103}''', 700, NULL),
+               ('tenant = 2 AND tags && ''{106}'' AND created > 100', 4000, 30),
+               ('tenant = 5 AND tags && ''{3}''', 1000, 20),
+               ('tags && ''{3,4}''', 2500, 30),
+               ('tenant IN (0, 1) AND tags && ''{3}''', 1000, 20)) v(q, ctr, lim);
+-- After inserts that split the run's leaves.
+INSERT INTO mk_ord SELECT id + 100000, tenant, tags, created FROM mk_ord_rows() WHERE id % 4 = 0;
+INSERT INTO mk_ord_seq SELECT id + 100000, tenant, tags, created FROM mk_ord_rows() WHERE id % 4 = 0;
+SELECT bark_index_check('mk_ord_ac'), bark_index_check('mk_ord_tac');
+SELECT q, ctr, lim, mk_ord_cmp(q, ctr, lim)
+  FROM (VALUES ('tags && ''{4}''', 3000, 100), ('tags && ''{4}''', 3000, NULL),
+               ('tenant = 0 AND tags && ''{104}''', 10, 60)) v(q, ctr, lim);
+-- A generic plan keeps the KNN scan with parameters the executor may set to
+-- NULL.  A NULL ordering constant makes every distance NULL, so the scan
+-- returns every row of the run, as a Sort over the NULL distances does; a
+-- NULL equality on the fixed prefix matches no entry, so the run is empty,
+-- as tenant = NULL matches no row.  mk_ord_gcheck runs the prepared
+-- statement and compares its rows with the seqscan's rows for the same
+-- qual: the rows returned, distinct ids, NULL distances, ids outside the
+-- run, ids of the run not returned, and whether the distances in order are
+-- the first n of the seqscan's sorted distances.
+CREATE FUNCTION mk_ord_gcheck(exec text, qual text, ctr int,
+  OUT n bigint, OUT ids bigint, OUT nulld bigint, OUT outside bigint,
+  OUT missing bigint, OUT exact bool)
+LANGUAGE plpgsql AS $$
+BEGIN
+  EXECUTE 'CREATE TEMP TABLE mk_ord_r AS ' || exec;
+  EXECUTE format($q$
+    SELECT count(*), count(DISTINCT id), count(*) FILTER (WHERE d IS NULL),
+           (SELECT count(*) FROM mk_ord_r
+             WHERE id NOT IN (SELECT id FROM mk_ord_seq WHERE %s)),
+           (SELECT count(*) FROM mk_ord_seq
+             WHERE %s AND id NOT IN (SELECT id FROM mk_ord_r)),
+           md5(coalesce(string_agg(coalesce(d::text, 'N'), ',' ORDER BY rn), '')) =
+           (SELECT md5(coalesce(string_agg(coalesce(d::text, 'N'), ',' ORDER BY rn), ''))
+              FROM (SELECT created <~> %L::int AS d, row_number() OVER () AS rn
+                      FROM (SELECT created FROM mk_ord_seq WHERE %s
+                             ORDER BY created <~> %L::int
+                             LIMIT (SELECT count(*) FROM mk_ord_r)) s) s)
+      FROM mk_ord_r$q$, qual, qual, ctr, qual, ctr)
+    INTO n, ids, nulld, outside, missing, exact;
+  DROP TABLE mk_ord_r;
+END $$;
+SET plan_cache_mode = force_generic_plan;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+PREPARE mk_ord_g_ac(int, int) AS
+  SELECT id, d, row_number() OVER () AS rn
+    FROM (SELECT id, created <~> $1 AS d FROM mk_ord
+           WHERE tags && '{3}' ORDER BY created <~> $1 LIMIT $2) s;
+PREPARE mk_ord_g_tac(int, int, int) AS
+  SELECT id, d, row_number() OVER () AS rn
+    FROM (SELECT id, created <~> $2 AS d FROM mk_ord
+           WHERE tenant = $1 AND tags && '{3}'
+           ORDER BY created <~> $2 LIMIT $3) s;
+EXPLAIN (COSTS OFF) EXECUTE mk_ord_g_ac(NULL, NULL);
+EXPLAIN (COSTS OFF) EXECUTE mk_ord_g_tac(NULL, NULL, NULL);
+SELECT e, r.*
+  FROM (VALUES ('EXECUTE mk_ord_g_ac(NULL, NULL)', 'tags && ''{3}''', NULL),
+               ('EXECUTE mk_ord_g_ac(NULL, 5)', 'tags && ''{3}''', NULL),
+               ('EXECUTE mk_ord_g_ac(2500, NULL)', 'tags && ''{3}''', 2500),
+               ('EXECUTE mk_ord_g_ac(2500, 9)', 'tags && ''{3}''', 2500),
+               ('EXECUTE mk_ord_g_tac(1, NULL, NULL)', 'tenant = 1 AND tags && ''{3}''', NULL),
+               ('EXECUTE mk_ord_g_tac(2, NULL, 7)', 'tenant = 2 AND tags && ''{3}''', NULL),
+               ('EXECUTE mk_ord_g_tac(1, 1000, NULL)', 'tenant = 1 AND tags && ''{3}''', 1000),
+               ('EXECUTE mk_ord_g_tac(NULL, 1000, NULL)', 'tenant = NULL AND tags && ''{3}''', 1000),
+               ('EXECUTE mk_ord_g_tac(NULL, NULL, NULL)', 'tenant = NULL AND tags && ''{3}''', NULL),
+               ('EXECUTE mk_ord_g_tac(5, NULL, NULL)', 'tenant = 5 AND tags && ''{3}''', NULL))
+       v(e, q, c),
+       LATERAL mk_ord_gcheck(e, q, c) r;
+DEALLOCATE mk_ord_g_ac;
+DEALLOCATE mk_ord_g_tac;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+RESET plan_cache_mode;
+-- Paths the planner never builds, through bark_multikey_knn, which hands
+-- the index AM the scan keys and ordering key it is given.  mk_knn_check
+-- compares an ordered scan's TIDs with the rows of mk_ord that the same
+-- condition (qual) selects: n rows, duplicates, rows outside qual, rows of
+-- qual missing, and whether the distances come in order.
+CREATE FUNCTION mk_knn_check(idx text, cols int2[], ops regoperator[],
+  args text[], ctr int, qual text,
+  OUT n bigint, OUT dup bigint, OUT outside bigint, OUT missing bigint,
+  OUT ordered bool)
+LANGUAGE plpgsql AS $$
+BEGIN
+  EXECUTE format($q$
+    WITH r AS (SELECT tid, dist, row_number() OVER () AS rn
+                 FROM bark_multikey_knn(%L, %L, %L, %L, %s,
+                                        '<~>(int4,int4)'::regoperator, %s)),
+         want AS (SELECT ctid FROM mk_ord WHERE %s)
+    SELECT (SELECT count(*) FROM r),
+           (SELECT count(*) - count(DISTINCT tid) FROM r),
+           (SELECT count(*) FROM r WHERE tid NOT IN (SELECT ctid FROM want)),
+           (SELECT count(*) FROM want WHERE ctid NOT IN (SELECT tid FROM r)),
+           (SELECT coalesce(bool_and(p <= d), true)
+              FROM (SELECT dist AS d, lag(dist) OVER (ORDER BY rn) AS p FROM r) s
+             WHERE p IS NOT NULL)$q$,
+    idx, cols, ops, args,
+    (SELECT attnum FROM pg_attribute WHERE attrelid = idx::regclass AND attname = 'created'),
+    ctr, qual)
+    INTO n, dup, outside, missing, ordered;
+END $$;
+SELECT c, k.*
+  FROM (VALUES
+    -- An inequality and an equality on tenant: the inequality only filters.
+    ('ineq then eq', 'mk_ord_tac', '{1,1,2}'::int2[],
+     '{">(int4,int4)","=(int4,int4)","&&(anyarray,anyarray)"}'::regoperator[],
+     '{0,1,"{3}"}'::text[], 'tenant > 0 AND tenant = 1 AND tags && ''{3}'''),
+    -- A ScalarArrayOp on tenant is skipped for the equality after it.
+    ('saop then eq', 'mk_ord_tac', '{1,1,2}',
+     '{"=(int4,int4)","=(int4,int4)","&&(anyarray,anyarray)"}',
+     '{"{1,2}",2,"{3}"}', 'tenant IN (1, 2) AND tenant = 2 AND tags && ''{3}'''),
+    -- A cross-type equality fixes the column through its ORDER proc.
+    ('cross-type eq', 'mk_ord_tac', '{1,2}',
+     '{"=(int4,int8)","&&(anyarray,anyarray)"}', '{1,"{3}"}',
+     'tenant = 1 AND tags && ''{3}'''),
+    -- A NULL equality: the run is empty.
+    ('null eq', 'mk_ord_tac', '{1,2}',
+     '{"=(int4,int4)","&&(anyarray,anyarray)"}', '{NULL,"{3}"}', 'false'),
+    -- An empty array: no boundary, so no entry.
+    ('empty point', 'mk_ord_ac', '{1}', '{"&&(anyarray,anyarray)"}', '{"{}"}',
+     'false'),
+    -- = '{}' has no key: procedure 8 asks for the NULL entries, which stand
+    -- for NULL and empty arrays alike, so the run is those entries, and the
+    -- backward cursor stops at the tenant's last non-NULL entry.
+    ('null point', 'mk_ord_tac', '{1,2}', '{"=(int4,int4)","=(anyarray,anyarray)"}',
+     '{1,"{}"}', 'tenant = 1 AND (tags IS NULL OR tags = ''{}'')'),
+    -- A key on the ordered column itself only filters.
+    ('key on ordered col', 'mk_ord_tac', '{1,2,3}',
+     '{"=(int4,int4)","&&(anyarray,anyarray)",">(int4,int4)"}', '{1,"{3}",2500}',
+     'tenant = 1 AND tags && ''{3}'' AND created > 2500')
+  ) v(c, i, cols, ops, args, q),
+  mk_knn_check(i, cols, ops, args, 1000, q) k;
+-- A NULL test on the extracted column is not a point of the class's
+-- procedure 8, so it fixes nothing either, and neither does a NULL test
+-- on a fixed column.
+SELECT count(*) FROM bark_multikey_knn('mk_ord_tac', '{1,2}',
+  '{"=(int4,int4)",NULL}', '{1,null}', 3, '<~>(int4,int4)', 1000);
+-- Scan keys that do not fix the columns before the ordered one: the scan
+-- refuses them rather than return rows out of order.
+SELECT count(*) FROM bark_multikey_knn('mk_ord_tac', '{2}',
+  '{"&&(anyarray,anyarray)"}', '{"{3}"}', 3, '<~>(int4,int4)', 1000);
+SELECT count(*) FROM bark_multikey_knn('mk_ord_tac', '{1}',
+  '{"=(int4,int4)"}', '{1}', 3, '<~>(int4,int4)', 1000);
+SELECT count(*) FROM bark_multikey_knn('mk_ord_tac', '{1,2}',
+  '{"=(int4,int4)","&&(anyarray,anyarray)"}', '{1,"{3,4}"}', 3,
+  '<~>(int4,int4)', 1000);
+-- A cross-type equality whose family has no ORDER proc for its types only
+-- filters, so it does not fix the column either.
+CREATE OPERATOR FAMILY mk_kp_ops USING btree;
+CREATE OPERATOR CLASS mk_kp_int4_ops FOR TYPE int4 USING bark FAMILY mk_kp_ops AS
+  OPERATOR 1 <, OPERATOR 2 <=, OPERATOR 3 =, OPERATOR 4 >=, OPERATOR 5 >,
+  FUNCTION 1 btint4cmp(int4, int4);
+ALTER OPERATOR FAMILY mk_kp_ops USING btree ADD OPERATOR 3 = (int4, int8);
+CREATE INDEX mk_ord_kp ON mk_ord USING bark (tenant mk_kp_int4_ops,
+  tags bark_int4_array_ops, created);
+SELECT count(*) FROM bark_multikey_knn('mk_ord_kp', '{1,2}',
+  '{"=(int4,int8)","&&(anyarray,anyarray)"}', '{1,"{3}"}', 3,
+  '<~>(int4,int4)', 1000);
+DROP INDEX mk_ord_kp;
+DROP OPERATOR FAMILY mk_kp_ops USING btree;
+-- Rows whose fixed column is NULL sit after every value in the index: a
+-- run that ends at them stops there.
+INSERT INTO mk_ord VALUES (900001, NULL, '{3}', 10), (900002, NULL, '{3}', 4000);
+INSERT INTO mk_ord_seq VALUES (900001, NULL, '{3}', 10), (900002, NULL, '{3}', 4000);
+SELECT * FROM mk_knn_check('mk_ord_tac', '{1,2}',
+          '{"=(int4,int4)","&&(anyarray,anyarray)"}', '{2,"{3}"}', 4500,
+          'tenant = 2 AND tags && ''{3}''');
+SELECT count(*) FROM bark_multikey_knn('mk_ord_tac', '{1,2}',
+  '{NULL,"&&(anyarray,anyarray)"}', '{null,"{3}"}', 3, '<~>(int4,int4)', 0);
+-- An empty index with a fixed prefix, in a generic plan.
+CREATE TABLE mk_ord_e (tenant int, tags int4[], created int);
+CREATE INDEX mk_ord_e_i ON mk_ord_e USING bark (tenant, tags bark_int4_array_ops, created);
+SET plan_cache_mode = force_generic_plan;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+PREPARE mk_ord_e_q(int) AS
+  SELECT * FROM mk_ord_e WHERE tenant = $1 AND tags && '{3}' ORDER BY created <~> 7;
+EXPLAIN (COSTS OFF) EXECUTE mk_ord_e_q(1);
+EXECUTE mk_ord_e_q(1);
+DEALLOCATE mk_ord_e_q;
+-- The planner skips an empty index's scan; the AM still answers one.
+SELECT count(*) FROM bark_multikey_knn('mk_ord_e_i', '{1,2}',
+  '{"=(int4,int4)","&&(anyarray,anyarray)"}', '{1,"{3}"}', 3,
+  '<~>(int4,int4)', 7);
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+RESET plan_cache_mode;
+DROP TABLE mk_ord_e;
+-- A fixed column of long text keys, stored OVERSIZED: the run's entries
+-- and the entry after its end are fetched to be compared.  |%| keeps a
+-- row whose key is even (procedure 9), so the run of an odd key is read
+-- and dropped; created > 250 is a filter on the ordered column.
+CREATE FUNCTION mk_long_key(k int) RETURNS text IMMUTABLE LANGUAGE sql AS
+  $$SELECT string_agg(md5(k || ':' || i), '') FROM generate_series(1, 94) i$$;
+CREATE TABLE mk_long (id int, t text, tags int4[], created int);
+ALTER TABLE mk_long ALTER t SET STORAGE external;
+INSERT INTO mk_long
+  SELECT g, mk_long_key(g % 3), ARRAY[g % 4, 10 + g % 5], (g * 37) % 500
+    FROM generate_series(1, 600) g;
+CREATE INDEX mk_long_i ON mk_long USING bark (t, tags bark_int4_array_range_ops, created);
+CREATE EXTENSION IF NOT EXISTS pageinspect;
+SELECT shape, count(*) FROM bark_page_items('mk_long_i', 1) GROUP BY 1 ORDER BY 1;
+CREATE FUNCTION mk_long_check(q text, ctr int, OUT plan text, OUT n bigint,
+  OUT same bool)
+LANGUAGE plpgsql AS $$
+DECLARE
+  l text;
+  got text;
+  want text;
+  sq text := format('SELECT count(*), string_agg(id || '':'' || d, '','' ORDER BY rn) FROM
+                       (SELECT id, created <~> %s AS d, row_number() OVER () AS rn
+                          FROM (SELECT id, created FROM mk_long WHERE %s
+                                 ORDER BY created <~> %s, id) s) s', ctr, q, ctr);
+BEGIN
+  PERFORM set_config('enable_seqscan', 'off', true);
+  PERFORM set_config('enable_bitmapscan', 'off', true);
+  plan := 'sort';
+  FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) SELECT id FROM mk_long WHERE ' || q ||
+                   ' ORDER BY created <~> ' || ctr LOOP
+    IF l ~ 'Order By' THEN plan := 'knn'; END IF;
+  END LOOP;
+  EXECUTE sq INTO n, got;
+  PERFORM set_config('enable_seqscan', 'on', true);
+  PERFORM set_config('enable_bitmapscan', 'on', true);
+  PERFORM set_config('enable_indexscan', 'off', true);
+  EXECUTE sq INTO n, want;
+  PERFORM set_config('enable_indexscan', 'on', true);
+  same := got IS NOT DISTINCT FROM want;
+END $$;
+-- Ties in distance are broken by id on both sides, after the scan.
+SELECT q, l.*
+  FROM (VALUES ('t = mk_long_key(1) AND tags |%| ''{2}'''),
+               ('t = mk_long_key(1) AND tags |%| ''{3}'''),
+               ('t = mk_long_key(0) AND tags |%| ''{0}'' AND created > 250'),
+               ('t = mk_long_key(2) AND tags |%| ''{2}''')) v(q),
+       mk_long_check(q, 300) l;
+DROP FUNCTION mk_long_check(text, int);
+DROP TABLE mk_long;
+DROP FUNCTION mk_long_key(int);
+DROP EXTENSION pageinspect;
+DELETE FROM mk_ord WHERE id > 900000;
+DELETE FROM mk_ord_seq WHERE id > 900000;
+DROP FUNCTION mk_knn_check(text, int2[], regoperator[], text[], int, text);
+DROP TABLE mk_ord, mk_ord_seq;
+DROP FUNCTION mk_ord_rows(), mk_ord_one(text, text, int, int), mk_ord_cmp(text, int, int),
+  mk_ord_gcheck(text, text, int);
+DROP EXTENSION bark_multikey;
