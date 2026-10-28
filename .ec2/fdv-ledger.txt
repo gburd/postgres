@@ -1,0 +1,3 @@
+key: xtc-fdv-20260805-153606
+sg: sg-03ef82f7dc5eb950c
+iid: i-03f456c0d7513968f

@@ -1,0 +1,6 @@
+ts: 20260804-150602
+region: us-east-1
+key: xtc-ab3-20260804-150602
+sg: sg-0794b205632c4520a
+ami: ami-08bc385c9fc5afc94
+iid: i-03ae45c0f589a33ea

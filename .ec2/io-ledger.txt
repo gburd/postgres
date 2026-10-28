@@ -1,0 +1,6 @@
+profile: chiuso
+region: us-east-2
+key: xtc-io-20260825-053717
+sg: sg-007880633991543e8
+iid: i-0186dce33ba293829
+type: c7i.metal-48xl

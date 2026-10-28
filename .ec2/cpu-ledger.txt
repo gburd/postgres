@@ -1,0 +1,6 @@
+profile: chiuso
+region: us-east-2
+key: xtc-cpu-20260824-170855
+sg: sg-01a3e9c8aec541625
+iid: i-02222421643120b31
+type: c7i.metal-48xl

@@ -1,0 +1,5 @@
+ts: 20260804-210613
+key: xtc-ab4-20260804-210613
+sg: sg-02b27135b4d3a923e
+iid: i-0b66934547e55a7ee
+region: us-east-1

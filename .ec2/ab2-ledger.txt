@@ -1,0 +1,6 @@
+timestamp: 20260804-122159
+region: us-east-1
+key: xtc-ab2-20260804-122159  (pem ~/.ssh/xtc-ab2-20260804-122159.pem)
+sg: sg-0f54fa4a5e44ca4bc
+ami: ami-08bc385c9fc5afc94
+iid: i-05aed48d5e6fc3e4a

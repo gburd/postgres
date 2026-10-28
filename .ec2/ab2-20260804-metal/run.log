@@ -1,0 +1,4 @@
+[16:35:16] OS tune
+[16:35:22] skip build -- libxtc + PG already present
+[16:35:22] initdb + load
+[18:08:37] thread-count + perf on mt select@384

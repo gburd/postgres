@@ -1,0 +1,11 @@
+=== xtc A/B benchmark instance ledger ===
+timestamp: 20260804-104442
+profile: beef (account 840154381708)
+region: us-east-1
+key: xtc-ab-20260804-104442  (pem: ~/.ssh/xtc-ab-20260804-104442.pem)
+security-group: sg-0551f2f99cd3f84a6
+instance-id: i-08ef4f185c4a88cda
+instance-type: m8idn.metal-96xl
+Name tag: xtc-ab-20260804-104442
+LAUNCHED: Tue Aug  4 02:45:50 PM UTC 2026
+TEARDOWN: <pending>

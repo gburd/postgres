@@ -1,0 +1,5 @@
+ts: 20260805-115904
+key: xtc-ab6-20260805-115904
+sg: sg-049c08a96dedbfa29
+iid: i-00163d3a54a44d4ec
+region: us-east-1

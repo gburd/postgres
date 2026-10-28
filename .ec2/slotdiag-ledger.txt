@@ -1,0 +1,5 @@
+ts: 20260805-113009
+key: xtc-slot-20260805-113009
+sg: sg-02ef09dfbc7eaa5f9
+iid: i-0ff863997efb9d66d
+region: us-east-1

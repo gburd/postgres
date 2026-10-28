@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "postgresq": {
+      "type": "http",
+      "url": "https://pg.ddx.io/mcp/"
+    }
+  }
+}

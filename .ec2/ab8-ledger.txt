@@ -1,0 +1,3 @@
+key: xtc-ab8-20260805-155803
+sg: sg-0469d2930f4550d91
+iid: i-07acd78ade127a7a8
