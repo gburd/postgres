@@ -1,0 +1,390 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1_begin s2_churn s2_cluster s2_shapes s2_insert s2_reinsert s2_dup_a s2_dup_b s2_scan s2_check s1_commit
+step s1_begin: 
+	BEGIN ISOLATION LEVEL REPEATABLE READ;
+	SELECT 1 AS snapshot;
+
+snapshot
+--------
+       1
+(1 row)
+
+step s2_churn: 
+	DELETE FROM cu WHERE a <= 5;
+	INSERT INTO cu SELECT g, g FROM generate_series(1, 5) g;
+
+step s2_cluster: CLUSTER cu USING cu_a;
+step s2_shapes: 
+	SELECT 'cu_a' AS idx, shape, count(*) FROM bark_page_items('cu_a', 1)
+	  GROUP BY shape
+	UNION ALL
+	SELECT 'cu_b', shape, count(*) FROM bark_page_items('cu_b', 1)
+	  GROUP BY shape;
+
+idx |shape |count
+----+------+-----
+cu_a|SINGLE|   25
+cu_b|SINGLE|   25
+(2 rows)
+
+step s2_insert: INSERT INTO cu SELECT g, g FROM generate_series(21, 30) g;
+step s2_reinsert: 
+	DELETE FROM cu WHERE a = 4;
+	INSERT INTO cu VALUES (4, 4);
+
+step s2_dup_a: INSERT INTO cu VALUES (3, 1003);
+ERROR:  duplicate key value violates unique constraint "cu_a"
+step s2_dup_b: INSERT INTO cu VALUES (1003, 3);
+ERROR:  duplicate key value violates unique constraint "cu_b"
+step s2_scan: 
+	EXPLAIN (COSTS OFF) SELECT count(*), sum(b) FROM cu WHERE a BETWEEN 1 AND 30;
+	SELECT count(*), sum(b) FROM cu WHERE a BETWEEN 1 AND 30;
+	EXPLAIN (COSTS OFF) SELECT count(*), sum(a) FROM cu WHERE b BETWEEN 1 AND 30;
+	SELECT count(*), sum(a) FROM cu WHERE b BETWEEN 1 AND 30;
+
+QUERY PLAN                                  
+--------------------------------------------
+Aggregate                                   
+  ->  Index Scan using cu_a on cu           
+        Index Cond: ((a >= 1) AND (a <= 30))
+(3 rows)
+
+count|sum
+-----+---
+   30|465
+(1 row)
+
+QUERY PLAN                                  
+--------------------------------------------
+Aggregate                                   
+  ->  Index Scan using cu_b on cu           
+        Index Cond: ((b >= 1) AND (b <= 30))
+(3 rows)
+
+count|sum
+-----+---
+   30|465
+(1 row)
+
+step s2_check: 
+	SELECT bark_index_check('cu_a', true), bark_index_check('cu_b', true);
+
+bark_index_check|bark_index_check
+----------------+----------------
+                |                
+(1 row)
+
+step s1_commit: COMMIT;
+
+starting permutation: s1_begin s2_churn s2_vacfull s2_shapes s2_insert s2_reinsert s2_dup_a s2_dup_b s2_scan s2_check s1_commit
+step s1_begin: 
+	BEGIN ISOLATION LEVEL REPEATABLE READ;
+	SELECT 1 AS snapshot;
+
+snapshot
+--------
+       1
+(1 row)
+
+step s2_churn: 
+	DELETE FROM cu WHERE a <= 5;
+	INSERT INTO cu SELECT g, g FROM generate_series(1, 5) g;
+
+step s2_vacfull: VACUUM FULL cu;
+step s2_shapes: 
+	SELECT 'cu_a' AS idx, shape, count(*) FROM bark_page_items('cu_a', 1)
+	  GROUP BY shape
+	UNION ALL
+	SELECT 'cu_b', shape, count(*) FROM bark_page_items('cu_b', 1)
+	  GROUP BY shape;
+
+idx |shape |count
+----+------+-----
+cu_a|SINGLE|   25
+cu_b|SINGLE|   25
+(2 rows)
+
+step s2_insert: INSERT INTO cu SELECT g, g FROM generate_series(21, 30) g;
+step s2_reinsert: 
+	DELETE FROM cu WHERE a = 4;
+	INSERT INTO cu VALUES (4, 4);
+
+step s2_dup_a: INSERT INTO cu VALUES (3, 1003);
+ERROR:  duplicate key value violates unique constraint "cu_a"
+step s2_dup_b: INSERT INTO cu VALUES (1003, 3);
+ERROR:  duplicate key value violates unique constraint "cu_b"
+step s2_scan: 
+	EXPLAIN (COSTS OFF) SELECT count(*), sum(b) FROM cu WHERE a BETWEEN 1 AND 30;
+	SELECT count(*), sum(b) FROM cu WHERE a BETWEEN 1 AND 30;
+	EXPLAIN (COSTS OFF) SELECT count(*), sum(a) FROM cu WHERE b BETWEEN 1 AND 30;
+	SELECT count(*), sum(a) FROM cu WHERE b BETWEEN 1 AND 30;
+
+QUERY PLAN                                  
+--------------------------------------------
+Aggregate                                   
+  ->  Index Scan using cu_a on cu           
+        Index Cond: ((a >= 1) AND (a <= 30))
+(3 rows)
+
+count|sum
+-----+---
+   30|465
+(1 row)
+
+QUERY PLAN                                  
+--------------------------------------------
+Aggregate                                   
+  ->  Index Scan using cu_b on cu           
+        Index Cond: ((b >= 1) AND (b <= 30))
+(3 rows)
+
+count|sum
+-----+---
+   30|465
+(1 row)
+
+step s2_check: 
+	SELECT bark_index_check('cu_a', true), bark_index_check('cu_b', true);
+
+bark_index_check|bark_index_check
+----------------+----------------
+                |                
+(1 row)
+
+step s1_commit: COMMIT;
+
+starting permutation: s1_begin s2_churn s2_repack s2_shapes s2_insert s2_reinsert s2_dup_a s2_dup_b s2_scan s2_check s1_commit
+step s1_begin: 
+	BEGIN ISOLATION LEVEL REPEATABLE READ;
+	SELECT 1 AS snapshot;
+
+snapshot
+--------
+       1
+(1 row)
+
+step s2_churn: 
+	DELETE FROM cu WHERE a <= 5;
+	INSERT INTO cu SELECT g, g FROM generate_series(1, 5) g;
+
+step s2_repack: REPACK cu;
+step s2_shapes: 
+	SELECT 'cu_a' AS idx, shape, count(*) FROM bark_page_items('cu_a', 1)
+	  GROUP BY shape
+	UNION ALL
+	SELECT 'cu_b', shape, count(*) FROM bark_page_items('cu_b', 1)
+	  GROUP BY shape;
+
+idx |shape |count
+----+------+-----
+cu_a|SINGLE|   25
+cu_b|SINGLE|   25
+(2 rows)
+
+step s2_insert: INSERT INTO cu SELECT g, g FROM generate_series(21, 30) g;
+step s2_reinsert: 
+	DELETE FROM cu WHERE a = 4;
+	INSERT INTO cu VALUES (4, 4);
+
+step s2_dup_a: INSERT INTO cu VALUES (3, 1003);
+ERROR:  duplicate key value violates unique constraint "cu_a"
+step s2_dup_b: INSERT INTO cu VALUES (1003, 3);
+ERROR:  duplicate key value violates unique constraint "cu_b"
+step s2_scan: 
+	EXPLAIN (COSTS OFF) SELECT count(*), sum(b) FROM cu WHERE a BETWEEN 1 AND 30;
+	SELECT count(*), sum(b) FROM cu WHERE a BETWEEN 1 AND 30;
+	EXPLAIN (COSTS OFF) SELECT count(*), sum(a) FROM cu WHERE b BETWEEN 1 AND 30;
+	SELECT count(*), sum(a) FROM cu WHERE b BETWEEN 1 AND 30;
+
+QUERY PLAN                                  
+--------------------------------------------
+Aggregate                                   
+  ->  Index Scan using cu_a on cu           
+        Index Cond: ((a >= 1) AND (a <= 30))
+(3 rows)
+
+count|sum
+-----+---
+   30|465
+(1 row)
+
+QUERY PLAN                                  
+--------------------------------------------
+Aggregate                                   
+  ->  Index Scan using cu_b on cu           
+        Index Cond: ((b >= 1) AND (b <= 30))
+(3 rows)
+
+count|sum
+-----+---
+   30|465
+(1 row)
+
+step s2_check: 
+	SELECT bark_index_check('cu_a', true), bark_index_check('cu_b', true);
+
+bark_index_check|bark_index_check
+----------------+----------------
+                |                
+(1 row)
+
+step s1_commit: COMMIT;
+
+starting permutation: s1_begin s2_churn s2_repack_b s2_shapes s2_insert s2_reinsert s2_dup_a s2_dup_b s2_scan s2_check s1_commit
+step s1_begin: 
+	BEGIN ISOLATION LEVEL REPEATABLE READ;
+	SELECT 1 AS snapshot;
+
+snapshot
+--------
+       1
+(1 row)
+
+step s2_churn: 
+	DELETE FROM cu WHERE a <= 5;
+	INSERT INTO cu SELECT g, g FROM generate_series(1, 5) g;
+
+step s2_repack_b: REPACK cu USING INDEX cu_b;
+step s2_shapes: 
+	SELECT 'cu_a' AS idx, shape, count(*) FROM bark_page_items('cu_a', 1)
+	  GROUP BY shape
+	UNION ALL
+	SELECT 'cu_b', shape, count(*) FROM bark_page_items('cu_b', 1)
+	  GROUP BY shape;
+
+idx |shape |count
+----+------+-----
+cu_a|SINGLE|   25
+cu_b|SINGLE|   25
+(2 rows)
+
+step s2_insert: INSERT INTO cu SELECT g, g FROM generate_series(21, 30) g;
+step s2_reinsert: 
+	DELETE FROM cu WHERE a = 4;
+	INSERT INTO cu VALUES (4, 4);
+
+step s2_dup_a: INSERT INTO cu VALUES (3, 1003);
+ERROR:  duplicate key value violates unique constraint "cu_a"
+step s2_dup_b: INSERT INTO cu VALUES (1003, 3);
+ERROR:  duplicate key value violates unique constraint "cu_b"
+step s2_scan: 
+	EXPLAIN (COSTS OFF) SELECT count(*), sum(b) FROM cu WHERE a BETWEEN 1 AND 30;
+	SELECT count(*), sum(b) FROM cu WHERE a BETWEEN 1 AND 30;
+	EXPLAIN (COSTS OFF) SELECT count(*), sum(a) FROM cu WHERE b BETWEEN 1 AND 30;
+	SELECT count(*), sum(a) FROM cu WHERE b BETWEEN 1 AND 30;
+
+QUERY PLAN                                  
+--------------------------------------------
+Aggregate                                   
+  ->  Index Scan using cu_a on cu           
+        Index Cond: ((a >= 1) AND (a <= 30))
+(3 rows)
+
+count|sum
+-----+---
+   30|465
+(1 row)
+
+QUERY PLAN                                  
+--------------------------------------------
+Aggregate                                   
+  ->  Index Scan using cu_b on cu           
+        Index Cond: ((b >= 1) AND (b <= 30))
+(3 rows)
+
+count|sum
+-----+---
+   30|465
+(1 row)
+
+step s2_check: 
+	SELECT bark_index_check('cu_a', true), bark_index_check('cu_b', true);
+
+bark_index_check|bark_index_check
+----------------+----------------
+                |                
+(1 row)
+
+step s1_commit: COMMIT;
+
+starting permutation: s1_begin s2_churn s2_par s2_vacfull s2_shapes s2_insert s2_reinsert s2_dup_a s2_dup_b s2_scan s2_check s1_commit
+step s1_begin: 
+	BEGIN ISOLATION LEVEL REPEATABLE READ;
+	SELECT 1 AS snapshot;
+
+snapshot
+--------
+       1
+(1 row)
+
+step s2_churn: 
+	DELETE FROM cu WHERE a <= 5;
+	INSERT INTO cu SELECT g, g FROM generate_series(1, 5) g;
+
+step s2_par: 
+	SET max_parallel_maintenance_workers = 2;
+	SET min_parallel_table_scan_size = 0;
+
+step s2_vacfull: VACUUM FULL cu;
+step s2_shapes: 
+	SELECT 'cu_a' AS idx, shape, count(*) FROM bark_page_items('cu_a', 1)
+	  GROUP BY shape
+	UNION ALL
+	SELECT 'cu_b', shape, count(*) FROM bark_page_items('cu_b', 1)
+	  GROUP BY shape;
+
+idx |shape |count
+----+------+-----
+cu_a|SINGLE|   25
+cu_b|SINGLE|   25
+(2 rows)
+
+step s2_insert: INSERT INTO cu SELECT g, g FROM generate_series(21, 30) g;
+step s2_reinsert: 
+	DELETE FROM cu WHERE a = 4;
+	INSERT INTO cu VALUES (4, 4);
+
+step s2_dup_a: INSERT INTO cu VALUES (3, 1003);
+ERROR:  duplicate key value violates unique constraint "cu_a"
+step s2_dup_b: INSERT INTO cu VALUES (1003, 3);
+ERROR:  duplicate key value violates unique constraint "cu_b"
+step s2_scan: 
+	EXPLAIN (COSTS OFF) SELECT count(*), sum(b) FROM cu WHERE a BETWEEN 1 AND 30;
+	SELECT count(*), sum(b) FROM cu WHERE a BETWEEN 1 AND 30;
+	EXPLAIN (COSTS OFF) SELECT count(*), sum(a) FROM cu WHERE b BETWEEN 1 AND 30;
+	SELECT count(*), sum(a) FROM cu WHERE b BETWEEN 1 AND 30;
+
+QUERY PLAN                                  
+--------------------------------------------
+Aggregate                                   
+  ->  Index Scan using cu_a on cu           
+        Index Cond: ((a >= 1) AND (a <= 30))
+(3 rows)
+
+count|sum
+-----+---
+   30|465
+(1 row)
+
+QUERY PLAN                                  
+--------------------------------------------
+Aggregate                                   
+  ->  Index Scan using cu_b on cu           
+        Index Cond: ((b >= 1) AND (b <= 30))
+(3 rows)
+
+count|sum
+-----+---
+   30|465
+(1 row)
+
+step s2_check: 
+	SELECT bark_index_check('cu_a', true), bark_index_check('cu_b', true);
+
+bark_index_check|bark_index_check
+----------------+----------------
+                |                
+(1 row)
+
+step s1_commit: COMMIT;
