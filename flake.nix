@@ -9,13 +9,12 @@
     # Defaults to GitHub; for local development point it at a checkout with
     #   nix develop --override-input libxtc path:$HOME/ws/xtc
     libxtc = {
-      # v1.49.2: fd-registration/cancellation lifetime fixes, paired cancellation
-      # masks, and fiber-scoped configuration. Rebuild PG against these exact
-      # headers: libxtc's 1.x caller-allocated structs are not minor-ABI-stable.
-      # This pin does not establish that the PG write wedge is fixed. Completed
-      # fibers still retain their stacks until loop teardown (KNOWN_ISSUES.md);
-      # connection-churn validation must account for that unresolved limitation.
-      url = "github:gburd/libxtc?rev=542a67d9ea37a425a2ab7d6b11dff8993bd42871";
+      # v2.0.0: size-first public structs and 64-bit pid generations.
+      # Rebuild PG and its modules against the matching headers/library.
+      # This pin has no PG runtime validation and does not establish that the
+      # write wedge is fixed. Proc stacks are reclaimed into bounded caches;
+      # connection churn with PG's 8 MiB stacks still needs validation.
+      url = "github:gburd/libxtc?rev=95041727ab08dca6b1474aabca38e2738c66e6ed";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.flake-utils.follows = "flake-utils";
     };

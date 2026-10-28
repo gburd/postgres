@@ -291,7 +291,7 @@ typedef struct PGPROC
 	bool		sem_fiber_wake_pending; /* waker fired while not armed */
 	uint32		sem_fiber_loop;
 	uint32		sem_fiber_local;
-	uint32		sem_fiber_gen;
+	uint64		sem_fiber_gen;
 
 	/*
 	 * Fiber-aware interrupt/latch wake eventfd (Phase 17, test-75 fix).  The

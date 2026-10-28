@@ -50,6 +50,10 @@
 #include "xtc_exec.h"		/* xtc_exec_loop, xtc_exec_n_loops, xtc_exec_set_eager_rebalance */
 #include "xtc_loop.h"		/* xtc_loop_wake (v1.39: lost-wake-free cross-thread loop nudge) */
 #include "xtc_proc.h"
+/* Installed libxtc headers do not export configured version macros. */
+#ifndef XTC_PROC_OPTS_INIT
+#error "PostgreSQL requires libxtc 2.0 or later (sized public structs)"
+#endif
 #include "xtc_async.h"		/* xtc_set_stack_size */
 #include "xtc_stats.h"		/* xtc_counter_* (fusion F1 runtime counters); xtc_tuning_check (F0a) */
 #include "xtc_sync.h"		/* xtc_amutex_*, xtc_notify_* (fusion F2 pooled-queue lock) */
@@ -509,7 +513,7 @@ xtc_carrier_supervisor_proc(void *arg)
 	{
 		void	   *msg = NULL;
 		size_t		len = 0;
-		xtc_down_info_t di;
+		xtc_down_info_t di = XTC_DOWN_INFO_INIT;
 		int			rc;
 
 		rc = xtc_recv(&msg, &len, -1);	/* block until a message arrives */
@@ -559,8 +563,8 @@ xtc_carrier_supervisor_proc(void *arg)
 					nlog++;
 					n = snprintf(buf, sizeof(buf),
 								 "xtc: supervisor observed normal backend fiber DOWN "
-								 "pid=(loop=%u,local=%u,gen=%u)\n",
-								 down_pid.loop_id, down_pid.local_id, down_pid.gen);
+								 "pid=(loop=%u,local=%u,gen=" UINT64_FORMAT ")\n",
+								 down_pid.loop_id, down_pid.local_id, (uint64) down_pid.gen);
 					if (n > 0)
 					{
 						if (n > (int) sizeof(buf))
@@ -582,8 +586,8 @@ xtc_carrier_supervisor_proc(void *arg)
 					nnp++;
 					n = snprintf(buf, sizeof(buf),
 								 "xtc: supervisor observed benign monitor-race DOWN "
-								 "(NOPROC) pid=(loop=%u,local=%u,gen=%u)\n",
-								 down_pid.loop_id, down_pid.local_id, down_pid.gen);
+								 "(NOPROC) pid=(loop=%u,local=%u,gen=" UINT64_FORMAT ")\n",
+								 down_pid.loop_id, down_pid.local_id, (uint64) down_pid.gen);
 					if (n > 0)
 					{
 						if (n > (int) sizeof(buf))
@@ -605,9 +609,9 @@ xtc_carrier_supervisor_proc(void *arg)
 					nabn++;
 					n = snprintf(buf, sizeof(buf),
 								 "xtc: SUPERVISOR observed GENUINE-CRASH backend fiber DOWN "
-								 "pid=(loop=%u,local=%u,gen=%u) signal=%d\n",
+								 "pid=(loop=%u,local=%u,gen=" UINT64_FORMAT ") signal=%d\n",
 								 down_pid.loop_id, down_pid.local_id,
-								 down_pid.gen, di.signal);
+								 (uint64) down_pid.gen, di.signal);
 					if (n > 0)
 					{
 						if (n > (int) sizeof(buf))
@@ -665,9 +669,9 @@ xtc_carrier_supervisor_proc(void *arg)
 					nappx++;
 					n = snprintf(buf, sizeof(buf),
 								 "xtc: supervisor observed non-zero exit DOWN "
-								 "pid=(loop=%u,local=%u,gen=%u) exit_code=%d (postmaster reaps)\n",
+								 "pid=(loop=%u,local=%u,gen=" UINT64_FORMAT ") exit_code=%d (postmaster reaps)\n",
 								 down_pid.loop_id, down_pid.local_id,
-								 down_pid.gen, di.exit_code >> 8);
+								 (uint64) down_pid.gen, di.exit_code >> 8);
 					if (n > 0)
 					{
 						if (n > (int) sizeof(buf))
@@ -681,7 +685,7 @@ xtc_carrier_supervisor_proc(void *arg)
 				 ((const xtc_sup_spawn_msg *) msg)->magic == XTC_SUP_SPAWN_MAGIC)
 		{
 			xtc_sup_spawn_msg sp;
-			xtc_proc_opts_t po = {0};
+			xtc_proc_opts_t po = XTC_PROC_OPTS_INIT;
 			xtc_pid_t	bpid = XTC_PID_NONE;
 			uint64_t	ref = 0;
 			PgCarrier  *bc;
@@ -722,13 +726,13 @@ xtc_carrier_supervisor_proc(void *arg)
 			if (xtc_proc_spawn_monitor(my_loop, xtc_carrier_proc, sp.entry_arg,
 									   &po, &bpid, &ref) == XTC_OK)
 			{
-				char		sbuf[96];
+				char		sbuf[128];
 				int			sn;
 
 				/* raw write: elog is unsafe from this bare fiber */
 				sn = snprintf(sbuf, sizeof(sbuf),
-							  "xtc: spawned backend fiber pid=(loop=%u,local=%u,gen=%u) migratable=%d\n",
-							  bpid.loop_id, bpid.local_id, bpid.gen, po.migratable);
+							  "xtc: spawned backend fiber pid=(loop=%u,local=%u,gen=" UINT64_FORMAT ") migratable=%d\n",
+							  bpid.loop_id, bpid.local_id, (uint64) bpid.gen, po.migratable);
 				if (sn > 0)
 				{
 					if (sn > (int) sizeof(sbuf))
@@ -761,7 +765,7 @@ xtc_carrier_start_supervisors(void)
 	{
 		xtc_loop_t *loop = (g_xtc_exec != NULL && g_xtc_n_loops > 1)
 			? xtc_exec_loop(g_xtc_exec, i) : g_xtc_loop;
-		xtc_proc_opts_t po = {0};
+		xtc_proc_opts_t po = XTC_PROC_OPTS_INIT;
 		xtc_pid_t	pid = XTC_PID_NONE;
 
 		po.name = "pg-xtc-supervisor";
@@ -1293,7 +1297,7 @@ xtc_pg_launch_backend_fiber(xtc_carrier_entry_fn entry, void *entry_arg)
 	 * launches.  Observability is lost for this one fiber only.
 	 */
 	{
-		xtc_proc_opts_t po = {0};
+		xtc_proc_opts_t po = XTC_PROC_OPTS_INIT;
 		xtc_pid_t	pid = XTC_PID_NONE;
 		xtc_loop_t *loop = (g_xtc_exec != NULL && g_xtc_n_loops > 1)
 			? xtc_exec_loop(g_xtc_exec, loop_idx) : g_xtc_loop;
@@ -1306,8 +1310,8 @@ xtc_pg_launch_backend_fiber(xtc_carrier_entry_fn entry, void *entry_arg)
 			po.migratable = 1;
 		if (xtc_proc_spawn(loop, xtc_carrier_proc, entry_arg, &po, &pid) != XTC_OK)
 			return EAGAIN;
-		elog(LOG, "xtc: spawned backend fiber (unmonitored) pid=(loop=%u,local=%u,gen=%u)",
-			 pid.loop_id, pid.local_id, pid.gen);
+		elog(LOG, "xtc: spawned backend fiber (unmonitored) pid=(loop=%u,local=%u,gen=" UINT64_FORMAT ")",
+			 pid.loop_id, pid.local_id, (uint64) pid.gen);
 		return 0;
 	}
 }
@@ -1325,13 +1329,13 @@ void
 xtc_pg_backend_fiber_exit(int code)
 {
 	{
-		char		buf[96];
+		char		buf[128];
 		int			n;
 		xtc_pid_t	self = xtc_self();
 
 		n = snprintf(buf, sizeof(buf),
-					 "xtc: backend fiber exiting pid=(loop=%u,local=%u,gen=%u) code=%d\n",
-					 self.loop_id, self.local_id, self.gen, code);
+					 "xtc: backend fiber exiting pid=(loop=%u,local=%u,gen=" UINT64_FORMAT ") code=%d\n",
+					 self.loop_id, self.local_id, (uint64) self.gen, code);
 		if (n > 0)
 		{
 			if (n > (int) sizeof(buf))
@@ -1520,7 +1524,7 @@ xtc_pg_carrier_total_steals(void)
 
 	for (int i = 0; i < g_xtc_n_loops; i++)
 	{
-		xtc_loop_stats_t st;
+		xtc_loop_stats_t st = XTC_LOOP_STATS_INIT;
 
 		if (xtc_exec_loop_stats(g_xtc_exec, i, &st) == XTC_OK)
 			total += st.steals;
@@ -1553,7 +1557,7 @@ xtc_pg_carrier_loop_stats(XtcPgLoopStat *out, int max_loops)
 
 	for (int i = 0; i < n; i++)
 	{
-		xtc_loop_stats_t st;
+		xtc_loop_stats_t st = XTC_LOOP_STATS_INIT;
 
 		out[i].loop_id = i;
 		if (xtc_exec_loop_stats(g_xtc_exec, i, &st) == XTC_OK)

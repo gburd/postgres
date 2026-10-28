@@ -140,7 +140,7 @@ typedef struct Latch
 	bool		owner_fiber_valid;
 	uint32		owner_fiber_loop;
 	uint32		owner_fiber_local;
-	uint32		owner_fiber_gen;
+	uint64		owner_fiber_gen;
 #endif
 #ifdef WIN32
 	HANDLE		event;

@@ -1137,7 +1137,7 @@ endif
 # The Nix dev shell puts xtc.pc on PKG_CONFIG_PATH; a manual build can
 # point PKG_CONFIG_PATH at libxtc's build dir or install prefix.
 xtcopt = get_option('xtc')
-xtc = dependency('xtc', required: xtcopt)
+xtc = dependency('xtc', version: '>=2.0.0', required: xtcopt)
 if xtc.found()
   cdata.set('USE_XTC_CARRIER', 1)
 
