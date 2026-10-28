@@ -408,7 +408,6 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSession early_session_fallback = {
 		.role_string_value = "none",
 		.lo_compat_privileges_value = false,
 		.extra_float_digits_value = 1,
-		.array_nulls_value = true,
 		.bytea_output_value = BYTEA_OUTPUT_HEX,
 		.xmlbinary_value = XMLBINARY_BASE64,
 		.xmloption_value = XMLOPTION_CONTENT,
@@ -1251,7 +1250,6 @@ PgSessionInitializeGeneralGUCState(PgSessionGeneralGUCState *general_guc)
 	general_guc->session_authorization_string_value = NULL;
 	general_guc->lo_compat_privileges_value = false;
 	general_guc->extra_float_digits_value = 1;
-	general_guc->array_nulls_value = true;
 	general_guc->bytea_output_value = BYTEA_OUTPUT_HEX;
 	general_guc->xmlbinary_value = XMLBINARY_BASE64;
 	general_guc->xmloption_value = XMLOPTION_CONTENT;

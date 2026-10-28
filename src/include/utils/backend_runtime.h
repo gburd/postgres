@@ -1726,7 +1726,6 @@ typedef struct PgSessionGeneralGUCState
 	char	   *session_authorization_string_value;
 	bool		lo_compat_privileges_value;
 	int			extra_float_digits_value;
-	bool		array_nulls_value;
 	int			bytea_output_value;
 	int			xmlbinary_value;
 	int			xmloption_value;
@@ -2820,7 +2819,6 @@ extern char **PgCurrentRoleStringRef(void);
 extern char **PgCurrentSessionAuthorizationStringRef(void);
 extern bool *PgCurrentLoCompatPrivilegesRef(void);
 extern int *PgCurrentExtraFloatDigitsRef(void);
-extern bool *PgCurrentArrayNullsRef(void);
 extern int *PgCurrentByteaOutputRef(void);
 extern int *PgCurrentXmlBinaryRef(void);
 extern int *PgCurrentXmlOptionRef(void);

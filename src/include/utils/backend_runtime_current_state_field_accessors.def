@@ -320,8 +320,6 @@
 	(&PgCurrentSessionGeneralGUCState()->lo_compat_privileges_value)
 #define PgCurrentExtraFloatDigitsRef() \
 	(&PgCurrentSessionGeneralGUCState()->extra_float_digits_value)
-#define PgCurrentArrayNullsRef() \
-	(&PgCurrentSessionGeneralGUCState()->array_nulls_value)
 #define PgCurrentByteaOutputRef() \
 	(&PgCurrentSessionGeneralGUCState()->bytea_output_value)
 #define PgCurrentXmlBinaryRef() \
