@@ -18,8 +18,11 @@ PGFILEDESC = "amcheck - function for verifying relation integrity"
 
 REGRESS = check check_btree check_gin check_bark check_bark_unique check_heap check_subattr
 
-EXTRA_INSTALL = contrib/pg_walinspect contrib/pageinspect src/test/modules/bark_multikey
+EXTRA_INSTALL = contrib/pg_walinspect contrib/pageinspect src/test/modules/bark_multikey \
+	src/test/modules/injection_points
 TAP_TESTS = 1
+
+export enable_injection_points
 
 ifdef USE_PGXS
 PG_CONFIG = pg_config

@@ -80,9 +80,9 @@ SELECT * FROM bark_page_items(barkp_entry(8200, 8, 20480));
 ERROR:  invalid PIVOT entry at offset number 1
 -- A LIST of no TIDs fits, and lists as such.
 SELECT * FROM bark_page_items(barkp_entry(8208, 8, 32768));
- itemoffset |   ctid    | itemlen | shape | ntids | htid | tids | downlink | overflow_blkno | data 
-------------+-----------+---------+-------+-------+------+------+----------+----------------+------
-          1 | (8,32768) |      16 | LIST  |       |      | {}   |          |                | 
+ itemoffset |   ctid    | itemlen | shape | ntids | htid | tids | downlink | overflow_blkno | tag | data 
+------------+-----------+---------+-------+-------+------+------+----------+----------------+-----+------
+          1 | (8,32768) |      16 | LIST  |       |      | {}   |          |                |     | 
 (1 row)
 
 -- Coded LISTs (status 0x8000 + count with 0x1000, so 36866 is a coded LIST

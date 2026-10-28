@@ -65,6 +65,7 @@ tests += {
       't/013_btree_impl_dump_upgrade.pl',
       't/014_lpdead_standby.pl',
       't/015_page_validator.pl',
+      't/016_version2.pl',
       't/017_promoted_lpdead.pl',
     ],
   },
