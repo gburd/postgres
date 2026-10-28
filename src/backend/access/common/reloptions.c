@@ -156,6 +156,16 @@ static relopt_bool boolRelOpts[] =
 	},
 	{
 		{
+			"deduplicate_items",
+			"Lets equal keys of this bark index share LIST and POSTING entries",
+			RELOPT_KIND_BARK,
+			ShareUpdateExclusiveLock	/* since it applies only to later
+										 * inserts */
+		},
+		true
+	},
+	{
+		{
 			"prefix_compression",
 			"Stores leaf keys of this bark index against a per-page prefix",
 			RELOPT_KIND_BARK,
@@ -527,6 +537,15 @@ static relopt_real realRelOpts[] =
 			"vacuum_cleanup_index_scale_factor",
 			"Deprecated B-Tree parameter.",
 			RELOPT_KIND_BTREE,
+			ShareUpdateExclusiveLock
+		},
+		-1, 0.0, 1e10
+	},
+	{
+		{
+			"vacuum_cleanup_index_scale_factor",
+			"Deprecated B-Tree parameter, accepted and ignored by bark.",
+			RELOPT_KIND_BARK,
 			ShareUpdateExclusiveLock
 		},
 		-1, 0.0, 1e10
