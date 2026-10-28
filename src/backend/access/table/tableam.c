@@ -399,6 +399,8 @@ table_slot_modified_idx_attrs(Relation rel, TupleTableSlot *old_slot,
  * the target tuple are not expected (for example, because we have a lock
  * on the relation associated with the tuple).  Any failure is reported
  * via ereport().  otid is taken to name the latest version of the row.
+ * TABLE_UPDATE_MAY_KEEP_LOCATOR is not passed, so a row whose indexed
+ * attributes change moves, and its new entries may be untagged.
  */
 void
 simple_table_tuple_update(Relation rel, ItemPointer otid,
@@ -408,6 +410,7 @@ simple_table_tuple_update(Relation rel, ItemPointer otid,
 {
 	TupleTableSlot *oldslot = table_slot_create(rel, NULL);
 	Bitmapset  *modified_idx_attrs;
+	IndexVersionTag version_tag;
 
 	if (!table_tuple_fetch_row_version(rel, otid, SnapshotAny, oldslot))
 		elog(ERROR, "tuple concurrently deleted");
@@ -415,7 +418,8 @@ simple_table_tuple_update(Relation rel, ItemPointer otid,
 	ExecDropSingleTupleTableSlot(oldslot);
 
 	simple_table_tuple_update_ext(rel, otid, slot, snapshot,
-								  modified_idx_attrs, update_indexes);
+								  modified_idx_attrs, 0, update_indexes,
+								  &version_tag);
 	bms_free(modified_idx_attrs);
 }
 
@@ -424,13 +428,18 @@ simple_table_tuple_update(Relation rel, ItemPointer otid,
  *
  * As simple_table_tuple_update(), but the caller passes the indexed
  * attributes the update changes, as table_tuple_update() takes them.
+ * options are passed on to table_tuple_update(), with
+ * TABLE_UPDATE_LOCKED_VERSION added, and the new version's tag is returned
+ * in *version_tag.
  */
 void
 simple_table_tuple_update_ext(Relation rel, ItemPointer otid,
 							  TupleTableSlot *slot,
 							  Snapshot snapshot,
 							  const Bitmapset *modified_idx_attrs,
-							  TU_UpdateIndexes *update_indexes)
+							  uint32 options,
+							  TU_UpdateIndexes *update_indexes,
+							  IndexVersionTag *version_tag)
 {
 	TM_Result	result;
 	TM_FailureData tmfd;
@@ -438,12 +447,12 @@ simple_table_tuple_update_ext(Relation rel, ItemPointer otid,
 
 	result = table_tuple_update(rel, otid, slot,
 								GetCurrentCommandId(true),
-								TABLE_UPDATE_LOCKED_VERSION,
+								options | TABLE_UPDATE_LOCKED_VERSION,
 								snapshot, InvalidSnapshot,
 								true /* wait for commit */ ,
 								&tmfd, &lockmode,
 								modified_idx_attrs,
-								update_indexes);
+								update_indexes, version_tag);
 
 	switch (result)
 	{
