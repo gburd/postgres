@@ -192,6 +192,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSession early_session_fallback = {
 		.binary_upgrade_next_toast_pg_class_oid_value = InvalidOid,
 		.binary_upgrade_next_toast_pg_class_relfilenumber_value =
 			InvalidRelFileNumber,
+		.binary_upgrade_next_toast_chunk_id_typoid_value = InvalidOid,
 		.binary_upgrade_next_pg_enum_oid_value = InvalidOid,
 		.binary_upgrade_next_pg_authid_oid_value = InvalidOid,
 		.binary_upgrade_record_init_privs_value = false
@@ -643,6 +644,7 @@ PgSessionInitializeBinaryUpgradeState(PgSessionBinaryUpgradeState *binary_upgrad
 	binary_upgrade->binary_upgrade_next_toast_pg_class_oid_value = InvalidOid;
 	binary_upgrade->binary_upgrade_next_toast_pg_class_relfilenumber_value =
 		InvalidRelFileNumber;
+	binary_upgrade->binary_upgrade_next_toast_chunk_id_typoid_value = InvalidOid;
 	binary_upgrade->binary_upgrade_next_pg_enum_oid_value = InvalidOid;
 	binary_upgrade->binary_upgrade_next_pg_authid_oid_value = InvalidOid;
 	binary_upgrade->binary_upgrade_record_init_privs_value = false;
@@ -2952,6 +2954,12 @@ Oid *
 PgCurrentBinaryUpgradeNextToastPgClassOidRef(void)
 {
 	return &PgCurrentSessionBinaryUpgradeState()->binary_upgrade_next_toast_pg_class_oid_value;
+}
+
+Oid *
+PgCurrentBinaryUpgradeNextToastChunkIdTypoidRef(void)
+{
+	return &PgCurrentSessionBinaryUpgradeState()->binary_upgrade_next_toast_chunk_id_typoid_value;
 }
 
 RelFileNumber *

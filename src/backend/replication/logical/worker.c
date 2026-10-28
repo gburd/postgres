@@ -328,30 +328,6 @@ typedef struct ApplyExecutionData
 } ApplyExecutionData;
 
 /*
- * Context describing the remote transaction whose changes are currently
- * being applied, and the change within it.
- *
- * The remote transaction information (remote_xid and finish_lsn) is set when
- * the transaction's changes begin to be applied. finish_lsn is invalid when
- * the final LSN of the remote transaction is not yet known (e.g. while
- * streaming an in-progress transaction).
- *
- * The remaining fields describe the individual change being applied and are
- * used only for error context reporting.
- */
-typedef struct ApplyRemoteCtx
-{
-	LogicalRepMsgType command;	/* 0 if invalid */
-	LogicalRepRelMapEntry *rel;
-
-	/* Remote node information */
-	int			remote_attnum;	/* -1 if invalid */
-	TransactionId remote_xid;
-	XLogRecPtr	finish_lsn;
-	char	   *origin_name;
-} ApplyRemoteCtx;
-
-/*
  * The action to be taken for the changes in the transaction.
  *
  * TRANS_LEADER_APPLY:
@@ -474,17 +450,21 @@ typedef struct RetainDeadTuplesData
 #define MIN_XID_ADVANCE_INTERVAL 100
 #define MAX_XID_ADVANCE_INTERVAL 180000
 
-/* Context of the remote transaction being applied */
-static ApplyRemoteCtx remote_ctx =
-{
-	.command = 0,
-	.rel = NULL,
-	.remote_attnum = -1,
-	.remote_xid = InvalidTransactionId,
-	.finish_lsn = InvalidXLogRecPtr,
-	.origin_name = NULL,
-};
-
+/*
+ * Context of the remote transaction being applied.
+ *
+ * Upstream keeps this in a file-static ApplyRemoteCtx.  It is per-apply-worker
+ * state, and several apply workers can run as fibers on one carrier thread, so
+ * it lives in the worker's logical-replication session state instead.  The
+ * remote_ctx macro keeps every upstream use site byte-identical.
+ *
+ * apply_error_context_stack, ApplyMessageContext and ApplyContext are likewise
+ * accessor macros here (see replication/worker_internal.h); upstream's plain
+ * global definitions for them must NOT be reintroduced, or the macros would
+ * expand into assignments to an accessor call.
+ */
+#define remote_ctx \
+	(PgCurrentLogicalReplicationState()->remote_ctx)
 
 /* per stream context for streaming transactions */
 #define LogicalStreamingContext (*PgCurrentLogicalStreamingContextRef())

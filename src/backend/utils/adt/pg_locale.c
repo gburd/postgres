@@ -182,15 +182,14 @@ pg_locale_release_external(pg_locale_t locale)
 				ucasemap_close(locale->icu.ucasemap);
 				locale->icu.ucasemap = NULL;
 			}
-			if (locale->icu.lt != (locale_t) 0)
-			{
-#ifdef WIN32
-				_free_locale(locale->icu.lt);
-#else
-				freelocale(locale->icu.lt);
-#endif
-				locale->icu.lt = (locale_t) 0;
-			}
+
+			/*
+			 * No locale_t to free here: `lt` and `icu` are alternatives of the
+			 * SAME UNION (see struct pg_locale_struct), so an ICU locale never
+			 * has an lt -- that storage holds icu.locale/ucol/ucasemap.  Freeing
+			 * locale->lt on this path would hand freelocale() a UCollator
+			 * pointer.  Only COLLPROVIDER_LIBC owns an lt, and it frees it above.
+			 */
 			break;
 #endif
 
