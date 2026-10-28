@@ -368,6 +368,16 @@ typedef struct TableAmRoutine
 	 */
 	const struct LocatorDesc *(*relation_locator) (Relation rel);
 
+	/*
+	 * Optional.  Return the pg_am OID of the index AM that should implement a
+	 * new index of index AM amoid on rel, or InvalidOid for no preference.
+	 * The implementation's IndexAmRoutine must have amimplements == amoid.
+	 * CREATE INDEX asks this before consulting default_btree_implementation,
+	 * and records the answer in pg_index.indimplam; it is never asked again
+	 * for that index.
+	 */
+	Oid			(*index_implementation) (Relation rel, Oid amoid);
+
 
 	/* ------------------------------------------------------------------------
 	 * Slot related callbacks.

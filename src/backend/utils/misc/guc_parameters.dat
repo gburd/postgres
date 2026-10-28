@@ -739,6 +739,15 @@
   ifdef => 'DEBUG_NODE_TESTS_ENABLED',
 },
 
+{ name => 'default_btree_implementation', type => 'string', context => 'PGC_USERSET', group => 'CLIENT_CONN_STATEMENT',
+  short_desc => 'Sets the index access method that implements new btree indexes.',
+  long_desc => 'An empty string means btree indexes are implemented by btree itself.',
+  flags => 'GUC_IS_NAME',
+  variable => 'default_btree_implementation',
+  boot_val => '""',
+  check_hook => 'check_default_btree_implementation',
+},
+
 { name => 'default_statistics_target', type => 'int', context => 'PGC_USERSET', group => 'QUERY_TUNING_OTHER',
   short_desc => 'Sets the default statistics target.',
   long_desc => 'This applies to table columns that have not had a column-specific target set via ALTER TABLE SET STATISTICS.',
