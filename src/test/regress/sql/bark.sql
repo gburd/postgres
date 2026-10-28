@@ -1,8 +1,8 @@
 --
 -- BARK index access method: registration, opclasses, build, insert, and scan.
 --
--- BARK is registered as an index AM, provides default operator classes for
--- the common scalar types (its operator families are btree operator
+-- BARK is registered as an index AM, provides an operator class for every
+-- btree operator class (its operator families are btree operator
 -- families), builds an index over a heap, accepts row inserts into an
 -- existing index (splitting pages and growing the tree), and supports index
 -- scans whose results match a sequential scan.
@@ -936,6 +936,170 @@ RESET parallel_setup_cost;
 RESET parallel_tuple_cost;
 
 RESET enable_seqscan;
+
+-- KNN scans against a sort of a sequential scan by distance: the two must
+-- return the same keys in the same order.  Each case runs as an index-only
+-- scan and as a plain index scan; bark_knn_check returns NULL, with a notice,
+-- if the plan is not a KNN scan of the requested kind.  At equal distance the
+-- scan returns its forward side first: keys >= the constant on an ASC index,
+-- keys <= it on a DESC one, so the reference sorts ties the same way.
+CREATE FUNCTION bark_knn_check(tbl text, expr text, c int, lim int, ios bool,
+                               descidx bool)
+RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE
+  q text := format('SELECT (%s)::text FROM %I ORDER BY a <~> (%s) LIMIT %s',
+                   expr, tbl, c, lim);
+  line text;
+  plan text := '';
+  node text := CASE WHEN ios THEN 'Index Only Scan' ELSE 'Index Scan' END;
+  knn text[];
+  ref text[];
+BEGIN
+  SET LOCAL enable_seqscan = off;
+  SET LOCAL enable_bitmapscan = off;
+  SET LOCAL enable_sort = off;
+  SET LOCAL enable_indexscan = on;
+  EXECUTE format('SET LOCAL enable_indexonlyscan = %s', ios);
+  FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+    plan := plan || line || E'\n';
+  END LOOP;
+  IF plan !~ node OR plan !~ 'Order By' OR plan ~ 'Sort' THEN
+    RAISE NOTICE 'not a KNN scan: %', plan;
+    RETURN NULL;
+  END IF;
+  EXECUTE format('SELECT array(%s)', q) INTO knn;
+  SET LOCAL enable_seqscan = on;
+  SET LOCAL enable_sort = on;
+  SET LOCAL enable_indexscan = off;
+  SET LOCAL enable_indexonlyscan = off;
+  EXECUTE format('SELECT array(SELECT (%s)::text FROM %I ORDER BY a <~> (%s), a %s (%s) LIMIT %s)',
+                 expr, tbl, c, CASE WHEN descidx THEN '>' ELSE '<' END, c, lim)
+    INTO ref;
+  RETURN knn IS NOT DISTINCT FROM ref;
+END $$;
+CREATE TEMP TABLE bark_knn_q (tbl text, expr text, c int, lim int,
+                              descidx bool DEFAULT false);
+
+-- Inside the key range, at and beyond either end, and the whole index.
+INSERT INTO bark_knn_q (tbl, expr, c, lim) VALUES
+  ('bark_knn', 'a', 5000, 10), ('bark_knn', 'a', 5000, 100000),
+  ('bark_knn', 'a', 4999, 50), ('bark_knn', 'a', 3, 30),
+  ('bark_knn', 'a', 1, 20), ('bark_knn', 'a', -100, 100000),
+  ('bark_knn', 'a', 9000, 30), ('bark_knn', 'a', 1000000, 20),
+  ('bark_knn', 'a', 1000000, 100000);
+
+-- POSTING entries (300 rows per even key) and LIST entries (3 per odd key):
+-- the center on a POSTING key, on a LIST key, and outside the range.
+CREATE TABLE bark_knn_post (a int);
+CREATE INDEX bark_knn_post_idx ON bark_knn_post USING bark (a);
+INSERT INTO bark_knn_post SELECT k * 2 FROM generate_series(0, 29) k,
+  generate_series(1, 300) g;
+INSERT INTO bark_knn_post SELECT k * 2 + 1 FROM generate_series(0, 29) k,
+  generate_series(1, 3) g;
+VACUUM ANALYZE bark_knn_post;
+-- As LIST entries the 9090 TIDs alone would fill more than 6 leaves.
+SELECT pg_relation_size('bark_knn_post_idx') / 8192 < 8 AS post_has_posting;
+INSERT INTO bark_knn_q (tbl, expr, c, lim) VALUES
+  ('bark_knn_post', 'a', 30, 1000), ('bark_knn_post', 'a', 31, 1000),
+  ('bark_knn_post', 'a', 31, 100000), ('bark_knn_post', 'a', -5, 1000),
+  ('bark_knn_post', 'a', 100, 100000);
+
+-- A DESC index, with NULLs (which sort first in it, and come last here).
+CREATE TABLE bark_knn_desc (a int);
+INSERT INTO bark_knn_desc
+  SELECT CASE WHEN g % 97 = 0 THEN NULL ELSE g * 3 END
+    FROM generate_series(1, 3000) g;
+CREATE INDEX bark_knn_desc_idx ON bark_knn_desc USING bark (a DESC);
+VACUUM ANALYZE bark_knn_desc;
+INSERT INTO bark_knn_q VALUES
+  ('bark_knn_desc', 'a', 5000, 100, true), ('bark_knn_desc', 'a', 4999, 50, true),
+  ('bark_knn_desc', 'a', -10, 50, true), ('bark_knn_desc', 'a', 1000000, 50, true),
+  ('bark_knn_desc', 'a', 5000, 100000, true);
+
+-- Delete the middle of the key range and VACUUM, which deletes the emptied
+-- leaves (as for bark_dpg above; a temp table so that only this session's
+-- snapshot holds back removal), then scan across the range: from its right,
+-- the backward side walks left over it; from its left, the forward side
+-- walks right over it; from inside, both sides do.
+CREATE TEMP TABLE bark_knn_del (a int);
+CREATE INDEX bark_knn_del_idx ON bark_knn_del USING bark (a);
+INSERT INTO bark_knn_del SELECT g FROM generate_series(1, 6000) g;
+DELETE FROM bark_knn_del WHERE a BETWEEN 1500 AND 4500;
+VACUUM ANALYZE bark_knn_del;
+SELECT bark_index_check('bark_knn_del_idx');
+INSERT INTO bark_knn_q (tbl, expr, c, lim) VALUES
+  ('bark_knn_del', 'a', 4800, 1000), ('bark_knn_del', 'a', 4800, 100000),
+  ('bark_knn_del', 'a', 1200, 1000), ('bark_knn_del', 'a', 3000, 500);
+
+-- OVERSIZED entries: there is no distance operator for text, so no oversized
+-- key can be KNN-ordered; an oversized INCLUDE payload makes the entries
+-- OVERSIZED instead.  The distance and the index-only scan's copy must come
+-- from the full tuple on the overflow chain, not from the small inline entry.
+-- Every other row is small, so pages mix the two shapes.  4000 bytes of hex
+-- digits cannot compress below the item size limit, so each oversized row
+-- has an overflow page of its own (the size check below).
+CREATE TABLE bark_knn_big (a int, p text);
+INSERT INTO bark_knn_big
+  SELECT g, CASE WHEN g % 2 = 0 THEN
+              (SELECT string_agg(md5(g::text || h::text), '')
+                 FROM generate_series(1, 125) h)
+            ELSE 'small' || g END
+    FROM generate_series(1, 400) g;
+CREATE INDEX bark_knn_big_idx ON bark_knn_big USING bark (a) INCLUDE (p);
+VACUUM ANALYZE bark_knn_big;
+SELECT pg_relation_size('bark_knn_big_idx') / 8192 > 200 AS big_has_overflow;
+INSERT INTO bark_knn_q (tbl, expr, c, lim) VALUES
+  ('bark_knn_big', 'a', 200, 50), ('bark_knn_big', 'a', 200, 100000),
+  ('bark_knn_big', 'a || '':'' || md5(p)', 200, 50),
+  ('bark_knn_big', 'a || '':'' || md5(p)', 1, 100000);
+
+SELECT count(*) AS knn_checks,
+       string_agg(format('%s %s <~> %s limit %s%s', tbl, expr, c, lim,
+                         CASE WHEN ios THEN ' ios' ELSE '' END), '; ')
+         FILTER (WHERE ok IS NOT TRUE) AS knn_failed
+  FROM (SELECT q.*, v.ios,
+               bark_knn_check(q.tbl, q.expr, q.c, q.lim, v.ios, q.descidx) AS ok
+          FROM bark_knn_q q, (VALUES (true), (false)) v(ios)) s;
+
+-- The scan reads a page at a time and only when the merge needs it: the ten
+-- nearest rows to 5000 lie on one or two leaves, so the scan reads at most
+-- one more leaf on each side of them, beside the metapage and the root,
+-- while a scan of the whole index reads every leaf.  A temp table, so that
+-- VACUUM can set every heap page all-visible and the index-only scans count
+-- index pages only.
+CREATE FUNCTION bark_knn_buffers(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE
+  warm refcursor;
+  line text;
+  n int := 0;
+BEGIN
+  SET LOCAL enable_seqscan = off;
+  SET LOCAL enable_bitmapscan = off;
+  SET LOCAL debug_parallel_query = off;	-- as in bark_xt_buffers
+  OPEN warm FOR EXECUTE q;
+  MOVE warm;
+  FOR line IN EXECUTE 'EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+    IF line ~ 'Buffers:' THEN
+      SELECT sum(m[2]::int) INTO n
+        FROM regexp_matches(line, '(hit|read)=([0-9]+)', 'g') m;
+      RETURN n;
+    END IF;
+  END LOOP;
+  RETURN NULL;
+END $$;
+CREATE TEMP TABLE bark_knn_rd (a int);
+INSERT INTO bark_knn_rd SELECT g * 3 FROM generate_series(1, 3000) g;
+CREATE INDEX bark_knn_rd_idx ON bark_knn_rd USING bark (a);
+VACUUM ANALYZE bark_knn_rd;
+SELECT bark_knn_buffers('SELECT a FROM bark_knn_rd ORDER BY a <~> 5000 LIMIT 10') <= 6
+         AS knn_limit_reads_few_pages,
+       bark_knn_buffers('SELECT a FROM bark_knn_rd ORDER BY a <~> 5000') >=
+         pg_relation_size('bark_knn_rd_idx') / 8192 - 2 AS knn_whole_scan_reads_all;
+DROP FUNCTION bark_knn_buffers(text);
+DROP FUNCTION bark_knn_check(text, text, int, int, bool, bool);
+DROP TABLE bark_knn_q, bark_knn_post, bark_knn_desc, bark_knn_del, bark_knn_big,
+  bark_knn_rd;
+
 DROP TABLE bark_knn, bark_knn_dup, bark_knn_null, bark_knn8;
 
 DROP TABLE bark_tab, bark_small, bark_empty, bark_ins, bark_scan;
@@ -1091,6 +1255,101 @@ CREATE INDEX bark_cost_dup_idx ON bark_cost_dup USING bark (k);
 ANALYZE bark_cost_dup;
 EXPLAIN (COSTS OFF) SELECT count(*) FROM bark_cost_dup WHERE k = 3;
 DROP TABLE bark_cost_dup;
+
+-- The index correlation comes from the leading column's statistics (or an
+-- expression index's own), as for btree.  On a table loaded in key order a
+-- range scan reads the heap in order and is a plain index scan, as btree's
+-- is; on one loaded in random order both take a bitmap scan.  30000 rows, so
+-- that ANALYZE reads them all; SELECT * keeps index-only scans, and with them
+-- the visibility map, out of the plans; temp tables keep autovacuum away.
+CREATE TEMP TABLE bark_corr AS
+  SELECT g AS a, md5(g::text) AS pad FROM generate_series(1, 30000) g;
+SELECT setseed(0.5);
+CREATE TEMP TABLE bark_uncorr AS SELECT * FROM bark_corr ORDER BY random();
+CREATE INDEX bark_corr_idx ON bark_corr USING bark (a);
+CREATE INDEX bark_corr_expr_idx ON bark_corr USING bark ((a + 1));
+CREATE INDEX bark_uncorr_idx ON bark_uncorr USING bark (a);
+ANALYZE bark_corr, bark_uncorr;
+EXPLAIN (COSTS OFF) SELECT * FROM bark_corr WHERE a BETWEEN 1000 AND 6000;
+EXPLAIN (COSTS OFF) SELECT * FROM bark_corr WHERE a + 1 BETWEEN 1000 AND 6000;
+EXPLAIN (COSTS OFF) SELECT * FROM bark_uncorr WHERE a BETWEEN 1000 AND 6000;
+DROP INDEX bark_corr_idx, bark_corr_expr_idx, bark_uncorr_idx;
+CREATE INDEX bark_corr_idx ON bark_corr USING btree (a);
+CREATE INDEX bark_corr_expr_idx ON bark_corr USING btree ((a + 1));
+CREATE INDEX bark_uncorr_idx ON bark_uncorr USING btree (a);
+ANALYZE bark_corr, bark_uncorr;
+EXPLAIN (COSTS OFF) SELECT * FROM bark_corr WHERE a BETWEEN 1000 AND 6000;
+EXPLAIN (COSTS OFF) SELECT * FROM bark_corr WHERE a + 1 BETWEEN 1000 AND 6000;
+EXPLAIN (COSTS OFF) SELECT * FROM bark_uncorr WHERE a BETWEEN 1000 AND 6000;
+DROP TABLE bark_corr, bark_uncorr;
+
+-- Only the quals that bound a scan decide how many entries it reads, and a
+-- partial index's share of its rows comes from the heap's row count, as for
+-- btree.  A scan of bark_part_ac reads all of its 3000 entries, since c is
+-- not its leading column, to return the 150 rows that bark_part_bc reaches
+-- directly; costing every qual as a bound, and the predicate's selectivity
+-- against the partial index's own entry count as well, would put that scan
+-- at 15 entries, below bark_part_bc's 150, and prefer it.  a is a permutation of 1..30000, so that
+-- neither index has a heap correlation the other lacks.
+CREATE TEMP TABLE bark_part (a int, b int, c int);
+INSERT INTO bark_part
+  SELECT (g * 7907) % 30000, g % 10, (g / 10) % 1000
+  FROM generate_series(1, 30000) g;
+CREATE INDEX bark_part_bc ON bark_part USING bark (b, c);
+CREATE INDEX bark_part_ac ON bark_part USING bark (a, c) WHERE b = 0;
+ANALYZE bark_part;
+EXPLAIN (COSTS OFF) SELECT * FROM bark_part WHERE b = 0 AND c BETWEEN 1 AND 50;
+DROP INDEX bark_part_bc, bark_part_ac;
+CREATE INDEX bark_part_bc ON bark_part USING btree (b, c);
+CREATE INDEX bark_part_ac ON bark_part USING btree (a, c) WHERE b = 0;
+EXPLAIN (COSTS OFF) SELECT * FROM bark_part WHERE b = 0 AND c BETWEEN 1 AND 50;
+DROP TABLE bark_part;
+
+-- Equality arrays bound the scan on every column of its equality prefix, in
+-- either direction, with one descent per combination of their elements, as
+-- for btree.  Costing an array past column 1 as a filter would charge these
+-- scans the whole a group (half the index) and prefer a sequential scan.
+CREATE TEMP TABLE bark_cost_arr (a int, b int, c text);
+INSERT INTO bark_cost_arr
+  SELECT g % 2, (g / 2) % 1000, repeat('x', 100) || g
+  FROM generate_series(1, 50000) g;
+CREATE INDEX bark_cost_arr_idx ON bark_cost_arr USING bark (a, b, c);
+VACUUM ANALYZE bark_cost_arr;
+EXPLAIN (COSTS OFF)
+  SELECT * FROM bark_cost_arr WHERE a = 1 AND b IN (751, 84, 417);
+EXPLAIN (COSTS OFF)
+  SELECT * FROM bark_cost_arr WHERE a = 1 AND b IN (751, 84, 417)
+  ORDER BY b DESC;
+EXPLAIN (COSTS OFF)
+  SELECT * FROM bark_cost_arr WHERE a IN (1, 0) AND b = 751;
+DROP INDEX bark_cost_arr_idx;
+CREATE INDEX bark_cost_arr_idx ON bark_cost_arr USING btree (a, b, c);
+EXPLAIN (COSTS OFF)
+  SELECT * FROM bark_cost_arr WHERE a = 1 AND b IN (751, 84, 417);
+EXPLAIN (COSTS OFF)
+  SELECT * FROM bark_cost_arr WHERE a = 1 AND b IN (751, 84, 417)
+  ORDER BY b DESC;
+EXPLAIN (COSTS OFF)
+  SELECT * FROM bark_cost_arr WHERE a IN (1, 0) AND b = 751;
+DROP TABLE bark_cost_arr;
+
+-- VACUUM reports the index's live heap TIDs, as nbtree does, not its entries:
+-- the planner reads pg_class.reltuples of a partial index as its row count.
+-- A scan that only counts (no dead rows) cannot see a LIST or POSTING
+-- entry's TIDs without decoding it, so its count is an estimate and leaves
+-- reltuples alone.  A temp table, so that the deleted rows are removable.
+CREATE TEMP TABLE bark_vcount (k int, v int);
+INSERT INTO bark_vcount SELECT g % 10, g FROM generate_series(1, 100000) g;
+CREATE INDEX bark_vcount_idx ON bark_vcount USING bark (k) WHERE v <= 50000;
+VACUUM bark_vcount;
+SELECT reltuples = (SELECT count(*) FROM bark_vcount WHERE v <= 50000)
+  FROM pg_class WHERE relname = 'bark_vcount_idx';
+DELETE FROM bark_vcount WHERE v % 7 = 0;
+VACUUM bark_vcount;
+SELECT reltuples = (SELECT count(*) FROM bark_vcount WHERE v <= 50000)
+  FROM pg_class WHERE relname = 'bark_vcount_idx';
+SELECT bark_index_check('bark_vcount_idx');
+DROP TABLE bark_vcount;
 
 -- ===========================================================================
 -- Page / FSM reclamation (A13-A15): VACUUM unlinks emptied interior leaves and
@@ -1923,6 +2182,59 @@ SELECT bark_sfx_check('SELECT s.a, count(t.a) FROM generate_series(0, 3000) s(a)
 SELECT bark_sfx_check('SELECT a, b FROM bark_sfx_lb WHERE a >= 1234 AND a < 1240 ORDER BY a, b');
 DROP TABLE bark_sfx_lb;
 
+-- Such a bound sorts after a pivot that has exactly its columns and no heap
+-- TID, as in nbtree: every entry left of the pivot is less than it, so the
+-- descent goes right of it instead of reading a leaf with no match.  200000
+-- rows over 100 values of a, inserted in random order, so that many leaf
+-- splits fall between two values and leave a high key of (a) alone.  Below
+-- the upper levels, a = v reads the leaves that hold v, and one more when v
+-- ends a leaf, since the scan stops at the first entry past v.  Each of the
+-- 99 boundaries between values adds one of the two, so the 100 queries
+-- together read every leaf, 99 more, and a descent each: no more than the
+-- leaves plus 100 times the pages of a descent (root to leaf).  A descent
+-- that went left of a (v) pivot would read one more leaf for each.  The
+-- leaf count and the height come from two scans this does not affect:
+-- a = -1 reads the upper levels and one leaf, a >= 0 every leaf.
+CREATE FUNCTION bark_sfx_blocks(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE
+  warm refcursor;
+  plan json;
+  node json;
+BEGIN
+  PERFORM set_config('enable_seqscan', 'off', true);
+  PERFORM set_config('enable_indexscan', 'off', true);
+  PERFORM set_config('enable_indexonlyscan', 'off', true);
+  PERFORM set_config('enable_bitmapscan', 'on', true);
+  PERFORM set_config('max_parallel_workers_per_gather', '0', true);
+  SET LOCAL debug_parallel_query = off;	-- as in bark_xt_buffers
+  OPEN warm FOR EXECUTE q;
+  MOVE warm;
+  EXECUTE 'EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, FORMAT JSON) ' || q
+    INTO plan;
+  node := plan->0->'Plan';
+  WHILE node->>'Node Type' <> 'Bitmap Index Scan' LOOP
+    node := node->'Plans'->0;
+  END LOOP;
+  RETURN (node->>'Shared Hit Blocks')::int + (node->>'Shared Read Blocks')::int;
+END $$;
+CREATE TABLE bark_sfx_tp (a int, b int) WITH (autovacuum_enabled = off);
+CREATE INDEX bark_sfx_tp_idx ON bark_sfx_tp USING bark (a, b);
+INSERT INTO bark_sfx_tp
+  SELECT g % 100, g FROM generate_series(1, 200000) g ORDER BY md5(g::text);
+SELECT bark_index_check('bark_sfx_tp_idx');
+SELECT bark_sfx_check('SELECT s.a, count(t.a) FROM generate_series(-1, 100) s(a)
+  LEFT JOIN bark_sfx_tp t ON t.a = s.a GROUP BY s.a ORDER BY s.a');
+SELECT bark_sfx_check('SELECT s.a, count(t.a) FROM generate_series(-1, 100) s(a)
+  LEFT JOIN bark_sfx_tp t ON t.a = s.a GROUP BY s.a ORDER BY s.a', true);
+SELECT sum(bark_sfx_blocks('SELECT count(*) FROM bark_sfx_tp WHERE a = ' || v)) <=
+       bark_sfx_blocks('SELECT count(*) FROM bark_sfx_tp WHERE a >= 0') -
+       bark_sfx_blocks('SELECT count(*) FROM bark_sfx_tp WHERE a = -1') + 1 +
+       100 * bark_sfx_blocks('SELECT count(*) FROM bark_sfx_tp WHERE a = -1')
+         AS no_leaf_left_of_pivot
+  FROM generate_series(0, 99) v;
+DROP TABLE bark_sfx_tp;
+DROP FUNCTION bark_sfx_blocks(text);
+
 -- OVERSIZED keys in the first column: a pivot keeps the oversized value when
 -- it is one of the attributes it needs, and stays OVERSIZED, recording the
 -- attributes it kept; otherwise the pivot drops it.  (Storage is plain so
@@ -2054,6 +2366,23 @@ INSERT INTO bark_bld_wkey
 CREATE INDEX bark_bld_wkey_idx ON bark_bld_wkey USING bark (t);
 SELECT bark_index_check('bark_bld_wkey_idx');
 
+-- Keys on both sides of the oversize threshold.  The build forms a row's
+-- tuple to measure it only when a bound on its size says it may be
+-- oversized; in-line incompressible keys (STORAGE plain) of 2660-2700 bytes
+-- with an int8 INCLUDE column straddle the threshold, so a bound that
+-- undercounts a key's length, header or alignment sends an oversized row
+-- through the sort and the loader, which the check rejects.
+CREATE TABLE bark_bld_edge (t text, i int8) WITH (autovacuum_enabled = off);
+ALTER TABLE bark_bld_edge ALTER t SET STORAGE plain;
+INSERT INTO bark_bld_edge
+  SELECT substr(lpad(n::text, 4, '0') ||
+                (SELECT string_agg(md5(n::text || i::text), '')
+                 FROM generate_series(1, 85) i), 1, 2660 + n), n
+  FROM generate_series(0, 40) n;
+INSERT INTO bark_bld_edge VALUES (NULL, 100), ('short', NULL);
+CREATE INDEX bark_bld_edge_idx ON bark_bld_edge USING bark (t) INCLUDE (i);
+SELECT bark_index_check('bark_bld_edge_idx');
+
 CREATE TABLE bark_bld_queries (n int, q text, bitmap bool);
 INSERT INTO bark_bld_queries VALUES
   (1, 'SELECT k, count(*) FROM bark_bld_one WHERE k >= 0 GROUP BY k', false),
@@ -2068,7 +2397,9 @@ INSERT INTO bark_bld_queries VALUES
   (10, 'SELECT k, count(*) FROM bark_bld_sparse WHERE k >= 0 GROUP BY k ORDER BY k', false),
   (11, 'SELECT count(*), sum(length(pad)) FROM bark_bld_sparse WHERE k = 7', true),
   (12, 'SELECT left(t, 4), length(t), count(*) FROM bark_bld_wkey WHERE t >= ''0020'' GROUP BY t ORDER BY t', false),
-  (13, 'SELECT count(*) FROM bark_bld_wkey WHERE t >= ''0020''', true);
+  (13, 'SELECT count(*) FROM bark_bld_wkey WHERE t >= ''0020''', true),
+  (14, 'SELECT left(t, 4), length(t), i FROM bark_bld_edge WHERE t >= ''0'' ORDER BY t', false),
+  (15, 'SELECT count(*), sum(i) FROM bark_bld_edge WHERE t >= ''0''', true);
 SELECT n, bark_bld_check(q, bitmap) FROM bark_bld_queries ORDER BY n;
 
 -- VACUUM after the build.  Built POSTING entries carry the removal reserve
@@ -2093,7 +2424,8 @@ SELECT bark_index_check('bark_bld_ks_idx');
 SELECT n, bark_bld_check(q, bitmap) FROM bark_bld_queries
   WHERE n IN (1, 2, 7, 8, 9) ORDER BY n;
 DROP TABLE bark_bld_queries;
-DROP TABLE bark_bld_one, bark_bld_kc, bark_bld_ks, bark_bld_sparse, bark_bld_wkey;
+DROP TABLE bark_bld_one, bark_bld_kc, bark_bld_ks, bark_bld_sparse, bark_bld_wkey,
+  bark_bld_edge;
 
 -- Where insert does not coalesce, neither does the build.  A unique index
 -- holds equal keys only when they are NULL, and builds the same tree as an
@@ -2168,3 +2500,2027 @@ RESET enable_bitmapscan;
 RESET max_parallel_maintenance_workers;
 RESET min_parallel_index_scan_size;
 DROP TABLE bark_pvac;
+-- ===========================================================================
+-- Mark/restore (ammarkpos/amrestrpos).  A merge join marks its inner scan at
+-- the first inner row of each run of equal keys and restores the mark for
+-- every further outer row with that key, so a BARK index scan can be the
+-- inner side directly, with no Materialize node over it.  The outer side
+-- here is an ordered subquery, which cannot itself be restored, so the plans
+-- put the BARK index on the inner side.  Each outer key appears three times,
+-- so each inner run is read once and restored twice.
+--
+-- bark_mj_check runs a query as a merge join and as a hash join and compares
+-- the results; it reports 'not merge inner' when the merge plan does not
+-- have the named index directly under a merge join's inner side.
+-- ===========================================================================
+CREATE FUNCTION bark_mj_check(q text, idx text)
+RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+  plan jsonb;
+  viamerge text;
+  viahash text;
+BEGIN
+  PERFORM set_config('enable_hashjoin', 'off', true);
+  PERFORM set_config('enable_nestloop', 'off', true);
+  PERFORM set_config('enable_material', 'off', true);
+  PERFORM set_config('enable_sort', 'off', true);
+  PERFORM set_config('enable_bitmapscan', 'off', true);
+  EXECUTE 'EXPLAIN (COSTS OFF, FORMAT JSON) ' || q INTO plan;
+  EXECUTE 'SELECT x::text FROM (' || q || ') x' INTO viamerge;
+  PERFORM set_config('enable_mergejoin', 'off', true);
+  PERFORM set_config('enable_hashjoin', 'on', true);
+  PERFORM set_config('enable_sort', 'on', true);
+  EXECUTE 'SELECT x::text FROM (' || q || ') x' INTO viahash;
+  IF NOT jsonb_path_exists(plan,
+         '$.** ? (@."Node Type" == "Merge Join" && @.Plans[1]."Index Name" == $i)',
+         jsonb_build_object('i', idx)) THEN
+    RETURN 'not merge inner';
+  END IF;
+  RETURN CASE WHEN viamerge IS NOT DISTINCT FROM viahash
+              THEN 'ok ' || viamerge
+              ELSE 'MISMATCH ' || viamerge || ' vs ' || viahash END;
+END $$;
+
+-- The outer side: keys 0..119, three rows each (keys 100..119 match nothing).
+CREATE TABLE bark_mj_o (k int, a int, b int) WITH (autovacuum_enabled = off);
+INSERT INTO bark_mj_o SELECT g % 120, g % 25, g % 9 FROM generate_series(1, 360) g;
+-- LIST keys: 100 keys, each key's rows scattered over the heap.
+CREATE TABLE bark_mj_list (k int, v int) WITH (autovacuum_enabled = off);
+INSERT INTO bark_mj_list SELECT g % 100, g FROM generate_series(1, 20000) g;
+CREATE INDEX bark_mj_list_idx ON bark_mj_list USING bark (k);
+-- POSTING keys: 100 keys, each key's 400 rows together on the heap.
+CREATE TABLE bark_mj_post (k int, v int) WITH (autovacuum_enabled = off);
+INSERT INTO bark_mj_post SELECT k, g FROM generate_series(0, 99) k, generate_series(1, 400) g;
+CREATE INDEX bark_mj_post_idx ON bark_mj_post USING bark (k);
+-- NULL keys (one row in ten) and a two-column key; the same rows under a
+-- DESC column.
+CREATE TABLE bark_mj_misc (k int, a int, b int, v int) WITH (autovacuum_enabled = off);
+INSERT INTO bark_mj_misc
+  SELECT CASE WHEN g % 10 = 0 THEN NULL ELSE g % 100 END, g % 20, g % 7, g
+  FROM generate_series(1, 20000) g;
+CREATE INDEX bark_mj_null_idx ON bark_mj_misc USING bark (k);
+CREATE INDEX bark_mj_ab_idx ON bark_mj_misc USING bark (a, b);
+CREATE TABLE bark_mj_desc (k int, v int) WITH (autovacuum_enabled = off);
+INSERT INTO bark_mj_desc SELECT k, v FROM bark_mj_misc;
+CREATE INDEX bark_mj_desc_idx ON bark_mj_desc USING bark (k DESC);
+-- Wide INCLUDE rows (no coalescing): key 50's 3000 rows span many leaves.
+-- Each row's payload p is its own number, so an index-only scan that returns
+-- another row's copy changes the sum.
+CREATE TABLE bark_mj_wide (k int, v int, p text) WITH (autovacuum_enabled = off);
+INSERT INTO bark_mj_wide
+  SELECT CASE WHEN g % 2 = 0 THEN 50 ELSE g % 100 END, g, lpad(g::text, 100, '0')
+  FROM generate_series(1, 6000) g;
+CREATE INDEX bark_mj_wide_idx ON bark_mj_wide USING bark (k) INCLUDE (p);
+VACUUM ANALYZE bark_mj_o, bark_mj_list, bark_mj_post, bark_mj_misc, bark_mj_desc,
+  bark_mj_wide;
+SELECT pg_relation_size('bark_mj_wide_idx') / 8192 > 40 AS wide_run_spans_leaves;
+
+-- The inner BARK scans need no Materialize: neither an index scan nor an
+-- index-only scan.
+SET enable_hashjoin = off;
+SET enable_nestloop = off;
+SET enable_material = off;
+SET enable_sort = off;
+SET enable_bitmapscan = off;
+EXPLAIN (COSTS OFF)
+SELECT count(*), sum(i.v)
+  FROM (SELECT k FROM bark_mj_o ORDER BY k OFFSET 0) o
+  JOIN bark_mj_list i ON o.k = i.k;
+EXPLAIN (COSTS OFF)
+SELECT count(*), sum(i.p::int)
+  FROM (SELECT k FROM bark_mj_o ORDER BY k OFFSET 0) o
+  JOIN bark_mj_wide i ON o.k = i.k;
+RESET enable_hashjoin;
+RESET enable_nestloop;
+RESET enable_material;
+RESET enable_sort;
+RESET enable_bitmapscan;
+
+-- Merge join equals hash join.  With a filter on the inner side, the first
+-- member of a LIST or POSTING entry is often rejected, so the mark falls on a
+-- later member of the entry, and the scan must resume at that member.
+SELECT bark_mj_check('SELECT count(*), sum(i.v)
+  FROM (SELECT k FROM bark_mj_o ORDER BY k OFFSET 0) o
+  JOIN bark_mj_list i ON o.k = i.k', 'bark_mj_list_idx') AS list;
+SELECT bark_mj_check('SELECT count(*), sum(i.v)
+  FROM (SELECT k FROM bark_mj_o ORDER BY k OFFSET 0) o
+  JOIN bark_mj_list i ON o.k = i.k AND i.v % 3 <> 1', 'bark_mj_list_idx') AS list_mid;
+SELECT bark_mj_check('SELECT count(*), sum(i.v)
+  FROM (SELECT k FROM bark_mj_o ORDER BY k OFFSET 0) o
+  JOIN bark_mj_post i ON o.k = i.k', 'bark_mj_post_idx') AS post;
+SELECT bark_mj_check('SELECT count(*), sum(i.v)
+  FROM (SELECT k FROM bark_mj_o ORDER BY k OFFSET 0) o
+  JOIN bark_mj_post i ON o.k = i.k AND i.v % 3 <> 1', 'bark_mj_post_idx') AS post_mid;
+SELECT bark_mj_check('SELECT count(*), sum(i.k)
+  FROM (SELECT k FROM bark_mj_o ORDER BY k OFFSET 0) o
+  JOIN bark_mj_post i ON o.k = i.k', 'bark_mj_post_idx') AS post_ios;
+SELECT bark_mj_check('SELECT count(*), sum(i.v), count(o.k), count(i.k)
+  FROM (SELECT k FROM bark_mj_o ORDER BY k OFFSET 0) o
+  FULL JOIN bark_mj_misc i ON o.k = i.k', 'bark_mj_null_idx') AS nulls;
+SELECT bark_mj_check('SELECT count(*), sum(v) FROM
+  (SELECT o.k, i.v FROM (SELECT k FROM bark_mj_o ORDER BY k DESC OFFSET 0) o
+   JOIN bark_mj_desc i ON o.k = i.k ORDER BY o.k DESC) j',
+  'bark_mj_desc_idx') AS desc_fwd;
+SELECT bark_mj_check('SELECT count(*), sum(i.v)
+  FROM (SELECT k FROM bark_mj_o ORDER BY k OFFSET 0) o
+  JOIN bark_mj_desc i ON o.k = i.k', 'bark_mj_desc_idx') AS desc_bwd;
+SELECT bark_mj_check('SELECT count(*), sum(i.v)
+  FROM (SELECT a, b FROM bark_mj_o ORDER BY a, b OFFSET 0) o
+  JOIN bark_mj_misc i ON o.a = i.a AND o.b = i.b', 'bark_mj_ab_idx') AS two_col;
+-- Key 50's run spans many leaves, so the scan leaves the marked page and the
+-- mark is restored from its saved copy, for a plain and an index-only scan.
+SELECT bark_mj_check('SELECT count(*), sum(i.v)
+  FROM (SELECT k FROM bark_mj_o ORDER BY k OFFSET 0) o
+  JOIN bark_mj_wide i ON o.k = i.k', 'bark_mj_wide_idx') AS long_run;
+SELECT bark_mj_check('SELECT count(*), sum(i.p::int)
+  FROM (SELECT k FROM bark_mj_o ORDER BY k OFFSET 0) o
+  JOIN bark_mj_wide i ON o.k = i.k', 'bark_mj_wide_idx') AS long_run_ios;
+-- A leading-array (SAOP) inner scan, whose position carries the array cursor.
+SELECT bark_mj_check('SELECT count(*), sum(i.v)
+  FROM (SELECT k FROM bark_mj_o ORDER BY k OFFSET 0) o
+  JOIN bark_mj_wide i ON o.k = i.k WHERE i.k = ANY (''{11,21,49,50,51,91}'')',
+  'bark_mj_wide_idx') AS saop;
+SELECT bark_mj_check('SELECT count(*), sum(i.v)
+  FROM (SELECT k FROM bark_mj_o ORDER BY k OFFSET 0) o
+  JOIN bark_mj_post i ON o.k = i.k WHERE i.k = ANY (''{3,17,40,41,77,99}'')',
+  'bark_mj_post_idx') AS saop_post;
+
+-- An ordered-operator (KNN) scan cannot be restored: the executor reorders
+-- its tuples in a queue that restoring the index position does not rewind.
+-- So a KNN scan (the planner considers one only for an ORDER BY on the
+-- distance) is never a merge join's inner side on its own.  With Materialize
+-- disabled, the plan puts it on the outer side, and the join returns what a
+-- hash join does.
+CREATE TABLE bark_mj_knn (a int) WITH (autovacuum_enabled = off);
+INSERT INTO bark_mj_knn SELECT g FROM generate_series(1, 10000) g;
+CREATE INDEX bark_mj_knn_idx ON bark_mj_knn USING bark (a);
+CREATE TABLE bark_mj_dist (f float8) WITH (autovacuum_enabled = off);
+INSERT INTO bark_mj_dist SELECT (g % 50)::float8 FROM generate_series(1, 300) g;
+CREATE INDEX bark_mj_dist_idx ON bark_mj_dist USING btree (f);
+VACUUM ANALYZE bark_mj_knn, bark_mj_dist;
+SET enable_hashjoin = off;
+SET enable_nestloop = off;
+SET enable_material = off;
+SET enable_sort = off;
+SET enable_seqscan = off;
+EXPLAIN (COSTS OFF)
+SELECT d.f, i.a FROM bark_mj_dist d JOIN bark_mj_knn i ON d.f = (i.a <~> 5000)
+  ORDER BY i.a <~> 5000;
+SELECT count(*), sum(a) FROM
+  (SELECT d.f, i.a FROM bark_mj_dist d JOIN bark_mj_knn i ON d.f = (i.a <~> 5000)
+   ORDER BY i.a <~> 5000) x;
+RESET enable_hashjoin;
+RESET enable_nestloop;
+RESET enable_material;
+RESET enable_sort;
+RESET enable_seqscan;
+SET enable_mergejoin = off;
+SELECT count(*), sum(a) FROM
+  (SELECT d.f, i.a FROM bark_mj_dist d JOIN bark_mj_knn i ON d.f = (i.a <~> 5000)
+   ORDER BY i.a <~> 5000) x;
+RESET enable_mergejoin;
+DROP TABLE bark_mj_o, bark_mj_list, bark_mj_post, bark_mj_misc, bark_mj_desc,
+  bark_mj_wide, bark_mj_knn, bark_mj_dist;
+
+-- KNN paths the scan can answer.  An ordering operator on a later column of
+-- a multicolumn BARK index gets no KNN path (the scan walks outward in the
+-- leading column's order only), and a SCROLL cursor over a KNN scan is
+-- materialized, since the scan cannot run its distance order backward.  The
+-- KNN scan's descent counts as an index search.
+CREATE TABLE bark_knnx (a int, b int);
+INSERT INTO bark_knnx SELECT g % 10, g FROM generate_series(1, 2000) g;
+CREATE INDEX bark_knnx_ab ON bark_knnx USING bark (a, b);
+ANALYZE bark_knnx;
+SET enable_seqscan = off;
+EXPLAIN (COSTS OFF) SELECT b FROM bark_knnx ORDER BY b <~> 1000 LIMIT 5;
+SELECT string_agg(b::text, ',' ORDER BY b <~> 1000, b) AS nearest_b FROM
+  (SELECT b FROM bark_knnx ORDER BY b <~> 1000 LIMIT 5) x;
+-- Two ordering operators on the leading column: one goes to the index, the
+-- second is an incremental sort.
+EXPLAIN (COSTS OFF)
+  SELECT a FROM bark_knnx ORDER BY a <~> 5, a <~> 7 LIMIT 3;
+CREATE TABLE bark_knnsc (a int);
+INSERT INTO bark_knnsc SELECT g FROM generate_series(1, 2000) g;
+CREATE INDEX bark_knnsc_a ON bark_knnsc USING bark (a);
+ANALYZE bark_knnsc;
+EXPLAIN (COSTS OFF)
+  DECLARE c SCROLL CURSOR FOR SELECT a FROM bark_knnsc ORDER BY a <~> 500;
+BEGIN;
+DECLARE c SCROLL CURSOR FOR SELECT a FROM bark_knnsc ORDER BY a <~> 500;
+FETCH 3 FROM c;
+FETCH BACKWARD 1 FROM c;
+FETCH 2 FROM c;
+COMMIT;
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF)
+  SELECT a, ctid FROM bark_knnsc ORDER BY a <~> 500 LIMIT 3;
+RESET enable_seqscan;
+DROP TABLE bark_knnx, bark_knnsc;
+
+-- Skip scan: no key on column 1, a key bounding column 2.  The scan
+-- re-descends past each column-1 group once column 2 is past its bounds
+-- (or to the bounds within the group) instead of reading every leaf.  The
+-- results match a sequential scan; bark_skip_stats shows the scan made a
+-- descent per group and read well under half of the index.
+CREATE TABLE bark_skip (a int, b int, t text);
+INSERT INTO bark_skip SELECT g % 10, g, 'k' || (g % 10) ||
+  CASE WHEN g % 10 = 7 THEN repeat('z', 3000) ELSE '' END
+  FROM generate_series(1, 100000) g;
+INSERT INTO bark_skip SELECT NULL, g, NULL FROM generate_series(1, 300) g;
+CREATE INDEX bark_skip_ab ON bark_skip USING bark (a, b);
+CREATE INDEX bark_skip_tb ON bark_skip USING bark (t DESC, b);
+VACUUM ANALYZE bark_skip;
+CREATE FUNCTION bark_skip_check(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+  r1 text;
+  r2 text;
+BEGIN
+  SET LOCAL enable_seqscan = off;
+  SET LOCAL enable_bitmapscan = off;
+  EXECUTE 'SELECT md5(string_agg(x::text, '','')) FROM (' || q || ') x' INTO r1;
+  RESET enable_seqscan;
+  SET LOCAL enable_indexscan = off;
+  SET LOCAL enable_indexonlyscan = off;
+  SET LOCAL enable_bitmapscan = off;
+  EXECUTE 'SELECT md5(string_agg(x::text, '','')) FROM (' || q || ') x' INTO r2;
+  RETURN CASE WHEN r1 = r2 THEN 'ok' ELSE 'mismatch' END;
+END $$;
+CREATE FUNCTION bark_skip_stats(q text, idx text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+  warm refcursor;
+  plan json;
+  node json;
+BEGIN
+  SET LOCAL enable_seqscan = off;
+  SET LOCAL enable_bitmapscan = off;
+  SET LOCAL debug_parallel_query = off;	-- as in bark_xt_buffers
+  OPEN warm FOR EXECUTE q;
+  MOVE warm;
+  EXECUTE 'EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, FORMAT JSON) ' || q
+    INTO plan;
+  node := plan->0->'Plan';
+  WHILE node->>'Index Name' IS NULL LOOP
+    node := node->'Plans'->0;
+  END LOOP;
+  RETURN format('searches>=10 %s, blocks<pages/2 %s',
+    (node->>'Index Searches')::int >= 10,
+    (node->>'Shared Hit Blocks')::int + (node->>'Shared Read Blocks')::int <
+      pg_relation_size(idx::regclass) / current_setting('block_size')::int / 2);
+END $$;
+CREATE FUNCTION bark_skip_searches(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+  plan json;
+  node json;
+BEGIN
+  EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, FORMAT JSON) ' || q INTO plan;
+  node := plan->0->'Plan';
+  WHILE node->>'Index Name' IS NULL LOOP
+    node := node->'Plans'->0;
+  END LOOP;
+  RETURN format('%s: %s searches', node->>'Index Name', node->>'Index Searches');
+END $$;
+SELECT bark_skip_check('SELECT a, b FROM bark_skip WHERE b = 4321 ORDER BY a, b');
+SELECT bark_skip_check('SELECT a, b FROM bark_skip WHERE b BETWEEN 5000 AND 5100 ORDER BY a, b');
+SELECT bark_skip_check('SELECT a, b FROM bark_skip WHERE b BETWEEN 5000 AND 5100 ORDER BY a DESC, b DESC');
+SELECT bark_skip_check('SELECT a, b FROM bark_skip WHERE b < 40 ORDER BY a NULLS FIRST, b');
+SELECT bark_skip_check('SELECT a, b FROM bark_skip WHERE b > 99950 ORDER BY a, b');
+SELECT bark_skip_check('SELECT a, b FROM bark_skip WHERE b >= 7000::int8 AND b < 7030::int8 AND b <> 7010::int2 ORDER BY a, b');
+SELECT bark_skip_check('SELECT t, b FROM bark_skip WHERE b BETWEEN 300 AND 420 ORDER BY t DESC, b');
+SELECT bark_skip_check('SELECT count(*) FROM bark_skip WHERE b BETWEEN 300 AND 420');
+SELECT bark_skip_stats('SELECT a, b FROM bark_skip WHERE b = 4321', 'bark_skip_ab');
+SELECT bark_skip_stats('SELECT a, b FROM bark_skip WHERE b BETWEEN 5000 AND 5100', 'bark_skip_ab');
+SELECT bark_skip_stats('SELECT t, b FROM bark_skip WHERE b BETWEEN 5000 AND 5100', 'bark_skip_tb');
+-- Column 1 is int4, whose opclass has skip support: one descent per group
+-- (10 groups, then the NULL group past the last), each straight to
+-- (next value, 5000), plus the first descent.
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT bark_skip_searches('SELECT a, b FROM bark_skip WHERE b BETWEEN 5000 AND 5100');
+RESET enable_bitmapscan;
+RESET enable_seqscan;
+-- A scroll cursor that reverses inside the scan returns the same rows as a
+-- sort over a sequential scan.
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SET enable_sort = off;
+BEGIN;
+DECLARE c SCROLL CURSOR FOR
+  SELECT a, b FROM bark_skip WHERE b BETWEEN 3000 AND 3400 ORDER BY a, b;
+FETCH 3 FROM c;
+FETCH BACKWARD 2 FROM c;
+MOVE 20 IN c;
+FETCH 2 FROM c;
+FETCH BACKWARD 3 FROM c;
+COMMIT;
+RESET enable_sort;
+RESET enable_bitmapscan;
+RESET enable_seqscan;
+SELECT a, b FROM bark_skip WHERE b BETWEEN 3000 AND 3400 ORDER BY a, b
+  LIMIT 25;
+-- Groups shorter than a page and about a page long: the next possible
+-- match after a failing entry is often later on the same page (found by
+-- binary search) or past the high key (the scan re-descends at once).
+-- Both agree with a sequential scan, with and without skip support
+-- (int4 and text column 1).
+CREATE TABLE bark_skip2 (a int, b int, t text);
+INSERT INTO bark_skip2 SELECT g / 7, g % 7, 'k' || (g / 7)
+  FROM generate_series(1, 20000) g;
+INSERT INTO bark_skip2 SELECT 10000 + g / 400, g % 400, 'k' || (10000 + g / 400)
+  FROM generate_series(1, 40000) g;
+CREATE INDEX bark_skip2_ab ON bark_skip2 USING bark (a, b);
+CREATE INDEX bark_skip2_tb ON bark_skip2 USING bark (t DESC, b);
+VACUUM ANALYZE bark_skip2;
+SELECT bark_skip_check('SELECT a, b FROM bark_skip2 WHERE b = 3 ORDER BY a, b');
+SELECT bark_skip_check('SELECT a, b FROM bark_skip2 WHERE b BETWEEN 5 AND 6 ORDER BY a, b');
+SELECT bark_skip_check('SELECT a, b FROM bark_skip2 WHERE b > 395 ORDER BY a, b');
+SELECT bark_skip_check('SELECT a, b FROM bark_skip2 WHERE b < 2 ORDER BY a, b');
+SELECT bark_skip_check('SELECT t, b FROM bark_skip2 WHERE b = 3 ORDER BY t DESC, b');
+SELECT bark_skip_check('SELECT t, b FROM bark_skip2 WHERE b > 395 ORDER BY t DESC, b');
+SELECT bark_index_check('bark_skip2_ab');
+DROP TABLE bark_skip2;
+DROP FUNCTION bark_skip_check(text), bark_skip_stats(text, text),
+  bark_skip_searches(text);
+DROP TABLE bark_skip;
+
+-- ScalarArrayOp with cross-type arrays and inequality operators.  An array
+-- whose element type differs from the column's (int8 elements on an int4
+-- column) is sorted with the element type's own comparator and compared
+-- with column values through the cross-type one; comparing through the
+-- column's comparator would truncate 4294967301 to 5.  An inequality array
+-- (a < ANY(...)) is a single bound on its extreme element, not a membership
+-- test.  bark_saop_check runs each query as an index (or index-only) scan,
+-- as a bitmap scan and as a sequential scan, and says ok when all three
+-- return the same rows in the same order.
+CREATE TABLE bark_xt (a int4, b int8);
+INSERT INTO bark_xt SELECT g, g FROM generate_series(1, 100000) g;
+CREATE INDEX bark_xt_a ON bark_xt USING bark (a);
+CREATE INDEX bark_xt_b ON bark_xt USING bark (b);
+CREATE TABLE bark_xt_mc (a int4, c int);
+INSERT INTO bark_xt_mc SELECT g, g % 3 FROM generate_series(1, 100000) g;
+CREATE INDEX bark_xt_mc_ac ON bark_xt_mc USING bark (a, c);
+CREATE TABLE bark_xt_desc (a int4, b int8);
+INSERT INTO bark_xt_desc SELECT g, g FROM generate_series(1, 100000) g;
+CREATE INDEX bark_xt_desc_a ON bark_xt_desc USING bark (a DESC);
+VACUUM ANALYZE bark_xt, bark_xt_mc, bark_xt_desc;
+CREATE FUNCTION bark_saop_check(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+  how text;
+  res text[] := '{}';
+  cnt text[] := '{}';
+  r record;
+BEGIN
+  FOREACH how IN ARRAY ARRAY['index', 'bitmap', 'seq'] LOOP
+    PERFORM set_config('enable_seqscan', (how = 'seq')::text, true);
+    PERFORM set_config('enable_indexscan', (how = 'index')::text, true);
+    PERFORM set_config('enable_indexonlyscan', (how = 'index')::text, true);
+    PERFORM set_config('enable_bitmapscan', (how = 'bitmap')::text, true);
+    EXECUTE 'SELECT count(*) AS n, md5(string_agg(x::text, '','')) AS h FROM ('
+      || q || ') x' INTO r;
+    res := res || coalesce(r.h, '');
+    cnt := cnt || r.n::text;
+  END LOOP;
+  IF res[1] = res[3] AND res[2] = res[3] THEN
+    RETURN 'ok';
+  END IF;
+  RETURN format('mismatch: index %s, bitmap %s, seq %s rows',
+                cnt[1], cnt[2], cnt[3]);
+END $$;
+-- The array is an Index Cond of the bark scan.
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+EXPLAIN (COSTS OFF)
+  SELECT a, b FROM bark_xt WHERE a = ANY('{4294967301,7}'::int8[]) ORDER BY a;
+EXPLAIN (COSTS OFF)
+  SELECT a, b FROM bark_xt WHERE a < ANY('{5,7}'::int8[]) ORDER BY a;
+RESET enable_bitmapscan;
+RESET enable_seqscan;
+SELECT bark_saop_check('SELECT a, b FROM bark_xt WHERE a = ANY(''{4294967301,7}''::int8[]) ORDER BY a');
+SELECT bark_saop_check('SELECT a, b FROM bark_xt WHERE a = ANY(''{-4294967291}''::int8[]) ORDER BY a');
+SELECT bark_saop_check('SELECT a, b FROM bark_xt WHERE a < ANY(''{5,7}''::int8[]) ORDER BY a');
+SELECT bark_saop_check('SELECT a, b FROM bark_xt WHERE a <= ANY(''{5,7}''::int4[]) ORDER BY a');
+SELECT bark_saop_check('SELECT a, b FROM bark_xt WHERE a >= ANY(''{99998,99990}''::int4[]) ORDER BY a');
+SELECT bark_saop_check('SELECT a, b FROM bark_xt WHERE a > ANY(''{99990,3000000000}''::int8[]) ORDER BY a');
+SELECT bark_saop_check('SELECT a, b FROM bark_xt WHERE a > ANY(''{99000,3000000000}''::int8[]) AND a < ANY(''{99010,5}''::int4[]) ORDER BY a');
+SELECT bark_saop_check('SELECT a, b FROM bark_xt WHERE b = ANY(''{5,7,32767}''::int2[]) ORDER BY b');
+SELECT bark_saop_check('SELECT a, b FROM bark_xt WHERE a = ANY(ARRAY[NULL, 7]::int8[]) ORDER BY a');
+SELECT bark_saop_check('SELECT a, b FROM bark_xt WHERE a < ANY(ARRAY[NULL, 3]::int8[]) ORDER BY a');
+SELECT bark_saop_check('SELECT a, b FROM bark_xt WHERE a > ANY(''{}''::int8[]) ORDER BY a');
+SELECT bark_saop_check('SELECT a, b FROM bark_xt WHERE a > ANY(ARRAY[NULL]::int8[]) ORDER BY a');
+-- A runtime array, re-evaluated on each rescan: the first is all NULL (the
+-- key stays an empty array), the later ones reduce to plain bounds.
+SELECT bark_saop_check('SELECT v.i, x.a FROM (VALUES (1, ARRAY[NULL]::int8[]), (2, ''{5,3}''::int8[]), (3, ''{}''::int8[]), (4, ''{4294967296,-1}''::int8[])) v(i, arr), LATERAL (SELECT a FROM bark_xt WHERE a < ANY(v.arr) ORDER BY a LIMIT 3) x ORDER BY v.i, x.a');
+-- Index-only and backward scans of a cross-type array.
+SELECT bark_saop_check('SELECT a FROM bark_xt WHERE a = ANY(''{3000000000,-3000000000,4294967303,5,99999}''::int8[]) ORDER BY a');
+SELECT bark_saop_check('SELECT a, b FROM bark_xt WHERE a = ANY(''{3000000000,-3000000000,4294967303,5,99999}''::int8[]) ORDER BY a DESC');
+SELECT bark_saop_check('SELECT a FROM bark_xt WHERE a = ANY(''{3000000000,-3000000000,4294967303,5,99999}''::int8[]) ORDER BY a DESC');
+-- Multicolumn: 200 int8 elements spread over the index, 20 of them beyond
+-- int4's range, drive the leading-array cursor and its re-descents; also an
+-- inequality array on the second column.
+SELECT bark_saop_check(format(
+  'SELECT a, c FROM bark_xt_mc WHERE a = ANY(%L::int8[]) AND c = 1 ORDER BY a',
+  (SELECT array_agg(CASE WHEN g % 10 = 0 THEN 4294967296 + g * 487 + 1
+                    ELSE g * 487 END)
+     FROM generate_series(1, 200) g)));
+SELECT bark_saop_check(format(
+  'SELECT a, c FROM bark_xt_mc WHERE a = ANY(%L::int8[]) AND c <= ANY(''{0,1}''::int8[]) ORDER BY a',
+  (SELECT array_agg(CASE WHEN g % 10 = 0 THEN 4294967296 + g * 487 + 1
+                    ELSE g * 487 END)
+     FROM generate_series(1, 200) g)));
+SELECT bark_saop_check('SELECT a, c FROM bark_xt_mc WHERE c > ANY(''{1,0}''::int8[]) AND a < 3000 ORDER BY a, c');
+SELECT bark_saop_check('SELECT a, c FROM bark_xt_mc WHERE c >= ANY(''{1,9}''::int8[]) ORDER BY a, c');
+-- DESC index, read forward (ORDER BY a DESC) and backward.
+SELECT bark_saop_check('SELECT a, b FROM bark_xt_desc WHERE a = ANY(''{4294967301,7,-4294967291,99999,3}''::int8[]) ORDER BY a DESC');
+SELECT bark_saop_check('SELECT a, b FROM bark_xt_desc WHERE a = ANY(''{4294967301,7,-4294967291,99999,3}''::int8[]) ORDER BY a');
+SELECT bark_saop_check('SELECT a FROM bark_xt_desc WHERE a < ANY(''{5,7}''::int8[]) ORDER BY a DESC');
+SELECT bark_saop_check('SELECT a FROM bark_xt_desc WHERE a >= ANY(''{99998,99990}''::int4[]) ORDER BY a DESC');
+DROP FUNCTION bark_saop_check(text);
+DROP TABLE bark_xt, bark_xt_mc, bark_xt_desc;
+
+--
+-- Leaf prefix compression (the prefix_compression reloption).  Each index is
+-- built with the option off and then on, the leaf counts compared, and the
+-- compressed index's results compared with a bitmap scan and a seqscan.
+--
+CREATE FUNCTION bark_pfx_check(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+  how text;
+  res text[] := '{}';
+  cnt text[] := '{}';
+  r record;
+BEGIN
+  FOREACH how IN ARRAY ARRAY['index', 'bitmap', 'seq'] LOOP
+    PERFORM set_config('enable_seqscan', (how = 'seq')::text, true);
+    PERFORM set_config('enable_indexscan', (how = 'index')::text, true);
+    PERFORM set_config('enable_indexonlyscan', (how = 'index')::text, true);
+    PERFORM set_config('enable_bitmapscan', (how = 'bitmap')::text, true);
+    EXECUTE 'SELECT count(*) AS n, md5(string_agg(x::text, '','')) AS h FROM ('
+      || q || ') x' INTO r;
+    res := res || coalesce(r.h, '');
+    cnt := cnt || r.n::text;
+  END LOOP;
+  IF res[1] = res[3] AND res[2] = res[3] THEN
+    RETURN 'ok';
+  END IF;
+  RETURN format('mismatch: index %s, bitmap %s, seq %s rows',
+                cnt[1], cnt[2], cnt[3]);
+END $$;
+-- Build bark_pfx_idx on `def` with the option off, then on; leave the
+-- compressed one, checked by amcheck, and return both sizes in pages.
+CREATE FUNCTION bark_pfx_build(def text, OUT off_pages int, OUT on_pages int)
+LANGUAGE plpgsql AS $$
+BEGIN
+  DROP INDEX IF EXISTS bark_pfx_idx;
+  EXECUTE format('CREATE INDEX bark_pfx_idx ON bark_pfx USING bark %s WITH (prefix_compression = off)', def);
+  off_pages := pg_relation_size('bark_pfx_idx'::regclass) / 8192;
+  DROP INDEX bark_pfx_idx;
+  EXECUTE format('CREATE INDEX bark_pfx_idx ON bark_pfx USING bark %s WITH (prefix_compression = on)', def);
+  on_pages := pg_relation_size('bark_pfx_idx'::regclass) / 8192;
+  PERFORM bark_index_check('bark_pfx_idx'::regclass);
+END $$;
+-- A collation other than C: ICU's root locale where ICU is available.
+DO $$
+BEGIN
+  -- ICU collations exist in every database but work only in one whose
+  -- encoding ICU supports (not SQL_ASCII)
+  IF EXISTS (SELECT 1 FROM pg_collation WHERE collname = 'und-x-icu') AND
+     getdatabaseencoding() <> 'SQL_ASCII' THEN
+    CREATE COLLATION bark_pfx_coll FROM "und-x-icu";
+  ELSE
+    CREATE COLLATION bark_pfx_coll FROM "POSIX";
+  END IF;
+END $$;
+-- URL-like keys (a long shared prefix), zero-padded codes with duplicates,
+-- md5 (little sharing), a mostly-NULL column, and long values: 330 bytes, or
+-- 600 compressible ones that are compressed inline and so stored raw.
+CREATE TABLE bark_pfx (id int, url text COLLATE "C", code text COLLATE "C",
+                       h text COLLATE "C", n int, z text COLLATE "C",
+                       big text COLLATE "C");
+INSERT INTO bark_pfx SELECT g,
+  'https://www.example.com/products/category/' || (g % 97) || '/item/' || md5(g::text),
+  'ACCT-' || lpad((g % 5000)::text, 12, '0'),
+  md5(g::text), g % 100,
+  CASE WHEN g % 4 = 0 THEN 'v' || (g % 300) END,
+  CASE WHEN g % 10 = 0 THEN repeat('b', 600) || g
+       ELSE repeat(md5((g % 50)::text), 10) || g END
+FROM generate_series(1, 20000) g ORDER BY md5(g::text || 'x');
+VACUUM ANALYZE bark_pfx;
+SELECT on_pages < off_pages AS smaller FROM bark_pfx_build('(url)');
+SELECT bark_pfx_check('SELECT id FROM bark_pfx WHERE url = ''https://www.example.com/products/category/5/item/'' || md5(''5'')');
+SELECT bark_pfx_check('SELECT url FROM bark_pfx WHERE url >= ''https://www.example.com/products/category/50'' AND url < ''https://www.example.com/products/category/6'' ORDER BY url');
+SELECT bark_pfx_check('SELECT url FROM bark_pfx WHERE url < ''https://www.example.com/products/category/2'' ORDER BY url DESC');
+SELECT bark_pfx_check('SELECT url, id FROM bark_pfx WHERE url > ''https://www.example.com/products/category/9'' ORDER BY url');
+SELECT on_pages < off_pages AS smaller FROM bark_pfx_build('(code)');
+SELECT bark_pfx_check('SELECT id FROM bark_pfx WHERE code = ''ACCT-000000001234'' ORDER BY id');
+SELECT bark_pfx_check('SELECT code FROM bark_pfx WHERE code BETWEEN ''ACCT-000000000100'' AND ''ACCT-000000002000'' ORDER BY code');
+SELECT bark_pfx_check('SELECT code FROM bark_pfx WHERE code > ''ACCT-000000004000'' ORDER BY code DESC');
+SELECT on_pages <= off_pages AS not_larger FROM bark_pfx_build('(h)');
+SELECT bark_pfx_check('SELECT h FROM bark_pfx WHERE h >= ''c'' AND h < ''d'' ORDER BY h');
+SELECT bark_pfx_check('SELECT id FROM bark_pfx WHERE h = md5(''777'')');
+SELECT on_pages < off_pages AS smaller FROM bark_pfx_build('(url COLLATE bark_pfx_coll)');
+SELECT bark_pfx_check('SELECT url FROM bark_pfx WHERE url COLLATE bark_pfx_coll >= ''https://www.example.com/products/category/50'' ORDER BY url COLLATE bark_pfx_coll');
+SELECT bark_pfx_check('SELECT url FROM bark_pfx WHERE url COLLATE bark_pfx_coll < ''https://www.example.com/products/category/3'' ORDER BY url COLLATE bark_pfx_coll DESC');
+SELECT on_pages < off_pages AS smaller FROM bark_pfx_build('(code DESC)');
+SELECT bark_pfx_check('SELECT code FROM bark_pfx WHERE code > ''ACCT-000000003000'' ORDER BY code DESC');
+SELECT bark_pfx_check('SELECT code FROM bark_pfx WHERE code < ''ACCT-000000000300'' ORDER BY code');
+SELECT on_pages < off_pages AS smaller FROM bark_pfx_build('(url, n)');
+SELECT bark_pfx_check('SELECT url, n FROM bark_pfx WHERE url >= ''https://www.example.com/products/category/4'' AND n = 3 ORDER BY url, n');
+SELECT bark_pfx_check('SELECT url, n FROM bark_pfx WHERE url < ''https://www.example.com/products/category/15'' ORDER BY url DESC, n DESC');
+SELECT on_pages <= off_pages AS not_larger FROM bark_pfx_build('(z)');
+SELECT bark_pfx_check('SELECT z FROM bark_pfx WHERE z > ''v1'' ORDER BY z');
+SELECT bark_pfx_check('SELECT id FROM bark_pfx WHERE z IS NULL AND id < 1000 ORDER BY id');
+SELECT on_pages < off_pages AS smaller FROM bark_pfx_build('(big)');
+SELECT bark_pfx_check('SELECT big FROM bark_pfx WHERE big > repeat(md5(''7''), 10) ORDER BY big');
+SELECT bark_pfx_check('SELECT id FROM bark_pfx WHERE big = repeat(''b'', 600) || ''120''');
+SELECT bark_pfx_check('SELECT id FROM bark_pfx WHERE big = repeat(md5(''7''), 10) || ''57''');
+-- A key column of a fixed-length type never has a prefix.
+SELECT on_pages = off_pages AS same FROM bark_pfx_build('(n)');
+-- Inserts after the build, VACUUM removing half the rows, and more inserts,
+-- into compressed indexes; coalescing extends LIST entries on coded pages.
+DROP INDEX bark_pfx_idx;
+CREATE INDEX bark_pfx_url ON bark_pfx USING bark (url) WITH (prefix_compression = on);
+CREATE INDEX bark_pfx_code ON bark_pfx USING bark (code DESC, n) WITH (prefix_compression = on);
+SELECT setseed(0.5);
+INSERT INTO bark_pfx SELECT g,
+  'https://www.example.com/products/category/' || (g % 89) || '/x/' || md5(g::text),
+  'ACCT-' || lpad((random() * 6000)::int::text, 12, '0'), md5(g::text), g % 100
+FROM generate_series(20001, 40000) g ORDER BY random();
+DELETE FROM bark_pfx WHERE id % 2 = 0;
+VACUUM bark_pfx;
+INSERT INTO bark_pfx SELECT g,
+  'https://www.example.com/products/' || (g % 13) || '/' || md5(g::text),
+  'ACCT-' || lpad((random() * 6000)::int::text, 12, '0'), md5(g::text), g % 100
+FROM generate_series(40001, 50000) g ORDER BY random();
+-- With the option turned off, compressed leaves stay readable, and their
+-- splits form plain halves, or keep the old prefix where plain does not fit.
+ALTER INDEX bark_pfx_url SET (prefix_compression = off);
+INSERT INTO bark_pfx SELECT g,
+  'https://www.example.com/products/category/' || (g % 7) || '/y/' || md5(g::text)
+FROM generate_series(50001, 60000) g ORDER BY md5(g::text);
+SELECT bark_index_check('bark_pfx_url'), bark_index_check('bark_pfx_code');
+SELECT bark_pfx_check('SELECT url FROM bark_pfx WHERE url >= ''https://www.example.com/products/c'' ORDER BY url');
+SELECT bark_pfx_check('SELECT url FROM bark_pfx ORDER BY url DESC');
+SELECT bark_pfx_check('SELECT code, n FROM bark_pfx WHERE code > ''ACCT-000000002000'' ORDER BY code DESC, n DESC');
+SELECT bark_pfx_check('SELECT id FROM bark_pfx WHERE code = ''ACCT-000000001234'' ORDER BY id');
+DROP TABLE bark_pfx;
+DROP FUNCTION bark_pfx_check(text);
+DROP FUNCTION bark_pfx_build(text);
+DROP COLLATION bark_pfx_coll;
+
+-- Row comparisons position and stop the scan.  A row comparison on column c
+-- bounds the descent with its leading members that sit on columns c, c+1, ...
+-- in the same direction (its usable prefix), and one on column 1 ends the scan
+-- once an entry sorts past that prefix.  Every case matches a sequential scan
+-- on each index shape; bark_rowcmp_check also names the scan direction.
+CREATE TABLE bark_rowcmp (a int, b int, c text);
+INSERT INTO bark_rowcmp SELECT g % 5000, (g / 5000) * 2, chr(97 + g % 26)
+  FROM generate_series(1, 50000) g;
+INSERT INTO bark_rowcmp VALUES (NULL, 1, 'n'), (NULL, NULL, NULL),
+  (2500, NULL, 'n'), (7, NULL, 'z'), (7, 5, NULL);
+VACUUM ANALYZE bark_rowcmp;
+CREATE FUNCTION bark_rowcmp_check(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+  plan json;
+  node json;
+  r1 text;
+  r2 text;
+BEGIN
+  SET LOCAL enable_seqscan = off;
+  SET LOCAL enable_bitmapscan = off;
+  SET LOCAL enable_sort = off;
+  EXECUTE 'EXPLAIN (COSTS OFF, FORMAT JSON) ' || q INTO plan;
+  node := plan->0->'Plan';
+  WHILE node->>'Index Name' IS NULL AND node->'Plans' IS NOT NULL LOOP
+    node := node->'Plans'->0;
+  END LOOP;
+  EXECUTE 'SELECT md5(string_agg(x::text, '','')) FROM (' || q || ') x' INTO r1;
+  RESET enable_seqscan;
+  RESET enable_sort;
+  SET LOCAL enable_indexscan = off;
+  SET LOCAL enable_indexonlyscan = off;
+  EXECUTE 'SELECT md5(string_agg(x::text, '','')) FROM (' || q || ') x' INTO r2;
+  RETURN format('%s %s', coalesce(node->>'Scan Direction', 'no index scan'),
+    CASE WHEN r1 IS NOT DISTINCT FROM r2 THEN 'ok' ELSE 'mismatch' END);
+END $$;
+CREATE FUNCTION bark_rowcmp_run(fwd text, bwd text) RETURNS SETOF text
+LANGUAGE plpgsql AS $$
+DECLARE
+  q text;
+BEGIN
+  FOREACH q IN ARRAY ARRAY[
+    'WHERE (a, b) > (2500, 10) ORDER BY ' || fwd,
+    'WHERE (a, b) > (2500, 10) ORDER BY ' || bwd,
+    'WHERE (a, b) >= (2500, 10) ORDER BY ' || fwd,
+    'WHERE (a, b) >= (2500, 10) ORDER BY ' || bwd,
+    'WHERE (a, b) < (2500, 10) ORDER BY ' || fwd,
+    'WHERE (a, b) < (2500, 10) ORDER BY ' || bwd,
+    'WHERE (a, b) <= (2500, 10) ORDER BY ' || fwd,
+    'WHERE (a, b) <= (2500, 10) ORDER BY ' || bwd,
+    'WHERE (a, b, c) > (2500, 10, ''k'') ORDER BY ' || fwd,
+    'WHERE (a, b, c) <= (2500, 10, ''k'') ORDER BY ' || bwd,
+    'WHERE (a, b) > (2500, NULL) ORDER BY ' || fwd,
+    'WHERE (a, b) < (2500, NULL) ORDER BY ' || bwd,
+    'WHERE (a, b) > (NULL, 1) ORDER BY ' || fwd,
+    'WHERE (a, b) > (2500::int8, 10::int2) ORDER BY ' || fwd,
+    'WHERE (a, b) <= (2500::int8, 10::int2) ORDER BY ' || bwd,
+    'WHERE a = 7 AND (b, c) > (5, ''x'') ORDER BY ' || fwd,
+    'WHERE a = 7 AND (b, c) >= (6, ''f'') ORDER BY ' || bwd,
+    'WHERE (a, b) > (2500, 10) ORDER BY ' || fwd || ' LIMIT 20',
+    'WHERE (a, b) < (2500, 10) ORDER BY ' || bwd || ' LIMIT 20']
+  LOOP
+    RETURN NEXT bark_rowcmp_check('SELECT a, b FROM bark_rowcmp ' || q) ||
+      ': ' || q;
+  END LOOP;
+END $$;
+CREATE INDEX bark_rowcmp_i ON bark_rowcmp USING bark (a, b);
+SELECT bark_rowcmp_run('a, b', 'a DESC, b DESC');
+DROP INDEX bark_rowcmp_i;
+CREATE INDEX bark_rowcmp_i ON bark_rowcmp USING bark (a DESC, b);
+SELECT bark_rowcmp_run('a DESC, b', 'a, b DESC');
+DROP INDEX bark_rowcmp_i;
+CREATE INDEX bark_rowcmp_i ON bark_rowcmp USING bark (a, b DESC);
+SELECT bark_rowcmp_run('a, b DESC', 'a DESC, b');
+DROP INDEX bark_rowcmp_i;
+CREATE INDEX bark_rowcmp_i ON bark_rowcmp USING bark (a, b, c);
+SELECT bark_rowcmp_run('a, b', 'a DESC, b DESC');
+DROP INDEX bark_rowcmp_i;
+-- Keyset pagination reads a few pages from where the row starts, and an
+-- upper-bound row on column 1 stops the scan early: each reads under 10
+-- index pages of a 50000-row index.
+CREATE INDEX bark_rowcmp_i ON bark_rowcmp USING bark (a, b);
+CREATE FUNCTION bark_rowcmp_pages(q text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE
+  warm refcursor;
+  plan json;
+  node json;
+BEGIN
+  SET LOCAL enable_seqscan = off;
+  SET LOCAL enable_bitmapscan = off;
+  SET LOCAL debug_parallel_query = off;	-- as in bark_xt_buffers
+  OPEN warm FOR EXECUTE q;
+  MOVE warm;
+  EXECUTE 'EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, FORMAT JSON) ' || q
+    INTO plan;
+  node := plan->0->'Plan';
+  WHILE node->>'Index Name' IS NULL LOOP
+    node := node->'Plans'->0;
+  END LOOP;
+  -- The node's buffers include the heap pages an index-only scan fetches
+  -- when the visibility map is not set, which depends on concurrent
+  -- snapshots; at most one heap page per fetch, so count them out.
+  RETURN (node->>'Shared Hit Blocks')::int + (node->>'Shared Read Blocks')::int -
+    coalesce((node->>'Heap Fetches')::int, 0) < 10;
+END $$;
+SELECT bark_rowcmp_pages('SELECT a, b FROM bark_rowcmp WHERE (a, b) > (2500, 10) ORDER BY a, b LIMIT 20') AS keyset_pages_lt_10;
+SELECT bark_rowcmp_pages('SELECT a, b FROM bark_rowcmp WHERE (a, b) < (5, 3) ORDER BY a, b') AS early_stop_pages_lt_10;
+-- A scroll cursor moving back and forth over a row comparison returns the
+-- same rows as a sort over a sequential scan.
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SET enable_sort = off;
+BEGIN;
+DECLARE c SCROLL CURSOR FOR
+  SELECT a, b FROM bark_rowcmp WHERE (a, b) > (2500, 10) ORDER BY a, b;
+FETCH 3 FROM c;
+FETCH BACKWARD 5 FROM c;
+FETCH 4 FROM c;
+MOVE 25 IN c;
+FETCH 2 FROM c;
+FETCH BACKWARD 3 FROM c;
+FETCH LAST FROM c;
+FETCH BACKWARD 2 FROM c;
+FETCH ABSOLUTE 2 FROM c;
+COMMIT;
+RESET enable_sort;
+RESET enable_bitmapscan;
+SET enable_indexscan = off;
+SET enable_indexonlyscan = off;
+SELECT a, b FROM bark_rowcmp WHERE (a, b) > (2500, 10) ORDER BY a, b LIMIT 32;
+SELECT a, b FROM bark_rowcmp WHERE (a, b) > (2500, 10) ORDER BY a DESC, b DESC
+  LIMIT 3;
+RESET enable_indexonlyscan;
+RESET enable_indexscan;
+RESET enable_seqscan;
+DROP FUNCTION bark_rowcmp_check(text), bark_rowcmp_run(text, text),
+  bark_rowcmp_pages(text);
+DROP TABLE bark_rowcmp;
+-- Bottom-up deletion.  Every UPDATE of v is non-HOT (v is indexed) and leaves
+-- k and u unchanged, so the executor inserts each new version into the k and
+-- u indexes with indexUnchanged set.  When such an insert would split a
+-- leaf, BARK first asks the heap which versions on the leaf are dead and
+-- deletes their entries, as nbtree does, so twenty rounds of UPDATEs leave
+-- the k index about the size of a btree index on k instead of twice it.  The
+-- u index (four rows per value, prefix-coded leaves) has LIST entries that
+-- lose some members and are re-formed.  A temp table, so that only this
+-- session's snapshot decides which versions are dead.
+CREATE TEMP TABLE bark_churn (id int, k int, v int, u text)
+  WITH (fillfactor = 100, autovacuum_enabled = off);
+CREATE INDEX bark_churn_k ON bark_churn USING bark (k);
+CREATE INDEX bark_churn_kbt ON bark_churn USING btree (k);
+CREATE INDEX bark_churn_v ON bark_churn USING bark (v);
+CREATE INDEX bark_churn_u ON bark_churn USING bark (u)
+  WITH (prefix_compression = on);
+CREATE INDEX bark_churn_ubt ON bark_churn USING btree (u);
+INSERT INTO bark_churn
+  SELECT g, g, 0, 'https://www.example.com/item/' || lpad((g % 2500)::text, 8, '0')
+  FROM generate_series(1, 10000) g;
+DO $$
+BEGIN
+  FOR i IN 1..20 LOOP
+    UPDATE bark_churn SET v = v + 1;
+    COMMIT;
+  END LOOP;
+END $$;
+SELECT pg_relation_size('bark_churn_k') <=
+         pg_relation_size('bark_churn_kbt') * 1.25 AS k_like_btree,
+       pg_relation_size('bark_churn_u') <=
+         pg_relation_size('bark_churn_ubt') * 1.25 AS u_like_btree;
+SELECT bark_index_check('bark_churn_k'), bark_index_check('bark_churn_v'),
+       bark_index_check('bark_churn_u');
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*), sum(k), sum(v) FROM bark_churn WHERE k > 0;
+SELECT count(*), count(DISTINCT u) FROM bark_churn WHERE u > 'h';
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SET enable_indexscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*), sum(k), sum(v) FROM bark_churn WHERE k > 0;
+SELECT count(*), count(DISTINCT u) FROM bark_churn WHERE u > 'h';
+RESET enable_indexscan;
+RESET enable_bitmapscan;
+DROP TABLE bark_churn;
+
+-- ===========================================================================
+-- Heap TID order.  The entries of a run of equal keys are in heap TID order,
+-- as nbtree's are: an insert goes to the place its heap TID gives it in the
+-- run, so space VACUUM frees inside a run is reused, and a pivot between
+-- entries of one key carries a heap TID.
+-- ===========================================================================
+
+-- Churn: DELETE a third of the rows at random and VACUUM, then insert new
+-- rows, which reuse the heap's free space and so take heap TIDs all through
+-- each key's run.  They go back into the space VACUUM freed in the index:
+-- the index grows no more than a btree index built the same way (it used to
+-- grow nearly three times as much, every new row going to the end of its
+-- key's run).  A temp table, so that only this session's snapshot limits
+-- what VACUUM can remove.
+CREATE EXTENSION IF NOT EXISTS amcheck;
+CREATE TEMP TABLE bark_hk (id int, d int) WITH (autovacuum_enabled = off);
+INSERT INTO bark_hk SELECT g, g % 20 FROM generate_series(1, 50000) g;
+CREATE INDEX bark_hk_bark ON bark_hk USING bark (d);
+CREATE INDEX bark_hk_bt ON bark_hk USING btree (d);
+CREATE TEMP TABLE bark_hk_size AS
+  SELECT pg_relation_size('bark_hk_bark') AS bark0,
+         pg_relation_size('bark_hk_bt') AS bt0;
+DELETE FROM bark_hk WHERE hashint4(id) % 3 = 0;
+VACUUM bark_hk;
+INSERT INTO bark_hk SELECT g, g % 20 FROM generate_series(50001, 65000) g;
+VACUUM bark_hk;
+SELECT pg_relation_size('bark_hk_bark') - bark0 <=
+       pg_relation_size('bark_hk_bt') - bt0 AS bark_grows_no_more
+  FROM bark_hk_size;
+SELECT bark_index_check('bark_hk_bark');
+DROP INDEX bark_hk_bt;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT d, count(*), md5(string_agg(ctid::text, ',' ORDER BY ctid)) AS tids
+  INTO TEMP bark_hk_idx FROM bark_hk WHERE d >= 0 GROUP BY d;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SET enable_indexscan = off;
+SET enable_indexonlyscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*) AS keys, sum(count) AS rows,
+       count(*) FILTER (WHERE s.tids IS DISTINCT FROM i.tids) AS mismatches
+  FROM (SELECT d, count(*), md5(string_agg(ctid::text, ',' ORDER BY ctid)) AS tids
+        FROM bark_hk GROUP BY d) s FULL JOIN bark_hk_idx i USING (d, count);
+RESET enable_indexscan;
+RESET enable_indexonlyscan;
+RESET enable_bitmapscan;
+-- An index scan returns each key's rows in heap TID order.
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*) AS out_of_order FROM
+  (SELECT ctid, lag(ctid) OVER () AS prev FROM bark_hk WHERE d = 7) x
+  WHERE prev > ctid;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+DROP TABLE bark_hk, bark_hk_size, bark_hk_idx;
+
+-- The same churn on indexes that existed before the rows were inserted.  The
+-- inserts come in heap TID order, so each key's last page receives them, and
+-- when it fills it is split leaving the left page at its single-value fill
+-- factor, cutting its last LIST to get there (bark_singleval_cut): the pages
+-- of a run end about 96% full, as nbtree's do.  Left with every entry that
+-- fits, they would be nearly full, the reinsert into the space VACUUM freed
+-- in them would overflow most, and the index would grow four times as much
+-- as btree's.  The rows are wide enough that each key has only a few
+-- on a heap page, so its entries are LISTs, as they are for a key with fewer
+-- rows than this one.
+CREATE TEMP TABLE bark_hkr (id int, d int, pad text)
+  WITH (autovacuum_enabled = off);
+CREATE INDEX bark_hkr_bark ON bark_hkr USING bark (d);
+CREATE INDEX bark_hkr_bt ON bark_hkr USING btree (d);
+INSERT INTO bark_hkr SELECT g, g % 20, repeat('x', 200)
+  FROM generate_series(1, 100000) g;
+SELECT bark_index_check('bark_hkr_bark');
+CREATE TEMP TABLE bark_hkr_size AS
+  SELECT pg_relation_size('bark_hkr_bark') AS bark0,
+         pg_relation_size('bark_hkr_bt') AS bt0;
+DELETE FROM bark_hkr WHERE hashint4(id) % 3 = 0;
+VACUUM bark_hkr;
+INSERT INTO bark_hkr SELECT g, g % 20, repeat('x', 200)
+  FROM generate_series(100001, 130000) g;
+VACUUM bark_hkr;
+SELECT pg_relation_size('bark_hkr_bark') - bark0 <=
+       (pg_relation_size('bark_hkr_bt') - bt0) * 1.2 AS bark_grows_no_more
+  FROM bark_hkr_size;
+SELECT bark_index_check('bark_hkr_bark');
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*), sum(id) FROM bark_hkr WHERE d >= 0;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SELECT count(*), sum(id) FROM bark_hkr;
+DROP TABLE bark_hkr, bark_hkr_size;
+
+-- The same churn on indexes built by CREATE INDEX after the load.  The build
+-- packs each key's rows into LISTs of a tenth of a page, so the reinsert's
+-- heap TIDs fall inside them, and a full LIST is divided around the TID it
+-- cannot take; on a full page that would be a 50/50 split.  Before it splits,
+-- the page's adjacent entries of the key are merged into fewer, larger ones
+-- (bark_merge_page, as nbtree's deduplication pass), which frees the room.
+-- Without the merge the index grows 40% more than btree's.  A temp table, so
+-- that only this session's snapshot limits what VACUUM can remove.
+CREATE TEMP TABLE bark_cim (id int, d int, pad text)
+  WITH (autovacuum_enabled = off);
+INSERT INTO bark_cim SELECT g, g % 20, repeat('x', 200)
+  FROM generate_series(1, 100000) g;
+CREATE INDEX bark_cim_bark ON bark_cim USING bark (d);
+CREATE INDEX bark_cim_bt ON bark_cim USING btree (d);
+CREATE TEMP TABLE bark_cim_size AS
+  SELECT pg_relation_size('bark_cim_bark') AS bark0,
+         pg_relation_size('bark_cim_bt') AS bt0;
+DELETE FROM bark_cim WHERE hashint4(id) % 3 = 0;
+VACUUM bark_cim;
+INSERT INTO bark_cim SELECT g, g % 20, repeat('x', 200)
+  FROM generate_series(100001, 130000) g;
+VACUUM bark_cim;
+SELECT pg_relation_size('bark_cim_bark') - bark0 <=
+       (pg_relation_size('bark_cim_bt') - bt0) * 1.1 AS bark_grows_no_more
+  FROM bark_cim_size;
+SELECT bark_index_check('bark_cim_bark');
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*), sum(id) FROM bark_cim WHERE d >= 0;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SELECT count(*), sum(id) FROM bark_cim;
+DROP TABLE bark_cim, bark_cim_size;
+
+-- The merge on a regular table, whose changes are WAL-logged, so that a
+-- standby replaying this suite applies XLOG_BARK_MERGE records (and checks
+-- them, under wal_consistency_checking).  The heap leaves room on each page,
+-- so an UPDATE's new versions take heap TIDs inside the built LISTs of the
+-- key they move to, and the leaves fill without any VACUUM.  The u index's
+-- leaves are prefix-coded, so its merged entries are decoded and coded again.
+CREATE TABLE bark_cimu (id int, d int, u text, pad text)
+  WITH (fillfactor = 70, autovacuum_enabled = off);
+INSERT INTO bark_cimu
+  SELECT g, g % 20, 'https://www.example.com/item/' || lpad((g % 20)::text, 8, '0'),
+         repeat('x', 200)
+  FROM generate_series(1, 20000) g;
+CREATE INDEX bark_cimu_bark ON bark_cimu USING bark (d);
+CREATE INDEX bark_cimu_u ON bark_cimu USING bark (u)
+  WITH (prefix_compression = on);
+UPDATE bark_cimu
+  SET d = (d + 1) % 20,
+      u = 'https://www.example.com/item/' || lpad(((d + 1) % 20)::text, 8, '0')
+  WHERE hashint4(id) % 3 = 0;
+SELECT bark_index_check('bark_cimu_bark'), bark_index_check('bark_cimu_u');
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*), sum(id), sum(d) FROM bark_cimu WHERE d >= 0;
+SELECT count(*), sum(id), md5(string_agg(u, ',' ORDER BY id)) FROM bark_cimu
+  WHERE u > 'h';
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SELECT count(*), sum(id), sum(d) FROM bark_cimu;
+SELECT count(*), sum(id), md5(string_agg(u, ',' ORDER BY id)) FROM bark_cimu;
+DROP TABLE bark_cimu;
+
+-- A heap TID that falls inside the TID range of a LIST or POSTING entry must
+-- go into that entry.  When the entry cannot take it (it is at the item
+-- ceiling, or the page is full), the entry is divided around it: in place
+-- when both parts fit on the page, else in a split of the page.  To get such
+-- TIDs, the heap leaves half of each page free (fillfactor 50) and rows of
+-- another key are updated to the key: each new version goes on its old
+-- version's page, after the rows already there, so inside the key's run.
+-- Key 1 of bark_hkl has a few TIDs per heap page (LIST entries), key 1 of
+-- bark_hkp nearly all of them (POSTING entries).  The indexes are filled by
+-- inserts, which grow entries to the item ceiling, then rebuilt by REINDEX,
+-- whose entries are smaller and whose pages are full, and updated again.
+CREATE FUNCTION bark_hk_check(tbl text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+  r1 text;
+  r2 text;
+BEGIN
+  SET LOCAL enable_seqscan = off;
+  SET LOCAL enable_bitmapscan = off;
+  EXECUTE format('SELECT count(*) || md5(string_agg(ctid::text, '','' ORDER BY k, ctid)) FROM %I WHERE k >= 0', tbl) INTO r1;
+  SET LOCAL enable_seqscan = on;
+  SET LOCAL enable_indexscan = off;
+  SET LOCAL enable_indexonlyscan = off;
+  EXECUTE format('SELECT count(*) || md5(string_agg(ctid::text, '','' ORDER BY k, ctid)) FROM %I WHERE k >= 0', tbl) INTO r2;
+  RETURN CASE WHEN r1 = r2 THEN 'ok' ELSE 'mismatch' END;
+END $$;
+CREATE TABLE bark_hkl (k int, v int) WITH (fillfactor = 50, autovacuum_enabled = off);
+CREATE INDEX bark_hkl_idx ON bark_hkl USING bark (k);
+INSERT INTO bark_hkl SELECT g % 50, g FROM generate_series(1, 100000) g;
+UPDATE bark_hkl SET k = 1 WHERE k = 2 AND v % 4 = 2;
+SELECT bark_index_check('bark_hkl_idx'), bark_hk_check('bark_hkl');
+REINDEX INDEX bark_hkl_idx;
+SELECT bark_index_check('bark_hkl_idx'), bark_hk_check('bark_hkl');
+UPDATE bark_hkl SET k = 1 WHERE k = 3 AND v % 4 = 3;
+SELECT bark_index_check('bark_hkl_idx'), bark_hk_check('bark_hkl');
+CREATE TABLE bark_hkp (k int, v int) WITH (fillfactor = 50, autovacuum_enabled = off);
+CREATE INDEX bark_hkp_idx ON bark_hkp USING bark (k);
+INSERT INTO bark_hkp SELECT CASE WHEN g % 10 = 0 THEN 2 ELSE 1 END, g
+  FROM generate_series(1, 60000) g;
+UPDATE bark_hkp SET k = 1 WHERE k = 2 AND v % 20 = 0;
+SELECT bark_index_check('bark_hkp_idx'), bark_hk_check('bark_hkp');
+REINDEX INDEX bark_hkp_idx;
+UPDATE bark_hkp SET k = 1 WHERE k = 2;
+SELECT bark_index_check('bark_hkp_idx'), bark_hk_check('bark_hkp');
+DROP TABLE bark_hkl, bark_hkp;
+DROP FUNCTION bark_hk_check(text);
+
+-- A unique check starts at the first leaf that can hold the key, since the
+-- live entry of a key may be anywhere in its run.  Dead versions of a key,
+-- not yet vacuumed, are wide enough (a 2000-byte INCLUDE column) to span a
+-- leaf boundary; the live version comes after them, and a conflicting insert
+-- must still find it.
+CREATE TABLE bark_hku (k int, pad text) WITH (autovacuum_enabled = off);
+CREATE UNIQUE INDEX bark_hku_idx ON bark_hku USING bark (k) INCLUDE (pad);
+INSERT INTO bark_hku SELECT g, 'x' FROM generate_series(0, 2) g;
+DO $$
+BEGIN
+  FOR i IN 1..4 LOOP
+    DELETE FROM bark_hku WHERE k = 1;
+    INSERT INTO bark_hku SELECT 1, string_agg(md5(i::text || g::text), '')
+      FROM generate_series(1, 63) g;
+  END LOOP;
+END $$;
+SELECT pg_relation_size('bark_hku_idx') / 8192 > 2 AS spans_leaves;
+INSERT INTO bark_hku VALUES (1, 'y');	-- fails
+INSERT INTO bark_hku VALUES (1, 'y') ON CONFLICT DO NOTHING;
+SELECT count(*) FROM bark_hku WHERE k = 1;
+SELECT bark_index_check('bark_hku_idx');
+DROP TABLE bark_hku;
+
+-- A leaf read after a scan's first page tests the keys that its first and
+-- last data entries both satisfy only once, for the whole page
+-- (bark_page_satisfied_keys), when every entry between them must satisfy them
+-- too: a key on column k counts only where columns 1..k-1 are equal across
+-- the page.  In bark_sk, b runs through 0..999 twice within each a, so a page
+-- that crosses from one a to the next has first and last entries satisfying
+-- b > 100 and entries in between that do not; each a also ends in NULL b's,
+-- and some rows have a NULL a.  Every query reads several leaves, forward and
+-- backward, through ASC and then DESC columns, and must return what a
+-- sequential scan and a bitmap scan do.
+CREATE TABLE bark_sk (a int, b int, c int);
+INSERT INTO bark_sk SELECT g / 2000, (g * 7) % 1000, g
+  FROM generate_series(0, 59999) g;
+INSERT INTO bark_sk SELECT g % 30, NULL, g FROM generate_series(1, 300) g;
+INSERT INTO bark_sk SELECT NULL, g % 1000, g FROM generate_series(1, 1000) g;
+CREATE INDEX bark_sk_idx ON bark_sk USING bark (a, b);
+VACUUM ANALYZE bark_sk;
+CREATE FUNCTION bark_sk_check(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+  plan json;
+  node json;
+  r1 text;
+  r2 text;
+  r3 text;
+BEGIN
+  SET LOCAL enable_seqscan = off;
+  SET LOCAL enable_bitmapscan = off;
+  SET LOCAL enable_sort = off;
+  EXECUTE 'EXPLAIN (COSTS OFF, FORMAT JSON) ' || q INTO plan;
+  node := plan->0->'Plan';
+  WHILE node->>'Index Name' IS NULL AND node->'Plans' IS NOT NULL LOOP
+    node := node->'Plans'->0;
+  END LOOP;
+  EXECUTE 'SELECT md5(string_agg(x::text, '','')) FROM (' || q || ') x' INTO r1;
+  RESET enable_bitmapscan;
+  RESET enable_sort;
+  SET LOCAL enable_indexscan = off;
+  SET LOCAL enable_indexonlyscan = off;
+  EXECUTE 'SELECT md5(string_agg(x::text, '','')) FROM (' || q || ') x' INTO r2;
+  RESET enable_seqscan;
+  SET LOCAL enable_bitmapscan = off;
+  EXECUTE 'SELECT md5(string_agg(x::text, '','')) FROM (' || q || ') x' INTO r3;
+  RETURN format('%s %s', coalesce(node->>'Scan Direction', 'no index scan'),
+    CASE WHEN r1 IS NOT DISTINCT FROM r3 AND r2 IS NOT DISTINCT FROM r3
+      THEN 'ok' ELSE 'mismatch' END);
+END $$;
+CREATE TABLE bark_sk_q (q text);
+INSERT INTO bark_sk_q VALUES
+  ('SELECT a, b FROM bark_sk WHERE a BETWEEN 3 AND 20 AND b > 100 ORDER BY a, b'),
+  ('SELECT a, b FROM bark_sk WHERE a BETWEEN 3 AND 20 AND b > 100 ORDER BY a DESC, b DESC'),
+  ('SELECT a, b FROM bark_sk WHERE a = 7 AND b BETWEEN 200 AND 700 ORDER BY a, b'),
+  ('SELECT a, b FROM bark_sk WHERE a = 7 AND b BETWEEN 200 AND 700 ORDER BY a DESC, b DESC'),
+  ('SELECT a, b FROM bark_sk WHERE a > 25 AND b < 900::int8 ORDER BY a, b'),
+  ('SELECT a, b FROM bark_sk WHERE a <= 4 AND b IS NOT NULL ORDER BY a DESC, b DESC'),
+  ('SELECT a, b FROM bark_sk WHERE a >= 0 AND b IS NULL ORDER BY a, b'),
+  ('SELECT a, b FROM bark_sk WHERE a IS NULL AND b > 500 ORDER BY a, b'),
+  ('SELECT a, b FROM bark_sk WHERE a IS NOT NULL AND b >= 990 ORDER BY a, b'),
+  ('SELECT a, b FROM bark_sk WHERE a = ANY (''{2, 9, 10}'') AND b > 500 ORDER BY a, b');
+SELECT q, bark_sk_check(q) FROM bark_sk_q;
+DROP INDEX bark_sk_idx;
+CREATE INDEX bark_sk_idx ON bark_sk USING bark (a DESC, b DESC NULLS LAST);
+SELECT q, bark_sk_check(q) FROM bark_sk_q;
+SELECT bark_index_check('bark_sk_idx');
+
+-- OVERSIZED first and last entries are read from their overflow chains.  The
+-- keys are incompressible, so every entry is OVERSIZED.
+CREATE TABLE bark_sk_big (k text, n int);
+INSERT INTO bark_sk_big SELECT 'K' || g / 250 ||
+  (SELECT string_agg(md5((g / 250)::text || h::text), '')
+   FROM generate_series(1, 100) h), g
+  FROM generate_series(0, 499) g;
+CREATE INDEX bark_sk_big_idx ON bark_sk_big USING bark (k, n);
+VACUUM ANALYZE bark_sk_big;
+SELECT pg_relation_size('bark_sk_big_idx') / 8192 > 500 AS oversized;
+SELECT bark_sk_check('SELECT n FROM bark_sk_big WHERE k >= ''K0'' AND n > 100 AND n < 450 ORDER BY k, n');
+SELECT bark_sk_check('SELECT n FROM bark_sk_big WHERE k >= ''K0'' AND n > 100 AND n < 450 ORDER BY k DESC, n DESC');
+SELECT bark_index_check('bark_sk_big_idx');
+DROP TABLE bark_sk, bark_sk_q, bark_sk_big;
+DROP FUNCTION bark_sk_check(text);
+
+-- The rightmost-leaf fast path: an insert into a tree of three levels or
+-- more that placed its entry on the rightmost leaf caches that leaf, and the
+-- next insert goes straight to it when its (key, heap TID) sorts after the
+-- leaf's first entry and fits there.  400-byte keys give a three-level index
+-- from 3000 rows.  Then 1000 single-row ascending inserts, every key twice so
+-- that half of them coalesce on the cached leaf, read about one index block
+-- each; a descent reads three.  An insert that lands on another leaf
+-- descends, and forgets the cached leaf.
+CREATE TABLE bark_fp (k text, v int) WITH (autovacuum_enabled = off);
+CREATE INDEX bark_fp_idx ON bark_fp USING bark (k);
+INSERT INTO bark_fp SELECT lpad(g::text, 400, '0'), g
+  FROM generate_series(1, 3000) g;
+-- The cached leaf lives in the index's relcache entry, which an open cursor
+-- on the index keeps (under RELCACHE_FORCE_RELEASE an entry nothing holds
+-- open is rebuilt, without it, at the end of every statement).
+DO $$
+DECLARE
+  pin refcursor;
+  b0 bigint;
+  b1 bigint;
+  b2 bigint;
+BEGIN
+  SET LOCAL enable_seqscan = off;
+  SET LOCAL enable_bitmapscan = off;
+  OPEN pin FOR SELECT k FROM bark_fp WHERE k = '';
+  b0 := pg_stat_get_xact_idx_blocks_fetched('bark_fp_idx'::regclass);
+  FOR g IN 6002..7001 LOOP
+    INSERT INTO bark_fp VALUES (lpad((g / 2)::text, 400, '0'), g);
+  END LOOP;
+  b1 := pg_stat_get_xact_idx_blocks_fetched('bark_fp_idx'::regclass);
+  INSERT INTO bark_fp VALUES (lpad('1', 400, '0'), 0);
+  b2 := pg_stat_get_xact_idx_blocks_fetched('bark_fp_idx'::regclass);
+  RAISE NOTICE 'ascending inserts read under 2 blocks each: %, descent reads 3 or more: %',
+    b1 - b0 < 2000, b2 - b1 >= 3;
+END $$;
+INSERT INTO bark_fp SELECT lpad((g / 2)::text, 400, '0'), g
+  FROM generate_series(7002, 9001) g;
+SELECT bark_index_check('bark_fp_idx');
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+EXPLAIN (COSTS OFF)
+SELECT count(*), count(DISTINCT k), sum(v) FROM bark_fp WHERE k >= '';
+SELECT count(*), count(DISTINCT k), sum(v) FROM bark_fp WHERE k >= '';
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SET enable_indexscan = off;
+SET enable_indexonlyscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*), count(DISTINCT k), sum(v) FROM bark_fp WHERE k >= '';
+RESET enable_indexscan;
+RESET enable_indexonlyscan;
+RESET enable_bitmapscan;
+DROP TABLE bark_fp;
+
+-- The same fast path for a unique index: the cached leaf is tested on the
+-- key alone, so ascending unique inserts go straight to it and are checked
+-- there, while a key equal to the leaf's first entry descends (its run may
+-- start on the left sibling).  A duplicate of every key of the rightmost leaf,
+-- and of keys further left, must still be refused, by the cached leaf or the
+-- descent.
+CREATE TABLE bark_fpu (k text, v int) WITH (autovacuum_enabled = off);
+CREATE UNIQUE INDEX bark_fpu_idx ON bark_fpu USING bark (k);
+INSERT INTO bark_fpu SELECT lpad(g::text, 400, '0'), g
+  FROM generate_series(1, 3000) g;
+DO $$
+DECLARE
+  pin refcursor;
+  b0 bigint;
+  b1 bigint;
+BEGIN
+  SET LOCAL enable_seqscan = off;
+  SET LOCAL enable_bitmapscan = off;
+  OPEN pin FOR SELECT k FROM bark_fpu WHERE k = '';	-- as for bark_fp
+  b0 := pg_stat_get_xact_idx_blocks_fetched('bark_fpu_idx'::regclass);
+  FOR g IN 3001..4000 LOOP
+    INSERT INTO bark_fpu VALUES (lpad(g::text, 400, '0'), g);
+  END LOOP;
+  b1 := pg_stat_get_xact_idx_blocks_fetched('bark_fpu_idx'::regclass);
+  RAISE NOTICE 'ascending unique inserts read under 2 blocks each: %',
+    b1 - b0 < 2000;
+END $$;
+CREATE FUNCTION bark_fpu_dup(key int) RETURNS bool LANGUAGE plpgsql AS $$
+BEGIN
+  INSERT INTO bark_fpu VALUES (lpad(key::text, 400, '0'), -key);
+  RETURN false;
+EXCEPTION WHEN unique_violation THEN
+  RETURN true;
+END $$;
+SELECT count(*) FILTER (WHERE bark_fpu_dup(g)) AS refused, count(*)
+  FROM (SELECT g FROM generate_series(3800, 4000) g
+        UNION ALL VALUES (1), (1500)) d(g);
+SELECT count(*) FROM bark_fpu WHERE v < 0;
+SELECT bark_index_check('bark_fpu_idx');
+DROP TABLE bark_fpu;
+DROP FUNCTION bark_fpu_dup(int);
+
+-- UNIQUE ... NULLS NOT DISTINCT: a NULL is equal to a NULL, so a key with
+-- NULLs is checked like any other, by inserts, by the build's duplicate check
+-- and by INSERT ... ON CONFLICT.  Every statement runs against a btree and a
+-- bark copy of the same table (bark_nnd_try substitutes the table for %1$I
+-- and %1$s and the access method for %2$s) and must have the same outcome
+-- and leave the same rows on both; it shows the outcome and the rows once
+-- when they agree, both when they do not.
+CREATE TABLE bark_nnd_btree (a int, b int, v text) WITH (autovacuum_enabled = off);
+CREATE TABLE bark_nnd_bark (a int, b int, v text) WITH (autovacuum_enabled = off);
+CREATE FUNCTION bark_nnd_try(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+  res text[] := '{}';
+  tab text;
+  msg text;
+  det text;
+  rows text;
+BEGIN
+  FOREACH tab IN ARRAY ARRAY['bark_nnd_btree', 'bark_nnd_bark'] LOOP
+    BEGIN
+      EXECUTE format(q, tab, substr(tab, 10));
+      msg := 'ok';
+    EXCEPTION WHEN unique_violation THEN
+      GET STACKED DIAGNOSTICS msg = MESSAGE_TEXT, det = PG_EXCEPTION_DETAIL;
+      msg := replace(msg, tab, 't') || ' ' || det;
+    END;
+    EXECUTE format($r$SELECT CASE WHEN count(*) > 10 THEN count(*) || ' rows'
+      ELSE string_agg(concat_ws('/', coalesce(a::text, '-'),
+                                coalesce(b::text, '-'), v), ' '
+                      ORDER BY a, b, v) END FROM %I$r$, tab) INTO rows;
+    res := res || (msg || ' [' || coalesce(rows, '') || ']');
+  END LOOP;
+  IF res[1] = res[2] THEN
+    RETURN res[1];
+  END IF;
+  RETURN 'btree: ' || res[1] || ' bark: ' || res[2];
+END $$;
+SELECT bark_nnd_try('CREATE UNIQUE INDEX %1$s_u ON %1$I USING %2$s (a) NULLS NOT DISTINCT');
+SELECT bark_nnd_try('INSERT INTO %I VALUES (1, 1, ''one''), (NULL, 1, ''first'')');
+SELECT bark_nnd_try('INSERT INTO %I VALUES (NULL, 2, ''second'')');	-- fails
+SELECT bark_nnd_try('INSERT INTO %I VALUES (2), (NULL)');			-- fails
+SELECT bark_nnd_try('UPDATE %I SET a = NULL WHERE a = 1');			-- fails
+SELECT bark_nnd_try('INSERT INTO %I VALUES (NULL, 3, ''skip'') ON CONFLICT (a) DO NOTHING');
+SELECT bark_nnd_try('INSERT INTO %I VALUES (NULL, 4, ''upd'') ON CONFLICT (a) DO UPDATE SET b = excluded.b, v = excluded.v');
+SELECT bark_nnd_try('INSERT INTO %I VALUES (3, 5, ''new'') ON CONFLICT (a) DO UPDATE SET v = excluded.v');
+-- A dead NULL entry is no conflict.
+SELECT bark_nnd_try('DELETE FROM %I WHERE a IS NULL');
+SELECT bark_nnd_try('INSERT INTO %I VALUES (NULL, 6, ''again'')');
+SELECT bark_index_check('bark_nnd_bark_u');
+-- A build over duplicate NULLs fails as btree's does; the default (NULLS
+-- DISTINCT) index is built over them and takes more.
+SELECT bark_nnd_try('DROP INDEX %1$s_u');
+SELECT bark_nnd_try('INSERT INTO %I VALUES (NULL, 7, ''dup'')');
+SELECT bark_nnd_try('CREATE UNIQUE INDEX %1$s_u ON %1$I USING %2$s (a) NULLS NOT DISTINCT');	-- fails
+SELECT bark_nnd_try('CREATE UNIQUE INDEX %1$s_u ON %1$I USING %2$s (a)');
+SELECT bark_nnd_try('INSERT INTO %I VALUES (NULL, 8, ''more''), (NULL, 9, ''more'')');
+SELECT bark_nnd_try('INSERT INTO %I VALUES (1, 10, ''dup'')');		-- fails
+-- Two columns: keys conflict when they have their NULLs in the same columns
+-- and are equal elsewhere.
+SELECT bark_nnd_try('DROP INDEX %1$s_u');
+SELECT bark_nnd_try('TRUNCATE %I');
+SELECT bark_nnd_try('CREATE UNIQUE INDEX %1$s_u ON %1$I USING %2$s (a, b) NULLS NOT DISTINCT');
+SELECT bark_nnd_try('INSERT INTO %I VALUES (1, NULL), (2, NULL), (NULL, 1), (NULL, NULL)');
+SELECT bark_nnd_try('INSERT INTO %I VALUES (1, NULL)');				-- fails
+SELECT bark_nnd_try('INSERT INTO %I VALUES (NULL, NULL)');			-- fails
+SELECT bark_nnd_try('INSERT INTO %I VALUES (NULL, 2), (3, NULL)');
+SELECT bark_index_check('bark_nnd_bark_u');
+SELECT bark_nnd_try('DROP INDEX %1$s_u');
+SELECT bark_nnd_try('INSERT INTO %I VALUES (2, NULL, ''dup'')');
+SELECT bark_nnd_try('CREATE UNIQUE INDEX %1$s_u ON %1$I USING %2$s (a, b) NULLS NOT DISTINCT');	-- fails
+SELECT bark_nnd_try('CREATE UNIQUE INDEX %1$s_u ON %1$I USING %2$s (a, b)');
+SELECT bark_nnd_try('INSERT INTO %I VALUES (1, NULL)');
+-- A tall tree with its rightmost leaf cached by ascending inserts: a NULL
+-- key sorts after every other key, so its insert takes the fast path to
+-- that leaf, and is checked there.
+SELECT bark_nnd_try('DROP INDEX %1$s_u');
+SELECT bark_nnd_try('TRUNCATE %I');
+SELECT bark_nnd_try('INSERT INTO %I (v) SELECT lpad(g::text, 400, ''0'') FROM generate_series(1, 3000) g');
+SELECT bark_nnd_try('CREATE UNIQUE INDEX %1$s_v ON %1$I USING %2$s (v) NULLS NOT DISTINCT');
+SELECT bark_nnd_try('INSERT INTO %I (v) SELECT lpad(g::text, 400, ''0'') FROM generate_series(3001, 3100) g');
+INSERT INTO bark_nnd_btree (v) VALUES (lpad('3101', 400, '0'));	-- as below
+INSERT INTO bark_nnd_btree (a) VALUES (1);
+DO $$
+DECLARE
+  pin refcursor;
+  b0 bigint;
+BEGIN
+  SET LOCAL enable_seqscan = off;
+  SET LOCAL enable_bitmapscan = off;
+  OPEN pin FOR SELECT v FROM bark_nnd_bark WHERE v = '';	-- as for bark_fp
+  -- an ascending insert caches the rightmost leaf again, with the pin held
+  INSERT INTO bark_nnd_bark (v) VALUES (lpad('3101', 400, '0'));
+  b0 := pg_stat_get_xact_idx_blocks_fetched('bark_nnd_bark_v'::regclass);
+  INSERT INTO bark_nnd_bark (a) VALUES (1);
+  RAISE NOTICE 'NULL key insert read one block: %',
+    pg_stat_get_xact_idx_blocks_fetched('bark_nnd_bark_v'::regclass) - b0 = 1;
+END $$;
+SELECT bark_nnd_try('INSERT INTO %I (a) VALUES (2)');				-- fails
+SELECT count(*) FROM bark_nnd_bark WHERE v IS NULL;
+SELECT bark_index_check('bark_nnd_bark_v');
+DROP TABLE bark_nnd_btree, bark_nnd_bark;
+DROP FUNCTION bark_nnd_try(text);
+
+-- Required keys: a bound on a later column ends the scan while every earlier
+-- column has an equality key, as nbtree's _bt_check_compare does.  The
+-- results match a sequential scan on ASC and DESC/NULLS FIRST indexes, in
+-- both directions, and a = AND b = point lookup reads a few pages instead of
+-- the rest of the a group.
+CREATE TABLE bark_req (a int, b int, c int, v int);
+INSERT INTO bark_req SELECT g % 10, (g / 10) % 1000, g % 7, g
+  FROM generate_series(1, 100000) g;
+INSERT INTO bark_req VALUES (3, NULL, 1, -1), (3, NULL, NULL, -2),
+  (NULL, 5, 1, -3), (3, 5, NULL, -4);
+CREATE INDEX bark_req_abc ON bark_req USING bark (a, b, c);
+VACUUM ANALYZE bark_req;
+CREATE FUNCTION bark_req_check(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+  r1 text;
+  r2 text;
+BEGIN
+  SET LOCAL enable_seqscan = off;
+  SET LOCAL enable_bitmapscan = off;
+  SET LOCAL enable_sort = off;
+  -- Rows can tie on (a, b, c): compare those in output order, and the rows
+  -- as a set.
+  q := 'SELECT md5(string_agg((a, b, c)::text, '','')) || ' ||
+    'md5(string_agg(x::text, '','' ORDER BY x::text)) FROM (' || q || ') x';
+  EXECUTE q INTO r1;
+  RESET enable_seqscan;
+  RESET enable_sort;
+  SET LOCAL enable_indexscan = off;
+  SET LOCAL enable_indexonlyscan = off;
+  EXECUTE q INTO r2;
+  RETURN CASE WHEN r1 IS NOT DISTINCT FROM r2 THEN 'ok' ELSE 'mismatch: ' || q END;
+END $$;
+CREATE FUNCTION bark_req_run() RETURNS SETOF text LANGUAGE plpgsql AS $$
+DECLARE
+  w text;
+  o text;
+BEGIN
+  FOREACH w IN ARRAY ARRAY[
+    'a = 3 AND b = 517', 'a = 3 AND b = 518', 'a = 3 AND b = 517 AND c = 2',
+    'a = 3 AND b = 517 AND c = 3', 'a = 3 AND b < 5', 'a = 3 AND b <= 5',
+    'a = 3 AND b > 995', 'a = 3 AND b >= 995', 'a = 3 AND b BETWEEN 10 AND 12',
+    'a = 3 AND b = 5 AND c < 3', 'a = 3 AND b = 5 AND c > 3',
+    'a = 3 AND b IS NULL', 'a = 3 AND b = 5 AND c IS NULL',
+    'a = 3 AND b = ANY (ARRAY[5, 7, 900])', 'a = ANY (ARRAY[2, 3]) AND b = 5',
+    'a IS NULL AND b = 5', 'a = 3 AND c = 2 AND b < 3', 'a = 3 AND b = 5::int8',
+    'a = 3 AND b < 3000000000::int8', 'a >= 3 AND a <= 4 AND b = 5',
+    'a = 9 AND b > 990 AND c = 6']
+  LOOP
+    FOREACH o IN ARRAY ARRAY['a, b, c', 'a DESC, b DESC, c DESC'] LOOP
+      RETURN NEXT bark_req_check(
+        'SELECT a, b, c, v FROM bark_req WHERE ' || w || ' ORDER BY ' || o);
+    END LOOP;
+  END LOOP;
+END $$;
+SELECT r, count(*) FROM bark_req_run() r GROUP BY r;
+DROP INDEX bark_req_abc;
+CREATE INDEX bark_req_abc ON bark_req USING bark (a, b DESC NULLS FIRST, c);
+SELECT r, count(*) FROM bark_req_run() r GROUP BY r;
+DROP INDEX bark_req_abc;
+CREATE INDEX bark_req_abc ON bark_req USING bark (a, b, c);
+-- The index scan of a point lookup on two columns reads a few pages: the
+-- scan ends after (3, 517) instead of reading the rest of a = 3 (about 75
+-- pages).  Heap fetches are counted out, as in bark_rowcmp_pages.
+CREATE FUNCTION bark_req_pages(q text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE
+  warm refcursor;
+  plan json;
+  node json;
+BEGIN
+  SET LOCAL enable_seqscan = off;
+  SET LOCAL enable_bitmapscan = off;
+  SET LOCAL debug_parallel_query = off;	-- as in bark_xt_buffers
+  OPEN warm FOR EXECUTE q;
+  MOVE warm;
+  EXECUTE 'EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, FORMAT JSON) ' || q
+    INTO plan;
+  node := plan->0->'Plan';
+  WHILE node->>'Index Name' IS NULL LOOP
+    node := node->'Plans'->0;
+  END LOOP;
+  RETURN (node->>'Shared Hit Blocks')::int + (node->>'Shared Read Blocks')::int -
+    coalesce((node->>'Heap Fetches')::int, 0) < 10;
+END $$;
+SELECT bark_req_pages('SELECT a, b, c FROM bark_req WHERE a = 3 AND b = 517') AS point_pages_lt_10,
+  bark_req_pages('SELECT a, b, c FROM bark_req WHERE a = 3 AND b = 517 ORDER BY a DESC, b DESC') AS point_backward_pages_lt_10,
+  bark_req_pages('SELECT a, b, c FROM bark_req WHERE a = 3 AND b < 5') AS range_pages_lt_10,
+  bark_req_pages('SELECT a, b, c FROM bark_req WHERE a = 3 AND b > 995 ORDER BY a DESC, b DESC') AS range_backward_pages_lt_10;
+
+-- Required array keys: the equality keys of the leading columns, scalars and
+-- arrays alike, position the scan when one of them is an array, as in
+-- nbtree.  The scan visits the combinations of their elements in index order
+-- in both directions, ends a combination's run at a bound on the next
+-- column, and re-descends to the next combination when it starts beyond the
+-- page.  Arrays after the first column without an equality only filter.
+-- Each query is checked against a sequential scan, as a plain and an
+-- index-only scan, forward and backward, on an ASC index and on one with
+-- DESC and NULLS FIRST columns.
+CREATE FUNCTION bark_arr_run(fwd text, bwd text) RETURNS SETOF text
+LANGUAGE plpgsql AS $$
+DECLARE
+  w text;
+  o text;
+  t text;
+BEGIN
+  FOREACH w IN ARRAY ARRAY[
+    'a IN (7, 3, 2) AND b = 517', 'a = 3 AND b IN (900, 5, 517, 5)',
+    'a IN (3, 9) AND b IN (5, 517, 999)',
+    'a IN (3, 9) AND b IN (5, 517) AND c IN (1, 6)',
+    'a IN (3, 9) AND b = 5 AND c IN (1, 6)',
+    'a = 3 AND b IN (5, 517) AND c = 2', 'a IN (3, 9) AND b < 3',
+    'a IN (3, 9) AND b > 997', 'a IN (3, 9) AND b BETWEEN 500 AND 502',
+    'a IN (3, 9) AND b IN (5, 517) AND c < 3',
+    'a IN (3, 9) AND b IN (5, 517) AND c >= 4',
+    'a = 3 AND b IN (5, 517) AND c > 2 AND c < 6',
+    'a IN (3, NULL) AND b = ANY (ARRAY[5, NULL, 517])',
+    'a IN (3, 9) AND b = ANY (''{}''::int[])',
+    'a = ANY (''{3, 4294967299}''::int8[]) AND b = ANY (''{5, 517, -4294967291}''::int8[])',
+    'a IN (3, 9) AND b = 517::int8', 'a IS NULL AND b IN (5, 517)',
+    'a IN (3, 9) AND b IS NULL', 'a IN (3, 9) AND b IN (5, 517) AND c IS NULL',
+    'a IN (2, 3, 4) AND a IN (3, 4, 8) AND b IN (5, 517)',
+    'a = 3 AND a IN (3, 4) AND b IN (5, 517)', 'a IN (3, 9) AND a >= 4 AND b = 5',
+    'b IN (5, 517) AND c = 2', 'a IN (3, 9) AND c IN (1, 6)',
+    'a IN (0, 9) AND b IN (0, 999)', 'a IN (-1, 3, 10) AND b IN (-5, 517, 2000)',
+    'a IN (3, 9) AND b IN (5, 517) AND b > 6']
+  LOOP
+    FOREACH o IN ARRAY ARRAY[fwd, bwd] LOOP
+      FOREACH t IN ARRAY ARRAY['a, b, c, v', 'a, b, c'] LOOP
+        RETURN NEXT bark_req_check(
+          'SELECT ' || t || ' FROM bark_req WHERE ' || w || ' ORDER BY ' || o);
+      END LOOP;
+    END LOOP;
+  END LOOP;
+END $$;
+-- A scroll cursor moving both ways across combinations and pages returns
+-- what a sequential scan's does, through a plain or an index-only scan
+-- (ios).  q returns a, b and c, which can tie, so rows are compared on them.
+CREATE FUNCTION bark_arr_scroll(q text, ios bool) RETURNS text
+LANGUAGE plpgsql AS $$
+DECLARE
+  c refcursor := 'bark_arr_c';
+  cmds text[] := ARRAY['NEXT', 'NEXT', 'FORWARD 12', 'PRIOR', 'BACKWARD 7',
+    'MOVE FORWARD 30', 'NEXT', 'PRIOR', 'PRIOR', 'MOVE BACKWARD 20', 'PRIOR',
+    'LAST', 'PRIOR', 'BACKWARD 15', 'FIRST', 'MOVE FORWARD 60', 'NEXT',
+    'MOVE FORWARD ALL', 'PRIOR', 'BACKWARD 12', 'ABSOLUTE 45', 'RELATIVE -10',
+    'NEXT', 'FORWARD 22', 'PRIOR', 'MOVE BACKWARD ALL', 'NEXT'];
+  cmd text;
+  how text;
+  va int;
+  vb int;
+  vc int;
+  res text[] := '{}';
+  out text;
+BEGIN
+  FOREACH how IN ARRAY ARRAY['index', 'seq'] LOOP
+    PERFORM set_config('enable_seqscan', (how = 'seq')::text, true);
+    PERFORM set_config('enable_indexscan', (how = 'index')::text, true);
+    PERFORM set_config('enable_indexonlyscan', (how = 'index' AND ios)::text,
+                       true);
+    PERFORM set_config('enable_bitmapscan', 'off', true);
+    PERFORM set_config('enable_sort', (how = 'seq')::text, true);
+    OPEN c SCROLL FOR EXECUTE q;
+    out := '';
+    FOREACH cmd IN ARRAY cmds LOOP
+      IF cmd LIKE 'MOVE%' THEN
+        EXECUTE format('%s FROM bark_arr_c', cmd);
+      ELSE
+        EXECUTE format('FETCH %s FROM bark_arr_c', cmd) INTO va, vb, vc;
+        out := out || format('(%s,%s,%s)', va, vb, vc);
+      END IF;
+    END LOOP;
+    CLOSE c;
+    res := res || md5(out);
+  END LOOP;
+  RETURN CASE WHEN res[1] = res[2] THEN 'ok' ELSE 'mismatch: ' || q END;
+END $$;
+-- Index blocks read by q's index scan, heap fetches counted out, are at
+-- most lim.
+CREATE FUNCTION bark_arr_pages(q text, lim int) RETURNS text
+LANGUAGE plpgsql AS $$
+DECLARE
+  warm refcursor;
+  plan json;
+  node json;
+  n int;
+BEGIN
+  SET LOCAL enable_seqscan = off;
+  SET LOCAL enable_bitmapscan = off;
+  SET LOCAL debug_parallel_query = off;	-- as in bark_xt_buffers
+  OPEN warm FOR EXECUTE q;
+  MOVE warm;
+  EXECUTE 'EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, FORMAT JSON) ' || q
+    INTO plan;
+  node := plan->0->'Plan';
+  WHILE node->>'Index Name' IS NULL LOOP
+    node := node->'Plans'->0;
+  END LOOP;
+  n := (node->>'Shared Hit Blocks')::int + (node->>'Shared Read Blocks')::int -
+    coalesce((node->>'Heap Fetches')::int, 0);
+  RETURN CASE WHEN n <= lim THEN 'ok'
+    ELSE format('%s blocks, %s searches: %s', n, node->>'Index Searches', q) END;
+END $$;
+BEGIN;
+SELECT r, count(*) FROM bark_arr_run('a, b, c', 'a DESC, b DESC, c DESC') r
+  GROUP BY r;
+SELECT bark_arr_scroll('SELECT a, b, c FROM bark_req WHERE a IN (2, 5, 8) AND b IN (5, 517, 999) ORDER BY a, b, c', false) AS scroll_fwd,
+  bark_arr_scroll('SELECT a, b, c FROM bark_req WHERE a IN (2, 5, 8) AND b IN (5, 517, 999) ORDER BY a DESC, b DESC, c DESC', true) AS scroll_bwd_ios,
+  bark_arr_scroll('SELECT a, b, c FROM bark_req WHERE a = 5 AND b IN (5, 517, 999) AND c < 5 ORDER BY a, b, c', false) AS scroll_range;
+COMMIT;
+-- A merge join restores marks on its inner scan; the marked position
+-- carries the required keys' cursors.  Joined on a alone, an inner run spans
+-- several combinations and re-descents.
+CREATE TABLE bark_arr_o (a int, b int);
+INSERT INTO bark_arr_o SELECT a, b FROM generate_series(1, 9) a,
+  unnest(ARRAY[5, 6, 517, 999]) b, generate_series(1, 3);
+ANALYZE bark_arr_o;
+SELECT bark_mj_check('SELECT count(*), sum(i.v) FROM
+  (SELECT a, b FROM bark_arr_o ORDER BY a, b OFFSET 0) o
+  JOIN bark_req i ON o.a = i.a AND o.b = i.b
+  WHERE i.a IN (2, 5, 8) AND i.b IN (5, 517, 999)', 'bark_req_abc') AS mj_ab;
+SELECT bark_mj_check('SELECT count(*), sum(i.v) FROM
+  (SELECT a FROM bark_arr_o ORDER BY a OFFSET 0) o
+  JOIN bark_req i ON o.a = i.a
+  WHERE i.a IN (2, 5, 8) AND i.b IN (5, 517, 999)', 'bark_req_abc') AS mj_a;
+SELECT bark_mj_check('SELECT count(*), sum(i.c) FROM
+  (SELECT a FROM bark_arr_o ORDER BY a OFFSET 0) o
+  JOIN bark_req i ON o.a = i.a
+  WHERE i.a IN (2, 5, 8) AND i.b IN (5, 517, 999)', 'bark_req_abc') AS mj_a_ios;
+-- A parallel scan does not re-descend: workers read the pages the shared
+-- cursor hands out, and the required keys only end page reads and the scan.
+BEGIN;
+SET LOCAL min_parallel_table_scan_size = 0;
+SET LOCAL min_parallel_index_scan_size = 0;
+SET LOCAL parallel_setup_cost = 0;
+SET LOCAL parallel_tuple_cost = 0;
+SET LOCAL max_parallel_workers_per_gather = 2;
+SET LOCAL enable_seqscan = off;
+SET LOCAL enable_bitmapscan = off;
+EXPLAIN (COSTS OFF) SELECT count(*), sum(v) FROM bark_req
+  WHERE a IN (2, 5, 8) AND b < 500;
+SELECT count(*), sum(v) FROM bark_req WHERE a IN (2, 5, 8) AND b < 500;
+SELECT count(*), sum(v) FROM bark_req
+  WHERE a IN (2, 5, 8) AND b > 100 AND c IN (1, 2);
+SET LOCAL max_parallel_workers_per_gather = 0;
+SET LOCAL enable_seqscan = on;
+SET LOCAL enable_indexscan = off;
+SET LOCAL enable_indexonlyscan = off;
+SELECT count(*), sum(v) FROM bark_req WHERE a IN (2, 5, 8) AND b < 500;
+SELECT count(*), sum(v) FROM bark_req
+  WHERE a IN (2, 5, 8) AND b > 100 AND c IN (1, 2);
+COMMIT;
+-- Arrays on the first, the second and both columns read a few pages per
+-- combination (one descent each, about 3 pages), not the rest of each a
+-- group (about 35 pages); so does a range on the column after the arrays.
+SELECT q, bark_arr_pages('SELECT a, b, c FROM bark_req WHERE ' || q, lim)
+FROM (VALUES ('a IN (2, 5, 8) AND b = 517', 12),
+  ('a IN (2, 5, 8) AND b = 517 ORDER BY a DESC, b DESC', 12),
+  ('a = 5 AND b IN (5, 517, 999)', 12),
+  ('a = 5 AND b IN (5, 517, 999) ORDER BY a DESC, b DESC', 12),
+  ('a IN (2, 8) AND b IN (5, 999)', 16),
+  ('a IN (2, 8) AND b IN (5, 999) ORDER BY a DESC, b DESC', 16),
+  ('a IN (2, 8) AND b < 3', 9),
+  ('a IN (2, 8) AND b > 997 ORDER BY a DESC, b DESC', 9),
+  ('a IN (2, 3) AND b IN (5, 6, 7, 8)', 9)) v(q, lim);
+DROP INDEX bark_req_abc;
+CREATE INDEX bark_req_abc ON bark_req USING bark (a DESC, b, c DESC NULLS FIRST);
+BEGIN;
+SELECT r, count(*) FROM bark_arr_run('a DESC, b, c DESC', 'a, b DESC, c') r
+  GROUP BY r;
+SELECT bark_arr_scroll('SELECT a, b, c FROM bark_req WHERE a IN (2, 5, 8) AND b IN (5, 517, 999) ORDER BY a DESC, b, c DESC', false) AS scroll_fwd,
+  bark_arr_scroll('SELECT a, b, c FROM bark_req WHERE a IN (2, 5, 8) AND b IN (5, 517, 999) ORDER BY a, b DESC, c', true) AS scroll_bwd_ios;
+COMMIT;
+SELECT q, bark_arr_pages('SELECT a, b, c FROM bark_req WHERE ' || q, lim)
+FROM (VALUES ('a IN (2, 5, 8) AND b = 517 ORDER BY a DESC', 12),
+  ('a IN (2, 5, 8) AND b = 517 ORDER BY a', 12),
+  ('a = 5 AND b IN (5, 517, 999) ORDER BY a DESC, b', 12),
+  ('a = 5 AND b IN (5, 517, 999) ORDER BY a, b DESC', 12)) v(q, lim);
+SELECT bark_index_check('bark_req_abc');
+DROP TABLE bark_arr_o;
+DROP FUNCTION bark_arr_run(text, text), bark_arr_scroll(text, bool),
+  bark_arr_pages(text, int), bark_mj_check(text, text);
+DROP FUNCTION bark_req_check(text), bark_req_run(), bark_req_pages(text);
+DROP TABLE bark_req;
+
+-- ===========================================================================
+-- Operator classes.  BARK has one operator class for each btree class, in
+-- btree's operator family, with the same name, input and storage types and
+-- default, so CREATE INDEX ... USING bark accepts every type btree does.
+-- ===========================================================================
+SELECT b.opcname
+FROM pg_opclass b JOIN pg_am ba ON ba.oid = b.opcmethod AND ba.amname = 'btree'
+WHERE b.oid < 16384 AND NOT EXISTS
+  (SELECT 1 FROM pg_opclass k JOIN pg_am ka ON ka.oid = k.opcmethod AND ka.amname = 'bark'
+   WHERE (k.opcnamespace, k.opcname, k.opcfamily, k.opcintype, k.opckeytype, k.opcdefault) =
+         (b.opcnamespace, b.opcname, b.opcfamily, b.opcintype, b.opckeytype, b.opcdefault));
+SELECT count(*) AS bark_opclasses, count(*) FILTER (WHERE amvalidate(c.oid)) AS valid
+FROM pg_opclass c JOIN pg_am a ON a.oid = c.opcmethod
+WHERE a.amname = 'bark';
+-- psql's \dAc sorts by type name in the database's collation; list them
+-- in a fixed order instead
+SELECT c.opcintype::regtype::text COLLATE "C" AS "Input type",
+       CASE WHEN c.opckeytype <> 0 AND c.opckeytype <> c.opcintype
+            THEN c.opckeytype::regtype::text END AS "Storage type",
+       c.opcname AS "Operator class",
+       CASE WHEN c.opcdefault THEN 'yes' ELSE 'no' END AS "Default?"
+FROM pg_opclass c JOIN pg_am a ON a.oid = c.opcmethod
+WHERE a.amname = 'bark' AND c.oid < 16384
+ORDER BY 1, 3;
+
+-- Every class works, not only exists.  For each one, bark_opc_check builds a
+-- BARK index over 600 rows (400 keys, a few NULLs), inserts 600 more (so keys
+-- repeat and coalesce where the class allows it), runs bark_index_check, and
+-- runs a point lookup, a two-sided range, an ordered range and a full
+-- descending scan as an index-only scan, a plain index scan and (for the
+-- counts) a bitmap scan.  Each result must equal the sequential scan's, and
+-- each index plan must use the BARK index with no Sort.  ops names the
+-- class's =, >=, <=, < and > operators.  The result names each failed check,
+-- with its scan mode; "ok" when none failed.  The second run repeats it all
+-- with prefix_compression, which codes the leaf keys of varlena types.
+CREATE TYPE bark_opc_pair AS (a int, b text);
+CREATE TYPE bark_opc_color AS ENUM ('red', 'orange', 'yellow', 'green', 'blue', 'violet');
+CREATE TABLE bark_opc_case (opc text, typ text, gen text,
+                            ops text[] DEFAULT '{=,>=,<=,<,>}');
+INSERT INTO bark_opc_case (opc, typ, gen) VALUES
+  ('array_ops', 'int4[]', 'ARRAY[x % 7, x]'),
+  ('bit_ops', 'bit(12)', 'x::bit(12)'),
+  ('bool_ops', 'bool', 'x % 3 = 0'),
+  ('bpchar_ops', 'char(10)', '''c'' || x'),
+  ('bytea_ops', 'bytea', 'decode(md5(x::text), ''hex'')'),
+  ('char_ops', '"char"', 'chr(65 + x % 50)::"char"'),
+  ('cidr_ops', 'cidr', '(''10.'' || x % 256 || ''.'' || x / 256 || ''.0/24'')::cidr'),
+  ('date_ops', 'date', 'date ''2000-01-01'' + x * 37'),
+  ('float4_ops', 'float4', '((x - 200) / 7.0)::float4'),
+  ('float8_ops', 'float8', '(x - 200) / 7.0::float8'),
+  ('inet_ops', 'inet', '(''192.168.'' || x % 256 || ''.'' || x / 256)::inet'),
+  ('int2_ops', 'int2', '(x - 200)::int2'),
+  ('int4_ops', 'int4', 'x * 7919 % 400'),
+  ('int8_ops', 'int8', 'x * 10000000000'),
+  ('interval_ops', 'interval', 'x * interval ''1 hour 1 minute'''),
+  ('macaddr_ops', 'macaddr', '(''08:00:2b:01:'' || lpad(to_hex(x / 256), 2, ''0'') || '':'' || lpad(to_hex(x % 256), 2, ''0''))::macaddr'),
+  ('macaddr8_ops', 'macaddr8', '(''08:00:2b:01:02:03:'' || lpad(to_hex(x / 256), 2, ''0'') || '':'' || lpad(to_hex(x % 256), 2, ''0''))::macaddr8'),
+  ('name_ops', 'name', '(''n'' || x)::name'),
+  ('numeric_ops', 'numeric', '(x - 200) / 7.0'),
+  ('oid_ops', 'oid', '(x * 1000)::oid'),
+  ('oidvector_ops', 'oidvector', '(x % 7 || '' '' || x)::oidvector'),
+  ('record_ops', 'bark_opc_pair', 'ROW(x % 7, ''r'' || x)::bark_opc_pair'),
+  ('record_image_ops', 'bark_opc_pair', 'ROW(x % 7, ''r'' || x)::bark_opc_pair'),
+  ('text_ops', 'text', 'md5(x::text)'),
+  ('text_ops', 'text COLLATE "C"', 'md5(x::text)'),
+  ('time_ops', 'time', 'time ''00:00'' + x * interval ''3 minutes 7 seconds'''),
+  ('timestamptz_ops', 'timestamptz', 'timestamptz ''2000-01-01 00:00+00'' + x * interval ''7 hours'''),
+  ('timetz_ops', 'timetz', '(x % 24 || '':'' || x % 60 || '':00+'' || x % 5)::timetz'),
+  ('varbit_ops', 'varbit', 'substring(x::bit(12)::varbit from 1 for 1 + x % 12)'),
+  ('varchar_ops', 'varchar', '(''v'' || x)::varchar'),
+  ('timestamp_ops', 'timestamp', 'timestamp ''2000-01-01'' + x * interval ''7 hours 3 minutes'''),
+  ('text_pattern_ops', 'text', 'md5(x::text)'),
+  ('varchar_pattern_ops', 'varchar', 'md5(x::text)::varchar'),
+  ('bpchar_pattern_ops', 'char(10)', '''c'' || x'),
+  ('money_ops', 'money', '((x - 200) * 1.25)::numeric::money'),
+  ('tid_ops', 'tid', '(''('' || x / 10 || '','' || x % 10 || '')'')::tid'),
+  ('xid8_ops', 'xid8', '(x * 1000)::text::xid8'),
+  ('oid8_ops', 'oid8', '(x * 10000000000)::oid8'),
+  ('uuid_ops', 'uuid', 'md5(x::text)::uuid'),
+  ('pg_lsn_ops', 'pg_lsn', '(to_hex(x % 7) || ''/'' || to_hex(x * 4096))::pg_lsn'),
+  ('enum_ops', 'bark_opc_color', '(enum_range(NULL::bark_opc_color))[1 + x % 6]'),
+  ('tsvector_ops', 'tsvector', '(''w'' || x % 9 || '' z'' || x)::tsvector'),
+  ('tsquery_ops', 'tsquery', '(''w'' || x % 9 || '' & z'' || x)::tsquery'),
+  ('range_ops', 'int4range', 'int4range(x % 50, x % 50 + 1 + x / 50)'),
+  ('multirange_ops', 'int4multirange', 'int4multirange(int4range(x % 50, x % 50 + 3), int4range(100 + x, 200 + x))'),
+  ('jsonb_ops', 'jsonb', 'jsonb_build_object(''a'', x % 9, ''b'', ''v'' || x)');
+UPDATE bark_opc_case SET ops = '{*=,*>=,*<=,*<,*>}' WHERE opc = 'record_image_ops';
+UPDATE bark_opc_case SET ops = '{=,~>=~,~<=~,~<~,~>~}' WHERE opc LIKE '%pattern_ops';
+CREATE FUNCTION bark_opc_check(c bark_opc_case, reloptions text) RETURNS text
+LANGUAGE plpgsql AS $$
+DECLARE
+  rows text := 'INSERT INTO bark_opc SELECT CASE WHEN g % 97 = 0 THEN NULL ELSE ' ||
+    c.gen || ' END FROM generate_series($1, $2) g, LATERAL (SELECT g % 400 AS x) s';
+  lo text;
+  mid text;
+  hi text;
+  q text[];
+  want text[];
+  got text;
+  plan text;
+  bad text[] := '{}';
+BEGIN
+  EXECUTE format('CREATE TEMP TABLE bark_opc (k %s)', c.typ);
+  EXECUTE rows USING 1, 600;
+  EXECUTE format('CREATE INDEX bark_opc_idx ON bark_opc USING bark (k %s) %s',
+                 c.opc, reloptions);
+  EXECUTE rows USING 601, 1200;
+  PERFORM bark_index_check('bark_opc_idx');
+  PERFORM set_config('enable_seqscan', 'on', true);
+  PERFORM set_config('enable_indexscan', 'off', true);
+  PERFORM set_config('enable_bitmapscan', 'off', true);
+  q[1] := format('SELECT k::text FROM bark_opc WHERE k IS NOT NULL ' ||
+                 'ORDER BY bark_opc.k USING %s OFFSET $1 LIMIT 1', c.ops[4]);
+  EXECUTE q[1] INTO lo USING 300;
+  EXECUTE q[1] INTO mid USING 550;
+  EXECUTE q[1] INTO hi USING 800;
+  q := ARRAY[
+    format('SELECT count(*) FROM bark_opc WHERE k %s %L::%s', c.ops[1], mid, c.typ),
+    format('SELECT count(*) FROM bark_opc WHERE k %s %L::%s AND k %s %L::%s',
+           c.ops[2], lo, c.typ, c.ops[3], hi, c.typ),
+    format('SELECT md5(string_agg(coalesce(k::text, ''-''), '','')) FROM ' ||
+           '(SELECT k FROM bark_opc WHERE k %s %L::%s ORDER BY k USING %s) s',
+           c.ops[2], lo, c.typ, c.ops[4]),
+    format('SELECT md5(string_agg(coalesce(k::text, ''-''), '','')) FROM ' ||
+           '(SELECT k FROM bark_opc ORDER BY k USING %s) s', c.ops[5])];
+  FOR i IN 1 .. 4 LOOP
+    EXECUTE q[i] INTO got;
+    want[i] := got;
+  END LOOP;
+  PERFORM set_config('enable_seqscan', 'off', true);
+  FOR m IN 1 .. 3 LOOP
+    PERFORM set_config('enable_indexscan', (m < 3)::text, true);
+    PERFORM set_config('enable_indexonlyscan', (m = 1)::text, true);
+    PERFORM set_config('enable_bitmapscan', (m = 3)::text, true);
+    FOR i IN 1 .. CASE WHEN m = 3 THEN 2 ELSE 4 END LOOP
+      EXECUTE 'EXPLAIN (COSTS OFF, FORMAT JSON) ' || q[i] INTO plan;
+      IF plan NOT LIKE '%"Node Type": "' ||
+           (ARRAY['Index Only Scan', 'Index Scan', 'Bitmap Index Scan'])[m] ||
+           '"%"Index Name": "bark_opc_idx"%' OR
+         (m < 3 AND plan LIKE '%"Node Type": "Sort"%') THEN
+        bad := bad || format('q%s/%s plan', i, (ARRAY['ios', 'idx', 'bitmap'])[m]);
+      END IF;
+      EXECUTE q[i] INTO got;
+      IF got IS DISTINCT FROM want[i] THEN
+        bad := bad || format('q%s/%s', i, (ARRAY['ios', 'idx', 'bitmap'])[m]);
+      END IF;
+    END LOOP;
+  END LOOP;
+  DROP TABLE bark_opc;
+  RETURN CASE WHEN bad = '{}' THEN 'ok' ELSE array_to_string(bad, ', ') END;
+END $$;
+SELECT opc, typ, bark_opc_check(c, '') AS plain,
+       bark_opc_check(c, 'WITH (prefix_compression = on)') AS prefix
+FROM bark_opc_case c ORDER BY opc COLLATE "C", typ COLLATE "C";
+DROP FUNCTION bark_opc_check(bark_opc_case, text);
+DROP TABLE bark_opc_case;
+
+-- An index on a non-default class names it, so pg_dump restores the same one.
+CREATE TABLE bark_opc_def (t text, v varchar, r bark_opc_pair, n cidr);
+CREATE INDEX bark_opc_def_t ON bark_opc_def USING bark (t text_pattern_ops);
+CREATE INDEX bark_opc_def_v ON bark_opc_def USING bark (v varchar_pattern_ops);
+CREATE INDEX bark_opc_def_r ON bark_opc_def USING bark (r record_image_ops);
+CREATE INDEX bark_opc_def_n ON bark_opc_def USING bark (n);
+SELECT pg_get_indexdef(indexrelid) FROM pg_index
+WHERE indrelid = 'bark_opc_def'::regclass ORDER BY indexrelid::regclass::text;
+DROP TABLE bark_opc_def;
+
+-- text_pattern_ops serves LIKE 'ab%' as a range scan under any collation,
+-- as with btree.
+CREATE TABLE bark_opc_like (t text);
+INSERT INTO bark_opc_like SELECT md5(g::text) FROM generate_series(1, 4000) g;
+CREATE INDEX bark_opc_like_idx ON bark_opc_like USING bark (t text_pattern_ops);
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+EXPLAIN (COSTS OFF) SELECT count(*) FROM bark_opc_like WHERE t LIKE 'ab%';
+SELECT count(*) AS idx_count FROM bark_opc_like WHERE t LIKE 'ab%';
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SET enable_indexscan = off;
+SET enable_indexonlyscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*) AS seq_count FROM bark_opc_like WHERE t LIKE 'ab%';
+RESET enable_indexscan;
+RESET enable_indexonlyscan;
+RESET enable_bitmapscan;
+DROP TABLE bark_opc_like;
+
+-- Classes whose keys can compare equal with different bytes have no
+-- equalimage support function (numeric: 1 = 1.0 = 1.00), so equal keys never
+-- share a LIST or POSTING entry, whether built or inserted: after VACUUM
+-- counts the leaf entries into reltuples, the numeric index has one entry per
+-- row, while int4 coalesces the same 600 equal keys into far fewer.  An
+-- index-only scan returns each row's own value.  Temp tables, so that
+-- autovacuum does not touch them.
+CREATE TEMP TABLE bark_opc_num (k numeric);
+INSERT INTO bark_opc_num SELECT (ARRAY[1, 1.0, 1.00])[1 + g % 3] FROM generate_series(1, 300) g;
+CREATE INDEX bark_opc_num_idx ON bark_opc_num USING bark (k);
+CREATE TEMP TABLE bark_opc_int (k int);
+INSERT INTO bark_opc_int SELECT 1 FROM generate_series(1, 300) g;
+CREATE INDEX bark_opc_int_idx ON bark_opc_int USING bark (k);
+INSERT INTO bark_opc_num SELECT (ARRAY[1, 1.0, 1.00])[1 + g % 3] FROM generate_series(1, 300) g;
+INSERT INTO bark_opc_int SELECT 1 FROM generate_series(1, 300) g;
+VACUUM bark_opc_num, bark_opc_int;
+SELECT bark_index_check('bark_opc_num_idx'), bark_index_check('bark_opc_int_idx');
+SELECT relname, reltuples = 600 AS one_entry_per_row
+FROM pg_class WHERE relname IN ('bark_opc_num_idx', 'bark_opc_int_idx') ORDER BY relname;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+EXPLAIN (COSTS OFF) SELECT k::text, count(*) FROM bark_opc_num WHERE k = 1 GROUP BY 1 ORDER BY 1;
+SELECT k::text, count(*) FROM bark_opc_num WHERE k = 1 GROUP BY 1 ORDER BY 1;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+DROP TABLE bark_opc_num, bark_opc_int;
+
+-- An OVERSIZED entry's inline prefix shortcuts a comparison only when the
+-- first key column sorts as its varlena bytes, which a "C" collation does not
+-- make true by itself: name is a cstring (no varlena header), bpchar ignores
+-- trailing spaces, and an array compares element by element.  Each index has
+-- oversized entries (an incompressible ~3kB INCLUDE payload or second key);
+-- bark_index_check passes and the index agrees with a sequential scan.
+CREATE TABLE bark_opc_big (n name, c char(4) COLLATE "C", a text[] COLLATE "C", p text);
+SELECT setseed(0.25);
+INSERT INTO bark_opc_big
+  SELECT ('l' || lpad(g::text, 3, '0') || chr(122 - g % 26))::name,
+         CASE WHEN g % 2 = 0 THEN 'a' ELSE 'a ' END,
+         CASE WHEN g % 2 = 0 THEN ARRAY[chr(98 + g % 20)]
+              ELSE ARRAY[chr(97 + g % 20), 'z'] END || g::text,
+         (SELECT string_agg(md5(g::text || i::text), '') FROM generate_series(1, 100) i)
+  FROM generate_series(1, 400) g ORDER BY random();
+CREATE INDEX bark_opc_big_n ON bark_opc_big USING bark (n) INCLUDE (p);
+CREATE INDEX bark_opc_big_c ON bark_opc_big USING bark (c, p);
+CREATE INDEX bark_opc_big_a ON bark_opc_big USING bark (a) INCLUDE (p);
+INSERT INTO bark_opc_big
+  SELECT ('l' || lpad(g::text, 3, '0') || chr(122 - g % 26))::name,
+         CASE WHEN g % 2 = 0 THEN 'a' ELSE 'a ' END,
+         CASE WHEN g % 2 = 0 THEN ARRAY[chr(98 + g % 20)]
+              ELSE ARRAY[chr(97 + g % 20), 'z'] END || g::text,
+         (SELECT string_agg(md5(g::text || i::text), '') FROM generate_series(1, 100) i)
+  FROM generate_series(401, 800) g ORDER BY random();
+SELECT bark_index_check('bark_opc_big_n'), bark_index_check('bark_opc_big_c'),
+       bark_index_check('bark_opc_big_a');
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+CREATE TEMP TABLE bark_opc_big_idx AS
+  SELECT (SELECT count(*) FROM bark_opc_big WHERE n > 'l300') AS n,
+         (SELECT count(*) FROM bark_opc_big WHERE c = 'a' AND p > '8') AS c,
+         (SELECT count(*) FROM bark_opc_big WHERE a > '{k}') AS a;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SET enable_indexscan = off;
+SET enable_indexonlyscan = off;
+SET enable_bitmapscan = off;
+SELECT i.*, (i.n, i.c, i.a) = (s.n, s.c, s.a) AS matches_seqscan
+FROM bark_opc_big_idx i,
+  (SELECT (SELECT count(*) FROM bark_opc_big WHERE n > 'l300') AS n,
+          (SELECT count(*) FROM bark_opc_big WHERE c = 'a' AND p > '8') AS c,
+          (SELECT count(*) FROM bark_opc_big WHERE a > '{k}') AS a) s;
+RESET enable_indexscan;
+RESET enable_indexonlyscan;
+RESET enable_bitmapscan;
+DROP TABLE bark_opc_big, bark_opc_big_idx;
+DROP TYPE bark_opc_pair, bark_opc_color;
+
+-- A strict inequality on the last column of a scan's start bound (> forward,
+-- < backward, or a row comparison whose usable prefix is the whole row)
+-- starts the scan past the entries equal to the bound, as nbtree's _bt_first
+-- does with nextkey, instead of reading and rejecting them.  In bark_nk each
+-- a holds 15000 entries and each (a, b) 3000, so those runs span many
+-- leaves, and some rows have a NULL a or b.  Every query must return what a
+-- sequential scan does, on ASC, DESC and mixed indexes, forward and
+-- backward, after an equality prefix and after required arrays, with
+-- cross-type constants, and for rows whose usable prefix is shorter than the
+-- row (not strict: (a, c) > (1, 25000) on (a, b, c) can match a = 1).
+CREATE TABLE bark_nk (a int, b int, c int);
+INSERT INTO bark_nk SELECT g / 15000, (g / 3000) % 5, g
+  FROM generate_series(0, 59999) g;
+INSERT INTO bark_nk SELECT g % 4, NULL, 60000 + g FROM generate_series(1, 400) g;
+INSERT INTO bark_nk SELECT NULL, g % 5, 70000 + g FROM generate_series(1, 400) g;
+VACUUM ANALYZE bark_nk;
+CREATE FUNCTION bark_nk_check(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+  plan json;
+  node json;
+  r1 text;
+  r2 text;
+BEGIN
+  SET LOCAL enable_seqscan = off;
+  SET LOCAL enable_bitmapscan = off;
+  SET LOCAL enable_sort = off;
+  EXECUTE 'EXPLAIN (COSTS OFF, FORMAT JSON) ' || q INTO plan;
+  node := plan->0->'Plan';
+  WHILE node->>'Index Name' IS NULL AND node->'Plans' IS NOT NULL LOOP
+    node := node->'Plans'->0;
+  END LOOP;
+  EXECUTE 'SELECT md5(string_agg(x::text, '','')) FROM (' || q || ') x' INTO r1;
+  RESET enable_seqscan;
+  RESET enable_sort;
+  SET LOCAL enable_indexscan = off;
+  SET LOCAL enable_indexonlyscan = off;
+  EXECUTE 'SELECT md5(string_agg(x::text, '','')) FROM (' || q || ') x' INTO r2;
+  RETURN format('%s %s', coalesce(node->>'Scan Direction', 'no index scan'),
+    CASE WHEN r1 IS NOT DISTINCT FROM r2 THEN 'ok' ELSE 'mismatch' END);
+END $$;
+CREATE FUNCTION bark_nk_run(fwd text, bwd text) RETURNS SETOF text
+LANGUAGE plpgsql AS $$
+DECLARE
+  q text;
+BEGIN
+  FOREACH q IN ARRAY ARRAY[
+    'WHERE a > 1 ORDER BY ' || fwd,
+    'WHERE a > 1 ORDER BY ' || bwd,
+    'WHERE a < 2 ORDER BY ' || fwd,
+    'WHERE a < 2 ORDER BY ' || bwd,
+    'WHERE a > 1 ORDER BY ' || fwd || ' LIMIT 5',
+    'WHERE a < 2 ORDER BY ' || bwd || ' LIMIT 5',
+    'WHERE a > 1::int8 ORDER BY ' || fwd || ' LIMIT 5',
+    'WHERE a < 2::int8 ORDER BY ' || bwd || ' LIMIT 5',
+    'WHERE a > 1 AND a < 3 ORDER BY ' || fwd,
+    'WHERE a > 1 AND a < 3 ORDER BY ' || bwd,
+    'WHERE a = 1 AND b > 3 ORDER BY ' || fwd,
+    'WHERE a = 1 AND b > 3 ORDER BY ' || bwd,
+    'WHERE a = 2 AND b < 1 ORDER BY ' || fwd,
+    'WHERE a = 2 AND b < 1 ORDER BY ' || bwd,
+    'WHERE a = 1 AND b > 2::int8 ORDER BY ' || fwd || ' LIMIT 5',
+    'WHERE a = 2 AND b < 3::int2 ORDER BY ' || bwd || ' LIMIT 5',
+    'WHERE a = 1 AND b = 3 AND c > 25000 ORDER BY ' || fwd || ' LIMIT 5',
+    'WHERE a = ANY (''{1, 3}'') AND b > 2 ORDER BY ' || fwd,
+    'WHERE a = ANY (''{1, 3}'') AND b > 2 ORDER BY ' || bwd,
+    'WHERE a = ANY (''{0, 2}'') AND b < 2 ORDER BY ' || fwd,
+    'WHERE a = ANY (''{0, 2}'') AND b < 2 ORDER BY ' || bwd,
+    'WHERE a = ANY (''{0, 2, 3}'') AND b > 3 ORDER BY ' || fwd || ' LIMIT 5',
+    'WHERE (a, b) > (1, 3) ORDER BY ' || fwd,
+    'WHERE (a, b) > (1, 3) ORDER BY ' || bwd,
+    'WHERE (a, b) >= (1, 3) ORDER BY ' || fwd || ' LIMIT 5',
+    'WHERE (a, b) < (2, 1) ORDER BY ' || bwd,
+    'WHERE (a, b) <= (2, 1) ORDER BY ' || bwd || ' LIMIT 5',
+    'WHERE (a, b) > (1, 3) ORDER BY ' || fwd || ' LIMIT 5',
+    'WHERE (a, b) < (2, 1) ORDER BY ' || bwd || ' LIMIT 5',
+    'WHERE (a, b) > (1::int8, 3::int2) ORDER BY ' || fwd || ' LIMIT 5',
+    'WHERE (a, b, c) > (1, 3, 25000) ORDER BY ' || fwd || ' LIMIT 5',
+    'WHERE (a, b, c) < (2, 1, 32000) ORDER BY ' || bwd || ' LIMIT 5',
+    'WHERE (a, b) > (1, NULL) ORDER BY ' || fwd || ' LIMIT 5',
+    'WHERE (a, c) > (1, 25000) ORDER BY ' || fwd,
+    'WHERE (a, c) < (2, 32000) ORDER BY ' || bwd,
+    'WHERE (a, c) > (1, 25000) ORDER BY ' || fwd || ' LIMIT 5',
+    'WHERE (a, b) > (1, 3) AND b > 2 ORDER BY ' || fwd || ' LIMIT 5']
+  LOOP
+    RETURN NEXT bark_nk_check('SELECT a, b, c FROM bark_nk ' || q) || ': ' || q;
+  END LOOP;
+END $$;
+CREATE INDEX bark_nk_i ON bark_nk USING bark (a, b, c);
+SELECT bark_nk_run('a, b, c', 'a DESC, b DESC, c DESC');
+-- Each LIMIT query starts on the leaf holding its first match, past the run
+-- of entries equal to its bound, so it reads that leaf, perhaps the next,
+-- and the inner pages (it would read every leaf of the run otherwise).
+CREATE FUNCTION bark_nk_pages(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE
+  warm refcursor;
+  plan json;
+  node json;
+BEGIN
+  SET LOCAL enable_seqscan = off;
+  SET LOCAL enable_bitmapscan = off;
+  SET LOCAL debug_parallel_query = off;	-- as in bark_xt_buffers
+  OPEN warm FOR EXECUTE q;
+  MOVE warm;
+  EXECUTE 'EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, FORMAT JSON) ' || q
+    INTO plan;
+  node := plan->0->'Plan';
+  WHILE node->>'Index Name' IS NULL LOOP
+    node := node->'Plans'->0;
+  END LOOP;
+  RETURN (node->>'Shared Hit Blocks')::int + (node->>'Shared Read Blocks')::int -
+    coalesce((node->>'Heap Fetches')::int, 0);
+END $$;
+SELECT q, bark_nk_pages('SELECT a, b, c FROM bark_nk WHERE ' || q || ' LIMIT 5') < 6 AS few_pages
+FROM unnest(ARRAY[
+  'a > 1 ORDER BY a, b, c',
+  'a < 2 ORDER BY a DESC, b DESC, c DESC',
+  'a > 1::int8 ORDER BY a, b, c',
+  'a = 1 AND b > 2 ORDER BY a, b, c',
+  'a = 2 AND b < 3 ORDER BY a DESC, b DESC, c DESC',
+  'a = ANY (''{0, 2}'') AND b > 3 ORDER BY a, b, c',
+  '(a, b) > (1, 3) ORDER BY a, b, c',
+  '(a, b) < (2, 1) ORDER BY a DESC, b DESC, c DESC']) q;
+SELECT bark_index_check('bark_nk_i');
+DROP INDEX bark_nk_i;
+CREATE INDEX bark_nk_i ON bark_nk USING bark (a DESC, b DESC, c DESC);
+SELECT bark_nk_run('a DESC, b DESC, c DESC', 'a, b, c');
+DROP INDEX bark_nk_i;
+CREATE INDEX bark_nk_i ON bark_nk USING bark (a DESC, b, c);
+SELECT bark_nk_run('a DESC, b, c', 'a, b DESC, c DESC');
+DROP INDEX bark_nk_i;
+DROP FUNCTION bark_nk_run(text, text), bark_nk_pages(text);
+
+-- A leaf read after a scan's first page skips the per-entry test of a row
+-- comparison that its first and last entries both satisfy on the same
+-- deciding member, and of an equality array whose column holds one of its
+-- elements across the page (bark_page_satisfied_keys).  bark_cnt's operator
+-- class counts calls of its comparator, which tests the row's members and
+-- the array's elements, so a query reading many leaves makes a few calls per
+-- leaf rather than one or more per entry.
+CREATE SEQUENCE bark_cnt_seq;
+CREATE FUNCTION bark_cnt_cmp(int4, int4) RETURNS int4 LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM nextval('public.bark_cnt_seq');
+  RETURN btint4cmp($1, $2);
+END $$;
+CREATE OPERATOR #< (LEFTARG = int4, RIGHTARG = int4, FUNCTION = int4lt);
+CREATE OPERATOR #<= (LEFTARG = int4, RIGHTARG = int4, FUNCTION = int4le);
+CREATE OPERATOR #= (LEFTARG = int4, RIGHTARG = int4, FUNCTION = int4eq);
+CREATE OPERATOR #>= (LEFTARG = int4, RIGHTARG = int4, FUNCTION = int4ge);
+CREATE OPERATOR #> (LEFTARG = int4, RIGHTARG = int4, FUNCTION = int4gt);
+CREATE OPERATOR FAMILY bark_cnt_fam USING btree;
+CREATE OPERATOR CLASS bark_cnt_ops FOR TYPE int4 USING bark FAMILY bark_cnt_fam AS
+  OPERATOR 1 #<, OPERATOR 2 #<=, OPERATOR 3 #=, OPERATOR 4 #>=, OPERATOR 5 #>,
+  FUNCTION 1 bark_cnt_cmp(int4, int4);
+CREATE TABLE bark_cnt (a int, b int);
+INSERT INTO bark_cnt SELECT g / 5000, g FROM generate_series(0, 19999) g;
+CREATE INDEX bark_cnt_i ON bark_cnt USING bark (a bark_cnt_ops, b bark_cnt_ops);
+VACUUM ANALYZE bark_cnt;
+CREATE FUNCTION bark_cnt_calls(q text, OUT n bigint, OUT few_calls bool)
+LANGUAGE plpgsql AS $$
+DECLARE
+  plan json;
+  node json;
+BEGIN
+  SET LOCAL enable_seqscan = off;
+  SET LOCAL enable_bitmapscan = off;
+  -- bark_cnt_cmp counts its calls with nextval(), which a parallel worker
+  -- cannot run; the planner does not look at an opclass's support
+  -- functions, so keep the scan in this backend.
+  SET LOCAL debug_parallel_query = off;
+  EXECUTE 'EXPLAIN (COSTS OFF, FORMAT JSON) ' || q INTO plan;
+  node := plan->0->'Plan';
+  WHILE node->>'Index Name' IS NULL AND node->'Plans' IS NOT NULL LOOP
+    node := node->'Plans'->0;
+  END LOOP;
+  IF node->>'Index Name' IS DISTINCT FROM 'bark_cnt_i' THEN
+    RAISE EXCEPTION 'not a scan of bark_cnt_i: %', plan;
+  END IF;
+  PERFORM setval('bark_cnt_seq', 1);
+  EXECUTE 'SELECT count(*) FROM (' || q || ') x' INTO n;
+  few_calls := currval('bark_cnt_seq') - 1 < n / 3;
+END $$;
+SELECT c.*, (SELECT count(*) FROM bark_cnt WHERE (a, b) > (0, 2500)) AS seqscan
+FROM bark_cnt_calls('SELECT b FROM bark_cnt WHERE ROW(a, b) #> ROW(0, 2500)') c;
+SELECT c.*, (SELECT count(*) FROM bark_cnt WHERE (a, b) <= (3, 17500)) AS seqscan
+FROM bark_cnt_calls('SELECT b FROM bark_cnt WHERE ROW(a, b) #<= ROW(3, 17500) ORDER BY a DESC, b DESC') c;
+SELECT c.*, (SELECT count(*) FROM bark_cnt WHERE a = ANY ('{1, 2, 3}')) AS seqscan
+FROM bark_cnt_calls('SELECT b FROM bark_cnt WHERE a #= ANY (''{1, 2, 3}'')') c;
+DROP TABLE bark_cnt;
+DROP FUNCTION bark_cnt_calls(text);
+DROP OPERATOR FAMILY bark_cnt_fam USING btree;
+DROP OPERATOR #< (int4, int4), #<= (int4, int4), #= (int4, int4),
+  #>= (int4, int4), #> (int4, int4);
+DROP FUNCTION bark_cnt_cmp(int4, int4);
+DROP SEQUENCE bark_cnt_seq;
+
+-- A row comparison is not marked when the page's first and last entries
+-- satisfy it on different members, since an entry between them may not:
+-- under (a, b) > (k, 5), a page from (k, 790) to (k + 1, 100) on (a, b)
+-- holds (k, NULL) (NULLS LAST), on (a DESC, b) a page from (k + 1, 700) to
+-- (k, 300) holds (k, 0) to (k, 5), and on (a, b DESC) a page from (k, 7) to
+-- (k + 1, 700) holds them too.  Each a has 800 b values and 40 NULLs, a few
+-- leaves, so these pages are read after the scan's first.
+CREATE TABLE bark_rme (a int, b int);
+INSERT INTO bark_rme SELECT g / 840, nullif(g % 840, 0) - 40 FROM generate_series(0, 16799) g;
+UPDATE bark_rme SET b = NULL WHERE b < 0;
+VACUUM ANALYZE bark_rme;
+CREATE INDEX bark_rme_i ON bark_rme USING bark (a, b);
+SELECT bark_nk_check('SELECT a, b FROM bark_rme WHERE (a, b) > (' || k || ', 5) ORDER BY a, b'),
+       bark_nk_check('SELECT a, b FROM bark_rme WHERE (a, b) > (' || k || ', 5) ORDER BY a DESC, b DESC')
+FROM (VALUES (3), (11)) v(k);
+DROP INDEX bark_rme_i;
+CREATE INDEX bark_rme_i ON bark_rme USING bark (a DESC, b);
+SELECT bark_nk_check('SELECT a, b FROM bark_rme WHERE (a, b) > (' || k || ', 5) ORDER BY a DESC, b'),
+       bark_nk_check('SELECT a, b FROM bark_rme WHERE (a, b) > (' || k || ', 5) ORDER BY a, b DESC')
+FROM (VALUES (3), (11)) v(k);
+DROP INDEX bark_rme_i;
+CREATE INDEX bark_rme_i ON bark_rme USING bark (a, b DESC);
+SELECT bark_nk_check('SELECT a, b FROM bark_rme WHERE (a, b) > (' || k || ', 5) ORDER BY a, b DESC'),
+       bark_nk_check('SELECT a, b FROM bark_rme WHERE (a, b) > (' || k || ', 5) ORDER BY a DESC, b')
+FROM (VALUES (3), (11)) v(k);
+DROP TABLE bark_rme, bark_nk;
+DROP FUNCTION bark_nk_check(text);
