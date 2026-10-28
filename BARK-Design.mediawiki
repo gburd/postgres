@@ -1556,9 +1556,17 @@ boundaries get a TIDBitmap. On that workload (4M rows, 235 values, about
 -t, ABBA) the chunked streams give 986-993 tps and 743-745 faults per
 query with glibc against the earlier 952-963 and 874-877, and 1,004-1,007 tps
 and 805-806 faults with MALLOC_MMAP_THRESHOLD_ and MALLOC_TRIM_THRESHOLD_
-at 128 kB (musl-like) against 962-971 and 956-957. What is left is the
-executor's TIDBitmap and the page read's member decoding (three 32 kB
-allocations; see "Not implemented" under "Status"). Tests
+at 128 kB (musl-like) against 962-971 and 956-957. With core's pagetable
+kept across queries (a measurement prototype of tidbitmap.c), what was
+left under the musl-like settings was the chunks themselves: each is a
+malloc of its own, about 31 per query, and the scan's end freed them, so
+the trimmed heap faulted them in again (73 faults per query against 19
+for a one-key scan); the 32 kB allocations of the page read's member
+decoding did not fault. The backend now keeps the chunk context and up
+to work_mem of free chunks between scans (bark_gin_chunks_keep): 8
+faults per query there, and 738 instead of 796 with glibc's defaults and
+core's own pagetable, with tps 0.9-1.0% higher (A/A floor 0.3%), and
+no change under jemalloc. Tests
 (bark_multikey_ginbound.sql): 27 queries on 40,000 rows over 1,600 heap
 pages, as bitmap and index scans of a class with and without
 triConsistent, at work_mem 64kB (lossy, and checked to be) and 64MB

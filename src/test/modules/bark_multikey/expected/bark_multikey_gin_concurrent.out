@@ -1,0 +1,173 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s2_shape s1_begin s1_attach s1_bitmap s3_wake1 s3_wake1 s2_churn s2_vacuum s3_wake s1_cmp_bitmap s1_commit s2_check
+injection_points_set_local
+--------------------------
+                          
+(1 row)
+
+step s2_shape: 
+	SELECT (bark_metap('gbc_a')).level >= 1 AS has_root;
+
+has_root
+--------
+t       
+(1 row)
+
+step s1_begin: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) > 0 AS snap FROM gbc;
+snap
+----
+t   
+(1 row)
+
+step s1_attach: 
+	SELECT injection_points_attach('bark-search-descend', 'wait');
+
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+step s1_bitmap: 
+	SET LOCAL enable_indexscan = off;
+	SET LOCAL enable_bitmapscan = on;
+	INSERT INTO gbc_got SELECT id FROM gbc WHERE a @> ARRAY[3,103,203];
+ <waiting ...>
+step s3_wake1: SELECT injection_points_wakeup('bark-search-descend');
+injection_points_wakeup
+-----------------------
+                       
+(1 row)
+
+step s3_wake1: SELECT injection_points_wakeup('bark-search-descend');
+injection_points_wakeup
+-----------------------
+                       
+(1 row)
+
+step s2_churn: 
+	INSERT INTO gbc SELECT g, ARRAY[g % 7, 100 + g % 13, 200 + g % 5]
+	  FROM generate_series(10001, 22000) g;
+	DELETE FROM gbc WHERE id % 4 = 0 AND id <= 6000;
+
+step s2_vacuum: VACUUM gbc;
+step s3_wake: 
+	SELECT injection_points_detach('bark-search-descend');
+	SELECT injection_points_wakeup('bark-search-descend');
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+injection_points_wakeup
+-----------------------
+                       
+(1 row)
+
+step s1_bitmap: <... completed>
+step s1_cmp_bitmap: 
+	SET LOCAL enable_seqscan = on;
+	SET LOCAL enable_indexscan = off;
+	SET LOCAL enable_bitmapscan = off;
+	SELECT (SELECT count(*) || ':' || count(DISTINCT id) || ':' || sum(id) FROM gbc_got) AS scan,
+	       (SELECT count(*) || ':' || count(DISTINCT id) || ':' || sum(id)
+	          FROM gbc WHERE a @> ARRAY[3,103,203]) AS seqscan;
+
+scan       |seqscan    
+-----------+-----------
+14:14:41447|14:14:41447
+(1 row)
+
+step s1_commit: COMMIT;
+step s2_check: 
+	SELECT bark_index_check('gbc_a') AS gbc_a,
+	       pg_relation_size('gbc_a') > 8192 * 20 AS grew;
+
+gbc_a|grew
+-----+----
+     |t   
+(1 row)
+
+
+starting permutation: s1_begin s1_attach s1_index s3_wake1 s3_wake1 s2_churn s2_vacuum s3_wake s1_cmp_index s1_commit s2_check
+injection_points_set_local
+--------------------------
+                          
+(1 row)
+
+step s1_begin: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) > 0 AS snap FROM gbc;
+snap
+----
+t   
+(1 row)
+
+step s1_attach: 
+	SELECT injection_points_attach('bark-search-descend', 'wait');
+
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+step s1_index: 
+	SET LOCAL enable_indexscan = on;
+	SET LOCAL enable_bitmapscan = off;
+	INSERT INTO gbc_got SELECT id FROM gbc WHERE a @> ARRAY[3,103] AND a @> ARRAY[203];
+ <waiting ...>
+step s3_wake1: SELECT injection_points_wakeup('bark-search-descend');
+injection_points_wakeup
+-----------------------
+                       
+(1 row)
+
+step s3_wake1: SELECT injection_points_wakeup('bark-search-descend');
+injection_points_wakeup
+-----------------------
+                       
+(1 row)
+
+step s2_churn: 
+	INSERT INTO gbc SELECT g, ARRAY[g % 7, 100 + g % 13, 200 + g % 5]
+	  FROM generate_series(10001, 22000) g;
+	DELETE FROM gbc WHERE id % 4 = 0 AND id <= 6000;
+
+step s2_vacuum: VACUUM gbc;
+step s3_wake: 
+	SELECT injection_points_detach('bark-search-descend');
+	SELECT injection_points_wakeup('bark-search-descend');
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+injection_points_wakeup
+-----------------------
+                       
+(1 row)
+
+step s1_index: <... completed>
+step s1_cmp_index: 
+	SET LOCAL enable_seqscan = on;
+	SET LOCAL enable_indexscan = off;
+	SET LOCAL enable_bitmapscan = off;
+	SELECT (SELECT count(*) || ':' || count(DISTINCT id) || ':' || sum(id) FROM gbc_got) AS scan,
+	       (SELECT count(*) || ':' || count(DISTINCT id) || ':' || sum(id)
+	          FROM gbc WHERE a @> ARRAY[3,103] AND a @> ARRAY[203]) AS seqscan;
+
+scan       |seqscan    
+-----------+-----------
+14:14:41447|14:14:41447
+(1 row)
+
+step s1_commit: COMMIT;
+step s2_check: 
+	SELECT bark_index_check('gbc_a') AS gbc_a,
+	       pg_relation_size('gbc_a') > 8192 * 20 AS grew;
+
+gbc_a|grew
+-----+----
+     |t   
+(1 row)
+
