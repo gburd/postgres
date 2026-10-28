@@ -601,90 +601,145 @@ bark_xlog_merge(XLogReaderState *record)
 }
 
 /*
- * Replay the deletion of an empty leaf (bark_delete_empty_leaf).
+ * Replay the deletion of an empty leaf, and of the chain of one-child
+ * parents above it when XLH_BARK_UNLINK_SUBTREE is set (bark_delete_subtree).
  *
- * The primary locks the parent first and the three leaves conditionally (see
- * bark_delete_empty_leaf).  Replay cannot skip a page, so it locks
- * unconditionally, in the order a split and amcheck use: the leaves left to
- * right, then the parent.  Standby readers hold one page lock at a time, or
- * a child's lock while they lock its parent, so this order cannot deadlock
- * with them.  All four locks are held until the record is applied, so a
- * reader sees the deletion whole or not at all, as on the primary.
+ * The pages are locked in the primary's order, which is the one every
+ * writer uses: each level left to right, from the leaf up, then the subtree
+ * parent.  Standby readers hold one page lock at a time, or a child's lock
+ * while they lock its parent, so this order cannot deadlock with them.  All
+ * the locks are held until the record is applied, so a reader sees the
+ * deletion whole or not at all, as on the primary.  A deleted page's links
+ * are its neighbours' block numbers; the leaf's are in the record too.
  */
 static void
 bark_xlog_unlink_page(XLogReaderState *record)
 {
 	XLogRecPtr	lsn = record->EndRecPtr;
 	xl_bark_unlink_page *xlrec = (xl_bark_unlink_page *) XLogRecGetData(record);
-	Buffer		leftbuf;
-	Buffer		target;
-	Buffer		rightbuf;
+	uint16		nlevels = 0;
+	uint16		lowtag = (xlrec->flags & XLH_BARK_UNLINK_LOWTAG) ?
+		BARK_LOWBOUND_TAGGED : 0;
+	Buffer		bufs[XLR_MAX_BLOCK_ID + 1];
 	Buffer		parentbuf;
 	Page		page;
 
-	/* Fix the right link of the left sibling */
-	if (XLogReadBufferForRedo(record, 1, &leftbuf) == BLK_NEEDS_REDO)
+	if (xlrec->flags & XLH_BARK_UNLINK_SUBTREE)
+		memcpy(&nlevels, (char *) xlrec + SizeOfBarkUnlinkPage, sizeof(uint16));
+	Assert(nlevels <= BARK_MAX_UNLINK_LEVELS);
+
+	for (int level = 0; level <= nlevels; level++)
 	{
-		page = BufferGetPage(leftbuf);
-		BarkPageGetOpaque(page)->bark_next = xlrec->rightsib;
+		uint8		lid = BarkUnlinkBlockId(level, BARK_UNLINK_LEFT);
+		uint8		tid = BarkUnlinkBlockId(level, BARK_UNLINK_TARGET);
+		uint8		rid = BarkUnlinkBlockId(level, BARK_UNLINK_RIGHT);
+		BlockNumber leftsib;
+		BlockNumber rightsib;
 
+		XLogRecGetBlockTag(record, lid, NULL, NULL, &leftsib);
+		XLogRecGetBlockTag(record, rid, NULL, NULL, &rightsib);
+		Assert(level > 0 ||
+			   (leftsib == xlrec->leftsib && rightsib == xlrec->rightsib));
+
+		/* Fix the right link of the left sibling */
+		if (XLogReadBufferForRedo(record, lid, &bufs[lid]) == BLK_NEEDS_REDO)
+		{
+			page = BufferGetPage(bufs[lid]);
+			BarkPageGetOpaque(page)->bark_next = rightsib;
+			PageSetLSN(page, lsn);
+			MarkBufferDirty(bufs[lid]);
+		}
+
+		/* Rewrite the target as an empty deleted page that keeps its links */
+		bufs[tid] = XLogInitBufferForRedo(record, tid);
+		page = BufferGetPage(bufs[tid]);
+		BarkPageSetDeleted(page, leftsib, rightsib, xlrec->safexid);
 		PageSetLSN(page, lsn);
-		MarkBufferDirty(leftbuf);
-	}
+		MarkBufferDirty(bufs[tid]);
 
-	/* Rewrite the target as an empty deleted page that keeps its links */
-	target = XLogInitBufferForRedo(record, 0);
-	page = BufferGetPage(target);
-	BarkPageSetDeleted(page, xlrec->leftsib, xlrec->rightsib, xlrec->safexid);
-	PageSetLSN(page, lsn);
-	MarkBufferDirty(target);
+		/*
+		 * Fix the left link of the right sibling.  A leaf takes over the
+		 * target's lower bound; an internal page's first downlink becomes
+		 * minus infinity.
+		 */
+		if (XLogReadBufferForRedo(record, rid, &bufs[rid]) == BLK_NEEDS_REDO)
+		{
+			BarkPageOpaque opaque;
 
-	/* Fix the left link of the right sibling */
-	if (XLogReadBufferForRedo(record, 2, &rightbuf) == BLK_NEEDS_REDO)
-	{
-		page = BufferGetPage(rightbuf);
-		BarkPageGetOpaque(page)->bark_prev = xlrec->leftsib;
-		if (xlrec->flags & XLH_BARK_UNLINK_LOWTAG)
-			BarkPageGetOpaque(page)->bark_flags |= BARK_LOWBOUND_TAGGED;
+			page = BufferGetPage(bufs[rid]);
+			opaque = BarkPageGetOpaque(page);
+			opaque->bark_prev = leftsib;
+			if (level == 0)
+				opaque->bark_flags |= lowtag;
+			else
+			{
+				OffsetNumber first = BarkPageFirstDataKey(opaque);
+				IndexTupleData minusinf;
+				BarkItemBuf ibuf;
+				bool		fits PG_USED_FOR_ASSERTS_ONLY;
 
-		PageSetLSN(page, lsn);
-		MarkBufferDirty(rightbuf);
+				BarkPivotInitMinusInfinity(&minusinf,
+										   BarkEntryGetDownLink(BarkPageGetItem(page, first,
+																				&ibuf)));
+				fits = PageIndexTupleOverwrite(page, first, &minusinf,
+											   sizeof(IndexTupleData));
+				Assert(fits);
+			}
+			PageSetLSN(page, lsn);
+			MarkBufferDirty(bufs[rid]);
+		}
 	}
 
 	/*
-	 * Move the target's key space to the right sibling: point the target's
-	 * downlink at the right sibling and remove the right sibling's own
-	 * downlink, the next item.
+	 * Move the top target's key space to its right sibling: point the
+	 * target's downlink at the right sibling and remove the right sibling's
+	 * own downlink, the next item.
 	 */
 	if (XLogReadBufferForRedo(record, 3, &parentbuf) == BLK_NEEDS_REDO)
 	{
+		BlockNumber rightsib;
 		IndexTuple	downlink;
 
+		XLogRecGetBlockTag(record, BarkUnlinkBlockId(nlevels, BARK_UNLINK_RIGHT),
+						   NULL, NULL, &rightsib);
 		/* Changed in place: internal items are stored as they are read. */
 		page = BufferGetPage(parentbuf);
 		downlink = (IndexTuple) PageGetItem(page,
 											PageGetItemId(page, xlrec->poffset));
-		BarkEntrySetDownLink(downlink, xlrec->rightsib);
+		BarkEntrySetDownLink(downlink, rightsib);
 		PageIndexTupleDelete(page, OffsetNumberNext(xlrec->poffset));
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(parentbuf);
 	}
 
-	bark_verify_redo(record, 1, leftbuf, InvalidOffsetNumber,
-					 InvalidOffsetNumber);
-	bark_verify_redo(record, 0, target, InvalidOffsetNumber,
-					 InvalidOffsetNumber);
-	bark_verify_redo(record, 2, rightbuf, InvalidOffsetNumber,
-					 InvalidOffsetNumber);
+	/* As on the primary, a level-1 page went while it was locked. */
+	if (nlevels >= 1)
+		bark_l1_epoch_advance();
+
+	for (int level = 0; level <= nlevels; level++)
+	{
+		for (int which = BARK_UNLINK_TARGET; which <= BARK_UNLINK_RIGHT; which++)
+		{
+			uint8		id = BarkUnlinkBlockId(level, which);
+
+			bark_verify_redo(record, id, bufs[id], InvalidOffsetNumber,
+							 InvalidOffsetNumber);
+		}
+	}
 	bark_verify_redo(record, 3, parentbuf, InvalidOffsetNumber,
 					 InvalidOffsetNumber);
 
-	if (BufferIsValid(leftbuf))
-		UnlockReleaseBuffer(leftbuf);
-	UnlockReleaseBuffer(target);
-	if (BufferIsValid(rightbuf))
-		UnlockReleaseBuffer(rightbuf);
+	for (int level = 0; level <= nlevels; level++)
+	{
+		for (int which = BARK_UNLINK_TARGET; which <= BARK_UNLINK_RIGHT; which++)
+		{
+			uint8		id = BarkUnlinkBlockId(level, which);
+
+			if (BufferIsValid(bufs[id]))
+				UnlockReleaseBuffer(bufs[id]);
+		}
+	}
 	if (BufferIsValid(parentbuf))
 		UnlockReleaseBuffer(parentbuf);
 }

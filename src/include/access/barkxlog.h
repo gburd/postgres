@@ -250,7 +250,7 @@ typedef struct xl_bark_merge
 #define SizeOfBarkMerge	(offsetof(xl_bark_merge, nupdated) + sizeof(uint16))
 
 /*
- * Deletion of an empty leaf (bark_delete_empty_leaf): the left sibling's
+ * Deletion of an empty leaf (bark_delete_subtree): the left sibling's
  * right link and the right sibling's left link skip the target, the target's
  * downlink in the parent (at poffset) is pointed at the right sibling and the
  * right sibling's own downlink, the next item, is removed, and the target is
@@ -263,6 +263,22 @@ typedef struct xl_bark_merge
  * Backup Blk 1: left sibling
  * Backup Blk 2: right sibling
  * Backup Blk 3: parent
+ *
+ * With XLH_BARK_UNLINK_SUBTREE the record deletes the leaf together with
+ * the chain of k internal pages above it, each its parent's only child, up
+ * to the subtree parent, which is then block 3 (the parent of the topmost
+ * page deleted, and poffset its downlink there).  A uint16 k follows the
+ * struct.  Every level is unlinked as the leaf level is; the right sibling
+ * at each internal level gets its first data item truncated to a minus-
+ * infinity pivot, since its lower bound becomes its new left sibling's high
+ * key.  For level i, 1 <= i <= k (BarkUnlinkBlockId):
+ *
+ * Backup Blk 3i+1: the deleted page (reinitialized)
+ * Backup Blk 3i+2: its left sibling
+ * Backup Blk 3i+3: its right sibling
+ *
+ * Each page's links are those of its neighbours' block tags.  leftsib and
+ * rightsib name the leaf's siblings.
  *
  * The same opcode also logs a second operation, the lowering of a leaf's
  * lower bound (bark_lower_bound), since BARK's rmgr has no free opcode.  The
@@ -292,10 +308,33 @@ typedef struct xl_bark_unlink_page
 
 #define SizeOfBarkUnlinkPage	(offsetof(xl_bark_unlink_page, flags) + sizeof(uint16))
 
+/*
+ * The most internal levels one subtree deletion removes: its blocks must
+ * fit the record's XLR_MAX_BLOCK_ID (blocks 0 .. 3 + 3 * k).
+ */
+#define BARK_MAX_UNLINK_LEVELS	9
+
+/*
+ * The block ID of a page of level `level` (0 .. k) of a deletion: the
+ * deleted page, its left or its right sibling.  The leaf level's are blocks
+ * 0 .. 2, as in a deletion of a leaf alone.
+ */
+#define BARK_UNLINK_TARGET	0
+#define BARK_UNLINK_LEFT	1
+#define BARK_UNLINK_RIGHT	2
+#define BarkUnlinkBlockId(level, which) \
+	((level) == 0 ? (which) : 3 * (level) + 1 + (which))
+
+StaticAssertDecl(BarkUnlinkBlockId(BARK_MAX_UNLINK_LEVELS, BARK_UNLINK_RIGHT) <=
+				 XLR_MAX_BLOCK_ID,
+				 "a subtree deletion's blocks exceed a WAL record's");
+
 /* The target had BARK_LOWBOUND_TAGGED, which its right sibling takes over. */
 #define XLH_BARK_UNLINK_LOWTAG	0x0001
 /* Not a page deletion: a lowered lower bound (bark_lower_bound). */
 #define XLH_BARK_UNLINK_LOWER_SEP	0x0002
+/* The leaf's chain of one-child parents goes too: k (uint16) follows. */
+#define XLH_BARK_UNLINK_SUBTREE	0x0004
 
 /*
  * A deleted page is about to be reused (bark_get_free_page), as nbtree's

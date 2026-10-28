@@ -45,6 +45,7 @@
 #include "utils/fmgrprotos.h"
 #include "utils/injection_point.h"
 #include "utils/lsyscache.h"
+#include "utils/memutils.h"
 #include "utils/selfuncs.h"
 #include "utils/spccache.h"
 
@@ -129,299 +130,551 @@ bark_find_parent_downlink(Relation index, BarkKeyInfo *keyinfo,
 }
 
 /*
- * Delete an empty leaf page from the tree.
- *
- * Reclaims the common case a delete-heavy workload produces: an interior leaf
- * (one with both a left and a right sibling) whose every entry VACUUM removed.
- * The page is unlinked from the leaf chain (its left sibling's right link and
- * its right sibling's left link are spliced across it), its key space passes
- * to its right sibling in the parent, and the page becomes a deleted page
- * (BarkPageSetDeleted).  All four touched pages (left sibling, target, right
- * sibling, parent) are updated under one XLOG_BARK_UNLINK_PAGE record so the
- * unlink is crash-atomic.
- *
- * The deleted page keeps its sibling links, as in nbtree, so a scan or
- * descent that read a link to it before the deletion moves right through it.
- * It is not handed to the FSM here: *safexid is set to the transaction ID it
- * must age past before reuse, and the caller records the page in the FSM once
- * that is safe (see bark_vacuum_scan).
- *
- * Returns true when the leaf was deleted.  Declines (returns false, leaving the
- * leaf linked and correct) when the page is not an eligible interior empty
- * leaf, or when it is its parent's last child, so that its right sibling's
- * downlink is not on the same parent page.
- *
- * This reclaims interior empty leaves only.  A leftmost or rightmost empty
- * leaf, an empty leaf that is its parent's last child, and an emptied
- * internal page are all left linked in place -- correct, and still reusable
- * once their siblings are rewritten, just not directly unlinked here.
- *
- * When the right sibling's downlink, which the deletion removes, is an
- * OVERSIZED pivot, its overflow chain is freed too, once every lock is
- * released (bark_free_oversized), and *nfreed counts its pages; otherwise
- * *nfreed is 0.  See the comment at the deletion for why no other entry
- * references that chain.
- *
- * It locks the parent first and then the left sibling, target and right
- * sibling, which is the reverse of the insert path's order (an inserter that
- * splits a leaf keeps the leaf locked until it has locked the parent).  To
- * avoid a deadlock between the two, the three leaf locks are only tried
- * conditionally while the parent is held, and the leaf is skipped if any of
- * them is busy; a later VACUUM retries it.  nbtree avoids the inversion by
- * locking the leaf level before the parent (_bt_mark_page_halfdead).
+ * A page deleted by this VACUUM and its safexid, kept so that the pages can
+ * be put in the FSM at the end of the VACUUM, once nothing can still hold a
+ * link to them.  As nbtree's BTPendingFSM.
  */
-static bool
-bark_delete_empty_leaf(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno,
-					   FullTransactionId *safexid, BlockNumber *nfreed)
+typedef struct BarkPendingFSM
 {
-	Buffer		buf;
+	BlockNumber target;			/* page deleted by this VACUUM */
+	FullTransactionId safexid;	/* its BarkDeletedPageData.safexid */
+} BarkPendingFSM;
+
+/*
+ * What bark_delete_subtree did with a leaf.  BARK_DELETE_LAST_CHILD is a
+ * decline that a retry may undo: the chain's top page was its parent's last
+ * child, and once the empty pages left of it under that parent are deleted
+ * it is the parent's only child, and the parent joins the chain (see
+ * bark_vacuum_scan).
+ */
+typedef enum BarkDeleteResult
+{
+	BARK_DELETE_DONE,
+	BARK_DELETE_DECLINED,
+	BARK_DELETE_LAST_CHILD,
+} BarkDeleteResult;
+
+/* One level of a subtree deletion: the page deleted and its siblings. */
+typedef struct BarkUnlinkLevel
+{
+	BlockNumber target;
+	BlockNumber leftsib;		/* as read in the first pass; may move right */
+	BlockNumber rightsib;
 	Buffer		lbuf;
+	Buffer		buf;
 	Buffer		rbuf;
-	Buffer		pbuf;
+} BarkUnlinkLevel;
+
+/*
+ * Lock the page whose right link is `target` at the level of `target`,
+ * starting from `leftblk`, its left link as read earlier, and moving right
+ * across splits made since, as _bt_unlink_halfdead_page does.  Only this
+ * VACUUM deletes pages of the index, so `target` keeps its place in the
+ * level, and the walk ends there.  Returns InvalidBuffer, having logged the
+ * corruption, when it falls off the level, meets a deleted page or loops
+ * first.
+ */
+static Buffer
+bark_lock_left_sibling(Relation index, BlockNumber leftblk, BlockNumber target)
+{
+	for (;;)
+	{
+		Buffer		buf = ReadBuffer(index, leftblk);
+		BarkPageOpaque opaque;
+
+		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+		opaque = BarkPageGetOpaque(BufferGetPage(buf));
+		if (opaque->bark_next == target && !BarkPageIgnore(opaque))
+			return buf;
+
+		/*
+		 * Links read under their pages' locks never name a deleted page, so
+		 * these hold only in a corrupt index, which nbtree's VACUUM meets in
+		 * the field: press on with VACUUM rather than fail.
+		 */
+		if (BarkPageRightmost(opaque) || BarkPageIgnore(opaque) ||
+			opaque->bark_next == leftblk)
+		{
+			ereport(LOG,
+					(errcode(ERRCODE_INDEX_CORRUPTED),
+					 errmsg_internal("left sibling of block %u could not be located: the walk right ended at block %u in BARK index \"%s\"",
+									 target, leftblk,
+									 RelationGetRelationName(index))));
+			UnlockReleaseBuffer(buf);
+			return InvalidBuffer;
+		}
+		leftblk = opaque->bark_next;
+		UnlockReleaseBuffer(buf);
+	}
+}
+
+/*
+ * Delete an empty leaf from the tree, together with the chain of internal
+ * pages above it that have it as their only descendant (a "skinny subtree",
+ * in nbtree's terms), in one XLOG_BARK_UNLINK_PAGE record.
+ *
+ * VACUUM found leaf T empty, with siblings on both sides.  The chain is
+ * C_1 .. C_k (k >= 0): C_1 is T's parent when T is its only child, C_2 is
+ * C_1's parent when C_1 is its only child, and so on.  SP, the subtree
+ * parent, is the first page above that has more than the one child; its
+ * downlink to the top of the chain (C_k, or T when k = 0) must not be its
+ * last, so that the next one, to that page's right sibling, is on SP too.
+ * At every level the deleted page X is spliced out of its sibling chain:
+ * its left sibling XL links to its right sibling XR and back, and X becomes
+ * a deleted page (BarkPageSetDeleted) that keeps its links, so a descent or
+ * scan that read a link to it before the deletion moves right through it.
+ * X's key space moves right to XR, as in nbtree: SP's downlink to C_k is
+ * pointed at C_k's right sibling, and that sibling's own downlink, the next
+ * item, is removed.  At every internal level XR's first downlink then is
+ * reached through a key below its old first key, so it is truncated to
+ * minus infinity (see the comment where that is done).
+ *
+ * The pages are locked in the order every BARK writer uses: a lower level
+ * before a higher one, left before right within a level.  So all the locks
+ * are taken unconditionally and held together (three per level and SP),
+ * with no intermediate state: a crash leaves the tree before the deletion or
+ * after it.  nbtree marks the leaf half-dead and then unlinks one level at a
+ * time instead, holding fewer locks at once.
+ *
+ * The chain is found first with no lock held on T, by finding each page's
+ * parent from the root (bark_find_upper_path, then bark_getstackbuf), and
+ * then checked under the locks.  Only this VACUUM deletes pages of the
+ * index, and once VACUUM has emptied T only an insert can change it: an
+ * insert that refills it or splits it leaves an entry on T.  So T still
+ * being empty under its lock means T has not split since the chain was
+ * read (its right link is the same), so no C_i gained a downlink, and the
+ * chain, its right cousins and the downlinks to them are as read; that is
+ * asserted.  What can change is T itself (it is refilled: decline), a left
+ * sibling (it split: move right to the new one), and SP (it split:
+ * bark_getstackbuf moves right to the downlink, which may now be the page's
+ * last, so decline with BARK_DELETE_LAST_CHILD).  The sibling links and
+ * SP's next downlink are checked as nbtree checks them: a corrupt index can
+ * break them, and the deletion then logs the corruption and declines.
+ *
+ * Declines when T is leftmost, rightmost, the root, refilled, mid-split
+ * or has no downlink yet (the right half of an unfinished split), when the
+ * chain's top is its parent's last child (BARK_DELETE_LAST_CHILD), when the
+ * chain would be longer than BARK_MAX_UNLINK_LEVELS, and on corruption.
+ * Like nbtree, BARK never deletes the rightmost page of a level or the
+ * root; unlike nbtree it never deletes a level's leftmost page either.
+ *
+ * *pending gets the deleted pages and their safexid (the caller leaves room
+ * for BARK_MAX_UNLINK_LEVELS + 1), which is read while every page is locked,
+ * as nbtree's _bt_unlink_halfdead_page does: a backend that read a link to
+ * one of them before we locked the pages took its snapshot before now, so
+ * its xmin is no later than safexid.  *nfreed counts the overflow
+ * pages freed after the deletion.
+ */
+static BarkDeleteResult
+bark_delete_subtree(Relation index, BarkKeyInfo *keyinfo, BlockNumber leafblk,
+					BarkPendingFSM *pending, int *npending, BlockNumber *nfreed)
+{
+	BarkUnlinkLevel levels[BARK_MAX_UNLINK_LEVELS + 1];
+	int			k = 0;
+	Buffer		buf;
 	Page		page;
 	BarkPageOpaque opaque;
-	BlockNumber leftblk;
-	BlockNumber rightblk;
 	IndexTuple	hikey;
-	OffsetNumber downoff;
-	uint16		lowtag;
-	Page		lpage;
-	Page		rpage;
-	Page		ppage;
-	IndexTuple	downlink;
+	BarkStack	sppath = NULL;
+	Buffer		spbuf = InvalidBuffer;
+	OffsetNumber spoff;
+	IndexTupleData firstdown[BARK_MAX_UNLINK_LEVELS + 1];
 	IndexTuple	removed = NULL;
-	BarkItemBuf ibuf;
+	FullTransactionId safexid;
+	uint16		lowtag;
 	XLogRecPtr	recptr;
-	bool		lockedl;
-	bool		lockedt;
+	BarkDeleteResult result = BARK_DELETE_DECLINED;
+	int			nlocked = 0;	/* levels whose three pages are locked */
+	BarkItemBuf ibuf;
 
 	*nfreed = 0;
-	buf = ReadBuffer(index, blkno);
-	LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
-	page = BufferGetPage(buf);
-
-	/* Re-check under the lock: must be an interior, empty, live leaf. */
-	if (PageIsNew(page))
-	{
-		UnlockReleaseBuffer(buf);
-		return false;
-	}
-	opaque = BarkPageGetOpaque(page);
-	if (!BarkPageIsLeaf(opaque) || BarkPageIsDeleted(opaque) ||
-		(opaque->bark_flags & BARK_INCOMPLETE_SPLIT) != 0 ||
-		BarkPageIsRoot(opaque) ||
-		BarkPageLeftmost(opaque) || BarkPageRightmost(opaque) ||
-		PageGetMaxOffsetNumber(page) >= BarkPageFirstDataKey(opaque))
-	{
-		UnlockReleaseBuffer(buf);
-		return false;			/* not an eligible interior empty leaf */
-	}
-
-	leftblk = opaque->bark_prev;
-	rightblk = opaque->bark_next;
 
 	/*
-	 * The high key (first item on this non-rightmost page) names the key
-	 * range boundary; use it to locate the parent downlink.  Copy it before
-	 * dropping the lock, since finding the parent re-descends the tree.
+	 * T as VACUUM's scan saw it, but for what inserts may have done since: it
+	 * may have been refilled, and split, which leaves it an entry.  The high
+	 * key is the right bound of every page of the chain (each is its
+	 * parent's only child), so it finds each one's parent.
 	 */
+	buf = ReadBuffer(index, leafblk);
+	LockBuffer(buf, BUFFER_LOCK_SHARE);
+	page = BufferGetPage(buf);
+	opaque = BarkPageGetOpaque(page);
+	if (PageGetMaxOffsetNumber(page) >= BarkPageFirstDataKey(opaque))
+	{
+		UnlockReleaseBuffer(buf);
+		return BARK_DELETE_DECLINED;
+	}
+	Assert(BarkPageIsLeaf(opaque) && !BarkPageIgnore(opaque) &&
+		   (opaque->bark_flags & BARK_INCOMPLETE_SPLIT) == 0 &&
+		   !BarkPageLeftmost(opaque) && !BarkPageRightmost(opaque));
+	levels[0].target = leafblk;
+	levels[0].leftsib = opaque->bark_prev;
+	levels[0].rightsib = opaque->bark_next;
 	hikey = CopyIndexTuple((IndexTuple)
 						   PageGetItem(page, PageGetItemId(page, BARK_P_HIKEY)));
 	UnlockReleaseBuffer(buf);
 
-	pbuf = bark_find_parent_downlink(index, keyinfo, hikey, blkno, &downoff);
-	pfree(hikey);
-	if (pbuf == InvalidBuffer)
-		return false;			/* parent downlink not found: leave it linked */
-
 	/*
-	 * The right sibling must be the target's next child in the same parent:
-	 * its downlink is the one this deletion removes (see below).  Decline
-	 * when the target is the parent's last child, as nbtree does for the
-	 * rightmost child of a parent.
+	 * Go up from T, one page locked at a time, while the page's parent holds
+	 * nothing but the downlink to it.  These reads may race with inserts; the
+	 * second pass checks them under the locks.
 	 */
-	if (downoff >= PageGetMaxOffsetNumber(BufferGetPage(pbuf)))
+	for (;;)
 	{
+		BarkStack	path = bark_find_upper_path(index, keyinfo, hikey, k);
+		Buffer		pbuf = bark_getstackbuf(index, keyinfo, path,
+											levels[k].target);
+		Page		ppage;
+		BarkPageOpaque popaque;
+		OffsetNumber maxoff;
+
+		if (pbuf == InvalidBuffer)
+		{
+			/* No downlink yet: the right half of an unfinished split. */
+			bark_freestack(path);
+			goto decline;
+		}
+		ppage = BufferGetPage(pbuf);
+		popaque = BarkPageGetOpaque(ppage);
+		maxoff = PageGetMaxOffsetNumber(ppage);
+		if (path->bark_offset < maxoff)
+		{
+			/* The subtree parent: the chain ends below it. */
+			UnlockReleaseBuffer(pbuf);
+			sppath = path;
+			break;
+		}
+		if (maxoff > BarkPageFirstDataKey(popaque))
+		{
+			/* The chain's top is its parent's last child, not its only. */
+			UnlockReleaseBuffer(pbuf);
+			bark_freestack(path);
+			result = BARK_DELETE_LAST_CHILD;
+			goto decline;
+		}
+
+		/*
+		 * A page that is its parent's only child, and has T as its only
+		 * leaf, is at no edge of its level, since T is not, and its parent
+		 * is not the root, which has every leaf below it.  Deleting the edge
+		 * of a level, or the root's only child, would break the tree, so
+		 * this is checked anyway, as corruption.
+		 */
+		if (BarkPageIsRoot(popaque) || BarkPageLeftmost(popaque) ||
+			BarkPageRightmost(popaque))
+		{
+			ereport(LOG,
+					(errcode(ERRCODE_INDEX_CORRUPTED),
+					 errmsg_internal("block %u of BARK index \"%s\" has block %u as its only child but is the root or at an edge of its level",
+									 BufferGetBlockNumber(pbuf),
+									 RelationGetRelationName(index),
+									 levels[k].target)));
+			UnlockReleaseBuffer(pbuf);
+			bark_freestack(path);
+			goto decline;
+		}
+		if (k == BARK_MAX_UNLINK_LEVELS)
+		{
+			UnlockReleaseBuffer(pbuf);
+			bark_freestack(path);
+			goto decline;
+		}
+		k++;
+		levels[k].target = BufferGetBlockNumber(pbuf);
+		levels[k].leftsib = popaque->bark_prev;
+		levels[k].rightsib = popaque->bark_next;
 		UnlockReleaseBuffer(pbuf);
-		return false;
+		bark_freestack(path);
 	}
 
 	/*
-	 * Lock the siblings and re-acquire the target, then re-validate.  These
-	 * are tried without waiting, since we already hold the parent (see
-	 * above); if any is busy, give up on this leaf.
+	 * Tests stop here, with the chain found and nothing locked, so that other
+	 * backends can change it before it is checked under the locks.
 	 */
-	lbuf = ReadBuffer(index, leftblk);
-	buf = ReadBuffer(index, blkno);
-	rbuf = ReadBuffer(index, rightblk);
-	lockedl = ConditionalLockBuffer(lbuf);
-	lockedt = lockedl && ConditionalLockBuffer(buf);
-	if (!lockedt || !ConditionalLockBuffer(rbuf))
+	INJECTION_POINT("bark-delete-subtree-found", NULL);
+
+	/*
+	 * Lock each level left to right, from the leaf up, and check it.  The
+	 * leaf is checked for what inserts can do to it; the rest cannot have
+	 * changed (see above), and is asserted, but for the sibling links nbtree
+	 * checks too, which a corrupt index can break.
+	 */
+	for (int i = 0; i <= k; i++)
 	{
-		if (lockedt)
-			LockBuffer(buf, BUFFER_LOCK_UNLOCK);
-		if (lockedl)
-			LockBuffer(lbuf, BUFFER_LOCK_UNLOCK);
-		ReleaseBuffer(rbuf);
-		ReleaseBuffer(buf);
-		ReleaseBuffer(lbuf);
-		UnlockReleaseBuffer(pbuf);
-		return false;
+		BarkUnlinkLevel *lv = &levels[i];
+		Page		rpage;
+		BarkPageOpaque ropaque;
+
+		lv->lbuf = bark_lock_left_sibling(index, lv->leftsib, lv->target);
+		if (lv->lbuf == InvalidBuffer)
+			goto decline;
+		lv->leftsib = BufferGetBlockNumber(lv->lbuf);
+		lv->buf = ReadBuffer(index, lv->target);
+		LockBuffer(lv->buf, BUFFER_LOCK_EXCLUSIVE);
+		lv->rbuf = ReadBuffer(index, lv->rightsib);
+		LockBuffer(lv->rbuf, BUFFER_LOCK_EXCLUSIVE);
+		nlocked++;
+
+		page = BufferGetPage(lv->buf);
+		opaque = BarkPageGetOpaque(page);
+		rpage = BufferGetPage(lv->rbuf);
+		ropaque = BarkPageGetOpaque(rpage);
+
+		/*
+		 * Refilled, or refilled, split and emptied again: an insert's simple
+		 * deletion can empty a page, and the insert then fail before it adds
+		 * its entry.  T's right link unchanged means it has not split.
+		 */
+		if (i == 0 &&
+			(PageGetMaxOffsetNumber(page) >= BarkPageFirstDataKey(opaque) ||
+			 opaque->bark_next != lv->rightsib))
+			goto decline;
+
+		if (ropaque->bark_prev != lv->target)
+		{
+			/* As _bt_unlink_halfdead_page, press on with VACUUM. */
+			ereport(LOG,
+					(errcode(ERRCODE_INDEX_CORRUPTED),
+					 errmsg_internal("right sibling %u of block %u links back to %u at level %d of BARK index \"%s\"",
+									 lv->rightsib, lv->target,
+									 ropaque->bark_prev, i,
+									 RelationGetRelationName(index))));
+			goto decline;
+		}
+		Assert(opaque->bark_prev == lv->leftsib &&
+			   opaque->bark_next == lv->rightsib &&
+			   !BarkPageIgnore(ropaque) && ropaque->bark_level == i);
+		Assert(i == 0 ||
+			   ((opaque->bark_flags & (BARK_INCOMPLETE_SPLIT | BARK_ROOT |
+									   BARK_LEAF | BARK_DELETED |
+									   BARK_HALF_DEAD)) == 0 &&
+				opaque->bark_level == i &&
+				PageGetMaxOffsetNumber(page) == BarkPageFirstDataKey(opaque) &&
+				BarkEntryGetDownLink(BarkPageGetItem(page,
+													 BarkPageFirstDataKey(opaque),
+													 &ibuf)) == levels[i - 1].target &&
+				BarkEntryGetDownLink(BarkPageGetItem(rpage,
+													 BarkPageFirstDataKey(ropaque),
+													 &ibuf)) == levels[i - 1].rightsib));
 	}
 
-	page = BufferGetPage(buf);
-
 	/*
-	 * Re-check the target is still the empty interior leaf we expect.  A new
-	 * page has no special space, so test for one before reading the flags.
+	 * Then SP, above them.  It may have split: bark_getstackbuf moves right
+	 * to the page that holds the downlink now, which may be its last.
 	 */
-	if (PageIsNew(page) ||
-		!BarkPageIsLeaf((opaque = BarkPageGetOpaque(page))) ||
-		BarkPageIsDeleted(opaque) ||
-		(opaque->bark_flags & BARK_INCOMPLETE_SPLIT) != 0 ||
-		opaque->bark_prev != leftblk || opaque->bark_next != rightblk ||
-		PageGetMaxOffsetNumber(page) >= BarkPageFirstDataKey(opaque) ||
-		BarkEntryGetDownLink(BarkPageGetItem(BufferGetPage(pbuf), downoff,
-											 &ibuf)) != blkno ||
-		BarkEntryGetDownLink(BarkPageGetItem(BufferGetPage(pbuf),
-											 OffsetNumberNext(downoff),
-											 &ibuf)) != rightblk ||
-		(BarkPageGetOpaque(BufferGetPage(rbuf))->bark_flags &
-		 (BARK_DELETED | BARK_HALF_DEAD)) != 0)
+	spbuf = bark_getstackbuf(index, keyinfo, sppath, levels[k].target);
+	if (spbuf == InvalidBuffer)
 	{
-		UnlockReleaseBuffer(rbuf);
-		UnlockReleaseBuffer(buf);
-		UnlockReleaseBuffer(lbuf);
-		UnlockReleaseBuffer(pbuf);
-		return false;
+		/* Only for a corrupt index: C_k's downlink can only move right. */
+		ereport(LOG,
+				(errcode(ERRCODE_INDEX_CORRUPTED),
+				 errmsg_internal("failed to re-find the parent of block %u in BARK index \"%s\"",
+								 levels[k].target,
+								 RelationGetRelationName(index))));
+		goto decline;
+	}
+	spoff = sppath->bark_offset;
+	page = BufferGetPage(spbuf);
+	if (spoff >= PageGetMaxOffsetNumber(page))
+	{
+		result = BARK_DELETE_LAST_CHILD;
+		goto decline;
+	}
+	if (BarkEntryGetDownLink(BarkPageGetItem(page, OffsetNumberNext(spoff),
+											 &ibuf)) != levels[k].rightsib)
+	{
+		/* As _bt_lock_subtree_parent, press on with VACUUM. */
+		ereport(LOG,
+				(errcode(ERRCODE_INDEX_CORRUPTED),
+				 errmsg_internal("downlink after block %u's on page %u of BARK index \"%s\" is not to its right sibling %u",
+								 levels[k].target, BufferGetBlockNumber(spbuf),
+								 RelationGetRelationName(index),
+								 levels[k].rightsib)));
+		goto decline;
 	}
 
-	/*
-	 * The target's key space moves right, to its right sibling, as in
-	 * nbtree's _bt_mark_page_halfdead: point the target's downlink at the
-	 * right sibling and delete the right sibling's own downlink, the next
-	 * item.  The parent then routes the target's whole range to the right
-	 * sibling, whose keys all sort at or above that range.  Dropping the
-	 * target's downlink instead would route the range to the left sibling,
-	 * whose high key does not cover it, and an insert there would move right
-	 * onto the right sibling below that page's downlink.
-	 */
-	PredicateLockPageCombine(index, blkno, rightblk);
-
-	/*
-	 * Splice the target out of the chain, move its key space, and mark it
-	 * deleted.  safexid is read while all four pages are locked, as nbtree's
-	 * _bt_unlink_halfdead_page does: a backend that read a link to the target
-	 * before we locked these pages took its snapshot before now, so its xmin
-	 * is no later than safexid, and a backend that reads a link after we
-	 * unlock finds the new links.  Once no snapshot as old as safexid exists,
-	 * nobody can hold a link to the page.
-	 */
-	*safexid = ReadNextFullTransactionId();
-	lpage = BufferGetPage(lbuf);
-	rpage = BufferGetPage(rbuf);
-	ppage = BufferGetPage(pbuf);
-
-	/*
-	 * The right sibling's lower bound becomes the target's, so it takes the
-	 * target's BARK_LOWBOUND_TAGGED with it.
-	 */
-	lowtag = opaque->bark_flags & BARK_LOWBOUND_TAGGED;
+	/* Tests stop here, holding every lock the deletion takes. */
+	INJECTION_POINT("bark-delete-subtree-locked", NULL);
 
 	/*
 	 * The removed downlink's overflow chain, if it is OVERSIZED, is freed
-	 * below, after the deletion is logged: no entry references the chain once
-	 * the downlink and the target's high key are gone.  A split puts one
-	 * chain in a leaf's high key and in the downlink copied from it, and in
-	 * nothing else, and an internal page's high key, copied from its right
-	 * sibling's first data item, shares that item's chain.  The removed
-	 * downlink is at downoff + 1, after the target's downlink, so it is never
-	 * its page's first data item, and it never was one: inserts into an
-	 * internal page go after the downlink to the left half of a split, and
-	 * nothing but this deletion, at downoff + 1, removes an item from one.
-	 * So no internal page's high key holds a copy of it.  The level-1 entry
-	 * cache (barksearch.c) copies only level-2 downlinks, so it holds no
-	 * leaf's downlink.  BARK deletes only leaves and overflow pages
-	 * (BarkPageSetDeleted), never internal pages, so no item moves between
-	 * internal pages but by a split, which copies the chain only as above.  A
-	 * descent or scan that read the downlink before now may still read the
-	 * chain: the freed pages keep their links and stay deleted until no
-	 * snapshot as old as their safexid remains (BarkPageIsRecyclable). Each
-	 * page is freed under its own record, so a crash before the last one
-	 * leaves the rest of the chain unreferenced, as a crash while VACUUM
-	 * frees a leaf entry's chain does.
+	 * after the deletion is logged, once nothing references it.  A split
+	 * puts one chain in the left page's high key, in the downlink copied from
+	 * it, and, on an internal level, in the right page's first item, which
+	 * the high key was copied from; and in nothing else (the level-1 entry
+	 * cache and the planner's sample keep no OVERSIZED keys).  The chain of
+	 * the downlink removed here, the key T's range moves to, is shared by
+	 * T's high key, by each C_i's high key (each C_i ends where its only
+	 * child does) and by each C_i's right sibling's first item, and by no
+	 * item at a level above SP's: a split there at that key would have made
+	 * it a first item of SP's level, where it is SP[spoff + 1] instead.  The
+	 * deleted pages are rewritten whole, and the right siblings' first items
+	 * are truncated, so after the record no item names the chain.  A descent
+	 * or scan that read one before now may still read the chain: the freed
+	 * pages keep their links and stay deleted until no snapshot as old as
+	 * their safexid remains (BarkPageIsRecyclable).  Each overflow page is
+	 * freed under its own record, so a crash before the last one leaves the
+	 * rest of the chain unreferenced, as a crash while VACUUM frees a leaf
+	 * entry's chain does.
 	 */
-	downlink = (IndexTuple) PageGetItem(ppage,
-										PageGetItemId(ppage, OffsetNumberNext(downoff)));
-	if (BarkEntryGetShape(downlink) == BARK_SHAPE_OVERSIZED)
-		removed = CopyIndexTuple(downlink);
+	{
+		IndexTuple	downlink = (IndexTuple)
+			PageGetItem(page, PageGetItemId(page, OffsetNumberNext(spoff)));
+
+		if (BarkEntryGetShape(downlink) == BARK_SHAPE_OVERSIZED)
+			removed = CopyIndexTuple(downlink);
+	}
+
+	/*
+	 * After the deletion, an internal right sibling C_iR is reached for keys
+	 * from C_iL's high key up, below its first item's key, which was C_i's
+	 * high key.  Its first downlink becomes minus infinity, as nbtree's are;
+	 * bark_binsrch routes every key below the page's second item to the first
+	 * downlink whatever its key, so this changes no routing, and the chain is
+	 * not left referenced.
+	 */
+	for (int i = 1; i <= k; i++)
+	{
+		Page		rpage = BufferGetPage(levels[i].rbuf);
+
+		BarkPivotInitMinusInfinity(&firstdown[i],
+								   BarkEntryGetDownLink(BarkPageGetItem(rpage,
+																		BarkPageFirstDataKey(BarkPageGetOpaque(rpage)),
+																		&ibuf)));
+	}
+	if (RelationNeedsWAL(index) && k > 0)
+		XLogEnsureRecordSpace(BarkUnlinkBlockId(k, BARK_UNLINK_RIGHT), 0);
+
+	/*
+	 * The right sibling's lower bound becomes the target's, so it takes the
+	 * target's BARK_LOWBOUND_TAGGED with it (leaves only have the flag).
+	 */
+	lowtag = BarkPageGetOpaque(BufferGetPage(levels[0].buf))->bark_flags &
+		BARK_LOWBOUND_TAGGED;
+	PredicateLockPageCombine(index, levels[0].target, levels[0].rightsib);
+	safexid = ReadNextFullTransactionId();
 
 	/* No ereport(ERROR) until changes are logged */
 	START_CRIT_SECTION();
 
-	BarkPageGetOpaque(lpage)->bark_next = rightblk;
-	BarkPageGetOpaque(rpage)->bark_prev = leftblk;
-	BarkPageGetOpaque(rpage)->bark_flags |= lowtag;
-	/* Changed in place: internal items are always stored as they are read. */
-	downlink = (IndexTuple) PageGetItem(ppage, PageGetItemId(ppage, downoff));
-	BarkEntrySetDownLink(downlink, rightblk);
-	PageIndexTupleDelete(ppage, OffsetNumberNext(downoff));
-	BarkPageSetDeleted(page, leftblk, rightblk, *safexid);
+	for (int i = 0; i <= k; i++)
+	{
+		BarkUnlinkLevel *lv = &levels[i];
+		Page		rpage = BufferGetPage(lv->rbuf);
 
-	MarkBufferDirty(lbuf);
-	MarkBufferDirty(buf);
-	MarkBufferDirty(rbuf);
-	MarkBufferDirty(pbuf);
+		BarkPageGetOpaque(BufferGetPage(lv->lbuf))->bark_next = lv->rightsib;
+		BarkPageGetOpaque(rpage)->bark_prev = lv->leftsib;
+		if (i == 0)
+			BarkPageGetOpaque(rpage)->bark_flags |= lowtag;
+		else
+		{
+			/* A shorter item always fits where the longer one was. */
+			bool		fits PG_USED_FOR_ASSERTS_ONLY;
+
+			fits = PageIndexTupleOverwrite(rpage,
+										   BarkPageFirstDataKey(BarkPageGetOpaque(rpage)),
+										   &firstdown[i], sizeof(IndexTupleData));
+			Assert(fits);
+		}
+		BarkPageSetDeleted(BufferGetPage(lv->buf), lv->leftsib, lv->rightsib,
+						   safexid);
+		MarkBufferDirty(lv->lbuf);
+		MarkBufferDirty(lv->buf);
+		MarkBufferDirty(lv->rbuf);
+	}
+
+	/* Changed in place: internal items are always stored as they are read. */
+	BarkEntrySetDownLink((IndexTuple) PageGetItem(page,
+												  PageGetItemId(page, spoff)),
+						 levels[k].rightsib);
+	PageIndexTupleDelete(page, OffsetNumberNext(spoff));
+	MarkBufferDirty(spbuf);
+
+	/*
+	 * A level-1 page is gone, while it is still locked: every backend's
+	 * level-1 entry table is out of date (see bark_l1_epoch).
+	 */
+	if (k >= 1)
+		bark_l1_epoch_advance();
 
 	if (RelationNeedsWAL(index))
 	{
 		xl_bark_unlink_page xlrec;
+		uint16		nlevels = k;
 
-		xlrec.leftsib = leftblk;
-		xlrec.rightsib = rightblk;
-		xlrec.safexid = *safexid;
-		xlrec.poffset = downoff;
-		xlrec.flags = lowtag ? XLH_BARK_UNLINK_LOWTAG : 0;
+		xlrec.leftsib = levels[0].leftsib;
+		xlrec.rightsib = levels[0].rightsib;
+		xlrec.safexid = safexid;
+		xlrec.poffset = spoff;
+		xlrec.flags = (lowtag ? XLH_BARK_UNLINK_LOWTAG : 0) |
+			(k > 0 ? XLH_BARK_UNLINK_SUBTREE : 0);
 
 		/*
-		 * The target is rebuilt from the record in redo, so it needs no
-		 * image, as in _bt_unlink_halfdead_page.
+		 * The deleted pages are rebuilt from the record in redo, so they need
+		 * no image, as in _bt_unlink_halfdead_page.
 		 */
 		XLogBeginInsert();
-		XLogRegisterBuffer(0, buf, REGBUF_WILL_INIT);
-		XLogRegisterBuffer(1, lbuf, REGBUF_STANDARD);
-		XLogRegisterBuffer(2, rbuf, REGBUF_STANDARD);
-		XLogRegisterBuffer(3, pbuf, REGBUF_STANDARD);
+		for (int i = 0; i <= k; i++)
+		{
+			XLogRegisterBuffer(BarkUnlinkBlockId(i, BARK_UNLINK_TARGET),
+							   levels[i].buf, REGBUF_WILL_INIT);
+			XLogRegisterBuffer(BarkUnlinkBlockId(i, BARK_UNLINK_LEFT),
+							   levels[i].lbuf, REGBUF_STANDARD);
+			XLogRegisterBuffer(BarkUnlinkBlockId(i, BARK_UNLINK_RIGHT),
+							   levels[i].rbuf, REGBUF_STANDARD);
+		}
+		XLogRegisterBuffer(3, spbuf, REGBUF_STANDARD);
 		XLogRegisterData(&xlrec, SizeOfBarkUnlinkPage);
+		if (k > 0)
+			XLogRegisterData(&nlevels, sizeof(uint16));
 
 		recptr = XLogInsert(RM_BARK_ID, XLOG_BARK_UNLINK_PAGE);
 	}
 	else
 		recptr = XLogGetFakeLSN(index);
 
-	PageSetLSN(lpage, recptr);
+	for (int i = 0; i <= k; i++)
+	{
+		PageSetLSN(BufferGetPage(levels[i].lbuf), recptr);
+		PageSetLSN(BufferGetPage(levels[i].buf), recptr);
+		PageSetLSN(BufferGetPage(levels[i].rbuf), recptr);
+	}
 	PageSetLSN(page, recptr);
-	PageSetLSN(rpage, recptr);
-	PageSetLSN(ppage, recptr);
 
 	END_CRIT_SECTION();
 
-	bark_verify_page_change(index, lbuf);
-	bark_verify_page_change(index, buf);
-	bark_verify_page_change(index, rbuf);
-	bark_verify_page_change(index, pbuf);
+	for (int i = 0; i <= k; i++)
+	{
+		bark_verify_page_change(index, levels[i].lbuf);
+		bark_verify_page_change(index, levels[i].buf);
+		bark_verify_page_change(index, levels[i].rbuf);
+		pending[*npending].target = levels[i].target;
+		pending[*npending].safexid = safexid;
+		(*npending)++;
+	}
+	bark_verify_page_change(index, spbuf);
+	result = BARK_DELETE_DONE;
 
-	UnlockReleaseBuffer(rbuf);
-	UnlockReleaseBuffer(buf);
-	UnlockReleaseBuffer(lbuf);
-	UnlockReleaseBuffer(pbuf);
+decline:
+	if (BufferIsValid(spbuf))
+		UnlockReleaseBuffer(spbuf);
+	for (int i = nlocked - 1; i >= 0; i--)
+	{
+		UnlockReleaseBuffer(levels[i].rbuf);
+		UnlockReleaseBuffer(levels[i].buf);
+		UnlockReleaseBuffer(levels[i].lbuf);
+	}
+	bark_freestack(sppath);
+	pfree(hikey);
 
 	if (removed != NULL)
 	{
+		/* Tests crash here: the deletion is logged, the chain not freed. */
+		INJECTION_POINT("bark-delete-subtree-unlinked", NULL);
 		*nfreed = bark_free_oversized(index, removed);
 		pfree(removed);
 	}
-	return true;
+	return result;
 }
 
 /*
@@ -475,9 +728,9 @@ bark_pivot_drop_tag(IndexTuple pivot)
  * through a page deletion that gave it P1 as its left sibling), only the
  * flag is cleared, and the parent is not needed.
  *
- * The locks are bark_delete_empty_leaf's: the parent first, then P1 and P2,
- * tried without waiting while the parent is held; when one is busy, give up
- * and let a later VACUUM retry.  A flag-only clear locks P1 and P2 left to
+ * The parent is locked first, then P1 and P2, tried without waiting while
+ * the parent is held (the reverse of a split's order, which locks the
+ * leaves first); when one is busy, give up and let a later VACUUM retry.  A flag-only clear locks P1 and P2 left to
  * right, as a split does, holding no parent.
  *
  * What was read before the locks is checked again under them only where it
@@ -995,7 +1248,7 @@ typedef struct BarkVacState
 								 * version_callback */
 	int64		nuntagged;		/* entries untagged in place */
 	int64		nkeptbound;		/* LIVE_UNTAG, kept: lower bound may be tagged */
-	int64		nkeptdup;		/* LIVE_UNTAG, kept: (K, L, 0) is in an entry */
+	int64		nkeptdup;		/* LIVE_UNTAG, kept: (K, L, 0) is its twin's */
 	int64		nlowered;		/* lower bounds lowered (bark_lower_bound) */
 	List	   *kept;			/* BarkKeptBound of entries in nkeptbound */
 	BarkCycleId cycleid;
@@ -1033,11 +1286,21 @@ bark_vacuum_verdict(BarkVacState *vstate, ItemPointer tid, IndexVersionTag tag)
  * bound has no tag (BARK_LOWBOUND_TAGGED unset), since an untagged lower
  * bound <= (K, L, t) is <= (K, L, 0).  Moving an entry to another page is
  * never done: a scan reading the two pages one at a time could miss the
- * row or return it twice.  An entry that cannot move stays tagged, as does
- * one whose (K, L, 0) falls in an entry already there: the row's untagged
- * entry, or a LIST or POSTING whose TID range holds L, which would have to
- * be divided.  The table AM's LIVE_UNTAG allows untagging, it does not
- * require it (IndexEntryVerdict).
+ * row or return it twice.  An entry that cannot move stays tagged.  The
+ * table AM's LIVE_UNTAG allows untagging, it does not require it
+ * (IndexEntryVerdict).
+ *
+ * So does one whose (K, L, 0) is already on the page, in its twin: the
+ * row's untagged entry, a SINGLE or the last member of the LIST or POSTING
+ * just before it (a tagged insert divides an entry whose range holds L, so
+ * no entry holds L strictly inside).  A correct table AM never gets here:
+ * (K, L, t) exists because t's update changed the index's attributes, so
+ * the twin is invalid for every version from t on, and since LIVE_UNTAG
+ * says t is no newer than the new base, the twin was DEAD in this pass and
+ * is gone.  One of the two verdicts is wrong, then.  If the twin's LIVE is,
+ * the tagged entry is the row's only valid one, and deleting it as
+ * redundant would lose the row; if the LIVE_UNTAG is, keeping the entry
+ * costs nothing.  Keeping is right either way, and nkeptdup counts it.
  *
  * An entry kept for its page's lower bound is recorded in vstate->kept with
  * the page's block `blkno`, and once the scan is over
@@ -1094,7 +1357,7 @@ bark_vacuum_untag(BarkVacState *vstate, Page page, BlockNumber blkno,
 				hi = mid;
 		}
 
-		/* An entry before the slot that holds (K, L, 0) already? */
+		/* Does the entry before the slot, the twin, hold (K, L, 0)? */
 		if (lo > firstdata)
 		{
 			BarkItemBuf pbuf;
@@ -1309,8 +1572,16 @@ bark_vacuum_page(BarkVacState *vstate, Buffer buf)
 			{
 				verdict = bark_vacuum_verdict(vstate, BarkEntryGetHeapTid(itup),
 											  BarkEntryGetTag(itup));
-				if (verdict == INDEX_ENTRY_DEAD)
+				if (verdict == INDEX_ENTRY_DEAD ||
+					(verdict == INDEX_ENTRY_LIVE_UNTAG &&
+					 BarkEntryHasTag(itup) &&
+					 IS_INJECTION_POINT_ATTACHED("bark-untag-delete")))
 				{
+					/*
+					 * The second case is a test's: it deletes the entry
+					 * instead, to show what keeping one bark_vacuum_untag
+					 * keeps protects (t/004_bark_vacuum.pl).
+					 */
 					todelete[ndelete++] = off;
 					ndelete_single++;
 				}
@@ -1639,17 +1910,6 @@ bark_vacuum_lower_bounds(BarkVacState *vstate)
 }
 
 /*
- * A leaf page deleted by this VACUUM and its safexid, kept so that the pages
- * can be put in the FSM at the end of the VACUUM, once nothing can still
- * hold a link to them.  As nbtree's BTPendingFSM.
- */
-typedef struct BarkPendingFSM
-{
-	BlockNumber target;			/* page deleted by this VACUUM */
-	FullTransactionId safexid;	/* its BarkDeletedPageData.safexid */
-} BarkPendingFSM;
-
-/*
  * Record in the FSM the pages this VACUUM deleted that are already safe to
  * reuse, as nbtree's _bt_pendingfsm_finalize does.  The rest stay deleted
  * and unrecorded; a later VACUUM finds them in its page walk and records
@@ -1692,7 +1952,7 @@ bark_pendingfsm_finalize(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
  * Scan the whole index once, in physical order, as nbtree's btvacuumscan does:
  * clean every live leaf (bark_vacuum_page), count the leaf entries and the
  * deleted pages, return safe deleted pages to the FSM, and then delete the
- * empty interior leaves the scan left behind.
+ * empty interior leaves the scan left behind, with their one-child parents.
  *
  * With a callback (barkbulkdelete) this is the whole of the VACUUM's work on
  * the index, and barkvacuumcleanup has nothing left to do; without one
@@ -1726,6 +1986,7 @@ bark_vacuum_scan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	BarkKeyInfo *keyinfo;
 	BarkPendingFSM *pending;
 	int			npending = 0;
+	int			pendingalloc;
 
 	vstate.info = info;
 	vstate.stats = stats;
@@ -1833,29 +2094,57 @@ bark_vacuum_scan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	stats->num_pages = npages;
 
 	/*
-	 * Delete the empty interior leaves the scan found.  Each deletion
+	 * Delete the empty interior leaves the scan found, each with the chain
+	 * of one-child parents above it (bark_delete_subtree).  Each deletion
 	 * re-validates the page under exclusive locks, so a leaf that was
-	 * concurrently refilled or already reclaimed is simply skipped.  The
-	 * deleted pages are kept in `pending`, in deletion order, for the FSM.
+	 * concurrently refilled is simply skipped.  The deleted pages are kept in
+	 * `pending`, in deletion order, for the FSM.
+	 *
+	 * The list is in physical order, so a leaf can come before the empty
+	 * leaves left of it under the same parent and be declined as its
+	 * parent's last child; once they are deleted it is the parent's only
+	 * child, and the parent goes with it.  The leaves declined so get another
+	 * pass while a pass deletes something.  After a sorted build the list is
+	 * in key order and no leaf is declined for this.
 	 */
 	keyinfo = bark_build_keyinfo(index);
 	keyinfo->heaprel = info->heaprel;
-	pending = palloc_array(BarkPendingFSM, Max(vstate.nempty, 1));
-	for (int i = 0; i < vstate.nempty; i++)
+	pendingalloc = vstate.nempty + BARK_MAX_UNLINK_LEVELS + 1;
+	pending = palloc_array(BarkPendingFSM, pendingalloc);
+	for (int ntodo = vstate.nempty;;)
 	{
-		FullTransactionId safexid;
-		BlockNumber nfreed;
+		int			nretry = 0;
+		int			ndone = 0;
 
-		if (bark_delete_empty_leaf(index, keyinfo, vstate.emptyleaves[i],
-								   &safexid, &nfreed))
+		for (int i = 0; i < ntodo; i++)
 		{
-			pending[npending].target = vstate.emptyleaves[i];
-			pending[npending].safexid = safexid;
-			npending++;
-			/* as the chains the scan frees, in pages_newly_deleted only */
-			stats->pages_newly_deleted += 1 + nfreed;
-			stats->pages_deleted++;
+			BlockNumber leaf = vstate.emptyleaves[i];
+			BlockNumber nfreed;
+			int			before = npending;
+			BarkDeleteResult result;
+
+			if (npending + BARK_MAX_UNLINK_LEVELS + 1 > pendingalloc)
+			{
+				pendingalloc *= 2;
+				pending = repalloc_array(pending, BarkPendingFSM, pendingalloc);
+			}
+			result = bark_delete_subtree(index, keyinfo, leaf, pending,
+										 &npending, &nfreed);
+			if (result == BARK_DELETE_DONE)
+			{
+				/* as the chains the scan frees, in pages_newly_deleted only */
+				stats->pages_newly_deleted += npending - before + nfreed;
+				stats->pages_deleted += npending - before;
+				ndone++;
+			}
+			else if (result == BARK_DELETE_LAST_CHILD)
+				vstate.emptyleaves[nretry++] = leaf;
 		}
+		if (ndone == 0 || nretry == 0)
+			break;
+		ntodo = nretry;
+		/* Tests count the passes that retry. */
+		INJECTION_POINT("bark-delete-subtree-retry", NULL);
 	}
 	pfree(keyinfo);
 	pfree(vstate.emptyleaves);
@@ -1868,7 +2157,7 @@ bark_vacuum_scan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	bark_vacuum_lower_bounds(&vstate);
 	if (vstate.nuntagged > 0 || vstate.nkeptbound > 0 || vstate.nkeptdup > 0)
 		ereport(info->message_level,
-				(errmsg("index \"%s\": untagged %lld entries in place, kept %lld tagged whose page's lower bound may carry a tag and %lld whose untagged position is in another entry, after lowering %lld lower bounds",
+				(errmsg("index \"%s\": %lld entries untagged in place, %lld kept tagged for their page's lower bound, %lld kept tagged beside their untagged twin, %lld lower bounds lowered",
 						RelationGetRelationName(index),
 						(long long) vstate.nuntagged,
 						(long long) vstate.nkeptbound,
@@ -2160,6 +2449,41 @@ bark_cost_keys_per_row(IndexOptInfo *index, bool *multikey)
 }
 
 /*
+ * Run procedure procoid, indexcol's procedure 8, on value, the constant of
+ * op, a qual on the extracted column indexcol, as the scan does at rescan:
+ * its boundaries in *result (*nresult of them), its recheck answer and the
+ * BarkQueryFlags it set.  indexRel, the open index or NULL for a
+ * hypothetical one, is handed to procedure 8 in the flags.
+ */
+static void
+bark_cost_extract(IndexOptInfo *index, int indexcol, Oid procoid, OpExpr *op,
+				  Datum value, Relation indexRel, BarkBoundary **result,
+				  int32 *nresult, bool *recheck, BarkQueryFlags *flags)
+{
+	FmgrInfo	flinfo;
+	Pointer		extra = NULL;
+	Datum		strategy;
+
+	strategy = Int16GetDatum(get_op_opfamily_strategy(op->opno,
+													  index->opfamily[indexcol]));
+	fmgr_info(procoid, &flinfo);
+	set_fn_opclass_options(&flinfo, index->opclassoptions[indexcol]);
+	memset(flags, 0, sizeof(*flags));
+	flags->index = indexRel;
+	if (get_func_nargs(procoid) >= 7)
+		FunctionCall7Coll(&flinfo, index->indexcollations[indexcol],
+						  value, strategy,
+						  PointerGetDatum(result), PointerGetDatum(nresult),
+						  PointerGetDatum(&extra), PointerGetDatum(recheck),
+						  PointerGetDatum(flags));
+	else
+		FunctionCall6Coll(&flinfo, index->indexcollations[indexcol],
+						  value, strategy,
+						  PointerGetDatum(result), PointerGetDatum(nresult),
+						  PointerGetDatum(&extra), PointerGetDatum(recheck));
+}
+
+/*
  * The number of boundaries procedure 8 makes of clause, a qual on the
  * extracted column indexcol, run on its constant as gincost_pattern runs
  * GIN's extractQuery: the scan descends once per boundary.  *noseen says
@@ -2178,9 +2502,7 @@ bark_cost_boundaries(IndexOptInfo *index, int indexcol, Expr *clause,
 	FmgrInfo	flinfo;
 	BarkBoundary *result = NULL;
 	int32		nresult = 0;
-	Pointer		extra = NULL;
 	BarkQueryFlags flags;
-	Datum		strategy;
 	Relation	indexRel = NULL;
 
 	*noseen = false;
@@ -2233,28 +2555,13 @@ bark_cost_boundaries(IndexOptInfo *index, int indexcol, Expr *clause,
 					searchMode == GIN_SEARCH_MODE_INCLUDE_EMPTY ? 1 : 2), 1);
 	}
 
-	strategy = Int16GetDatum(get_op_opfamily_strategy(op->opno,
-													  index->opfamily[indexcol]));
-	fmgr_info(procoid, &flinfo);
-	set_fn_opclass_options(&flinfo, index->opclassoptions[indexcol]);
-	memset(&flags, 0, sizeof(flags));
 	if (!index->hypothetical)
 	{
 		/* plancat.c has locked the index. */
 		indexRel = index_open(index->indexoid, NoLock);
-		flags.index = indexRel;
 	}
-	if (get_func_nargs(procoid) >= 7)
-		FunctionCall7Coll(&flinfo, index->indexcollations[indexcol],
-						  ((Const *) arg)->constvalue, strategy,
-						  PointerGetDatum(&result), PointerGetDatum(&nresult),
-						  PointerGetDatum(&extra), PointerGetDatum(recheck),
-						  PointerGetDatum(&flags));
-	else
-		FunctionCall6Coll(&flinfo, index->indexcollations[indexcol],
-						  ((Const *) arg)->constvalue, strategy,
-						  PointerGetDatum(&result), PointerGetDatum(&nresult),
-						  PointerGetDatum(&extra), PointerGetDatum(recheck));
+	bark_cost_extract(index, indexcol, procoid, op, ((Const *) arg)->constvalue,
+					  indexRel, &result, &nresult, recheck, &flags);
 	if (indexRel != NULL)
 		index_close(indexRel, NoLock);
 
@@ -2277,6 +2584,537 @@ bark_cost_boundaries(IndexOptInfo *index, int indexcol, Expr *clause,
 		(result[0].lower == result[0].upper ||
 		 result[0].lower->argument == result[0].upper->argument);
 	return Max(nresult + (flags.searchnulls ? 1 : 0), 1);
+}
+
+/*
+ * The planner's sample of an index's separator keys, for
+ * bark_estimate_qual_selectivity: up to BARK_SAMPLE_KEYS pivots in key
+ * order, copied from one level of the tree, and the root it was read
+ * under.  It hangs off BarkAmCache.sample but lives in a context of its
+ * own, a child of rd_indexcxt named BARK_SAMPLE_CXT, because a relcache
+ * reload of an index (RelationReloadIndexInfo) frees rd_amcache and keeps
+ * rd_indexcxt: a sample allocated in rd_indexcxt itself would leak on every
+ * invalidation.  bark_sample_get deletes the old context, orphaned or not,
+ * before it builds a new one, so a backend keeps at most one per index.
+ */
+typedef struct BarkKeySample
+{
+	BlockNumber root;			/* the root the sample was read under */
+	int			nkeys;
+	double	   *density;		/* per key, its leaf's TIDs, -1 unread */
+	IndexTuple	keys[FLEXIBLE_ARRAY_MEMBER];
+}			BarkKeySample;
+
+#define BARK_SAMPLE_KEYS	1024	/* separator keys kept */
+#define BARK_SAMPLE_PAGES	64	/* pages read per level */
+#define BARK_SAMPLE_LEAVES	4	/* leaves an exact count reads */
+#define BARK_SAMPLE_PROBES	3	/* leaves a wide range's density reads */
+#define BARK_SAMPLE_CXT		"BARK key sample"
+
+/*
+ * Read up to BARK_SAMPLE_PAGES internal pages of one level, left to right
+ * from blkno, share-locking one at a time, and append to *keys (*nkeys of
+ * *maxkeys used, in CurrentMemoryContext) a copy of every downlink's key.
+ * The minus-infinity downlink has none, and an oversized one is left out:
+ * its key is on an overflow chain, which the sample could outlive.  Returns
+ * the downlinks read; *complete says the walk reached the level's right end,
+ * and *child is the first downlink, the leftmost page of the level below.
+ *
+ * A page can be deleted after the walk read the right link to it, since the
+ * walk holds one lock at a time.  A deleted page keeps its right link and
+ * holds no downlinks, so the walk steps over it, as a descent moves right
+ * through one; the planner's snapshot keeps it from being reused meanwhile.
+ * The leftmost page of a level, where the walk starts, is never deleted.
+ */
+static int
+bark_sample_level(Relation index, BlockNumber blkno, IndexTuple **keys,
+				  int *nkeys, int *maxkeys, bool *complete,
+				  BlockNumber *child)
+{
+	int			ndown = 0;
+
+	*complete = false;
+	*child = BARK_P_NONE;
+	for (int npages = 0; npages < BARK_SAMPLE_PAGES; npages++)
+	{
+		Buffer		buf = ReadBuffer(index, blkno);
+		Page		page;
+		BarkPageOpaque opaque;
+
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buf);
+		opaque = BarkPageGetOpaque(page);
+		Assert(BarkPageIgnore(opaque) || !BarkPageIsLeaf(opaque));
+		if (!BarkPageIgnore(opaque))
+		{
+			OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
+
+			for (OffsetNumber off = BarkPageFirstDataKey(opaque); off <= maxoff;
+				 off = OffsetNumberNext(off))
+			{
+				IndexTuple	itup = (IndexTuple) PageGetItem(page,
+															PageGetItemId(page, off));
+
+				if (*child == BARK_P_NONE)
+					*child = BarkEntryGetDownLink(itup);
+				ndown++;
+				if (BarkEntryGetShape(itup) != BARK_SHAPE_PIVOT ||
+					BarkPivotGetNAtts(itup) == 0)
+					continue;
+				if (*nkeys >= *maxkeys)
+				{
+					*maxkeys *= 2;
+					*keys = repalloc_array(*keys, IndexTuple, *maxkeys);
+				}
+				(*keys)[(*nkeys)++] = CopyIndexTuple(itup);
+			}
+		}
+		blkno = opaque->bark_next;
+		UnlockReleaseBuffer(buf);
+		if (blkno == BARK_P_NONE)
+		{
+			*complete = true;
+			break;
+		}
+
+		/*
+		 * Tests stop here, holding the right link to a page but no lock, so
+		 * that VACUUM can delete the page first.
+		 */
+		INJECTION_POINT("bark-sample-level-next", NULL);
+	}
+	return ndown;
+}
+
+/*
+ * The index's separator sample, built on first use and again whenever the
+ * root has moved since (bark_get_root refreshes cache->root); NULL when the
+ * root is a leaf or the index is empty.  It has no keys when every
+ * separator of the level read is OVERSIZED (bark_sample_level skips them),
+ * and is cached so all the same, so that it is not read again every plan.
+ *
+ * The sample is one level's downlink keys: level 1's, one per leaf, when
+ * that level has at most BARK_SAMPLE_PAGES pages.  It is found top down:
+ * from the root, a level is read whole and the walk moves down while the
+ * level below has at most BARK_SAMPLE_PAGES pages (the downlinks just read);
+ * otherwise it keeps this level's keys, one per subtree, which cover the
+ * whole key range at a coarser grain.  Reading level 1 from its left end
+ * until the budget ran out would sample only the left end of a big index.
+ * The keys are then thinned evenly to BARK_SAMPLE_KEYS.  A level that
+ * splits during the walk can take it past the budget, which then leaves a
+ * few pages at the right end out; the sample is an estimate's input, and
+ * the next root split rebuilds it.
+ */
+static BarkKeySample *
+bark_sample_get(Relation index)
+{
+	BarkAmCache *cache;
+	BlockNumber root;
+	uint32		level;
+	BlockNumber blkno;
+	IndexTuple *keys;
+	int			nkeys = 0;
+	int			maxkeys = 256;
+	int			nsample;
+	MemoryContext cxt;
+	MemoryContext child;
+	BarkKeySample *sample;
+
+	root = bark_get_root(index, &level);
+	cache = bark_get_amcache(index);
+	if (root == BARK_P_NONE || level == 0)
+		return NULL;
+	if (cache->sample != NULL && cache->sample->root == root)
+		return cache->sample;
+
+	INJECTION_POINT("bark-sample-build", NULL);
+
+	keys = palloc_array(IndexTuple, maxkeys);
+	blkno = root;
+	for (;;)
+	{
+		bool		complete;
+		BlockNumber down;
+		int			ndown;
+
+		ndown = bark_sample_level(index, blkno, &keys, &nkeys, &maxkeys,
+								  &complete, &down);
+		Assert(down != BARK_P_NONE);
+		if (level <= 1 || !complete || ndown > BARK_SAMPLE_PAGES)
+			break;
+		for (int i = 0; i < nkeys; i++)
+			pfree(keys[i]);
+		nkeys = 0;
+		blkno = down;
+		level--;
+	}
+
+	/* Drop the sample built before, whether cache->sample still names it. */
+	child = index->rd_indexcxt->firstchild;
+	while (child != NULL)
+	{
+		MemoryContext next = child->nextchild;
+
+		if (strcmp(child->name, BARK_SAMPLE_CXT) == 0)
+			MemoryContextDelete(child);
+		child = next;
+	}
+	cache = bark_get_amcache(index);
+	cache->sample = NULL;
+
+	cxt = AllocSetContextCreate(index->rd_indexcxt, BARK_SAMPLE_CXT,
+								ALLOCSET_SMALL_SIZES);
+	nsample = Min(nkeys, BARK_SAMPLE_KEYS);
+	sample = MemoryContextAlloc(cxt, offsetof(BarkKeySample, keys) +
+								nsample * sizeof(IndexTuple));
+	sample->root = root;
+	sample->nkeys = nsample;
+	sample->density = MemoryContextAlloc(cxt, nsample * sizeof(double));
+	for (int i = 0; i < nsample; i++)
+	{
+		/* The middle key of each of nsample equal runs of the keys read. */
+		IndexTuple	key = keys[(int) (((int64) 2 * i + 1) * nkeys / (2 * nsample))];
+
+		sample->density[i] = -1;
+
+		sample->keys[i] = MemoryContextAlloc(cxt, IndexTupleSize(key));
+		memcpy(sample->keys[i], key, IndexTupleSize(key));
+	}
+	for (int i = 0; i < nkeys; i++)
+		pfree(keys[i]);
+	pfree(keys);
+	cache->sample = sample;
+	return sample;
+}
+
+/*
+ * Set the end of start/end that procedure 8's search element e gives, the
+ * lower one in value order when lower, as bark_mk_set_side and bark_mk_bound
+ * place it: a bound on column 1 that sorts before the entries equal to it
+ * when it is the start and not strict, or the end and strict, and after
+ * them otherwise.  An entry is then inside the boundary when
+ * bark_compare_bound puts the start before it and the end after it.
+ */
+static void
+bark_sample_side(BarkKeyInfo *keyinfo, const BarkSearchElement *e, bool lower,
+				 BarkScanBound * start, BarkScanBound * end, bool *hasstart,
+				 bool *hasend)
+{
+	BarkKeyColumn *col = &keyinfo->cols[0];
+
+	/* The scan refuses any other strategy (bark_mk_set_side). */
+	bool		strict = e->strategy == BTGreaterStrategyNumber ||
+		e->strategy == BTLessStrategyNumber;
+	bool		isstart;
+	BarkScanBound *bound;
+
+	/* In index order a DESC column's upper element comes first. */
+	isstart = lower != col->reverse;
+	bound = isstart ? start : end;
+	*(isstart ? hasstart : hasend) = true;
+	bound->nkeys = 1;
+	bound->upper = isstart ? strict : !strict;
+	bound->backward = false;
+	bound->args[0] = e->argument;
+	bound->procs[0] = &col->cmp;
+	bound->collations[0] = col->collation;
+}
+
+/* The number of sample keys bound sorts after (bark_compare_bound). */
+static int
+bark_sample_find(Relation index, BarkKeyInfo *keyinfo, BarkKeySample * sample,
+				 const BarkScanBound * bound)
+{
+	int			low = 0;
+	int			high = sample->nkeys;
+
+	while (low < high)
+	{
+		int			mid = low + (high - low) / 2;
+
+		if (bark_compare_bound(index, keyinfo, bound, sample->keys[mid]) > 0)
+			low = mid + 1;
+		else
+			high = mid;
+	}
+	return low;
+}
+
+/*
+ * Count the heap TIDs of the live entries between start and end, reading
+ * the leaves from the one a scan for start begins at, share-locked one at a
+ * time, at most BARK_SAMPLE_LEAVES of them.  Returns true when the count is
+ * complete (an entry past end, or the last leaf, was reached), false when
+ * the leaf limit, or a right link to a page that is no longer a leaf,
+ * stopped it; *ntids is the count so far, *nleaves the leaves read (one at
+ * least).  There is no snapshot: an entry not yet marked dead counts,
+ * though its row may be.
+ */
+static bool
+bark_sample_count(Relation index, BarkKeyInfo *keyinfo,
+				  const BarkScanBound * start, const BarkScanBound * end,
+				  double *ntids, int *nleaves)
+{
+	/* There is a sample, so the root is not a leaf and the index not empty. */
+	Buffer		buf = bark_search_bound(index, keyinfo, start, start->upper);
+	OffsetNumber off = bark_binsrch_bound(index, keyinfo, start,
+										  BufferGetPage(buf));
+	BarkItemBuf ibuf;
+
+	*ntids = 0;
+	*nleaves = 0;
+	for (;;)
+	{
+		Page		page = BufferGetPage(buf);
+		BarkPageOpaque opaque = BarkPageGetOpaque(page);
+
+		/* The first entry past end, found by binary search, as a scan's. */
+		OffsetNumber endoff = bark_binsrch_bound(index, keyinfo, end, page);
+		BlockNumber next;
+
+		/* A half-dead or deleted leaf has no entries, so counts nothing. */
+		(*nleaves)++;
+		for (; off < endoff; off = OffsetNumberNext(off))
+		{
+			if (!ItemIdIsDead(PageGetItemId(page, off)))
+				*ntids += bark_entry_count_tids(BarkPageGetItem(page, off,
+																&ibuf));
+		}
+		if (endoff <= PageGetMaxOffsetNumber(page))
+		{
+			UnlockReleaseBuffer(buf);
+			return true;
+		}
+		next = opaque->bark_next;
+		UnlockReleaseBuffer(buf);
+		if (next == BARK_P_NONE)
+			return true;
+		if (*nleaves >= BARK_SAMPLE_LEAVES)
+			return false;
+		buf = ReadBuffer(index, next);
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buf);
+
+		/*
+		 * No snapshot holds a deleted leaf back from reuse, so the right link
+		 * may lead to a page recycled as something else: stop there.
+		 */
+		if (PageIsNew(page) || !BarkPageIsLeaf(BarkPageGetOpaque(page)))
+		{
+			UnlockReleaseBuffer(buf);
+			return false;
+		}
+		off = BarkPageFirstDataKey(BarkPageGetOpaque(page));
+	}
+}
+
+/*
+ * The heap TIDs of the live entries on the leaf that begins at sample key
+ * k (its low key, when the sample is level 1's), read once per sample: a
+ * descent for an upper bound at the key's first column lands right of the
+ * separator, share-locked.  The answer is kept in sample->density, so it is
+ * as of the probe, as the keys are as of the build.
+ */
+static double
+bark_sample_probe(Relation index, BarkKeyInfo *keyinfo, BarkKeySample * sample,
+				  int k)
+{
+	BarkScanBound at;
+	bool		isnull;
+	Buffer		buf;
+	Page		page;
+	BarkPageOpaque opaque;
+	OffsetNumber maxoff;
+	BarkItemBuf ibuf;
+	double		ntids = 0;
+
+	if (sample->density[k] >= 0)
+		return sample->density[k];
+	at.args[0] = index_getattr(sample->keys[k], 1, RelationGetDescr(index),
+							   &isnull);
+	Assert(!isnull);			/* a sample key has its first column */
+	at.nkeys = 1;
+	at.upper = true;
+	at.backward = false;
+	at.procs[0] = &keyinfo->cols[0].cmp;
+	at.collations[0] = keyinfo->cols[0].collation;
+	buf = bark_search_bound(index, keyinfo, &at, true);
+	page = BufferGetPage(buf);
+	opaque = BarkPageGetOpaque(page);
+	maxoff = PageGetMaxOffsetNumber(page);
+	for (OffsetNumber off = BarkPageFirstDataKey(opaque); off <= maxoff;
+		 off = OffsetNumberNext(off))
+	{
+		if (!ItemIdIsDead(PageGetItemId(page, off)))
+			ntids += bark_entry_count_tids(BarkPageGetItem(page, off, &ibuf));
+	}
+	UnlockReleaseBuffer(buf);
+	sample->density[k] = ntids;
+	return ntids;
+}
+
+/*
+ * bark_estimate_qual_selectivity -- the fraction of the heap's rows that
+ * clause, an operator with a constant on extracted column indexcol of
+ * index, matches, read from the index; -1 when the index cannot say.
+ *
+ * Procedure 8 makes the constant into boundaries, as the scan does.  Each
+ * boundary is located among the separator sample (bark_sample_get): with m
+ * sample keys inside, it covers m - 1 of the sample's nkeys + 1 intervals
+ * whole and two in part, each counted half, so m intervals (half of one
+ * when m is 0).  If members were spread evenly over the leaves, that
+ * fraction of the key space would hold that fraction of the index's
+ * members, fraction * K * rows of them, where K is the members per row
+ * (bark_cost_keys_per_row); a qual on one path matches a row through about
+ * one member, so the selectivity would be fraction * K.  (The RethinkDB
+ * review's sketch divided by K; that counts members per row the wrong way
+ * round.)
+ *
+ * They are not spread evenly: a separator is a leaf, and a value whose rows
+ * coalesce into LIST and POSTING entries packs ten times the members of a
+ * leaf of distinct keys, or more.  So the leaves are read instead, which
+ * is get_actual_variable_range's reading of the index at plan time.  A row
+ * has one member per key, so the TIDs read are rows.  A boundary that
+ * covers at most two intervals, or is a point, is counted exactly
+ * (bark_sample_count); one that runs past the leaf limit is estimated from
+ * the TIDs per leaf read, over the leaves its intervals cover, or from the
+ * fraction when that is higher.  Any other boundary with a sample key
+ * inside, open at one end or not, reads the leaves at up to three of them
+ * (bark_sample_probe, once per key for the sample's life) and takes their
+ * TIDs per leaf over the leaves it covers.  The fraction alone is left for
+ * a boundary open at one end with no sample key inside.  A sample with no
+ * keys (every separator OVERSIZED) says nothing of the distribution, so
+ * then only an exact count is an answer.
+ *
+ * -1 for a hypothetical index, an empty one or one whose root is a leaf,
+ * an extracted column that is not the first key column, a non-Const or
+ * NULL argument, a procedure 8 that asks for a recheck or the NULL entries
+ * (its boundaries then hold more than the matches), an empty heap, and a
+ * sample with no keys unless every boundary is counted exactly.
+ */
+double
+bark_estimate_qual_selectivity(IndexOptInfo *index, int indexcol, Expr *clause)
+{
+	OpExpr	   *op = (OpExpr *) clause;
+	Node	   *arg;
+	Oid			procoid;
+	Relation	indexRel;
+	BarkKeySample *sample;
+	BarkKeyInfo *keyinfo;
+	BarkBoundary *result = NULL;
+	int32		nresult = 0;
+	bool		recheck = false;
+	BarkQueryFlags flags;
+	double		reltuples = index->rel->tuples;
+	double		keysperrow;
+	double		leavesper;
+	double		selec = 0.0;
+	bool		multikey;
+
+	if (index->hypothetical || indexcol != 0 || reltuples <= 0 ||
+		!IsA(clause, OpExpr) || list_length(op->args) != 2)
+		return -1;
+	/* A planner clause has a RelabelType of a Const folded into the Const. */
+	arg = (Node *) lsecond(op->args);
+	if (!IsA(arg, Const) || ((Const *) arg)->constisnull)
+		return -1;
+	procoid = get_opfamily_proc(index->opfamily[indexcol],
+								index->opcintype[indexcol],
+								index->opcintype[indexcol],
+								BARK_EXTRACTQUERY_PROC);
+	if (!OidIsValid(procoid))
+		return -1;
+
+	/* plancat.c has locked the index. */
+	indexRel = index_open(index->indexoid, NoLock);
+	if (bark_index_extracted_column(indexRel) != indexcol + 1 ||
+		(sample = bark_sample_get(indexRel)) == NULL)
+	{
+		index_close(indexRel, NoLock);
+		return -1;
+	}
+	bark_cost_extract(index, indexcol, procoid, op, ((Const *) arg)->constvalue,
+					  indexRel, &result, &nresult, &recheck, &flags);
+	if (recheck || flags.searchnulls)
+	{
+		index_close(indexRel, NoLock);
+		return -1;
+	}
+
+	keysperrow = bark_cost_keys_per_row(index, &multikey);
+	keyinfo = bark_build_keyinfo(indexRel);
+	leavesper = Max((double) index->pages / (sample->nkeys + 1), 1.0);
+	for (int i = 0; i < nresult; i++)
+	{
+		BarkScanBound start;
+		BarkScanBound end;
+		bool		hasstart = false;
+		bool		hasend = false;
+		bool		point;
+		bool		exact = false;
+		int			lo;
+		int			hi;
+		int			inside;
+		double		bsel;
+
+		if (result[i].lower != NULL)
+			bark_sample_side(keyinfo, result[i].lower, true, &start, &end,
+							 &hasstart, &hasend);
+		if (result[i].upper != NULL)
+			bark_sample_side(keyinfo, result[i].upper, false, &start, &end,
+							 &hasstart, &hasend);
+		point = result[i].lower != NULL && result[i].upper != NULL &&
+			result[i].lower->strategy == BTEqualStrategyNumber &&
+			result[i].upper->strategy == BTEqualStrategyNumber;
+
+		lo = hasstart ? bark_sample_find(indexRel, keyinfo, sample, &start) : 0;
+		hi = hasend ? bark_sample_find(indexRel, keyinfo, sample, &end) :
+			sample->nkeys;
+		inside = Max(hi - lo, 0);
+		bsel = (inside > 0 ? inside : 0.5) / (sample->nkeys + 1) * keysperrow;
+
+		if (hasstart && hasend && (inside <= 2 || point))
+		{
+			double		ntids;
+			int			nleaves;
+
+			if ((exact = bark_sample_count(indexRel, keyinfo, &start, &end,
+										   &ntids, &nleaves)))
+				bsel = ntids / reltuples;
+			else
+				bsel = Max(bsel, Max(ntids, ntids / nleaves * (inside + 1) *
+									 leavesper) / reltuples);
+		}
+		else if (inside > 0)
+		{
+			double		ntids = 0;
+			int			nprobes = 0;
+
+			/* The leaves at up to three sample keys spread across the range. */
+			for (int j = 0; j < Min(inside, BARK_SAMPLE_PROBES); j++)
+			{
+				int			k = lo + (int) (((int64) 2 * j + 1) * inside /
+											(2 * Min(inside, BARK_SAMPLE_PROBES)));
+
+				ntids += bark_sample_probe(indexRel, keyinfo, sample, k);
+				nprobes++;
+			}
+			bsel = ntids / nprobes * inside * leavesper / reltuples;
+		}
+		/* With no sample keys, there are no intervals to estimate over. */
+		if (sample->nkeys == 0 && !exact)
+		{
+			pfree(keyinfo);
+			index_close(indexRel, NoLock);
+			return -1;
+		}
+		selec += Min(bsel, 1.0);
+	}
+	pfree(keyinfo);
+	index_close(indexRel, NoLock);
+
+	/* A sum of fractions, so never negative, but over 1 for overlaps. */
+	return Min(selec, 1.0);
 }
 
 /*
@@ -2863,6 +3701,7 @@ barkhandler(PG_FUNCTION_ARGS)
 		.amimplements = BTREE_AM_OID,
 		.amcanversion = true,
 		.amindexcanversion = bark_indexcanversion,
+		.amindexmaykeeplocator = bark_indexmaykeeplocator,
 
 		.ambuild = barkbuild,
 		.ambuildempty = barkbuildempty,

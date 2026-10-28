@@ -21,7 +21,7 @@ The code
 
   bark.c          the handler (barkhandler, the IndexAmRoutine), the
                   reloptions, VACUUM (bark_vacuum_scan, bark_vacuum_page,
-                  bark_delete_empty_leaf, bark_pendingfsm_finalize), the
+                  bark_delete_subtree, bark_pendingfsm_finalize), the
                   cost estimate (barkcostestimate), amgettreeheight
   barkinsert.c    insert (bark_insert, bark_insert_entries,
                   bark_insert_key), the uniqueness check (bark_check_unique),
@@ -404,10 +404,12 @@ large to fit inline; its BarkOverflowRef.natts records the attributes kept.
 A high key and the downlink copied from it share one overflow chain, as do an
 internal page's high key and the item it is copied from, and nothing else
 shares a pivot's chain.  The only pivot chain ever freed is that of the
-downlink VACUUM removes when it deletes an empty leaf (bark_delete_empty_leaf):
-the right sibling's, which shares its chain only with the deleted leaf's high
-key, since it is never its internal page's first data item.  So the sharing
-needs no reference count.
+downlink VACUUM removes when it deletes an empty leaf and its one-child
+parents (bark_delete_subtree): the downlink to the chain's right sibling,
+which shares its chain with the deleted pages' high keys and with the first
+items of their right siblings, which the deletion truncates to minus
+infinity, and with nothing else (see "Page deletion and recycling").  So
+the sharing needs no reference count.
 
 Reading an overflow chain
 -------------------------
@@ -546,16 +548,42 @@ can be far left of the key's, and moving right across the pages between
 would lock and pin each one, which costs more than the root (measured: 30
 to 78 buffer hits a lookup, against 4).
 
-Correctness rests on two facts.  BARK never deletes or merges an internal
-page (VACUUM removes only empty interior leaves, see "Page deletion and
-recycling"), so a level-1 page stays a level-1 page for the life of the
-relfilenode.  And an internal page's low key never changes: a split keeps a
-page's left part, so it moves only the high key left.  Every key the root
-would route to a page P at or right of the slot's page S is >= S's low key,
-every page between S and P has a high key <= that key, and so moving right
-from S reaches P, as moving right does after a concurrent split.  A slot
-may name a page that has split since; that costs move-rights, not a wrong
-answer.
+Correctness rests on two facts, which hold within one level-1 epoch.  A
+level-1 page stays a level-1 page, and its low key never changes: a split
+keeps a page's left part, so it moves only the high key left, and only the
+deletion of a level-1 page (see "Page deletion and recycling") changes
+either, which advances the epoch.  Every key the root would route to a page
+P at or right of the slot's page S is >= S's low key, every page between S
+and P has a high key <= that key, and so moving right from S reaches P, as
+moving right does after a concurrent split.  A slot may name a page that
+has split since; that costs move-rights, not a wrong answer.
+
+The level-1 epoch (bark_l1_epoch) is a counter in BARK's shared memory of
+the deletions that removed a level-1 page, in any BARK index of the
+cluster.  The table holds pages across transactions, so no snapshot keeps a
+deleted level-1 page from being recycled, and the danger is a block deleted
+and then reused as a level-1 page further right: it passes the page check,
+and a descent for a key in the old page's range would start right of the
+key's page and never move left (a missing row for a reader, an entry on the
+wrong leaf for an inserter).  So the table records the epoch it was filled
+under (BarkAmCache.l1epoch, read whenever the table is empty, before the
+descent from the root that fills it), and bark_l1_start reads the epoch
+again once it holds the slot's page locked, and drops the table when it
+moved.  The deletion advances the epoch while it still holds the deleted
+level-1 page locked, and so does its redo, for a hot standby's backends.  A
+backend that sees the block recycled locked it after the recycler did,
+which locked it after the deleter unlocked it, so it reads the advanced
+value: the atomic increment and the buffer locks are full barriers.  A slot
+recorded before a deletion therefore never outlives it.  A relcache
+invalidation would not do: VACUUM's comes at its commit, after the pending
+free-space list can have handed the page out, and a backend that already
+holds the index's lock accepts none before its next descent (the isolation
+test bark_subtree_concurrent and TAP test 020 have such a backend).  The
+cost is one atomic read per cached descent, on a cache line only such a
+deletion writes, and a refill of every backend's tables after each.
+OVERSIZED low keys are not cached (bark_l1_remember): the copy would be
+a reference to an overflow chain, which the deletion that removes its last
+downlink frees.
 
 The table is filled as a side effect of ordinary descents: a level-2 page's
 downlink is its child's low key, so each time a descent follows one (other
@@ -592,8 +620,10 @@ crash left them).
 Tests: bark_l1_cache (every value, ranges across cached boundaries, missing
 keys, backward scans, inserts that split cached pages, VACUUM page deletion,
 a root split from level 2 to 3, REINDEX, TRUNCATE, a two-column index with
-truncated pivots, DESC NULLS FIRST, and 2 kB keys that overflow the table's
-256 kB cap), each compared with a sequential scan;
+truncated pivots, DESC NULLS FIRST, 2 kB keys that overflow the table's
+256 kB cap, and OVERSIZED low keys, which are not cached), each compared
+with a sequential scan; bark_subtree_concurrent's recycling permutation,
+which returns no row without the epoch;
 the bark_l1_concurrent isolation spec (another backend splitting cached
 pages and the root, and a split while a descent from a cached page is
 stopped before its leaf); the bark-l1-start injection point shows which
@@ -1477,6 +1507,92 @@ seize/release protocol.  Mark and restore copy the position, as nbtree's do;
 the executor does not restore a scan with ORDER BY operators, since its
 reorder queue would not be rewound.
 
+The copy holds one item per matching entry, not one per heap TID.  A LIST
+or POSTING entry's item points at a copy of the entry's body (its TID
+array, coded deltas or sbm) in the tuple workspace, and bark_gettuple
+returns its members one call at a time, decoding the body into
+so->entryTids when it enters the item (a plain array is read in place).
+So a LIMIT 1 decodes the one entry it returns from, not the page: since
+coded LISTs a duplicate-heavy leaf holds about 3200 TIDs in two dozen
+entries, and expanding them all into items made LIMIT 1 cost twice
+nbtree's instructions.  Nothing is read from the page after the lock is
+released, so resuming within an entry needs no new concurrency rule: a
+split, an insert or a VACUUM between two calls changes the page, not the
+copy, exactly as between two pages.  The position records the member
+returned last (memberIndex), and a mark records it too.  A kill names an
+(item, member) run; bark_killitems marks an entry LP_DEAD only when one
+run covers every member of the copy and the entry on the page still holds
+exactly those TIDs.  A multikey scan filters an entry's members when it
+reads the page (bark_mk_accept, bark_mk_seen) and copies the survivors as a
+TID array instead.  Bitmap scans and the GIN interface's streams take each
+item's members as a batch.
+
+bark_gettuple settles the row returned last at the top of each call (the
+kill_prior_tuple test, bark_kill_prior, and the entry verdict of
+"Versioned multikey scans") before bark_step_member moves the position:
+the position still names that row's (item, member) there, and the table
+AM sets the verdict before it asks for the next row (relscan.h).
+
+Versioned multikey scans
+------------------------
+
+An index with BARK_META_MKTAGS (see "Version tags") can hold entries of a
+row that are valid for different versions: an update that kept the
+locator inserted the new version's full key set, tagged, and the old
+entries stay until VACUUM removes them.  The page-read seen set, which
+keeps a row's first entry by TID, would then keep a stale entry and drop
+the valid one (`doc && '{a,b}'` after {a,b} became {b,c} in place loses
+the row).  Such a scan, through a table AM, follows rule D instead
+(bark_mk_ruled; the decision is the meta page's alone, so tagged entries
+already on disk are always handled so):
+
+  * A page read keeps every entry the filters and procedure 9 accept
+    (bark_mk_seen only records a group change, as BARK_ITEM_NEWGROUP on
+    the item).
+  * At the top of bark_gettuple (and bark_knn_gettuple) the entry
+    returned last is settled by the table AM's verdict,
+    xs_entry_verdict (bark_mk_settle): VALID puts its row in R, the seen
+    set's radix tree; INVALID puts (TID, tag) in J, a hash, under an MVCC
+    snapshot only; UNKNOWN is an error, since the table AM broke its
+    obligation (amlocator.h), and guessing could return a row twice or
+    not at all.
+  * An entry is then returned only if its row is not in R and its
+    (TID, tag) is not in J (bark_mk_admit); it becomes the entry whose
+    verdict is due.
+  * R and J empty when the scan returns from the first item of a new
+    group of the columns before the extracted one, unless the scan is
+    marked.  A KNN scan interleaves groups and keeps them whole.
+  * bark_markpos settles the due verdict first (the marked row was
+    returned); bark_restrpos drops it (the row is behind the mark and is
+    returned again) and takes the rows added since the mark out of R.  J
+    needs no undo: under an MVCC snapshot its facts hold for the scan.
+  * A rescan clears R, J and the due verdict, so a LIMIT, a closed cursor
+    or a nested loop's inner rescan, which leave a verdict unread, raise
+    nothing.
+  * A non-MVCC snapshot keeps R and never fills J.  Under one, heap may
+    return several tuples through one entry (xs_heap_continue); the
+    verdict is about the entry, and BARK reads it only at its next call.
+  * A caller of amgettuple without a table AM (scan->heapRelation NULL)
+    gets the page-read seen set: dedup by TID, no verdict.
+
+useseen is decided as before (bark_mk_rescan): when one point boundary,
+procedure 8's oneentry or a never-multikey index rules a second matching
+entry of one version out, no set is used; a stale entry is rejected by
+the table AM whether or not the set is used.  Bitmap scans need none of
+this: the bitmap holds each locator once, and the table AM rechecks every
+row with history against the original qual.  A GIN-interface index gets
+no MKTAGS: its TIDBitmap has no entry to judge.
+
+The scan's memory stays under AllocSet's chunk limit (ALLOC_CHUNK_LIMIT,
+8 kB), so it comes from the context's blocks with no malloc of its own:
+items[] is at most MaxIndexTuplesPerPage items of 16 bytes, 6.5 kB, and a
+plain scan's copied bodies are no larger than the page.  An index-only
+scan's workspace also holds the keys, starts at 16 kB as nbtree's does, and
+grows past that for a page whose keys decode larger (prefix compression,
+OVERSIZED entries); a multikey scan's survivor arrays can grow it too.  The
+one allocation that scales with an entry is entryTids: a LIST decodes to at
+most 4095 TIDs (24 kB), but a dense POSTING entry can decode to many more.
+
 The first descent uses the longest bound the keys give on the leading
 columns (bark_make_bound): equality on columns 1..k-1 and a bound on column
 k, compared through the opfamily's cross-type ORDER procs.  A lower bound
@@ -1529,20 +1645,21 @@ parent's last child, see "Page deletion and recycling"); without it, a
 lookup below the remaining keys read every such leaf up to them.  A high key
 cut short by suffix truncation is minus infinity on the columns it lost, so
 the test stops at the first of them (bark_scan_natts).  An OVERSIZED high
-key is not tested, since reading its chain would cost more than the step it
-might save.  Under required keys whose columns the high key has, the cursors
-move on as for an entry; none left ends the scan, and when the next
-combination starts beyond the page (bark_req_next_page), a page that
-returned no rows re-descends to it, while one that returned rows steps
-right, since a dense array's next combination is likely on the next page.
-The cursors are left alone when the last required key is a multikey column's
-boundaries, whose comparison keeps state about the entries read in order.  A
-skip scan never stops here: it has no key on column 1, and it tests the high
-key for its next group itself.  The high key is read under the page's share
-lock, with the entries: then every entry to its right sorts at or after it,
-and an entry that a page to the right gets later is one the read already
-copied (a split moved it) or one the scan's snapshot does not see, as for
-the stop at an entry.  As in nbtree, a backward read has no low key to test.
+key is compared on its inline prefix only (bark_prefix_past_bound), since
+reading its chain would cost more than the step it might save.  Under
+required keys whose columns the high key has, the cursors move on as for an
+entry; none left ends the scan, and when the next combination starts beyond
+the page (bark_req_next_page), a page that returned no rows re-descends to
+it, while one that returned rows steps right, since a dense array's next
+combination is likely on the next page.  The cursors are left alone when the
+last required key is a multikey column's boundaries, whose comparison keeps
+state about the entries read in order.  A skip scan never stops here: it has
+no key on column 1, and it tests the high key for its next group itself.
+The high key is read under the page's share lock, with the entries: then
+every entry to its right sorts at or after it, and an entry that a page to
+the right gets later is one the read already copied (a split moved it) or
+one the scan's snapshot does not see, as for the stop at an entry.  As in
+nbtree, a backward read has no low key to test.
 
 ScalarArrayOp keys.  The equality keys of columns 1..m, each column having
 an equality array or a scalar equality (IS NULL among them: a required key
@@ -1859,7 +1976,7 @@ a BARK page: bark_insert_entry, bark_insert_multi, bark_overwrite_entry,
 bark_add_tid_entry, bark_swap_tid_entry, bark_split (both halves, the
 right sibling, the child), bark_new_root (with the old root and the meta
 page), bark_create_root_leaf, bark_delitems_vacuum, bark_delitems_delete
-(bottom-up deletion and the merge), bark_delete_empty_leaf (four pages),
+(bottom-up deletion and the merge), bark_delete_subtree (3k + 4 pages),
 bark_write_overflow_chain, bark_free_overflow_page, bark_set_multikey and
 bark_set_nkeys.
 
@@ -1933,23 +2050,78 @@ can make the walk count an entry twice), and stores it in the meta page's
 bark_nkeys.  The count is of live heap TIDs, not entries, as
 btvacuumpage's is, so reltuples has the heap's unit.
 
-At the end of the pass, VACUUM deletes the empty interior leaves it noted
-(bark_delete_empty_leaf): in one XLOG_BARK_UNLINK_PAGE record it
-splices the leaf out of the sibling chain, points the leaf's downlink in the
-parent at the right sibling and removes the right sibling's old downlink (so
-the leaf's key space moves right, as in nbtree), and turns the leaf into a
-deleted page.  Only a leaf with siblings on both sides that is not its
-parent's last child is deleted; leftmost and rightmost empty leaves, a last
-child and emptied internal pages stay.  The parent is found by descending
-with the leaf's high key and matching its downlink
-(bark_find_parent_downlink) and is locked before the three leaves, the
-reverse of a split's child-before-parent order, so the leaves are only
-locked conditionally and a busy leaf is left for a later VACUUM; nbtree
-avoids the inversion by marking the leaf half-dead first
-(_bt_mark_page_halfdead), which BARK does not do.
+At the end of the pass, VACUUM deletes the empty interior leaves it noted,
+each together with the chain of internal pages above it that have it as
+their only descendant: a "skinny subtree", in nbtree's terms
+(bark_delete_subtree).  The leaf is T; C_1 is T's parent when T is its only
+child, C_2 is C_1's parent when C_1 is its only child, and so on up to C_k
+(k >= 0); SP, the subtree parent, is the first page above with more than
+the one child.  At every level 0 .. k the page X is spliced out of its
+sibling chain (its left sibling's right link and its right sibling's left
+link skip it) and becomes a deleted page that keeps its links.  The key
+space moves right at every level at once, as in nbtree: SP's downlink to C_k
+(T when k = 0) is pointed at C_k's right sibling, and that sibling's own
+downlink, the next item, is removed.  So the downlink to C_k must not be
+SP's last.  Each C_i's right sibling C_iR is then reached for keys from its
+new left sibling's high key up, below its first downlink's key, which was
+C_i's high key, so its first downlink is truncated to minus infinity (no key
+attributes), as nbtree's are; bark_binsrch never compares a page's first
+downlink, so routing does not change.  One XLOG_BARK_UNLINK_PAGE record
+makes the whole change (see "WAL"), so a crash leaves the tree before the
+deletion or after it, with no intermediate state.  When k = 0 this is the
+deletion of a leaf alone.
+
+The chain is found with no lock on T: each page's parent is found from the
+root with T's high key, which is every C_i's high key too
+(bark_find_upper_path, then bark_getstackbuf to move right to the
+downlink), until a parent with more than one child.  Then the pages are
+locked in the order every BARK writer locks: a lower level before a higher
+one, left before right within a level.  For each level, the left sibling
+(found from the page's left link, moving right across splits made since,
+as _bt_unlink_halfdead_page does), the page and its right sibling; then SP,
+through bark_getstackbuf, which moves right if SP split.  Every lock is
+taken unconditionally and held to the end: 3(k + 1) + 1 pages.  No writer
+that holds a page waits for one at a lower level or to its left, so no
+cycle can form; readers hold one lock at a time.  nbtree instead marks the
+leaf half-dead and unlinks one level per step, holding fewer locks at once,
+and needs the half-dead state, its recovery and its amcheck rules; BARK's
+record has room for the locks of k <= 9 internal levels
+(BARK_MAX_UNLINK_LEVELS), which a tree below height 11 cannot exceed.
+
+What was read without the locks is checked under them.  Only this VACUUM
+deletes pages of the index, and once VACUUM has emptied T only an insert can
+change it, and an insert that refills or splits T leaves an entry on it.  So
+T still empty with the same right link means T has not split, so no C_i has
+gained a downlink, and the chain, its right cousins and the downlinks to
+them are as read, which is asserted.  What can change is T (refilled:
+decline), a left sibling (split: move right) and SP (split: the downlink may
+now be its page's last, and the deletion declines).  As nbtree does, the
+deletion checks what a corrupt index can break, the sibling links (a left
+sibling that the walk right does not lead to the page, a right sibling that
+does not link back) and SP's next downlink, and logs a mismatch as
+corruption and declines, so that VACUUM goes on.
+
+Declined leaves stay linked and correct, and a later VACUUM tries again: a
+leftmost or rightmost leaf (nbtree deletes a leftmost page; BARK does not,
+and neither does it delete the leftmost page of any level, which a queue's
+leftmost subtree keeps), a leaf whose chain's top is its parent's last child
+(nbtree deletes those too, taking the parent's whole subtree), a refilled
+leaf, and the right half of an unfinished split, which has no downlink yet.
+VACUUM's list of empty leaves is in physical order, so a leaf can come
+before the empty leaves left of it under the same parent and be declined as
+the last child; once they are gone it is the parent's only child.  So the
+leaves declined as a last child get another pass while a pass deletes
+something.
+
 VACUUM also deletes the overflow pages of the OVERSIZED entries it removes
-(bark_free_oversized), and of the right sibling's downlink, which the deletion
-of an empty leaf removes, when it is OVERSIZED.
+(bark_free_oversized), and of SP's removed downlink, when it is OVERSIZED.
+A split puts one chain in the left page's high key, in the downlink copied
+from it and, on an internal level, in the right page's first item, which
+the high key was copied from.  The removed downlink's chain is shared by T's
+high key, every C_i's high key and every C_iR's first item, all of which
+the record rewrites, and by nothing above SP's level; so it is freed once,
+after the record.  A crash in between leaves it unreferenced, which amcheck
+reports as an orphaned chain (TAP test 018).
 
 A deleted page has no items (pd_lower = SizeOfPageHeaderData) and holds a
 BarkDeletedPageData at the end of the tuple area (pd_upper = pd_special -
@@ -1966,19 +2138,27 @@ The page keeps the sibling links it had (an overflow page keeps its link to
 the next chunk).  A descent that read the parent's downlink, or a scan that
 read a sibling link, before the deletion can arrive at the page afterwards;
 it moves right through it, as nbtree's readers move through P_IGNORE pages.
-Its neighbours no longer link back to it, which amcheck allows.  A page's
+Its neighbours no longer link back to it, which amcheck allows.  A descent
+that read SP's downlink to C_k, or C_{i+1}'s to C_i, before the deletion
+reaches a deleted page, moves right to C_iR, and from its first downlink
+reaches the page that took the keys over.  An inserter whose path names a
+deleted C_i moves right from it (bark_getstackbuf).  The planner's sample
+of a level steps over a deleted page (bark_sample_level).  A page's
 right link, read under its lock, never names a deleted page: deletion holds
 that page's lock while it rewrites the link.  So a writer that moves right
 with its page still locked (bark_lock_right) never meets a deleted sibling,
-and only leaves are deleted, so neither does a writer at an internal
-level; their tests for one are defensive.
+and neither does a writer at an internal level, whose page cannot be
+deleted while it holds it; their tests for one are defensive.
 
 A deleted page is reused only when BarkPageIsRecyclable says so, which is
 nbtree's BTPageIsRecyclable test: GlobalVisCheckRemovableFullXid(heaprel,
 safexid).  Any backend that might hold a link to the page took its snapshot
 before the deletion, so its xmin is no later than safexid; once safexid is
-removable by that horizon, no such backend remains.  VACUUM keeps the leaves
-it deletes in a pending list and records in the FSM, at its end, those whose
+removable by that horizon, no such backend remains.  The one link held
+across transactions, the level-1 entry cache, is covered by the level-1
+epoch instead (see "Level-1 entry cache").  A deleted internal page looks
+like a deleted leaf, and is walked, recycled and reused alike.  VACUUM keeps
+the pages it deletes in a pending list and records in the FSM, at its end, those whose
 safexid is already removable (nbtree's _bt_pendingfsm_finalize).  VACUUM's page
 walk (the bulk delete's, or the cleanup-only scan's) records every other
 deleted page in the FSM once it becomes recyclable, so a page not
@@ -2132,7 +2312,7 @@ records:
       numbered as after the deletions.  Redo takes an exclusive lock and
       shares bark_redo_delitems with VACUUM and DELETE.
 
-  XLOG_BARK_UNLINK_PAGE (bark_delete_empty_leaf, bark_lower_bound)
+  XLOG_BARK_UNLINK_PAGE (bark_delete_subtree, bark_lower_bound)
       One opcode for two operations, since the rmgr has no free opcode;
       they are told apart by XLH_BARK_UNLINK_LOWER_SEP in the record's flags
       and by the absence of block 0 in the second.  pg_waldump and
@@ -2144,11 +2324,17 @@ records:
       no image needed), its left sibling's right link, its right sibling's
       left link, and the parent, where the target's downlink is pointed at
       the right sibling and the right sibling's own downlink is removed.
-      This is nbtree's MARK_PAGE_HALFDEAD and UNLINK_PAGE in one record,
-      since BARK deletes only leaves whose right sibling has the same
-      parent.  Redo takes exclusive locks on the left sibling, target, right
-      sibling and parent, in that order, and holds them all until the record
-      is applied.
+      This is nbtree's MARK_PAGE_HALFDEAD and UNLINK_PAGE in one record.
+      With XLH_BARK_UNLINK_SUBTREE the record also deletes the chain of k
+      one-child parents above the leaf (a uint16 k follows the struct, and
+      the description adds "internal levels: k"): blocks 3i + 1 .. 3i + 3
+      are level i's deleted page (reinitialized), left sibling and right
+      sibling, whose first downlink becomes minus infinity, and block 3 is
+      the subtree parent.  Each deleted page's links are its neighbours'
+      block numbers.  Redo locks the pages in the primary's order (each
+      level left to right from the leaf up, then the parent), holds them all
+      until the record is applied, and advances the level-1 epoch when
+      k >= 1.  nbtree logs one UNLINK_PAGE per level.
 
       The lowering of a leaf's lower bound (XLH_BARK_UNLINK_LOWER_SEP, see
       "Lowering a lower bound" in "Version tags"): block 1, the left page,
@@ -2253,8 +2439,17 @@ There are five entry shapes (BarkEntryShape):
            the chain of an entry it removes (bark_free_oversized).  A normal-size entry never uses
            this shape, so it is pure overhead-free opt-in.  When the first
            key column is text under a C/POSIX collation, the ref also keeps
-           that column's first 32 bytes, which order two OVERSIZED entries
-           without reading their chains when they differ.  No other column
+           that column's first 32 bytes, decompressed when the full tuple
+           stores the value compressed (bark_value_prefix).  They order the
+           entry without reading its chain whenever they differ from the
+           other side's leading bytes: another OVERSIZED entry, an inline
+           key, an insert's key (detoasted once per key), or a scan bound
+           (its argument detoasted once per rescan).  Descent, leaf
+           positioning, the insert's search and the end of a scan
+           (bark_prefix_past_bound) all use them, so a lookup reads the
+           chain of the entry it returns and no other.  A tie reads the
+           chain, unless both sides are whole and column 1 is the only
+           column compared.  No other column
            gets them, even under "C": bpchar ignores trailing spaces, arrays
            compare element by element, and name is a cstring, so their bytes
            are not their order (bark_first_column_bytewise).
@@ -2275,8 +2470,12 @@ TID mapped to block << 11 | offset as ginpostinglist.c does (more offset
 bits for a TID stride past 2047; see "TID stride").  The first and
 last TIDs stay readable in O(1) for bark_entry_tid_range.  Every reader goes
 through bark_entry_get_tids / bark_entry_count_tids / bark_entry_has_tid, and
-bark_entry_add_tid re-forms a coded LIST (decode, insert, re-encode), which
-is a function of the sorted TID set alone, so redo is deterministic.  Plain
+bark_entry_add_tid splices a TID into a coded LIST's delta stream without
+decoding the set (one delta appended past the last TID, the common case, or
+the spanning delta replaced by two), giving the same bytes as decoding,
+inserting and re-encoding: the coded form is a function of the sorted TID set
+alone, so redo is deterministic, and assert builds check the splice against
+the full re-form.  Plain
 LISTs are unchanged, so no REINDEX is needed.  A subset of a coded LIST never
 codes longer than the whole (a removed member's two deltas become their sum),
 but a plain subset can be longer than the coded original, so VACUUM re-forms
@@ -2331,15 +2530,22 @@ Which indexes.  The meta page's BARK_META_VERSIONED says the table's
 locator was versioned when the index was built; CREATE INDEX and every
 rebuild (REINDEX, the rewrite of ALTER TABLE ... SET ACCESS METHOD) set it
 from the table's LocatorDesc, and nothing else changes it.  Such an index
-stores tags unless it has an extracted column: amindexcanversion
-(bark_indexcanversion) answers the executor's index_can_version().  A
-multikey index returns each row once by TID (the seen set, and a
-GIN-interface index scan's TIDBitmap), which is right only while no row has
-two valid entries of different versions, so it stores no tags, and the
+stores tags, if it has an extracted column only when its meta page also
+has BARK_META_MKTAGS: amindexcanversion (bark_indexcanversion) answers the
+executor's index_can_version() from those two bits alone, never from
+rd_index, which can change after the build.  A build sets MKTAGS with
+VERSIONED for a multikey index that is neither GIN-interface nor, in the
+catalog, unique or exclusion (bark_build_mktags); REINDEX recomputes it.
+A tagged multikey index's scans settle each entry of a row by the table
+AM's verdict ("Versioned multikey scans").  Every other multikey index
+returns each row once by TID (the seen set, and a GIN-interface index
+scan's TIDBitmap, which carries no tag), which is right only while no row
+has two valid entries of different versions, so it stores no tags, and the
 executor moves a row whenever an update affects it; its entries stay
-untagged, as an index of heap's.  (Versioned multikey indexes need
-deduplication after the table AM's verdict, or untagging a row's entries
-together, and are left as a follow-up.)  An index with BARK_META_VERSIONED
+untagged, as an index of heap's.  A tagged multikey index's key entries
+carry the row's tag, its markers never: a marker names no row, so nothing
+could judge its tag (bark_insert_entries forces it to 0).  An index with
+BARK_META_VERSIONED
 has a pivot suffix reserve (BarkPivotSuffixReserve) of 16 bytes, room for a
 pivot's heap TID and tag (6 + 4, MAXALIGNed); every other
 index keeps the 8-byte reserve, so an index of a heap table is laid out
@@ -2422,12 +2628,25 @@ safe when the slot has an entry before it on the page, or the page is
 leftmost, or it lacks BARK_LOWBOUND_TAGGED: an untagged lower bound <=
 (K, L, t) is <= (K, L, 0).  Otherwise (the slot would be the page's first,
 under a lower bound that may be (K, L, t0 > 0)) the entry stays tagged and
-the verdict is taken as LIVE, counted in VACUUM's DEBUG2 line, as is an
-entry whose (K, L, 0) lies in another entry (the row's untagged one, or a
-LIST or POSTING whose range holds L).  An entry is never moved to another
-page: a scan reads one page at a time, and would miss the row or return
-it twice.  Instead, after its scan VACUUM lowers the bound, and untags the
-entries it kept for it then.
+the verdict is taken as LIVE, counted in VACUUM's DEBUG2 line.  An entry
+is never moved to another page: a scan reads one page at a time, and would
+miss the row or return it twice.  Instead, after its scan VACUUM lowers the
+bound, and untags the entries it kept for it then.
+
+An entry whose (K, L, 0) is already on the page, in the row's own
+untagged entry (its twin: a SINGLE, or the last member of the LIST or
+POSTING just before it; no entry holds L strictly inside its range, since
+a tagged insert divides it at L), stays tagged too, counted as "kept
+tagged beside their untagged twin".  A correct table AM never makes one:
+(K, L, t) exists because t's update changed attrs(i), so the twin is
+invalid from t on, and with t no newer than the new base it is DEAD in the
+same pass.  One verdict is wrong, then.  If it is the twin's LIVE, the
+tagged entry is the row's only valid one and deleting it would lose the
+row (heapallindexed would not notice: the twin still indexes (K, L)); if
+it is the LIVE_UNTAG, keeping costs nothing.  So BARK keeps it, and a count
+above 0 means the table AM answered LIVE for an entry the per-index
+validity rule makes invalid.  t/004_bark_vacuum.pl builds each twin shape
+and shows the row lost under the bark-untag-delete injection point.
 
 Lowering a lower bound.  A leaf P2 whose lower bound is a tagged (K, L, t0),
 its left sibling P1's high key and the parent's downlink to P2, can have
@@ -2442,9 +2661,8 @@ XLOG_BARK_VACUUM record of their own.  bark_lower_bound:
     returns the parent exclusive-locked) and checks that P1's downlink is
     just before it on the same page, below (K, L), and that P2's is a copy
     of P1's high key;
-  * then tries P1's and P2's locks without waiting, as
-    bark_delete_empty_leaf does while it holds the parent, since an insert
-    that splits a leaf locks the parent after it;
+  * then tries P1's and P2's locks without waiting, since it holds the
+    parent and an insert that splits a leaf locks the parent after it;
   * under all three locks checks that P1's right link is still P2 and P1
     is not the left half of an incomplete split (whose right half, P2,
     would have no downlink to lower), and that P1 holds no entry at or
@@ -2518,7 +2736,29 @@ version 2 index on a versioned table, which only pg_upgrade of a
 pre-version-3 BARK index could produce, then works as an index of heap's
 does; REINDEX makes it store tags.
 
-Writers.  barkhandler sets amcanversion and amindexcanversion.  aminsert
+Conversion.  A multikey index with BARK_META_MKTAGS that the catalog
+later calls unique or exclusion (a constraint added after the build, as
+DocumentDB's collMod prepareUnique adds one) keeps the bit and its tagged
+entries, which the table AM still judges and rule D still reads.  But it
+answers false to amindexmaykeeplocator (bark_indexmaykeeplocator, read
+from rd_index at run time), so an update that needs new entries in it
+moves the row, and a constraint check never meets two versions at one
+locator through an update that began after the change.  An update whose
+statement began before it can still keep the locator; waiting those out
+is the conversion barrier, left to a later change.
+
+Updates.  An update that keeps the locator inserts, into each index it
+affects, the new version's entries, tagged.  For a multikey index that is
+the new value's full key set, unchanged keys included: the old entries are
+invalid for the new version once the column changed (the table AM's rule
+is per index, not per key), so `doc && '{b}'` after {a,b} became {b,c}
+finds the row through (b,L,new).  The old entries stay until VACUUM
+removes them.  barkcomparedatums still tells the executor when a value
+gives the same entries ({a,b} to {b,a} on a class that sorts keys), and
+then nothing is inserted.
+
+Writers.  barkhandler sets amcanversion, amindexcanversion and
+amindexmaykeeplocator.  aminsert
 and the build callback read IndexInfo.ii_VersionTag (the executor, or the
 table AM's build and validation scans, set it).  A tagged row's entry is
 placed by (key, TID, tag), as a tagged SINGLE or a tagged OVERSIZED entry,
@@ -2565,8 +2805,12 @@ SINGLE or OVERSIZED entry, the trailer at the MAXALIGNed end of the key and
 ending the entry, a tag never 0, no tag in an index not built for tags), the
 pivot rule (a tagged pivot has every key attribute and a heap TID), the
 (key, TID, tag) order on a page and against the high key and across
-downlinks, and that a version 2 meta page does not claim
-BARK_META_VERSIONED.  amcheck also checks that a leaf whose lower bound has a
+downlinks, that a version 2 meta page does not claim
+BARK_META_VERSIONED, and that BARK_META_MKTAGS comes with
+BARK_META_VERSIONED (redo too, from the page alone) on an index with an
+extracted column that is not GIN-interface (with the index at hand), and
+that no marker is tagged.  An index that is unique or exclusion now but has
+MKTAGS is not corrupt: rd_index can change after the build.  amcheck also checks that a leaf whose lower bound has a
 tag has BARK_LOWBOUND_TAGGED, and the validator that only a leaf with a left
 sibling has it.  pageinspect's bark_page_items shows a tag column, and
 bark_page_stats the flag as lowbound_tagged.
@@ -2593,7 +2837,9 @@ Invariants
     OVERSIZED entry, and on a PIVOT the same bit is BARK_PIVOT_HEAP_TID
     (see "Version tags").
   * Leaf entries are in (key, TID, tag) order; only a SINGLE or OVERSIZED
-    entry of an index with BARK_META_VERSIONED has a tag, never 0.
+    entry of an index with BARK_META_VERSIONED, and with BARK_META_MKTAGS
+    if it has an extracted column, has a tag, never 0; a marker never has
+    one.  BARK_META_MKTAGS implies BARK_META_VERSIONED.
   * An OVERSIZED entry's full tuple lives on a chain of BARK_OVERFLOW pages
     (bark_flags has BARK_OVERFLOW, not BARK_LEAF): each page holds up to
     BarkOverflowChunkSize raw bytes of the tuple and links to the next chunk
@@ -2612,7 +2858,14 @@ Invariants
     by (key, lowest TID) on a leaf.
   * A downlink is a pivot with at most the index's key attributes, the first
     downlink of a level has none, and the first key on the child it points
-    at is greater than or equal to it, by (key, lowest TID) on a leaf.
+    at is greater than or equal to it, by (key, lowest TID) on a leaf.  An
+    internal page's first downlink has no key attributes either, or is a
+    copy of its left neighbour's high key, sharing its overflow chain when
+    OVERSIZED: a split puts a copy of the right half's first item in the
+    left half's high key, and a subtree deletion truncates the first
+    downlink of every page whose left neighbour it deletes.
+  * A deleted page has no items and level 0, whatever it was; no live page
+    links to it, and no downlink names it.
   * A POSTING entry is at least as large as BarkPostingEntrySize of its key
     and of sbm_removal_bound of its set.  An sbm is not size-monotone:
     removing members from a dense run turns all-ones vectors (a 2-bit flag)
