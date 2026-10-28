@@ -229,7 +229,11 @@ ORDER BY c.relpages DESC LIMIT 10;
       point to, and that each LIST, POSTING and OVERSIZED entry is well
       formed (an OVERSIZED entry's overflow chain is read in full).  A
       unique index must have no LIST or POSTING entry: each of its entries
-      has one heap TID.  It
+      has one heap TID.  The meta page's flags must agree with each other
+      and with the index's definition: version tags on a multikey column's
+      keys only in an index built for version tags, and a conversion (see
+      <xref linkend="bark-version-tags"/>) only of such an index, settled
+      only once it has begun.  It
       acquires an <literal>AccessShareLock</literal> on the index and its
       table, as <function>bt_index_check</function> does.  The
       one-argument form <function>bark_index_check(index
