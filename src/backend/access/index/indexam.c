@@ -717,6 +717,29 @@ index_can_return(Relation indexRelation, int attno)
 }
 
 /* ----------------
+ *		index_can_version
+ *
+ *		Does the index store version tags?  Its access method must have
+ *		amcanversion, and, if it has amindexcanversion, say so for this
+ *		index; see "Versioned locators" in amlocator.h.  Every entry of any
+ *		other index is untagged, and the table AM resolves it by locator
+ *		alone.
+ * ----------------
+ */
+bool
+index_can_version(Relation indexRelation)
+{
+	/* Not RELATION_CHECKS: an index's own build and REINDEX ask too. */
+	Assert(RelationIsValid(indexRelation));
+	Assert(indexRelation->rd_indam);
+
+	if (!indexRelation->rd_indam->amcanversion)
+		return false;
+	return indexRelation->rd_indam->amindexcanversion == NULL ||
+		indexRelation->rd_indam->amindexcanversion(indexRelation);
+}
+
+/* ----------------
  *		index_getprocid
  *
  *		Index access methods typically require support routines that are
