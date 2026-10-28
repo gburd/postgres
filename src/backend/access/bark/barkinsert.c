@@ -2593,6 +2593,17 @@ bark_insert_state(Relation index, IndexInfo *indexInfo)
 }
 
 /*
+ * Make itup the key whose first-column prefix bark_compare_itups caches
+ * (BarkKeyInfo.pfxkey), or forget the cached one (NULL).
+ */
+static inline void
+bark_set_insert_key(BarkKeyInfo *keyinfo, IndexTuple itup)
+{
+	keyinfo->pfxkey = itup;
+	keyinfo->pfxready = false;
+}
+
+/*
  * Outcome of bark_insert_key.
  */
 typedef enum BarkPlaceResult
@@ -3061,6 +3072,11 @@ bark_insert_entries(Relation index, BarkInsertState *state,
 	keyinfo->instag = markers ? InvalidIndexVersionTag : tag;
 	if (markers)
 		indexUnchanged = false;
+#ifdef USE_INJECTION_POINTS
+	/* Tests tag markers, to show that amcheck and the validator object. */
+	if (markers && IS_INJECTION_POINT_ATTACHED("bark-insert-tag-markers"))
+		keyinfo->instag = 1;
+#endif
 
 	/*
 	 * `itup` is the full in-memory key tuple at any size; bark_compare_itups
@@ -3087,6 +3103,7 @@ bark_insert_entries(Relation index, BarkInsertState *state,
 	 */
 retry:
 	itup = itups[i];
+	bark_set_insert_key(keyinfo, itup);
 	checking = checkkeys != NULL && checkkeys[i];
 	insertoff = InvalidOffsetNumber;
 
@@ -3200,7 +3217,10 @@ check:
 		if (stack)
 			bark_freestack(stack);
 		if (++i == nitups)
+		{
+			bark_set_insert_key(keyinfo, NULL);
 			return result;
+		}
 		goto retry;
 	}
 
@@ -3277,6 +3297,7 @@ check:
 		}
 
 		itup = itups[i];
+		bark_set_insert_key(keyinfo, itup);
 		checking = checkkeys != NULL && checkkeys[i];
 		if (placed == BARK_PLACE_SPLIT)
 		{
@@ -3325,6 +3346,7 @@ check:
 
 	if (stack)
 		bark_freestack(stack);
+	bark_set_insert_key(keyinfo, NULL);
 	return result;
 }
 
@@ -3440,8 +3462,9 @@ bark_index_has_marker(Relation index, Datum key)
  * With oversizedonly, only the keys too large for CREATE INDEX's sort are
  * inserted: the build's second pass (bark_insert_oversized_keys) does that
  * for a row whose other keys the build loaded, after writing the flag and
- * the markers itself.  `tag` is always 0: such an index stores no tags
- * (bark_indexcanversion).
+ * the markers itself.  Every key entry gets `tag`, which only an index with
+ * BARK_META_MKTAGS is given (bark_check_can_tag); markers never do
+ * (bark_insert_entries).
  */
 static bool
 bark_insert_row_keys(Relation index, BarkInsertState *state, Datum *values,
@@ -3461,8 +3484,7 @@ bark_insert_row_keys(Relation index, BarkInsertState *state, Datum *values,
 	bool		result = true;
 	int			n = 0;
 
-	/* A multikey index stores no tags (bark_indexcanversion). */
-	Assert(tag == InvalidIndexVersionTag);
+	Assert(state->keyinfo->canversion || tag == InvalidIndexVersionTag);
 	oldcxt = MemoryContextSwitchTo(state->rowcxt);
 	bark_extract_row_keys(index, state->keyinfo, values[attno - 1],
 						  isnull[attno - 1], &rk);
