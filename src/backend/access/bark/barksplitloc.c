@@ -101,7 +101,7 @@ bark_split_hikeysz(Relation index, IndexTuple firstright)
 	{
 		if (shape == BARK_SHAPE_LIST || shape == BARK_SHAPE_POSTING)
 			sz = BarkEntryGetBodyOffset(firstright);
-		sz = MAXALIGN(sz) + MAXALIGN(sizeof(ItemPointerData));
+		sz = MAXALIGN(sz) + BarkPivotSuffixReserve;
 	}
 	return MAXALIGN(sz) + sizeof(ItemIdData);
 }
@@ -388,7 +388,7 @@ bark_singleval_cut(Relation index, BarkKeyInfo *keyinfo, Page page,
 		 BarkEntryGetShape(last) != BARK_SHAPE_POSTING) ||
 		bark_compare_itups(keyinfo, index, newitem, last) != 0)
 		return false;
-	bark_entry_tid_range(last, &lo, &hi);
+	bark_entry_tid_range(last, &lo, &hi, keyinfo->tidstride);
 	if (ItemPointerCompare(&newitem->t_tid, &hi) <= 0)
 		return false;
 
@@ -428,5 +428,6 @@ bark_singleval_cut(Relation index, BarkKeyInfo *keyinfo, Page page,
 	if (leftmax <= 0)
 		return false;
 
-	return bark_entry_cut(last, &newitem->t_tid, leftmax, left, right);
+	return bark_entry_cut(last, &newitem->t_tid, leftmax, left, right,
+						  keyinfo->tidstride);
 }

@@ -29,6 +29,7 @@
 #include "access/genam.h"
 #include "access/reloptions.h"
 #include "access/xloginsert.h"
+#include "catalog/pg_am_d.h"
 #include "commands/vacuum.h"
 #include "miscadmin.h"
 #include "optimizer/optimizer.h"
@@ -38,6 +39,7 @@
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
 #include "storage/procarray.h"
+#include "storage/read_stream.h"
 #include "utils/fmgrprotos.h"
 #include "utils/injection_point.h"
 #include "utils/lsyscache.h"
@@ -356,6 +358,11 @@ bark_delete_empty_leaf(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno,
 
 	END_CRIT_SECTION();
 
+	bark_verify_page_change(index, lbuf);
+	bark_verify_page_change(index, buf);
+	bark_verify_page_change(index, rbuf);
+	bark_verify_page_change(index, pbuf);
+
 	UnlockReleaseBuffer(rbuf);
 	UnlockReleaseBuffer(buf);
 	UnlockReleaseBuffer(lbuf);
@@ -436,8 +443,8 @@ bark_delitems_vacuum(Relation index, Buffer buf,
 
 	for (int i = 0; i < nupdated; i++)
 	{
-		if (!PageIndexTupleOverwrite(page, updatedoffsets[i], updated[i],
-									 IndexTupleSize(updated[i])))
+		if (!BarkPageOverwriteEntry(page, updatedoffsets[i], updated[i],
+									IndexTupleSize(updated[i])))
 			elog(PANIC, "failed to rewrite BARK leaf entry at offset %u of block %u of index \"%s\"",
 				 updatedoffsets[i], BufferGetBlockNumber(buf),
 				 RelationGetRelationName(index));
@@ -445,6 +452,7 @@ bark_delitems_vacuum(Relation index, Buffer buf,
 	if (ndeletable > 0)
 		PageIndexMultiDelete(page, deletable, ndeletable);
 	BarkPageGetOpaque(page)->bark_cycleid = 0;
+	BarkPageGetOpaque(page)->bark_flags &= ~BARK_HAS_GARBAGE;	/* a hint */
 
 	MarkBufferDirty(buf);
 
@@ -476,6 +484,8 @@ bark_delitems_vacuum(Relation index, Buffer buf,
 	PageSetLSN(page, recptr);
 
 	END_CRIT_SECTION();
+
+	bark_verify_page_change(index, buf);
 
 	if (updatedbuf != NULL)
 		pfree(updatedbuf);
@@ -545,9 +555,13 @@ typedef struct BarkVacState
  * page but not yet returned, and the heap cannot reuse that TID's line pointer
  * under the scan.  The page is first examined under a share lock, since
  * pages that are not live leaves need no cleanup lock.
+ *
+ * `buf` is block scanblkno, pinned by bark_vacuum_scan's read stream, as
+ * btvacuumpage gets its buffer since nbtree's c5c239e26e3; the pages a
+ * backtrack reaches are off the stream's order and are read here.
  */
 static void
-bark_vacuum_page(BarkVacState *vstate, BlockNumber scanblkno)
+bark_vacuum_page(BarkVacState *vstate, Buffer buf)
 {
 	IndexVacuumInfo *info = vstate->info;
 	IndexBulkDeleteResult *stats = vstate->stats;
@@ -555,11 +569,11 @@ bark_vacuum_page(BarkVacState *vstate, BlockNumber scanblkno)
 	void	   *callback_state = vstate->callback_state;
 	BarkCycleId cycleid = vstate->cycleid;
 	Relation	index = info->index;
+	BlockNumber scanblkno = BufferGetBlockNumber(buf);
 	BlockNumber blkno = scanblkno;
 
 	for (;;)
 	{
-		Buffer		buf;
 		Page		page;
 		BarkPageOpaque opaque;
 		OffsetNumber maxoff;
@@ -575,8 +589,9 @@ bark_vacuum_page(BarkVacState *vstate, BlockNumber scanblkno)
 		bool		clearcycleid;
 		BlockNumber backtrack_to = BARK_P_NONE;
 
-		buf = ReadBufferExtended(index, MAIN_FORKNUM, blkno, RBM_NORMAL,
-								 info->strategy);
+		if (blkno != scanblkno)
+			buf = ReadBufferExtended(index, MAIN_FORKNUM, blkno, RBM_NORMAL,
+									 info->strategy);
 		LockBuffer(buf, BUFFER_LOCK_SHARE);
 		page = BufferGetPage(buf);
 
@@ -687,7 +702,8 @@ bark_vacuum_page(BarkVacState *vstate, BlockNumber scanblkno)
 					palloc(ntids * sizeof(ItemPointerData));
 				int			nlive = 0;
 
-				ntids = bark_entry_get_tids(itup, tids, ntids);
+				ntids = bark_entry_get_tids(itup, tids, ntids,
+											bark_index_tid_stride(index));
 				for (int i = 0; i < ntids; i++)
 				{
 					if (!callback(&tids[i], callback_state))
@@ -907,8 +923,9 @@ bark_vacuum_scan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	Relation	index = info->index;
 	BarkVacState vstate;
 	bool		needLock = !RELATION_IS_LOCAL(index);
-	BlockNumber blkno = BARK_METAPAGE + 1;
 	BlockNumber npages;
+	BlockRangeReadStreamPrivate p;
+	ReadStream *stream;
 	BarkKeyInfo *keyinfo;
 	BarkPendingFSM *pending;
 	int			npending = 0;
@@ -949,7 +966,23 @@ bark_vacuum_scan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 		 * not counted yet or already locked by the backend adding it (which
 		 * extends with EB_LOCK_FIRST), so we never see it uninitialized and
 		 * unlocked.  This is btvacuumscan's loop.
+		 *
+		 * The blocks come from a read stream over [first data block, npages),
+		 * re-armed for the blocks added since each pass, as btvacuumscan does
+		 * since nbtree's c5c239e26e3 (RethinkDB's parallel traversal also
+		 * prefetches each level). block_range_read_stream_cb takes no locks,
+		 * so batch mode is safe.
 		 */
+		p.current_blocknum = BARK_METAPAGE + 1;
+		stream = read_stream_begin_relation(READ_STREAM_MAINTENANCE |
+											READ_STREAM_FULL |
+											READ_STREAM_USE_BATCHING,
+											info->strategy,
+											index,
+											MAIN_FORKNUM,
+											block_range_read_stream_cb,
+											&p,
+											0);
 		for (;;)
 		{
 			if (needLock)
@@ -958,15 +991,30 @@ bark_vacuum_scan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 			if (needLock)
 				UnlockRelationForExtension(index, ExclusiveLock);
 
-			if (blkno >= npages)
+			if (p.current_blocknum >= npages)
 				break;
+			p.last_exclusive = npages;
 
-			for (; blkno < npages; blkno++)
+			for (;;)
 			{
+				Buffer		buf;
+
+				/* Not while holding a buffer lock */
 				vacuum_delay_point(false);
-				bark_vacuum_page(&vstate, blkno);
+
+				buf = read_stream_next_buffer(stream, NULL);
+				if (!BufferIsValid(buf))
+					break;
+				bark_vacuum_page(&vstate, buf);
 			}
+
+			/*
+			 * After returning InvalidBuffer the stream calls the callback
+			 * again only once it is reset.
+			 */
+			read_stream_reset(stream);
 		}
+		read_stream_end(stream);
 	}
 	PG_END_ENSURE_ERROR_CLEANUP(bark_end_vacuum_callback, (Datum) 0);
 	if (callback != NULL)
@@ -1706,6 +1754,12 @@ barkcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 
 /*
  * Parse and validate the index's reloptions into a BarkOptions.
+ *
+ * deduplicate_items and vacuum_cleanup_index_scale_factor are btree's, so
+ * that a btree index BARK implements (pg_index.indimplam) takes every
+ * option a btree index takes.  deduplicate_items = off stops equal keys from
+ * sharing entries (bark_index_coalesces); vacuum_cleanup_index_scale_factor
+ * is accepted and ignored, as nbtree has ignored it since PostgreSQL 14.
  */
 static bytea *
 barkoptions(Datum reloptions, bool validate)
@@ -1714,6 +1768,10 @@ barkoptions(Datum reloptions, bool validate)
 		{"fillfactor", RELOPT_TYPE_INT, offsetof(BarkOptions, fillfactor)},
 		{"prefix_compression", RELOPT_TYPE_BOOL,
 		offsetof(BarkOptions, prefix_compression)},
+		{"deduplicate_items", RELOPT_TYPE_BOOL,
+		offsetof(BarkOptions, deduplicate_items)},
+		{"vacuum_cleanup_index_scale_factor", RELOPT_TYPE_REAL,
+		offsetof(BarkOptions, vacuum_cleanup_index_scale_factor)},
 	};
 
 	return (bytea *) build_reloptions(reloptions, validate,
@@ -1776,6 +1834,15 @@ barkendscan(IndexScanDesc scan)
  * the btree AM's), it stores the heap-TID locator, and it answers ordered-
  * operator (KNN) scans -- ORDER BY col <~> const -- over its scalar key
  * (amcanorderbyop; see barkknn.c).
+ *
+ * It can also implement btree indexes (amimplements): with
+ * default_btree_implementation = bark, or a table AM that asks for it, an
+ * index created USING btree is stored and searched by this code
+ * (pg_index.indimplam).  Such an index has btree's operator classes, whose
+ * families are btree's, so every column takes BARK's scalar path: no
+ * procedure past 6, no extracted column (bark_opfamily_is_own is false).
+ * amsupport 15 and amstrategies 0 are what BARK's own families need; core
+ * accepts both for an implementation ("Implementing btree" in the README).
  */
 Datum
 barkhandler(PG_FUNCTION_ARGS)
@@ -1809,6 +1876,7 @@ barkhandler(PG_FUNCTION_ARGS)
 		.amparallelvacuumoptions =
 		VACUUM_OPTION_PARALLEL_BULKDEL | VACUUM_OPTION_PARALLEL_COND_CLEANUP,
 		.amkeytype = InvalidOid,
+		.amimplements = BTREE_AM_OID,
 
 		.ambuild = barkbuild,
 		.ambuildempty = barkbuildempty,
@@ -1837,6 +1905,7 @@ barkhandler(PG_FUNCTION_ARGS)
 		.amparallelrescan = bark_parallelrescan,
 		.amtranslatestrategy = bark_translate_strategy,
 		.amtranslatecmptype = bark_translate_cmptype,
+		.amcomparedatums = barkcomparedatums,
 	};
 
 	PG_RETURN_POINTER(&amroutine);

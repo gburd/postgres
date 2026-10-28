@@ -561,7 +561,11 @@ INSERT INTO bark_par
 SET min_parallel_table_scan_size = 0;
 SET max_parallel_maintenance_workers = 4;
 SET maintenance_work_mem = '1MB';				-- force a disk-spilling sort
+-- The planner gives a build no workers below 32MB of maintenance_work_mem
+-- each, unless the table's parallel_workers says how many.
+ALTER TABLE bark_par SET (parallel_workers = 4);
 CREATE INDEX bark_par_idx ON bark_par USING bark (a);	-- parallel build
+ALTER TABLE bark_par RESET (parallel_workers);
 SET max_parallel_maintenance_workers = 0;
 CREATE INDEX bark_ser_idx ON bark_par USING bark (a);	-- serial build
 -- The two builds index the same rows: scans over either must agree, and must
@@ -1144,6 +1148,27 @@ INSERT INTO bark_big SELECT 100 + g,
   'K' || lpad(g::text, 6, '0') || bark_bigstr(g, 5000)
   FROM generate_series(1, 30) g;
 CREATE INDEX bark_big_idx ON bark_big USING bark (k);
+
+-- A parallel build defers the oversized keys too: the participant that meets
+-- one says so in the shared state, and the leader inserts them after the load,
+-- so the index is the serial build's.  With no worker launched
+-- (max_parallel_workers = 0) the build falls back to a serial one.  The
+-- parallel_workers reloption grants the workers whatever the table's size.
+ALTER TABLE bark_big SET (parallel_workers = 2);
+SET max_parallel_maintenance_workers = 2;
+CREATE INDEX bark_big_par ON bark_big USING bark (k);
+SET max_parallel_workers = 0;
+CREATE INDEX bark_big_noworkers ON bark_big USING bark (k);
+RESET max_parallel_workers;
+RESET max_parallel_maintenance_workers;
+ALTER TABLE bark_big RESET (parallel_workers);
+SELECT pg_relation_size('bark_big_par') = pg_relation_size('bark_big_idx')
+         AS par_same_size,
+       pg_relation_size('bark_big_noworkers') = pg_relation_size('bark_big_idx')
+         AS noworkers_same_size;
+SELECT bark_index_check('bark_big_par', true),
+       bark_index_check('bark_big_noworkers', true);
+DROP INDEX bark_big_par, bark_big_noworkers;
 
 -- Insert more oversized keys into the built index, forcing leaf splits of
 -- pages that hold oversized entries (and oversized pivots on internal pages).
@@ -1773,7 +1798,16 @@ ALTER INDEX bark_ff50_idx RESET (fillfactor);
 SELECT reloptions FROM pg_class WHERE relname = 'bark_ff50_idx';
 CREATE INDEX bark_ff_bad ON bark_ff USING bark (a) WITH (fillfactor = 5);
 CREATE INDEX bark_ff_bad ON bark_ff USING bark (a) WITH (fillfactor = 101);
-CREATE INDEX bark_ff_bad ON bark_ff USING bark (a) WITH (deduplicate_items = off);
+-- btree's other parameters are accepted, so that BARK can implement btree
+-- indexes (bark_btree_impl in src/test/modules/bark tests what
+-- deduplicate_items = off stores).
+CREATE INDEX bark_ff_dd ON bark_ff USING bark (a)
+  WITH (deduplicate_items = off, vacuum_cleanup_index_scale_factor = 0.5);
+SELECT reloptions FROM pg_class WHERE relname = 'bark_ff_dd';
+SELECT bark_index_check('bark_ff_dd', true);
+DROP INDEX bark_ff_dd;
+CREATE INDEX bark_ff_bad ON bark_ff USING bark (a) WITH (deduplicate_items = 2);
+CREATE INDEX bark_ff_bad ON bark_ff USING bark (a) WITH (vacuum_cleanup_index_scale_factor = -1);
 -- A low fillfactor with wide keys still puts at least two entries on each
 -- page: 200 incompressible ~1kB keys at fillfactor 10 must take fewer than
 -- 200 pages, internal levels and meta page included.
@@ -4541,3 +4575,126 @@ SELECT bark_nk_check('SELECT a, b FROM bark_rme WHERE (a, b) > (' || k || ', 5) 
 FROM (VALUES (3), (11)) v(k);
 DROP TABLE bark_rme, bark_nk;
 DROP FUNCTION bark_nk_check(text);
+
+-- HOT updates of a scalar BARK index.  An index-only scan can return every
+-- column of one, so core decides by image and does not ask
+-- barkcomparedatums.  A change to a
+-- column no index uses is HOT; a change to the key is not; and neither is
+-- numeric 1.0 to 1.00, which compare equal but are stored differently and
+-- an index-only scan returns the stored value.  A new value that is the
+-- same bytes as the old one stored compressed or out of line is HOT; a key
+-- too large for a page (OVERSIZED) that differs in its last byte is not.
+-- INCLUDE columns are stored whole too.  Afterwards the index checks clean
+-- with heapallindexed, and index-only, index, bitmap and sequential scans
+-- agree.
+CREATE TABLE bark_hot (id int, k int, n numeric, t text, x int, w text)
+  WITH (fillfactor = 10);
+CREATE INDEX bark_hot_k ON bark_hot USING bark (k);
+CREATE INDEX bark_hot_n ON bark_hot USING bark (n) INCLUDE (t);
+CREATE INDEX bark_hot_w ON bark_hot USING bark (w);
+INSERT INTO bark_hot SELECT g, g, 1.0, repeat('t', 3000) || g, 0,
+    (SELECT string_agg(md5(g::text || i::text), '') FROM generate_series(1, 300) i)
+  FROM generate_series(1, 20) g;
+SELECT pg_column_compression(t) IS NOT NULL AS t_compressed,
+       pg_column_size(w) > 9000 AS w_out_of_line
+  FROM bark_hot WHERE id = 1;
+CREATE FUNCTION bark_hot_count(OUT upd bigint, OUT hot bigint)
+LANGUAGE sql AS $$
+  SELECT pg_stat_get_xact_tuples_updated('bark_hot'::regclass),
+         pg_stat_get_xact_tuples_hot_updated('bark_hot'::regclass) $$;
+BEGIN;
+UPDATE bark_hot SET x = 1;
+SELECT 'other column' AS step, * FROM bark_hot_count();
+UPDATE bark_hot SET k = k + 100 WHERE id <= 2;
+SELECT 'key' AS step, * FROM bark_hot_count();
+UPDATE bark_hot SET n = 1.00 WHERE id <= 3;
+SELECT 'numeric 1.0 to 1.00' AS step, * FROM bark_hot_count();
+UPDATE bark_hot SET n = 1.00 WHERE id <= 3;
+SELECT 'numeric 1.00 to 1.00' AS step, * FROM bark_hot_count();
+UPDATE bark_hot SET t = repeat('t', 3000) || id WHERE id > 10;
+SELECT 'INCLUDE, same value' AS step, * FROM bark_hot_count();
+UPDATE bark_hot SET t = 'short' WHERE id = 20;
+SELECT 'INCLUDE, new value' AS step, * FROM bark_hot_count();
+UPDATE bark_hot SET w = w || '' WHERE id <= 5;
+SELECT 'oversized key, same value' AS step, * FROM bark_hot_count();
+UPDATE bark_hot SET w = left(w, -1) || 'x' WHERE id = 6;
+SELECT 'oversized key, last byte' AS step, * FROM bark_hot_count();
+COMMIT;
+SELECT bark_index_check('bark_hot_k', true), bark_index_check('bark_hot_n', true),
+       bark_index_check('bark_hot_w', true);
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+EXPLAIN (COSTS OFF) SELECT n, right(t, 2) FROM bark_hot WHERE n = 1;
+SELECT n::text, count(*), sum(length(t)) FROM bark_hot WHERE n = 1 GROUP BY 1 ORDER BY 1;
+SET enable_indexonlyscan = off;
+SELECT n::text, count(*), sum(length(t)) FROM bark_hot WHERE n = 1 GROUP BY 1 ORDER BY 1;
+SELECT array_agg(id ORDER BY id) FROM bark_hot WHERE k > 100;
+SET enable_indexscan = off;
+SET enable_bitmapscan = on;
+SELECT array_agg(id ORDER BY id) FROM bark_hot WHERE k > 100;
+SELECT count(*) FROM bark_hot WHERE n = 1;
+SELECT array_agg(id ORDER BY id) FROM bark_hot
+  WHERE w = ANY (ARRAY(SELECT w FROM bark_hot WHERE id IN (5, 6)));
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+RESET enable_indexscan;
+RESET enable_indexonlyscan;
+SELECT n::text, count(*), sum(length(t)) FROM bark_hot GROUP BY 1 ORDER BY 1;
+SELECT array_agg(id ORDER BY id) FROM bark_hot WHERE k > 100;
+SELECT array_agg(id ORDER BY id) FROM bark_hot
+  WHERE w = ANY (ARRAY(SELECT w FROM bark_hot WHERE id IN (5, 6)));
+DROP TABLE bark_hot;
+DROP FUNCTION bark_hot_count;
+
+-- An exclusion constraint on a scalar BARK column is decided by image, as
+-- for any index that returns its columns: an update that writes a
+-- compressed value back in plain form is the same value, keeps the entries
+-- and is HOT, under an immediate and a deferrable constraint alike.  A
+-- changed value is not HOT and conflicts as an insert would; under the
+-- deferrable constraint it is checked at commit.  bark_excl_hot (isolation)
+-- has a concurrent insertion.
+CREATE TABLE bark_excl (id int, t text, EXCLUDE USING bark (t WITH =))
+  WITH (fillfactor = 10);
+CREATE TABLE bark_excl_d (id int, t text,
+    EXCLUDE USING bark (t WITH =) DEFERRABLE INITIALLY DEFERRED)
+  WITH (fillfactor = 10);
+INSERT INTO bark_excl SELECT g, repeat('e', 3000) || g FROM generate_series(1, 4) g;
+INSERT INTO bark_excl_d SELECT id, t FROM bark_excl;
+SELECT bool_and(pg_column_compression(t) IS NOT NULL) AS compressed FROM bark_excl;
+CREATE FUNCTION bark_excl_count(rel regclass, OUT upd bigint, OUT hot bigint)
+LANGUAGE sql AS $$
+  SELECT pg_stat_get_xact_tuples_updated(rel),
+         pg_stat_get_xact_tuples_hot_updated(rel) $$;
+BEGIN;
+UPDATE bark_excl SET t = t || '';
+SELECT 'immediate, same value' AS step, * FROM bark_excl_count('bark_excl');
+UPDATE bark_excl_d SET t = t || '';
+SELECT 'deferrable, same value' AS step, * FROM bark_excl_count('bark_excl_d');
+COMMIT;
+-- the HOT updates kept the old entries, which still find the rows (terse:
+-- the error detail would print the 3000-byte values)
+\set VERBOSITY terse
+INSERT INTO bark_excl VALUES (5, repeat('e', 3000) || 1);
+INSERT INTO bark_excl VALUES (5, repeat('e', 3000) || 5);
+-- an update to a conflicting value changes it, so it is not HOT, and fails
+UPDATE bark_excl SET t = repeat('e', 3000) || 1 WHERE id = 5;
+BEGIN;
+UPDATE bark_excl_d SET t = t || '' WHERE id = 2;
+UPDATE bark_excl_d SET t = repeat('e', 3000) || 1 WHERE id = 2;
+COMMIT;
+\set VERBOSITY default
+SELECT bark_index_check(indexrelid, true) FROM pg_index
+  WHERE indrelid IN ('bark_excl'::regclass, 'bark_excl_d'::regclass)
+  ORDER BY indexrelid::regclass::text;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+EXPLAIN (COSTS OFF) SELECT id FROM bark_excl WHERE t = 'x';
+SELECT id FROM bark_excl WHERE t = repeat('e', 3000) || 1;
+SELECT array_agg(id ORDER BY id) FROM bark_excl b
+  WHERE t = (SELECT t FROM bark_excl WHERE id = b.id);
+SELECT array_agg(id ORDER BY id) FROM bark_excl_d b
+  WHERE t = (SELECT t FROM bark_excl_d WHERE id = b.id);
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+DROP TABLE bark_excl, bark_excl_d;
+DROP FUNCTION bark_excl_count;
