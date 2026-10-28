@@ -1098,21 +1098,28 @@ XLogCompressBackupBlock(const PageData *page, uint16 hole_offset, uint16 hole_le
 
 		case WAL_COMPRESSION_ZSTD:
 #ifdef USE_ZSTD
-			if (zstd_cctx == NULL)
-				zstd_cctx = ZSTD_createCCtx();
-
-			/*
-			 * We may be in a critical section, so skip if the context
-			 * allocation failed.
-			 */
-			if (zstd_cctx == NULL)
+			/* The cached context is process-private, not safe for carriers. */
+			if (multithreaded)
+				len = ZSTD_compress(dest, COMPRESS_BUFSIZE, source, orig_len,
+									ZSTD_CLEVEL_DEFAULT);
+			else
 			{
-				len = -1;
-				break;
-			}
+				if (zstd_cctx == NULL)
+					zstd_cctx = ZSTD_createCCtx();
 
-			len = ZSTD_compressCCtx(zstd_cctx, dest, COMPRESS_BUFSIZE,
-									source, orig_len, ZSTD_CLEVEL_DEFAULT);
+				/*
+				 * We may be in a critical section, so skip if the context
+				 * allocation failed.
+				 */
+				if (zstd_cctx == NULL)
+				{
+					len = -1;
+					break;
+				}
+
+				len = ZSTD_compressCCtx(zstd_cctx, dest, COMPRESS_BUFSIZE,
+										source, orig_len, ZSTD_CLEVEL_DEFAULT);
+			}
 			if (ZSTD_isError(len))
 				len = -1;		/* failure */
 #else
