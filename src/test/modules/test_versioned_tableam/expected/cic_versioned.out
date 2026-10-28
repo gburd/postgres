@@ -1,0 +1,109 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1_reset s1_lock s2_cic s1_upd s1_unlock s1_upd2 s1_check
+step s1_reset: SELECT test_versioned_reset();
+test_versioned_reset
+--------------------
+                    
+(1 row)
+
+step s1_lock: SELECT pg_advisory_lock(4243);
+pg_advisory_lock
+----------------
+                
+(1 row)
+
+step s2_cic: CREATE INDEX CONCURRENTLY cv_k ON cv (cv_lock(k)); <waiting ...>
+step s1_upd: UPDATE cv SET k = k + 1000 WHERE id <= 10;
+step s1_unlock: SELECT pg_advisory_unlock(4243);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step s2_cic: <... completed>
+step s1_upd2: UPDATE cv SET k = k + 1000 WHERE id > 40;
+step s1_check: 
+	SET enable_seqscan = off;
+	SET enable_bitmapscan = off;
+	SELECT count(*) FROM cv WHERE cv_lock(k) > 0;
+	SELECT count(*) FROM cv WHERE cv_lock(k) = 1005;
+	RESET enable_seqscan;
+	RESET enable_bitmapscan;
+	SELECT indisready, indisvalid FROM pg_index WHERE indexrelid = 'cv_k'::regclass;
+	SELECT counter FROM test_versioned_seen
+	 WHERE counter IN ('validate_tagged', 'insert_tagged', 'scan_tagged');
+
+count
+-----
+   50
+(1 row)
+
+count
+-----
+    1
+(1 row)
+
+indisready|indisvalid
+----------+----------
+t         |t         
+(1 row)
+
+counter        
+---------------
+insert_tagged  
+scan_tagged    
+validate_tagged
+(3 rows)
+
+
+starting permutation: s1_lock s2_cic_u s1_dup s1_unlock s1_ready
+step s1_lock: SELECT pg_advisory_lock(4243);
+pg_advisory_lock
+----------------
+                
+(1 row)
+
+step s2_cic_u: CREATE UNIQUE INDEX CONCURRENTLY cv_k ON cv (cv_lock(k)); <waiting ...>
+step s1_dup: UPDATE cv SET k = 1 WHERE id = 2;
+step s1_unlock: SELECT pg_advisory_unlock(4243);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step s2_cic_u: <... completed>
+ERROR:  duplicate key value violates unique constraint "cv_k"
+step s1_ready: 
+	SELECT indisready, indisvalid FROM pg_index WHERE indexrelid = 'cv_k'::regclass;
+	SELECT test_versioned_reset();
+	UPDATE cv SET k = 5000 WHERE id = 30;
+	SELECT test_versioned_tag('cv_k', ctid) = xmin::text::bigint AS tagged
+	  FROM cv WHERE id = 30;
+	SET test_versioned_tableam.keep_locator = pretend;
+	UPDATE cv SET k = 5001 WHERE id = 31;
+	RESET test_versioned_tableam.keep_locator;
+	SELECT counter FROM test_versioned_seen
+	 WHERE counter IN ('insert_tagged', 'update_kept');
+
+indisready|indisvalid
+----------+----------
+t         |f         
+(1 row)
+
+test_versioned_reset
+--------------------
+                    
+(1 row)
+
+tagged
+------
+t     
+(1 row)
+
+counter      
+-------------
+insert_tagged
+update_kept  
+(2 rows)
+
