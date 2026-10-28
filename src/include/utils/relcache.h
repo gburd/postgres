@@ -61,6 +61,7 @@ extern Oid	RelationGetToastChunkIdType(Relation relation);
 extern List *RelationGetIndexExpressions(Relation relation);
 extern List *RelationGetDummyIndexExpressions(Relation relation);
 extern List *RelationGetIndexPredicate(Relation relation);
+extern Bitmapset *RelationGetIndexedAttrs(Relation indexRel);
 extern bytea **RelationGetIndexAttOptions(Relation relation, bool copy);
 
 /*
