@@ -417,8 +417,8 @@ FOR TYPE int4[] USING bark FAMILY bark_int4_array_sim11_ops AS
                                              internal),
     STORAGE int4;
 
--- Heap declaring offsets up to MaxOffsetNumber, only to reach BARK's refusal
--- of such a table (bark_locator.sql).
+-- Heap declaring offsets up to MaxOffsetNumber, whose real offsets stay
+-- heap's (bark_locator.sql).
 CREATE FUNCTION bark_test_bigoffset_handler(internal)
 RETURNS table_am_handler
 AS 'MODULE_PATHNAME' LANGUAGE C;
