@@ -37,7 +37,7 @@ tests += {
     'specs': [
       'cic_versioned',
       'cic_bark',
-    ] + (get_option('injection_points') ? ['bark_lower_bound'] : []),
+    ] + (get_option('injection_points') ? ['bark_lower_bound', 'bark_mk_convert', 'bark_mk_convert_race'] : []),
     'regress_args': ['--temp-config', files('versioned.conf')],
     'runningcheck': false,
   },
@@ -54,6 +54,7 @@ tests += {
       't/006_bark_corrupt.pl',
       't/007_bark_lower_bound.pl',
       't/008_bark_mktags.pl',
+      't/009_bark_convert.pl',
     ],
   },
 }
