@@ -422,6 +422,7 @@ typedef struct _indxInfo
 	char	   *indreloptions;	/* options specified by WITH (...) */
 	char	   *indstatcols;	/* column numbers with statistics */
 	char	   *indstatvals;	/* statistic values for columns */
+	char	   *indimplam;		/* name of implementing index AM, or NULL */
 	int			indnkeyattrs;	/* number of index key attributes */
 	int			indnattrs;		/* total number of index attributes */
 	int		   *indkeys;		/* In spite of the name 'indkeys' this field
