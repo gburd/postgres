@@ -49,6 +49,7 @@ spghandler(PG_FUNCTION_ARGS)
 		.amsupport = SPGISTNProc,
 		.amoptsprocnum = SPGIST_OPTIONS_PROC,
 		.amcanorder = false,
+		.ambtreeopfamilies = false,
 		.amcanorderbyop = true,
 		.amcanhash = false,
 		.amconsistentequality = false,
