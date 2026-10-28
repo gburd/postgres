@@ -14,6 +14,7 @@
 #ifndef GENAM_H
 #define GENAM_H
 
+#include "access/amlocator.h"
 #include "access/htup.h"
 #include "access/sdir.h"
 #include "access/skey.h"
@@ -42,6 +43,31 @@ typedef struct IndexBuildResult
 } IndexBuildResult;
 
 /*
+ * Verdict of an IndexBulkDeleteVersionCallback on one index entry.
+ *
+ * INDEX_ENTRY_LIVE_UNTAG lets the index AM rewrite the entry with tag
+ * InvalidIndexVersionTag, so that it means "older than the row's base".  The
+ * table AM answers so only for an entry whose meaning that does not change:
+ * one valid for the row's new base, with a tag no newer than that base.
+ * The index AM may also keep the entry as it is.
+ */
+typedef enum IndexEntryVerdict
+{
+	INDEX_ENTRY_DEAD,			/* remove the entry */
+	INDEX_ENTRY_LIVE,			/* keep it unchanged */
+	INDEX_ENTRY_LIVE_UNTAG,		/* keep it; its tag may be cleared */
+} IndexEntryVerdict;
+
+/*
+ * Callback that tells ambulkdelete what to do with the entry (tid, tag);
+ * see IndexVacuumInfo.version_callback.  An entry is dead when no snapshot
+ * can see a version of the row for which the entry is valid.
+ */
+typedef IndexEntryVerdict (*IndexBulkDeleteVersionCallback) (ItemPointer tid,
+															 IndexVersionTag tag,
+															 void *state);
+
+/*
  * Struct for input arguments passed to ambulkdelete and amvacuumcleanup
  *
  * num_heap_tuples is accurate only when estimated_count is false;
@@ -60,6 +86,16 @@ typedef struct IndexVacuumInfo
 	int			message_level;	/* ereport level for progress messages */
 	double		num_heap_tuples;	/* tuples remaining in heap */
 	BufferAccessStrategy strategy;	/* access strategy for reads */
+
+	/*
+	 * Set only by a table AM whose locator is versioned (see amlocator.h),
+	 * for an index whose AM has amcanversion; NULL otherwise.  When it is
+	 * set, ambulkdelete asks version_callback, with version_state, about
+	 * every entry, tagged or not, instead of the callback it is passed.  The
+	 * table AM reaches the index through version_state.
+	 */
+	IndexBulkDeleteVersionCallback version_callback;
+	void	   *version_state;
 } IndexVacuumInfo;
 
 /*
@@ -92,7 +128,10 @@ typedef struct IndexBulkDeleteResult
 	BlockNumber pages_free;		/* # pages available for reuse */
 } IndexBulkDeleteResult;
 
-/* Typedef for callback function to determine if a tuple is bulk-deletable */
+/*
+ * Typedef for callback function to determine if a tuple is bulk-deletable.
+ * See IndexVacuumInfo.version_callback for the versioned variant.
+ */
 typedef bool (*IndexBulkDeleteCallback) (ItemPointer itemptr, void *state);
 
 /* struct definitions appear in relscan.h */
