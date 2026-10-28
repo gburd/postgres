@@ -3,10 +3,8 @@
  * barkxlog.h
  *	  header file for BARK WAL records and redo routines
  *
- * BARK changes that have no record of their own here (splits, new roots,
- * overflow chains) are still WAL-logged with generic WAL (generic_xlog.c).
- * Each change to a page is in exactly one record of either kind, so replay
- * applies them in LSN order per page.
+ * Every change BARK makes to a page after CREATE INDEX is in exactly one of
+ * these records.
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
@@ -42,6 +40,125 @@
 #define XLOG_BARK_OVERWRITE		0x60	/* replace an entry on a leaf */
 #define XLOG_BARK_ADD_TID		0x70	/* add one heap TID to a LIST or
 										 * POSTING entry */
+#define XLOG_BARK_SPLIT			0x80	/* split a leaf or internal page */
+#define XLOG_BARK_OVERFLOW		0x90	/* write overflow pages of an
+										 * oversized entry */
+#define XLOG_BARK_NEWROOT		0xA0	/* add a level above a split root */
+#define XLOG_BARK_CREATE_ROOT	0xB0	/* give an empty index its root leaf */
+#define XLOG_BARK_INSERT_SWAP	0xC0	/* divide a LIST or POSTING entry
+										 * around a new heap TID */
+#define XLOG_BARK_DELETE		0xD0	/* delete entries on a leaf whose heap
+										 * tuples are dead (bottom-up
+										 * deletion) */
+#define XLOG_BARK_MERGE			0xE0	/* merge a leaf's equal-key entries
+										 * before a split */
+
+/*
+ * The meta page's root and level, set by NEWROOT and CREATE_ROOT, as
+ * nbtree's xl_btree_metadata.
+ */
+typedef struct xl_bark_metadata
+{
+	BlockNumber root;
+	uint32		level;
+} xl_bark_metadata;
+
+/*
+ * A page split (bark_split), as nbtree's xl_btree_split.  Both halves get
+ * the cycle ID that the split stamped on them (zero for an internal page).
+ *
+ * Backup Blk 0: left page (the original block, rebuilt)
+ * Backup Blk 1: new right page
+ * Backup Blk 2: original right sibling (only if the original had one)
+ * Backup Blk 3: child whose split the new downlink finishes (internal only)
+ *
+ * The right page is logged whole: its block data is the page's tuple area,
+ * pd_upper to pd_special, of the page the primary built by adding the
+ * entries in offset order to an empty page, the format bark_restore_page
+ * reads (as nbtree's _bt_restore_page).  It holds the original high key
+ * unless the original page was rightmost, then the entries from the split
+ * point on.
+ *
+ * The left page is usually rebuilt from the original page, which redo has
+ * (it is the same block, before the split), as btree_xlog_split does: its
+ * entries are the original page's entries before firstrightoff, stored as
+ * they are, with the new entry added before newitemoff if it went left
+ * (XLH_BARK_SPLIT_NEWLEFT) and the entry at replaceoff replaced if that
+ * entry stayed left (XLH_BARK_SPLIT_REPLACE), after the new high key and,
+ * on a BARK_PREFIX leaf, the original page's PREFIX item; both sides build
+ * it with bark_split_build_left.  The block data is then the new high key,
+ * the new entry if it went left and the replacement if it stayed left, in
+ * that order, each coded for the page and padded to MAXALIGN.  That works
+ * only while the left half keeps the original page's prefix, or neither has
+ * one: a leaf split that gives the left half a different prefix (or takes
+ * its prefix away) re-codes every entry, so the left page is then logged
+ * whole as the right page is (XLH_BARK_SPLIT_LWHOLE), and the offsets are
+ * unused.
+ */
+typedef struct xl_bark_split
+{
+	uint32		level;			/* tree level of the split page */
+	uint16		flags;			/* XLH_BARK_SPLIT_* */
+	uint16		cycleid;		/* BTCycleId stamped on both halves */
+	BlockNumber leftprev;		/* original page's left sibling */
+	BlockNumber rightnext;		/* original page's right sibling */
+	OffsetNumber firstrightoff; /* first original entry that moved right */
+	OffsetNumber newitemoff;	/* new entry's offset, if it went left */
+	OffsetNumber replaceoff;	/* replaced entry's offset, if it stayed left */
+} xl_bark_split;
+
+#define SizeOfBarkSplit	(offsetof(xl_bark_split, replaceoff) + sizeof(OffsetNumber))
+
+#define XLH_BARK_SPLIT_LEAF		0x0001	/* the split page is a leaf */
+#define XLH_BARK_SPLIT_LPREFIX	0x0002	/* left half has BARK_PREFIX */
+#define XLH_BARK_SPLIT_RPREFIX	0x0004	/* right half has BARK_PREFIX */
+#define XLH_BARK_SPLIT_NEWLEFT	0x0008	/* new entry went to the left half */
+#define XLH_BARK_SPLIT_REPLACE	0x0010	/* replaced entry stayed left */
+#define XLH_BARK_SPLIT_LWHOLE	0x0020	/* left half is logged whole */
+
+/*
+ * A new root above the split of the old one (bark_new_root), as nbtree's
+ * xl_btree_newroot.
+ *
+ * Backup Blk 0: new root
+ * Backup Blk 1: left child, whose split the new root finishes
+ * Backup Blk 2: meta page
+ *
+ * In payload of blk 0: the root's two downlinks, as the tuple area of a split
+ * In payload of blk 2: xl_bark_metadata
+ */
+typedef struct xl_bark_newroot
+{
+	BlockNumber rootblk;		/* location of new root */
+	uint32		level;			/* its tree level */
+} xl_bark_newroot;
+
+#define SizeOfBarkNewroot	(offsetof(xl_bark_newroot, level) + sizeof(uint32))
+
+/*
+ * Overflow pages of an OVERSIZED entry's chain (bark_write_overflow_chain),
+ * up to BARK_OVERFLOW_PER_RECORD per record.  Each page is rebuilt from its
+ * block data: an xl_bark_overflow_page, then the page's slice of the tuple.
+ * No main data.
+ *
+ * Backup Blk 0..n-1: the overflow pages, in chain order
+ */
+#define BARK_OVERFLOW_PER_RECORD	XLR_NORMAL_MAX_BLOCK_ID
+
+typedef struct xl_bark_overflow_page
+{
+	BlockNumber next;			/* next page of the chain, or BARK_P_NONE */
+} xl_bark_overflow_page;
+
+/*
+ * The first root of an empty index (bark_create_root_leaf): an empty leaf
+ * that is also the root.  No main data.
+ *
+ * Backup Blk 0: the new leaf
+ * Backup Blk 1: meta page
+ *
+ * In payload of blk 1: xl_bark_metadata
+ */
 
 /*
  * VACUUM's changes to one leaf page, as nbtree's xl_btree_vacuum: entries
@@ -68,6 +185,53 @@ typedef struct xl_bark_vacuum
 } xl_bark_vacuum;
 
 #define SizeOfBarkVacuum	(offsetof(xl_bark_vacuum, nupdated) + sizeof(uint16))
+
+/*
+ * Bottom-up deletion's changes to one leaf (bark_delitems_delete), as
+ * nbtree's xl_btree_delete: the same payload as xl_bark_vacuum, entries
+ * deleted whole and LIST or POSTING entries rewritten with the members that
+ * survive, plus the conflict horizon of the heap tuples whose entries go.
+ * Unlike VACUUM, the record leaves the page's vacuum cycle ID alone, and redo
+ * takes an exclusive lock rather than a cleanup lock (see "Bottom-up
+ * deletion" in the README).
+ *
+ * Backup Blk 0: leaf page
+ *
+ * In payload of blk 0: as xl_bark_vacuum
+ */
+typedef struct xl_bark_delete
+{
+	TransactionId snapshotConflictHorizon;
+	uint16		ndeleted;
+	uint16		nupdated;
+	bool		isCatalogRel;	/* to handle recovery conflict during logical
+								 * decoding on standby */
+} xl_bark_delete;
+
+#define SizeOfBarkDelete	(offsetof(xl_bark_delete, isCatalogRel) + sizeof(bool))
+
+/*
+ * The merge of adjacent equal-key entries on one leaf (bark_merge_page), as
+ * nbtree's xl_btree_dedup is a record of its own: the entries absorbed into
+ * the one before them are deleted, and that one is rewritten as the merged
+ * entry.  The payload is xl_bark_vacuum's, but the changes are applied in the
+ * other order, deletions first: a merged entry is larger than the entry it
+ * replaces, and on a full page it fits only once the absorbed entries' space
+ * is free.  The rewritten entries' offsets are therefore numbered as they are
+ * after the deletions.  No heap TID leaves the page, so there is no conflict
+ * horizon, and redo takes an exclusive lock, not a cleanup lock.
+ *
+ * Backup Blk 0: leaf page
+ *
+ * In payload of blk 0: as xl_bark_vacuum
+ */
+typedef struct xl_bark_merge
+{
+	uint16		ndeleted;
+	uint16		nupdated;
+} xl_bark_merge;
+
+#define SizeOfBarkMerge	(offsetof(xl_bark_merge, nupdated) + sizeof(uint16))
 
 /*
  * Deletion of an empty leaf (bark_delete_empty_leaf): the left sibling's
@@ -178,6 +342,24 @@ typedef struct xl_bark_add_tid
 } xl_bark_add_tid;
 
 #define SizeOfBarkAddTid	(offsetof(xl_bark_add_tid, tid) + sizeof(ItemPointerData))
+
+/*
+ * A heap TID inserted inside the TID range of a LIST or POSTING entry that
+ * cannot take it (bark_swap_tid_entry): the entry at offnum is divided around
+ * the TID into two entries of its key, which replace it at offnum and
+ * offnum + 1, as nbtree's posting-list split (XLOG_BTREE_INSERT_POST with a
+ * postingoff) rewrites the posting list and adds the new item.  Only the TID
+ * is logged: redo calls bark_entry_swap_tid on the entry, as the primary did.
+ *
+ * Backup Blk 0: leaf page
+ */
+typedef struct xl_bark_insert_swap
+{
+	OffsetNumber offnum;		/* entry being divided */
+	ItemPointerData tid;		/* the TID */
+}			xl_bark_insert_swap;
+
+#define SizeOfBarkInsertSwap	(offsetof(xl_bark_insert_swap, tid) + sizeof(ItemPointerData))
 
 /*
  * prototypes for functions in barkxlog.c
