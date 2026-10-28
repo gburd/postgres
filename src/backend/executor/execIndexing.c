@@ -114,6 +114,7 @@
 #include "executor/executor.h"
 #include "nodes/nodeFuncs.h"
 #include "storage/lmgr.h"
+#include "utils/datum.h"
 #include "utils/injection_point.h"
 #include "utils/lsyscache.h"
 #include "utils/multirangetypes.h"
@@ -140,6 +141,9 @@ static bool check_exclusion_or_unique_constraint(Relation heap, Relation index,
 static bool index_recheck_constraint(Relation index, const Oid *constr_procs,
 									 const Datum *existing_values, const bool *existing_isnull,
 									 const Datum *new_values);
+static bool FormIndexDatumForRow(ResultRelInfo *resultRelInfo, int i,
+								 bool reuse, TupleTableSlot *slot,
+								 EState *estate, Datum *values, bool *isnull);
 static bool check_exclusion_for_insert(Relation heapRelation,
 									   Relation indexRelation,
 									   IndexInfo *indexInfo,
@@ -276,6 +280,96 @@ ExecCloseIndices(ResultRelInfo *resultRelInfo)
 	 */
 }
 
+/*
+ * Does the i'th index get an entry for the row in slot, and with which
+ * datums?  If the index is partial and the row does not satisfy its
+ * predicate, return false.  Otherwise form the datums into values and
+ * isnull, and return true.
+ *
+ * With reuse, slot must hold the new row of the UPDATE that
+ * ExecUpdateModifiedIdxAttrs() decided last: what that found out about
+ * this index for the row, if anything, is used instead of evaluating the
+ * index's predicate and expressions again.
+ */
+static bool
+FormIndexDatumForRow(ResultRelInfo *resultRelInfo, int i, bool reuse,
+					 TupleTableSlot *slot, EState *estate,
+					 Datum *values, bool *isnull)
+{
+	IndexInfo  *indexInfo = resultRelInfo->ri_IndexRelationInfo[i];
+	ExprContext *econtext = GetPerTupleExprContext(estate);
+	NewIndexDatums *nid = NULL;
+
+	if (reuse && resultRelInfo->ri_NewIndexDatums != NULL)
+		nid = &resultRelInfo->ri_NewIndexDatums[i];
+
+	if (nid != NULL && nid->state == NEWIDX_OUTSIDE)
+	{
+		Assert(indexInfo->ii_Predicate != NIL);
+		return false;
+	}
+	if (nid != NULL && nid->state == NEWIDX_DATUMS)
+	{
+		memcpy(values, nid->values,
+			   sizeof(Datum) * indexInfo->ii_NumIndexAttrs);
+		memcpy(isnull, nid->isnull,
+			   sizeof(bool) * indexInfo->ii_NumIndexAttrs);
+#ifdef USE_ASSERT_CHECKING
+		{
+			Datum		check_values[INDEX_MAX_KEYS];
+			bool		check_isnull[INDEX_MAX_KEYS];
+			ListCell   *expr = list_head(indexInfo->ii_Expressions);
+
+			/* the saved datums must be what evaluating would give */
+			econtext->ecxt_scantuple = slot;
+			if (indexInfo->ii_Predicate != NIL)
+			{
+				if (indexInfo->ii_PredicateState == NULL)
+					indexInfo->ii_PredicateState =
+						ExecPrepareQual(indexInfo->ii_Predicate, estate);
+				Assert(ExecQual(indexInfo->ii_PredicateState, econtext));
+			}
+			FormIndexDatum(indexInfo, slot, estate,
+						   check_values, check_isnull);
+			for (int k = 0; k < indexInfo->ii_NumIndexAttrs; k++)
+			{
+				AttrNumber	attnum = indexInfo->ii_IndexAttrNumbers[k];
+				Oid			typid;
+				int16		typlen;
+				bool		typbyval;
+
+				if (attnum != 0)
+					typid = TupleDescAttr(RelationGetDescr(resultRelInfo->ri_RelationDesc),
+										  attnum - 1)->atttypid;
+				else
+				{
+					typid = exprType(lfirst(expr));
+					expr = lnext(indexInfo->ii_Expressions, expr);
+				}
+				get_typlenbyval(typid, &typlen, &typbyval);
+				Assert(check_isnull[k] == isnull[k]);
+				Assert(isnull[k] ||
+					   datumIsEqual(check_values[k], values[k],
+									typbyval, typlen));
+			}
+		}
+#endif
+		return true;
+	}
+
+	econtext->ecxt_scantuple = slot;
+	if (indexInfo->ii_Predicate != NIL)
+	{
+		if (indexInfo->ii_PredicateState == NULL)
+			indexInfo->ii_PredicateState =
+				ExecPrepareQual(indexInfo->ii_Predicate, estate);
+		if (!ExecQual(indexInfo->ii_PredicateState, econtext))
+			return false;
+	}
+	FormIndexDatum(indexInfo, slot, estate, values, isnull);
+	return true;
+}
+
 /* ----------------------------------------------------------------
  *		ExecInsertIndexTuples
  *
@@ -382,36 +476,15 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 		if ((flags & EIIT_ONLY_SUMMARIZING) && !indexInfo->ii_Summarizing)
 			continue;
 
-		/* Check for partial index */
-		if (indexInfo->ii_Predicate != NIL)
-		{
-			ExprState  *predicate;
-
-			/*
-			 * If predicate state not set up yet, create it (in the estate's
-			 * per-query context)
-			 */
-			predicate = indexInfo->ii_PredicateState;
-			if (predicate == NULL)
-			{
-				predicate = ExecPrepareQual(indexInfo->ii_Predicate, estate);
-				indexInfo->ii_PredicateState = predicate;
-			}
-
-			/* Skip this index-update if the predicate isn't satisfied */
-			if (!ExecQual(predicate, econtext))
-				continue;
-		}
-
 		/*
-		 * FormIndexDatum fills in its values and isnull parameters with the
-		 * appropriate values for the column(s) of the index.
+		 * Skip a partial index whose predicate the row does not satisfy, and
+		 * form the index's datums for the row.  For an UPDATE, these may be
+		 * known already.
 		 */
-		FormIndexDatum(indexInfo,
-					   slot,
-					   estate,
-					   values,
-					   isnull);
+		if (!FormIndexDatumForRow(resultRelInfo, i,
+								  (flags & EIIT_NEW_DATUMS) != 0,
+								  slot, estate, values, isnull))
+			continue;
 
 		/* Check whether to apply noDupErr to this index */
 		applyNoDupErr = (flags & EIIT_NO_DUPE_ERROR) &&
@@ -605,9 +678,12 @@ ExecCheckHotExclusion(ResultRelInfo *resultRelInfo, EState *estate,
 
 		/*
 		 * ExecUpdateModifiedIdxAttrs() only notes an index the row is in, so
-		 * a partial index's predicate holds.
+		 * a partial index's predicate holds, and has the row's datums.
 		 */
-		FormIndexDatum(indexInfo, slot, estate, values, isnull);
+		if (!FormIndexDatumForRow(resultRelInfo, i, true, slot, estate,
+								  values, isnull))
+			elog(ERROR, "row outside the predicate of index \"%s\"",
+				 RelationGetRelationName(indexRelation));
 
 		applyNoDupErr = (flags & EIIT_NO_DUPE_ERROR) &&
 			(arbiterIndexes == NIL ||
