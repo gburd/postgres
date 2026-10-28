@@ -35,13 +35,23 @@ tests += {
   'isolation': {
     'specs': [
       'cic_versioned',
-    ],
+      'cic_bark',
+    ] + (get_option('injection_points') ? ['bark_lower_bound'] : []),
     'regress_args': ['--temp-config', files('versioned.conf')],
     'runningcheck': false,
   },
   'tap': {
+    'env': {
+       'enable_injection_points': get_option('injection_points') ? 'yes' : 'no',
+    },
     'tests': [
       't/001_apply.pl',
+      't/002_bark_tags.pl',
+      't/003_bark_readers.pl',
+      't/004_bark_vacuum.pl',
+      't/005_bark_more.pl',
+      't/006_bark_corrupt.pl',
+      't/007_bark_lower_bound.pl',
     ],
   },
 }

@@ -30,7 +30,9 @@
  */
 #define XLOG_BARK_VACUUM		0x00	/* delete entries on a leaf during
 										 * VACUUM */
-#define XLOG_BARK_UNLINK_PAGE	0x10	/* delete an empty leaf from the tree */
+#define XLOG_BARK_UNLINK_PAGE	0x10	/* delete an empty leaf from the tree,
+										 * or lower a leaf's lower bound
+										 * (XLH_BARK_UNLINK_LOWER_SEP) */
 #define XLOG_BARK_REUSE_PAGE	0x20	/* deleted page is about to be reused
 										 * from the FSM */
 #define XLOG_BARK_MARK_DELETED	0x30	/* free one overflow page */
@@ -117,6 +119,8 @@ typedef struct xl_bark_split
 #define XLH_BARK_SPLIT_NEWLEFT	0x0008	/* new entry went to the left half */
 #define XLH_BARK_SPLIT_REPLACE	0x0010	/* replaced entry stayed left */
 #define XLH_BARK_SPLIT_LWHOLE	0x0020	/* left half is logged whole */
+#define XLH_BARK_SPLIT_LLOWTAG	0x0040	/* left half has BARK_LOWBOUND_TAGGED */
+#define XLH_BARK_SPLIT_RLOWTAG	0x0080	/* right half has BARK_LOWBOUND_TAGGED */
 
 /*
  * A new root above the split of the old one (bark_new_root), as nbtree's
@@ -170,8 +174,14 @@ typedef struct xl_bark_overflow_page
  * whole: re-forming a POSTING entry needs the index's tuple descriptor, which
  * redo does not have.  Rewrites never grow an entry.
  *
- * Redo also clears the page's vacuum cycle ID.  A record with nothing deleted
- * or rewritten is written only to clear a page's cycle ID.
+ * Then, after the deletions, tagged entries are untagged in place, one at a
+ * time in the order logged (bark_vacuum_untag): the entry at the i'th
+ * "from" offset is removed and the i'th untagged entry goes in at the i'th
+ * "to" offset, at or before it (BarkPageMoveEntry).  Offsets are as of that
+ * step.
+ *
+ * Redo also clears the page's vacuum cycle ID.  A record with nothing deleted,
+ * rewritten or untagged is written only to clear a page's cycle ID.
  *
  * Backup Blk 0: leaf page
  *
@@ -179,14 +189,18 @@ typedef struct xl_bark_overflow_page
  * - DELETED TARGET OFFSET NUMBERS (ndeleted)
  * - UPDATED TARGET OFFSET NUMBERS (nupdated)
  * - UPDATED ENTRIES (nupdated), each padded to MAXALIGN(IndexTupleSize())
+ * - UNTAGGED "FROM" OFFSET NUMBERS (nuntagged)
+ * - UNTAGGED "TO" OFFSET NUMBERS (nuntagged)
+ * - UNTAGGED ENTRIES (nuntagged), each padded to MAXALIGN(IndexTupleSize())
  */
 typedef struct xl_bark_vacuum
 {
 	uint16		ndeleted;
 	uint16		nupdated;
+	uint16		nuntagged;
 } xl_bark_vacuum;
 
-#define SizeOfBarkVacuum	(offsetof(xl_bark_vacuum, nupdated) + sizeof(uint16))
+#define SizeOfBarkVacuum	(offsetof(xl_bark_vacuum, nuntagged) + sizeof(uint16))
 
 /*
  * Bottom-up deletion's changes to one leaf (bark_delitems_delete), as
@@ -241,12 +255,31 @@ typedef struct xl_bark_merge
  * downlink in the parent (at poffset) is pointed at the right sibling and the
  * right sibling's own downlink, the next item, is removed, and the target is
  * reinitialized as a deleted leaf that keeps its sibling links.  This is
- * nbtree's mark-half-dead and unlink steps in one record.
+ * nbtree's mark-half-dead and unlink steps in one record.  The right sibling
+ * takes over the target's lower bound, and with it the target's
+ * BARK_LOWBOUND_TAGGED (XLH_BARK_UNLINK_LOWTAG).
  *
  * Backup Blk 0: target leaf (reinitialized)
  * Backup Blk 1: left sibling
  * Backup Blk 2: right sibling
  * Backup Blk 3: parent
+ *
+ * The same opcode also logs a second operation, the lowering of a leaf's
+ * lower bound (bark_lower_bound), since BARK's rmgr has no free opcode.  The
+ * two are told apart by XLH_BARK_UNLINK_LOWER_SEP and by the absence of
+ * block 0: a lowering deletes no page.  It moves no entry: the left page's
+ * high key and the parent's downlink to the right page, both (K, L, t0),
+ * become (K, L) with no tag, and the right page loses BARK_LOWBOUND_TAGGED.
+ * leftsib and rightsib name the two leaves and poffset the downlink;
+ * safexid is unused (zero).  Each block is present only when it changes:
+ *
+ * Backup Blk 1: left page; payload: its new high key
+ * Backup Blk 2: right page; BARK_LOWBOUND_TAGGED is cleared
+ * Backup Blk 3: parent; payload: the new downlink at poffset
+ *
+ * A lowering whose bound has no tag already (the right page kept the flag
+ * through a page deletion that gave it an untagged lower bound) has block 2
+ * alone.
  */
 typedef struct xl_bark_unlink_page
 {
@@ -254,9 +287,15 @@ typedef struct xl_bark_unlink_page
 	BlockNumber rightsib;		/* target's right sibling */
 	FullTransactionId safexid;	/* target's BarkPageSetDeleted() XID */
 	OffsetNumber poffset;		/* target's downlink in the parent */
+	uint16		flags;			/* XLH_BARK_UNLINK_* */
 } xl_bark_unlink_page;
 
-#define SizeOfBarkUnlinkPage	(offsetof(xl_bark_unlink_page, poffset) + sizeof(OffsetNumber))
+#define SizeOfBarkUnlinkPage	(offsetof(xl_bark_unlink_page, flags) + sizeof(uint16))
+
+/* The target had BARK_LOWBOUND_TAGGED, which its right sibling takes over. */
+#define XLH_BARK_UNLINK_LOWTAG	0x0001
+/* Not a page deletion: a lowered lower bound (bark_lower_bound). */
+#define XLH_BARK_UNLINK_LOWER_SEP	0x0002
 
 /*
  * A deleted page is about to be reused (bark_get_free_page), as nbtree's
@@ -381,6 +420,11 @@ typedef struct xl_bark_add_tid
  * postingoff) rewrites the posting list and adds the new item.  Only the TID
  * is logged: redo calls bark_entry_swap_tid on the entry, as the primary did.
  * The TID stride follows as for xl_bark_add_tid.
+ *
+ * The same record, with the stride and then a version tag after the struct,
+ * divides the entry at the TID without adding it (bark_divide_entry), to make
+ * room between the parts for a tagged entry of the TID, which an INSERT_LEAF
+ * record then adds; redo calls bark_entry_divide.
  *
  * Backup Blk 0: leaf page
  */
