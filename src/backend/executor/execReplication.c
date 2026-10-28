@@ -1029,7 +1029,8 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 			ExecPartitionCheck(resultRelInfo, slot, estate, true);
 
 		modified_idx_attrs = ExecUpdateModifiedIdxAttrs(resultRelInfo,
-														searchslot, slot);
+														searchslot, slot,
+														estate);
 
 		/*
 		 * The conflict report and AFTER ROW triggers below read searchslot
