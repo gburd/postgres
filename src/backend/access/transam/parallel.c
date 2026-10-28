@@ -724,7 +724,6 @@ WaitForParallelWorkersToAttach(ParallelContext *pcxt)
 		{
 			BgwHandleStatus status;
 			shm_mq	   *mq;
-			int			rc;
 			pid_t		pid;
 
 			if (pcxt->known_attached_workers[i])
@@ -769,29 +768,19 @@ WaitForParallelWorkersToAttach(ParallelContext *pcxt)
 				pcxt->known_attached_workers[i] = true;
 				++pcxt->nknown_attached_workers;
 			}
-			else
-			{
-				/*
-				 * Worker not yet started, so we must wait.  The postmaster
-				 * will notify us if the worker's state changes.  Our latch
-				 * might also get set for some other reason, but if so we'll
-				 * just end up waiting for the same worker again.
-				 */
-				rc = WaitLatch(MyLatch,
-							   WL_LATCH_SET | WL_EXIT_ON_PM_DEATH,
-							   -1, WAIT_EVENT_BGWORKER_STARTUP);
-
-				if (rc & WL_LATCH_SET)
-					ResetLatch(MyLatch);
-			}
 		}
 
-		/* If all workers are known to have started, we're done. */
+		/* If all workers are known to have attached, we're done. */
 		if (pcxt->nknown_attached_workers >= pcxt->nworkers_launched)
 		{
 			Assert(pcxt->nknown_attached_workers == pcxt->nworkers_launched);
 			break;
 		}
+
+		/* Worker state changes and error queue attachment set our latch. */
+		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_EXIT_ON_PM_DEATH, -1,
+						 WAIT_EVENT_BGWORKER_STARTUP);
+		ResetLatch(MyLatch);
 	}
 }
 
