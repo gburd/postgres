@@ -2440,6 +2440,25 @@ SELECT pg_size_pretty(sum(pg_relation_size(relid))) AS total_size
       <row>
        <entry role="func_table_entry"><para role="func_signature">
         <indexterm>
+         <primary>bark_reclaim_orphans</primary>
+        </indexterm>
+        <function>bark_reclaim_orphans</function> ( <parameter>index</parameter> <type>regclass</type> )
+        <returnvalue>bigint</returnvalue>
+       </para>
+       <para>
+        Frees the overflow pages of the specified BARK index that no entry
+        references, which a crash or an error during the insert of an
+        oversized key can leave behind, and returns the number of pages
+        freed.  It blocks writes to the index while it reads the whole index,
+        but not reads.  It cannot be run while its own transaction holds the
+        lock that writing to the index takes.  See
+        <xref linkend="bark-features-oversized"/>.
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <indexterm>
          <primary>brin_summarize_new_values</primary>
         </indexterm>
         <function>brin_summarize_new_values</function> ( <parameter>index</parameter> <type>regclass</type> )
