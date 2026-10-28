@@ -305,6 +305,11 @@ tuplesort_begin_cluster(TupleDesc tupDesc,
 
 	arg->tupDesc = tupDesc;		/* assume we need not copy tupDesc */
 
+	/*
+	 * Without a tuple, _bt_mkscankey() reads only relcache data built from
+	 * the index's btree operator classes and pg_index row, never the index's
+	 * pages, so this works for a btree index whatever code implements it.
+	 */
 	indexScanKey = _bt_mkscankey(indexRel, NULL);
 
 	if (arg->indexInfo->ii_Expressions != NULL)
