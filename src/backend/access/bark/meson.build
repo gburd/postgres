@@ -5,6 +5,7 @@ backend_sources += files(
   'barkdelete.c',
   'barkinsert.c',
   'barkknn.c',
+  'barkprefix.c',
   'barkscan.c',
   'barksearch.c',
   'barksort.c',

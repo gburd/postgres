@@ -1,0 +1,215 @@
+-- Exclusion constraints on a BARK index's extracted column.  The executor
+-- checks one by scanning the index for the new row's value under the
+-- constraint's operator, with a dirty snapshot, and rechecking on the
+-- rows' values those the scan returns with xs_recheck
+-- (check_exclusion_or_unique_constraint).  So the scan must return every
+-- conflicting row, and each row once: the check skips the row's own TID,
+-- and fails if it meets it twice.
+CREATE EXTENSION IF NOT EXISTS bark_multikey;
+
+-- (updates, HOT updates) of a table so far in this transaction, or since
+-- the backend last reported its statistics: read it only for a table no
+-- earlier transaction updated.  The HOT count does not roll back with a
+-- subtransaction.
+CREATE FUNCTION x_count(rel regclass, OUT upd bigint, OUT hot bigint)
+LANGUAGE sql AS $$
+  SELECT pg_stat_get_xact_tuples_updated(rel),
+         pg_stat_get_xact_tuples_hot_updated(rel) $$;
+
+-- Overlap: two rows conflict when they share a key that is not NULL, and
+-- one row may repeat a key.  The scan's points are exact, so the rows come
+-- back without xs_recheck.  A NULL value, an empty array and an array of
+-- NULL elements have only the NULL key, which no overlap scan reads, and
+-- conflict with nothing; a NULL element beside keys is ignored, and the
+-- keys still conflict.
+CREATE TABLE xo (id int, a int4[],
+  CONSTRAINT xo_excl EXCLUDE USING bark (a bark_int4_array_ops WITH |&&|));
+INSERT INTO xo VALUES (1, '{1,2}'), (2, '{3}'), (3, '{4,4,5}');
+INSERT INTO xo VALUES (4, '{2,9}');
+INSERT INTO xo VALUES (4, '{9,3,3}');
+-- the shared key is the new value's largest
+INSERT INTO xo VALUES (4, '{0,1}');
+INSERT INTO xo VALUES (10, NULL), (11, NULL), (12, '{}'), (13, '{}'),
+  (14, '{NULL}'), (15, '{NULL,NULL}'), (16, '{NULL,7}');
+INSERT INTO xo VALUES (17, '{7,NULL}');
+INSERT INTO xo VALUES (17, '{NULL,1}');
+INSERT INTO xo VALUES (17, '{NULL,8}');
+-- UPDATE to a new key set makes a new version with new entries, checked
+-- as an insert is.  The keys a row keeps meet only its old version, which
+-- the updater deleted.
+UPDATE xo SET a = '{1,2,6}' WHERE id = 1;
+UPDATE xo SET a = '{3,6}' WHERE id = 2;
+UPDATE xo SET a = a || 1 WHERE id = 16;
+UPDATE xo SET a = '{}' WHERE id = 16;
+SELECT id, a FROM xo ORDER BY id;
+-- No two rows share a key, by a sequential scan of the heap.
+SELECT e, count(DISTINCT id) FROM xo, unnest(a) e WHERE e IS NOT NULL
+GROUP BY e HAVING count(DISTINCT id) > 1;
+SELECT bark_index_parent_check('xo_excl', true);
+
+-- ON CONFLICT DO NOTHING takes an exclusion constraint as its arbiter with
+-- no conflict target or with the constraint named, not inferred from a
+-- column; DO UPDATE is not supported for one.  Of one statement's rows,
+-- one that conflicts with an earlier one is skipped.
+INSERT INTO xo VALUES (20, '{1,20}') ON CONFLICT DO NOTHING;
+INSERT INTO xo VALUES (20, '{20,21}') ON CONFLICT ON CONSTRAINT xo_excl DO NOTHING;
+INSERT INTO xo VALUES (21, '{21,22}'), (22, '{22,23}'), (23, '{NULL}'),
+  (24, '{23,24}') ON CONFLICT DO NOTHING RETURNING id, a;
+INSERT INTO xo VALUES (25, '{25}') ON CONFLICT (a) DO NOTHING;
+INSERT INTO xo VALUES (25, '{1}') ON CONFLICT ON CONSTRAINT xo_excl
+  DO UPDATE SET a = '{25}';
+SELECT id, a FROM xo WHERE id >= 20 ORDER BY id;
+SELECT bark_index_check('xo_excl', true);
+
+-- Any operator of the class that core accepts for a constraint
+-- (commutative, with a strategy in the family) is scanned by the class's
+-- procedure 8, as in a WHERE clause.  = is not exact on the keys: its
+-- points come back with xs_recheck, as do the NULL entries for a value
+-- with no key, and the executor decides on the values.  {1,2}, {2,1} and
+-- {1,2,2} have one key set and are three values; {}, {NULL} and
+-- {NULL,NULL} all have the NULL key and are three values; a NULL value
+-- conflicts with nothing.
+CREATE TABLE xe (id int, a int4[],
+  CONSTRAINT xe_excl EXCLUDE USING bark (a bark_int4_array_ops WITH =));
+INSERT INTO xe VALUES (1, '{1,2}'), (2, '{2,1}'), (3, '{1,2,2}'), (4, '{}'),
+  (5, '{NULL}'), (6, '{NULL,NULL}'), (7, NULL), (8, NULL), (9, '{1,NULL}'),
+  (10, '{NULL,1}');
+INSERT INTO xe VALUES (11, '{2,1}');
+INSERT INTO xe VALUES (11, '{}');
+INSERT INTO xe VALUES (11, '{NULL}');
+INSERT INTO xe VALUES (11, '{NULL,NULL}');
+INSERT INTO xe VALUES (11, '{1,NULL}');
+INSERT INTO xe VALUES (11, '{2,2,1}');
+-- With row 4 gone, a scan for {} reads only NULL entries of rows that are
+-- not {}: NULL values and {NULL}, {NULL,NULL}.  The recheck rejects each.
+DELETE FROM xe WHERE id = 4;
+INSERT INTO xe VALUES (12, '{}');
+SELECT bark_index_check('xe_excl', true);
+-- @> is not commutative, so core refuses it.
+CREATE TABLE xbad (a int4[],
+  EXCLUDE USING bark (a bark_int4_array_ops WITH @>));
+
+-- A fixed column: rows conflict when their tenants are equal and their
+-- arrays overlap, with the extracted column after the fixed one or before
+-- it.  A NULL tenant conflicts with nothing.  Core's && is strategy 1 as
+-- |&&| is, and the range class, which has no procedure 15, serves it too.
+CREATE TABLE xc (tenant int, a int4[],
+  CONSTRAINT xc_ta EXCLUDE USING bark (tenant WITH =, a bark_int4_array_ops WITH &&),
+  CONSTRAINT xc_at EXCLUDE USING bark (a bark_int4_array_range_ops WITH &&, tenant WITH =));
+INSERT INTO xc VALUES (1, '{1,2}'), (2, '{1,2}'), (NULL, '{1,2}'), (NULL, '{1,2}');
+INSERT INTO xc VALUES (1, '{5,2}');
+INSERT INTO xc VALUES (2, '{3,4}'), (3, '{2}');
+ALTER TABLE xc DROP CONSTRAINT xc_ta;
+INSERT INTO xc VALUES (3, '{9,2}');
+SELECT tenant, a FROM xc ORDER BY tenant, a;
+SELECT bark_index_check('xc_at', true);
+
+-- Refused: a class that answers scans through GIN's query interface
+-- (procedure 10, no procedure 8), whose index scans need an MVCC snapshot;
+-- a class with neither, which cannot be scanned; two extracted columns.
+CREATE TABLE xr (a int4[], b int4[]);
+ALTER TABLE xr ADD EXCLUDE USING bark (a bark_gin_int4_array_ops WITH &&);
+ALTER TABLE xr ADD EXCLUDE USING bark (a bark_int4_array_marked_ops WITH &&);
+ALTER TABLE xr ADD EXCLUDE USING bark
+  (a bark_int4_array_ops WITH &&, b bark_int4_array_ops WITH &&);
+DROP TABLE xr;
+
+-- Adding the constraint checks every live row (IndexCheckExclusion, an
+-- index scan per row): two rows sharing a key fail.  A deleted row and an
+-- updated row's old version conflict with nothing, and the scan for a row
+-- with several keys meets the row once.  REINDEX checks again.
+CREATE TABLE xb (id int, a int4[]);
+INSERT INTO xb VALUES (1, '{1,2,3}'), (2, '{4,5}'), (3, '{6,NULL}'), (4, '{}'),
+  (5, NULL), (6, '{NULL}'), (7, '{7,3}');
+ALTER TABLE xb ADD CONSTRAINT xb_excl
+  EXCLUDE USING bark (a bark_int4_array_ops WITH |&&|);
+DELETE FROM xb WHERE id = 7;
+UPDATE xb SET a = '{2,3,8}' WHERE id = 1;
+ALTER TABLE xb ADD CONSTRAINT xb_excl
+  EXCLUDE USING bark (a bark_int4_array_ops WITH |&&|);
+REINDEX INDEX xb_excl;
+INSERT INTO xb VALUES (8, '{8}');
+SELECT bark_index_check('xb_excl', true);
+
+-- HOT.  Core asks barkcomparedatums about the extracted column of an
+-- immediate constraint's index.  An update to a value with the same keys
+-- keeps the old entries and is HOT, and core then checks the constraint
+-- for the new value (ExecCheckHotExclusion): values with the same keys
+-- need not have the same conflicts.  Under overlap they do, so nothing
+-- fails, and later inserts meet the kept entries, which lead to the new
+-- versions.
+CREATE TABLE xh (id int, a int4[],
+  CONSTRAINT xh_excl EXCLUDE USING bark (a bark_int4_array_ops WITH |&&|))
+  WITH (fillfactor = 10, autovacuum_enabled = off);
+INSERT INTO xh VALUES (1, '{1,2}'), (2, '{3,4}'), (3, '{}');
+BEGIN;
+UPDATE xh SET a = '{2,1,1}' WHERE id = 1;
+SELECT 'same keys' AS step, * FROM x_count('xh');
+UPDATE xh SET a = '{4,5}' WHERE id = 2;
+SELECT 'other keys' AS step, * FROM x_count('xh');
+UPDATE xh SET a = '{NULL}' WHERE id = 3;
+SELECT '{} to {NULL}' AS step, * FROM x_count('xh');
+COMMIT;
+INSERT INTO xh VALUES (4, '{1}');
+INSERT INTO xh VALUES (4, '{5}');
+INSERT INTO xh VALUES (4, '{3}');
+SELECT bark_index_check('xh_excl', true);
+
+-- Under = they need not: {1,2,2} and {2,1} have row 1's keys.  The first
+-- equals no row and is HOT.  The second equals row 2, and the check after
+-- the HOT update raises the violation; the HOT count shows the update was
+-- HOT.  So does {NULL} to {}, which keeps the single NULL key and equals
+-- row 4.
+CREATE TABLE xhe (id int, a int4[],
+  CONSTRAINT xhe_excl EXCLUDE USING bark (a bark_int4_array_ops WITH =))
+  WITH (fillfactor = 10, autovacuum_enabled = off);
+INSERT INTO xhe VALUES (1, '{1,2}'), (2, '{2,1}'), (3, '{NULL}'), (4, '{}');
+BEGIN;
+UPDATE xhe SET a = '{1,2,2}' WHERE id = 1;
+SELECT 'same keys, no conflict' AS step, * FROM x_count('xhe');
+SAVEPOINT s;
+UPDATE xhe SET a = '{2,1}' WHERE id = 1;
+ROLLBACK TO s;
+SELECT 'same keys, conflict' AS step, hot FROM x_count('xhe');
+UPDATE xhe SET a = '{}' WHERE id = 3;
+ROLLBACK TO s;
+SELECT '{NULL} to {}, conflict' AS step, hot FROM x_count('xhe');
+COMMIT;
+SELECT id, a FROM xhe ORDER BY id;
+SELECT bark_index_check('xhe_excl', true);
+
+-- DEFERRABLE: a conflicting insert or update is checked again at commit
+-- or at SET CONSTRAINTS (unique_key_recheck), and fails only if the
+-- conflict is still there.  Core does not ask barkcomparedatums about a
+-- deferrable constraint's index, so an update to the same keys is not HOT.
+CREATE TABLE xd (id int, a int4[],
+  CONSTRAINT xd_excl EXCLUDE USING bark (a bark_int4_array_ops WITH |&&|)
+    DEFERRABLE INITIALLY DEFERRED)
+  WITH (fillfactor = 10, autovacuum_enabled = off);
+INSERT INTO xd VALUES (1, '{1,2}'), (2, '{3,4}');
+BEGIN;
+INSERT INTO xd VALUES (3, '{2,5}');
+UPDATE xd SET a = '{5,6}' WHERE id = 3;
+COMMIT;
+BEGIN;
+INSERT INTO xd VALUES (4, '{1,9}');
+DELETE FROM xd WHERE id = 1;
+COMMIT;
+BEGIN;
+INSERT INTO xd VALUES (5, '{9,4}');
+COMMIT;
+BEGIN;
+INSERT INTO xd VALUES (5, '{3,10}');
+SET CONSTRAINTS xd_excl IMMEDIATE;
+ROLLBACK;
+BEGIN;
+UPDATE xd SET a = '{4,3}' WHERE id = 2;
+SELECT 'deferrable, same keys' AS step, hot FROM x_count('xd');
+COMMIT;
+-- a deferrable constraint cannot be an arbiter
+INSERT INTO xd VALUES (6, '{6}') ON CONFLICT DO NOTHING;
+SELECT id, a FROM xd ORDER BY id;
+SELECT bark_index_check('xd_excl', true);
+
+DROP TABLE xo, xe, xc, xb, xh, xhe, xd;
+DROP FUNCTION x_count;

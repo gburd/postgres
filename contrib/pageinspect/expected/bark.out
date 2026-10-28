@@ -7,7 +7,7 @@ CREATE INDEX bark1_a_idx ON bark1 USING bark (a);
 SELECT * FROM bark_metap('bark1_a_idx');
 -[ RECORD 1 ]-+-----------
 magic         | 1380008523
-version       | 2
+version       | 3
 root          | 1
 level         | 0
 allequalimage | t
@@ -63,6 +63,7 @@ htid           | (0,1)
 tids           | 
 downlink       | 
 overflow_blkno | 
+tag            | 
 data           | 01 00 00 00 00 00 00 01
 
 SELECT * FROM bark_page_items('bark1_a_idx', 2);
@@ -79,6 +80,7 @@ htid           | (0,1)
 tids           | 
 downlink       | 
 overflow_blkno | 
+tag            | 
 data           | 01 00 00 00 00 00 00 01
 
 \x
@@ -256,8 +258,8 @@ SELECT * FROM bark_page_items(get_raw_page('bark5_k_idx',
   (SELECT min(overflow_blkno) FROM bark_page_items('bark5_k_idx',
      (SELECT root FROM bark_metap('bark5_k_idx'))))::int));
 NOTICE:  page is an overflow page
- itemoffset | ctid | itemlen | shape | ntids | htid | tids | downlink | overflow_blkno | data 
-------------+------+---------+-------+-------+------+------+----------+----------------+------
+ itemoffset | ctid | itemlen | shape | ntids | htid | tids | downlink | overflow_blkno | tag | data 
+------------+------+---------+-------+-------+------+------+----------+----------------+-----+------
 (0 rows)
 
 -- Prefix compression: a BARK_PREFIX leaf holds a PREFIX item, and its other
@@ -273,13 +275,18 @@ SELECT flags FROM bark_page_stats('bark6_pfx', 1);
  {leaf,root,prefix}
 (1 row)
 
-SELECT itemoffset, shape, ntids, htid, data
+-- The PREFIX item sits once at the first leaf offset and carries no entry
+-- fields of its own (its raw directory bytes are MAXALIGN-padded, so they
+-- differ between 32- and 64-bit builds; the structural facts here do not).
+SELECT itemoffset, shape, ntids IS NULL AS no_ntids, htid IS NULL AS no_htid,
+       data IS NOT NULL AS has_dir
   FROM bark_page_items('bark6_pfx', 1) WHERE shape = 'PREFIX';
- itemoffset | shape  | ntids | htid |                                                data                                                
-------------+--------+-------+------+----------------------------------------------------------------------------------------------------
-          1 | PREFIX |       |      | 61 20 63 6f 6d 6d 6f 6e 20 70 72 65 66 69 78 20 66 6f 72 20 61 6c 6c 20 6b 65 79 73 20 30 30 30 31
+ itemoffset | shape  | no_ntids | no_htid | has_dir 
+------------+--------+----------+---------+---------
+          1 | PREFIX | t        | t       | t
 (1 row)
 
+-- The coded items display decoded, so they equal the plain index's keys.
 SELECT (SELECT array_agg(data || htid::text ORDER BY itemoffset)
           FROM bark_page_items('bark6_pfx', 1) WHERE shape <> 'PREFIX') =
        (SELECT array_agg(data || htid::text ORDER BY itemoffset)
@@ -316,8 +323,8 @@ SELECT * FROM bark_page_items('bark7_a_idx',
   (SELECT min(blkno) FROM bark_multi_page_stats('bark7_a_idx', 1, -1)
    WHERE type = 'deleted'));
 NOTICE:  page is deleted
- itemoffset | ctid | itemlen | shape | ntids | htid | tids | downlink | overflow_blkno | data 
-------------+------+---------+-------+-------+------+------+----------+----------------+------
+ itemoffset | ctid | itemlen | shape | ntids | htid | tids | downlink | overflow_blkno | tag | data 
+------------+------+---------+-------+-------+------+------+----------+----------------+-----+------
 (0 rows)
 
 -- Failures: not a BARK index, and pages that are not BARK pages.

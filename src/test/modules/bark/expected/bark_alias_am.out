@@ -260,7 +260,7 @@ SELECT bark_index_parent_check('ba_c', false, false);
 SELECT magic, version, level, nkeys > 0 AS has_keys FROM bark_metap('ba_a');
    magic    | version | level | has_keys 
 ------------+---------+-------+----------
- 1380008523 |       2 |     1 | t
+ 1380008523 |       3 |     1 | t
 (1 row)
 
 SELECT count(*) > 0 AS has_items FROM bark_page_items('ba_b', 1);
@@ -278,13 +278,13 @@ SELECT count(*) > 0 AS has_items FROM bark_page_items('ba_a', 1);
 SELECT version, tree_level, leaf_pages > 0 AS has_leaves FROM pgstatbarkindex('ba_a');
  version | tree_level | has_leaves 
 ---------+------------+------------
-       2 |          1 | t
+       3 |          1 | t
 (1 row)
 
 SELECT version, tree_level, leaf_pages > 0 AS has_leaves FROM pgstatbarkindex('ba_c');
  version | tree_level | has_leaves 
 ---------+------------+------------
-       2 |          1 | t
+       3 |          1 | t
 (1 row)
 
 SELECT * FROM bark_multikey_meta('ba_a');

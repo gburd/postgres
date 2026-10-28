@@ -25,6 +25,7 @@
 #define BARK_H
 
 #include "access/amapi.h"
+#include "access/amlocator.h"
 #include "access/itup.h"
 #include "access/transam.h"
 #include "catalog/pg_am_d.h"
@@ -115,7 +116,18 @@ typedef BarkPageOpaqueData *BarkPageOpaque;
 #define BARK_INCOMPLETE_SPLIT (1 << 5)	/* right sibling's downlink is missing */
 #define BARK_HAS_GARBAGE	(1 << 6)	/* page has known-dead entries */
 #define BARK_OVERFLOW		(1 << 7)	/* holds a chunk of an oversized value */
+#define BARK_LOWBOUND_TAGGED (1 << 8)	/* leaf's lower bound may have a tag */
 #define BARK_PREFIX			(1 << 10)	/* leaf keys coded against a prefix */
+
+/*
+ * BARK_LOWBOUND_TAGGED is set on a leaf whose lower bound (its left
+ * sibling's high key) may carry a version tag: the right half of a split
+ * whose high key has one, and the right sibling of a deleted leaf that had
+ * the flag, which takes over that leaf's lower bound.  It only says "may",
+ * so keeping it is always safe.  VACUUM reads it to decide whether an entry
+ * may be untagged in place (bark_vacuum_untag), and clears it when it lowers
+ * the bound to an untagged one, or finds it untagged (bark_lower_bound).
+ */
 
 #define BarkPageIsLeaf(opaque)		(((opaque)->bark_flags & BARK_LEAF) != 0)
 #define BarkPageIsRoot(opaque)		(((opaque)->bark_flags & BARK_ROOT) != 0)
@@ -277,66 +289,139 @@ BarkPageIsRecyclable(Page page, Relation heaprel)
 #define BARK_P_FIRSTKEY		((OffsetNumber) 2)	/* first data item after it */
 
 /*
- * Leaf prefix compression.
+ * Leaf key prefix compression (see barkprefix.c for the code).
  *
- * A leaf of an index with the prefix_compression reloption, whose first key
- * column is of a varlena type, may be flagged BARK_PREFIX.  Such a page holds
- * one extra item, the PREFIX item, at BarkPagePrefixOff (where its first data
- * item would otherwise be), and its data items start one offset later; so
- * BarkPageFirstDataKey, which every loop over a page's data items starts
- * from, accounts for the flag.  The PREFIX item is an IndexTupleData header
- * (t_tid zero, t_info its size and nothing else, so that code that walks a
- * page's items by IndexTupleSize, such as split redo, steps over it) followed
- * by 1..BARK_PREFIX_MAX prefix bytes.  The prefix is chosen when the page is
- * written as a whole (by CREATE INDEX, or as one half of a split) and never
- * changes after that; a page's high key, which fixes the prefix item's
- * offset, also changes only in a split.
+ * A leaf of an index whose prefix_compression reloption is on may be flagged
+ * BARK_PREFIX.  Its data items are organized in GROUPS of consecutive items;
+ * each group has an ANCHOR, a copy of the key part of the group's first item,
+ * and each member is stored "coded": without the data-area bytes it shares
+ * with the anchor.  Sharing is by stored bytes, never by the opclass notion of
+ * equality, so it is sound for any column type (an index-only scan gets back
+ * exactly the bytes that were stored) and needs no equalimage support.  Within
+ * a group every member shares the anchor's leading key columns whole, then
+ * diverges inside one column (the DIVERGENT column: a common value prefix, a
+ * differing full value, hence a differing varlena length header).  Only that
+ * column's length header is kept with the member; the fully-shared leading
+ * columns and their headers share from the anchor as ordinary bytes.  Walking
+ * to the divergent column needs the key-column layout, which the directory
+ * carries (see BarkPrefixDirHdr).
  *
- * On a BARK_PREFIX page, every SINGLE, LIST and POSTING entry whose first key
- * column is not NULL stores that column coded, as a varlena (1-byte header
- * when it fits one, else 4-byte) whose payload starts with a uint8 `shared`:
+ * Page layout.  At BarkPagePrefixOff(opaque) (right after the high key) is a
+ * single PREFIX DIRECTORY item that holds every group's anchor; the data items
+ * follow it, in key order, starting at BarkPageFirstDataKey.  One item before
+ * the data keeps BarkPageFirstDataKey a function of the page flag alone, so
+ * neither BarkPageOpaqueData nor the on-disk page header changes, and binary
+ * search over the data items is unaffected.  The directory item is an
+ * IndexTupleData header (invalid t_tid; t_info = its size) followed by the
+ * group count, the cached decoded size of the page's data items (see
+ * bark_prefix_split_needed), the key-column layout, the anchor offsets, and the
+ * anchors (BarkPrefixDirHdr, BarkPrefixAnchorDisk).
  *
- *   shared <= BARK_PREFIX_MAX: the value's data bytes are the page prefix's
- *                first `shared` bytes followed by the rest of the payload.
- *                The value's own varlena header is not stored: it is the
- *                1-byte header when the value fits one and the 4-byte header
- *                otherwise, the form index_form_tuple gives a value of a
- *                type it may pack.
- *   shared == BARK_PREFIX_RAW: the rest of the payload is the value exactly
- *                as it was stored, header included.  Used for a value that
- *                is compressed inline (index_form_tuple compresses values
- *                larger than TOAST_INDEX_TARGET), or whose header is not in
- *                the form above (a type that may not be packed).
- *
- * The bytes after the first column (later key columns, INCLUDE columns and
- * alignment padding) are kept as they are, moved to the first position after
- * the coded column whose distance from the original position is a multiple
- * of MAXALIGN, so that every alignment within them still holds and they need
- * no tuple descriptor to move.  When they are only the zero padding that
- * ends the key, they are left out, and decoding puts them back.  A LIST or
- * POSTING body follows the key at the new key end, and the body offset in
- * t_tid is changed to match.  NULL first columns, OVERSIZED entries, the
- * high key and pivots are stored as on any other page.
- *
- * Coding and decoding therefore depend only on the page's prefix and the
- * entry, not on the index's catalog entries, so WAL redo can repeat them,
- * and decoding gives back the plain entry byte for byte.  A coded entry is
- * at most MAXALIGN bytes larger than the plain one when it shares nothing
- * with the prefix (the count byte can cross an alignment boundary), and a
- * few more for a raw value.  Every reader goes through
- * BarkPageGetItem, which returns the plain entry; writers code an entry with
- * bark_prefix_encode just before placing it, and size it with
- * bark_coded_size.  An entry that shares less of the prefix than the others,
- * or none, is still stored correctly, so no insert, VACUUM or change of the
- * page's key range ever has to rewrite the page.
+ * Coded member.  An IndexTupleData header whose t_tid is the member's own heap
+ * locator (or alt-TID body offset), a small code header (group, the
+ * fully-shared leading byte count, the divergent column's shared value byte
+ * count, the original's t_info, key end and total size), the original's null
+ * bitmap, the residual (the original's key data-area bytes from the divergent
+ * column on, minus the shared value bytes) and, for a LIST or POSTING entry,
+ * its body (locator array or sbm blob) in the standard layout at the coded
+ * entry's own body offset.  Decoding splices the anchor's fully-shared leading
+ * columns, then the member's own divergent-column header, then the anchor's
+ * shared value bytes, then the member's remaining residual, then the body,
+ * reproducing the original entry byte for byte.  Coding and decoding use only
+ * the page and the tuple, never the catalog, so WAL redo repeats them.  NULL
+ * is handled column by column (the null bitmap travels with the member); an
+ * OVERSIZED entry keeps its key out of line and is never coded, as pivots are.
  */
-#define BARK_PREFIX_MAX			126
-#define BARK_PREFIX_RAW			127 /* shared count of a raw value */
-#define BARK_PREFIX_SHARED_MASK	0x7F	/* shared count bits */
-#define BARK_PREFIX_REST		0x80	/* bytes after the column follow */
+#define BARK_PREFIX_MAXGROUPS	0xFFFE	/* group-id ceiling (uint16) */
 
-/* A leaf whose items share less of its prefix than this, on average, has none. */
-#define BARK_PREFIX_MIN_SHARED	4
+/*
+ * Most bytes a coded member can take beyond its plain tuple (see the static
+ * assertion in barkprefix.c).  Insert reserves this on a prefix page so the
+ * coded PageAddItem cannot fail after the fit check.
+ */
+#define BARK_PREFIX_CODE_OVERHEAD	MAXALIGN(24)
+
+/* by-value flag in a stored BarkPrefixAttr. */
+#define BARK_PREFIX_ATTR_BYVAL	0x01
+
+/*
+ * On-disk per-key-attribute layout, enough to parse a tuple's data area
+ * without the catalog.  The primary fills it from RelationGetDescr(index);
+ * decode reads it from the directory so decoding stays page-only.  The column
+ * walk uses every key column's attlen, attalignby, and by-value flag to find
+ * where two tuples diverge, so the whole key-column layout is stored.
+ */
+typedef struct BarkPrefixAttr
+{
+	int16		attlen;
+	uint8		attalignby;
+	uint8		flags;			/* BARK_PREFIX_ATTR_BYVAL */
+}			BarkPrefixAttr;
+
+/*
+ * On-disk directory item header.  decodedsz and maxdecoded cache the decoded
+ * (plain) size of the page's data items, each counted with its line pointer:
+ * their sum and the largest.  They make bark_prefix_split_needed O(1).  Every
+ * change to the data items keeps them exact, through page-only routines that
+ * WAL redo repeats (bark_prefix_recount).
+ *
+ * The variable tail is, in order: `natts' BarkPrefixAttr records (the
+ * key-column layout), the `ngroups' anchor offsets, and the packed anchors.
+ */
+typedef struct BarkPrefixDirHdr
+{
+	IndexTupleData header;		/* t_tid invalid; t_info = whole item size */
+	uint16		ngroups;
+	uint16		decodedsz;		/* sum of decoded item sizes + line pointers */
+	uint16		maxdecoded;		/* largest of those */
+	uint16		natts;			/* key-column count, layout records that follow */
+	BarkPrefixAttr attrs[FLEXIBLE_ARRAY_MEMBER];	/* [natts], then anchoroff[] */
+} BarkPrefixDirHdr;
+
+/* One packed anchor in the directory item. */
+typedef struct BarkPrefixAnchorDisk
+{
+	uint16		repsz;			/* size of the representative tuple blob */
+	/* IndexTupleData rep[repsz] follows, MAXALIGN'd */
+} BarkPrefixAnchorDisk;
+
+/*
+ * Code header of a coded member, right after its IndexTupleData header.
+ *
+ * lead_shared (= D) is the key data-area byte offset of the divergent column:
+ * the first key column whose value differs from the anchor's.  Every byte
+ * before it, the fully-shared leading columns and their length headers, is
+ * identical across the group and comes from the anchor.  shared_len (= sv) is
+ * the divergent column's shared value bytes, after its length header.  orig_*
+ * records the plain entry's t_info flags, key-part end, and total size, so
+ * decode rebuilds the exact plain entry (including an alt-TID body).
+ */
+typedef struct BarkPrefixCode
+{
+	uint16		group;			/* anchor index in the directory */
+	uint16		lead_shared;	/* data-area bytes of fully-shared leading cols */
+	uint16		shared_len;		/* divergent column's shared value bytes */
+	uint16		orig_info;		/* original t_info flags + key-part end (size) */
+	uint16		orig_total;		/* original tuple's whole size */
+} BarkPrefixCode;
+
+/*
+ * Running estimate of a BARK_PREFIX page's coded size while CREATE INDEX fills
+ * it (bark_prefix_est_add).  Mirrors nbtree's BTPrefixPageEst.
+ */
+typedef struct BarkPrefixPageEst
+{
+	IndexTuple	grouprep;		/* current group's representative */
+	IndexTuple	prev;			/* previous tuple seen */
+	int			natts;			/* key-column count */
+	int			ngroups;		/* groups so far */
+	Size		anchorsz;		/* total packed-anchor bytes */
+	Size		codedsz;		/* coded data items + line pointers */
+	Size		plainsz;		/* plain data items + line pointers */
+	Size		lastcoded;		/* last item's coded size + line pointer */
+	Size		maxcoded;		/* largest coded item (no line pointer) */
+	Size		maxplain;		/* largest plain item + line pointer */
+} BarkPrefixPageEst;
 
 #define BarkPageHasPrefix(opaque)	(((opaque)->bark_flags & BARK_PREFIX) != 0)
 #define BarkPagePrefixOff(opaque) \
@@ -360,6 +445,20 @@ BarkPageOverwriteEntry(Page page, OffsetNumber off, const void *item,
 		return false;
 	PageGetItemId(page, off)->lp_flags = LP_NORMAL;
 	return true;
+}
+
+/*
+ * Move the leaf entry at `from` to `to` <= from, replaced by `item`: VACUUM's
+ * in-place untagging (bark_vacuum_untag) and its redo.  The entries between
+ * shift up by one; those after `from` keep their offsets.
+ */
+static inline bool
+BarkPageMoveEntry(Page page, OffsetNumber from, OffsetNumber to,
+				  const void *item, Size size)
+{
+	Assert(to <= from);
+	PageIndexTupleDelete(page, from);
+	return PageAddItem(page, item, size, to, false, false) != InvalidOffsetNumber;
 }
 
 /*
@@ -415,14 +514,25 @@ BarkPageGetItem(Page page, OffsetNumber off, BarkItemBuf *buf)
 /*
  * The bytes a pivot's suffix adds to its MAXALIGNed key: the heap TID a pivot
  * between two entries equal on every key attribute keeps (see
- * BarkPivotGetHeapTID).  Every size calculation that must leave room for a
- * high key formed from a leaf entry uses this one value: the leaf free space
- * an insert may take, the high key a split or CREATE INDEX plans for, the
- * room bark_merge_page frees, and the inline limit of a leaf entry.  The
- * version tag of the versioned-entry design adds 4 bytes to the
- * suffix, which makes it 16; it grows here, and only here.
+ * BarkPivotGetHeapTID), and, in an index whose table's locator is versioned
+ * (BarkKeyInfo.versioned), the version tag a pivot between two entries equal
+ * on (key, heap TID) keeps too (BarkPivotGetTag): 6 + 4 bytes, 16 once
+ * MAXALIGNed.  Every size calculation that must leave room for a high key
+ * formed from a leaf entry uses this one value: the leaf free space an insert
+ * may take, the high key a split or CREATE INDEX plans for, the room
+ * bark_merge_page frees, and the inline limit of a leaf entry.
+ *
+ * The reserve is the index's, not the format's: an index of a table whose
+ * locator is not versioned never holds a tag, keeps the 8-byte reserve, and
+ * so lays out its pages exactly as before tags existed.  The meta page's
+ * BARK_META_VERSIONED says which, and is fixed when the index is built.
  */
-#define BarkPivotSuffixReserve	MAXALIGN(sizeof(ItemPointerData))
+#define BarkPivotSuffixReserveFor(versioned) \
+	((versioned) ? \
+	 MAXALIGN(sizeof(ItemPointerData) + sizeof(IndexVersionTag)) : \
+	 MAXALIGN(sizeof(ItemPointerData)))
+#define BarkPivotSuffixReserve(keyinfo) \
+	BarkPivotSuffixReserveFor((keyinfo)->versioned)
 
 /*
  * Fill factors, as in nbtree.  CREATE INDEX packs leaf pages to the index's
@@ -487,12 +597,18 @@ typedef struct BarkOptions
  */
 #define BARK_METAPAGE		0	/* block number of the meta page */
 #define BARK_MAGIC			0x5241424B	/* "BARK" as a big-endian uint32 */
-#define BARK_VERSION		2	/* current on-disk version */
+#define BARK_VERSION		3	/* current on-disk version */
 
 /*
  * The oldest version this code reads.  Version 2 orders the entries of a run
  * of equal keys by heap TID and gives pivots a heap TID; a version 1 index
  * has neither, so it must be rebuilt with REINDEX (bark_get_root refuses it).
+ *
+ * Version 3 adds version tags (BARK_HAS_TAG) and BARK_META_VERSIONED.  An
+ * index without that flag, which every version 2 index is, holds no tags and
+ * its pages are laid out as version 2 lays them out, so a version 2 index is
+ * read and written as it is; only CREATE INDEX (or REINDEX, or any rebuild)
+ * writes version 3.  An index without the flag never holds a tag.
  */
 #define BARK_MIN_VERSION	2
 
@@ -653,6 +769,16 @@ StaticAssertDecl(offsetof(BarkMetaPageData, bark_allequalimage) == 16 &&
 #define BARK_META_MULTIKEY	(1 << 0)
 
 /*
+ * BARK_META_VERSIONED: the table's locator was versioned (see
+ * "Versioned locators" in amlocator.h) when the index was built, so its
+ * entries may carry version tags and its pivot suffix reserve has room for
+ * one (BarkPivotSuffixReserve).  Set by CREATE INDEX, and by every rebuild
+ * (REINDEX, or the rewrite of ALTER TABLE ... SET ACCESS METHOD), from the
+ * table's LocatorDesc; never changed otherwise.  Version 3 only.
+ */
+#define BARK_META_VERSIONED	(1 << 1)
+
+/*
  * bark_tid_stride is the largest locator offset of the table, its
  * LocatorDesc's max_offset, when the index was built: every mapping of a
  * heap TID to an integer (bark_tid_to_key, and a coded LIST's) is laid out
@@ -706,19 +832,27 @@ StaticAssertDecl(offsetof(BarkMetaPageData, bark_allequalimage) == 16 &&
  *				  offset bits hold the number of key attributes present (a
  *				  pivot may be truncated by suffix truncation).
  *
- * A leaf entry of any shape may additionally be delete-marked (the C-DELETE
- * contract, BARK-Design.mediawiki): BARK_IS_DELETE_MARKED is reserved to
- * record that the entry is logically deleted but retained for UNDO
- * rollback.  Nothing sets it yet; it waits for an UNDO-backed table AM.  It
- * is a property of an entry, orthogonal to its shape,
- * so it shares the status-bit region and must never be set on a PIVOT: on a
- * pivot the same bit is BARK_PIVOT_HEAP_TID, so the two meanings never meet.
+ * A SINGLE or OVERSIZED leaf entry may carry a version tag (see "Versioned
+ * locators" in amlocator.h): BARK_HAS_TAG.  A tagged SINGLE sets the alt-TID
+ * bit with BARK_HAS_TAG alone in the status bits; its heap TID moves out of
+ * t_tid to a trailer after the key, followed by the 4-byte tag, and the
+ * trailer's offset is in the t_tid block field, as a LIST's body offset is.
+ * A tagged OVERSIZED entry sets BARK_HAS_TAG with BARK_IS_OVERFLOW and keeps
+ * the tag after its BarkOverflowRef.  An untagged entry (tag 0, the only kind
+ * an index without BARK_META_VERSIONED has) is byte-identical to the entry
+ * of the same shape before tags existed.  A LIST or POSTING entry is never
+ * tagged: tagged entries never coalesce.  On a pivot the same bit is
+ * BARK_PIVOT_HEAP_TID, and a pivot that carries a tag says so with
+ * BARK_PIVOT_TAG, in its attribute-count bits.
  *
  * Within a run of equal keys, leaf entries are ordered by heap TID, as
  * nbtree's are since version 4: each entry covers a range of heap TIDs (see
  * bark_entry_tid_range), and the ranges of successive entries of one key are
  * disjoint and ascending, across pages too.  A pivot separating two entries
- * of the same key carries the first right entry's lowest TID.
+ * of the same key carries the first right entry's lowest TID.  Entries equal
+ * on (key, heap TID) are ordered by version tag, compared as a raw uint32,
+ * untagged (0) first; a pivot separating two of them carries the first right
+ * entry's tag.
  * ----------------------------------------------------------------------------
  */
 
@@ -731,18 +865,27 @@ StaticAssertDecl(offsetof(BarkMetaPageData, bark_allequalimage) == 16 &&
 
 /*
  * Status bits carried in the high nibble of an alt-TID entry's offset number.
- * These deliberately match nbtree's values so the shared reserved-bit
- * conventions (and BARK_IS_DELETE_MARKED in particular, which is consumed by
- * the generic index delete-marking path) stay aligned across the two AMs.
+ * These match nbtree's values where nbtree has them, so the two AMs share the
+ * reserved-bit conventions.
  */
 #define BARK_PIVOT_META				0x1000	/* pivot carries extra metadata */
 #define BARK_IS_POSTING				0x2000	/* leaf entry is a posting set */
-#define BARK_IS_DELETE_MARKED		0x4000	/* leaf entry is delete-marked */
+#define BARK_HAS_TAG				0x4000	/* leaf entry has a version tag */
 #define BARK_PIVOT_HEAP_TID			0x4000	/* pivot carries a heap TID; the
-											 * same bit as
-											 * BARK_IS_DELETE_MARKED, which is
-											 * never set on a pivot */
+											 * same bit as BARK_HAS_TAG, which
+											 * a plain pivot never has */
 #define BARK_IS_LIST				0x8000	/* leaf entry is a sorted list */
+
+/*
+ * A pivot that also carries a version tag (only one with a heap TID can)
+ * sets this bit in the low bits of its offset field, above every attribute
+ * count: the status nibble has no free bit left for a pivot.
+ * BarkPivotGetNAtts masks it out.
+ */
+#define BARK_PIVOT_TAG				0x0800
+
+StaticAssertDecl(INDEX_MAX_KEYS < BARK_PIVOT_TAG,
+				 "BARK_PIVOT_TAG overlaps the pivot attribute count");
 
 /*
  * A LIST entry whose body is delta+varbyte coded (barkutils.c) sets this bit
@@ -813,6 +956,13 @@ BarkEntryGetShape(const IndexTupleData *itup)
 		return BARK_SHAPE_LIST;
 	if (status & BARK_IS_POSTING)
 		return BARK_SHAPE_POSTING;
+
+	/*
+	 * Every pivot has BARK_PIVOT_META; a tagged SINGLE has BARK_HAS_TAG
+	 * alone.
+	 */
+	if (status == BARK_HAS_TAG)
+		return BARK_SHAPE_SINGLE;
 	return BARK_SHAPE_PIVOT;
 }
 
@@ -841,7 +991,7 @@ static inline uint16
 BarkPivotGetNAtts(const IndexTupleData *itup)
 {
 	return (ItemPointerGetOffsetNumberNoCheck(&itup->t_tid) &
-			BARK_OFFSET_MASK);
+			BARK_OFFSET_MASK & ~BARK_PIVOT_TAG);
 }
 
 /*
@@ -859,6 +1009,27 @@ BarkPivotGetHeapTID(IndexTupleData *itup)
 		return NULL;
 	return (ItemPointer) ((char *) itup + IndexTupleSize(itup) -
 						  sizeof(ItemPointerData));
+}
+
+/*
+ * The version tag of a plain PIVOT, or InvalidIndexVersionTag when it has
+ * none.  A pivot keeps one only when it separates two entries equal on every
+ * key attribute and on heap TID, so only a pivot with a heap TID has one; it
+ * is the 4 bytes just before the heap TID, in the 16-byte suffix
+ * (BarkPivotSuffixReserve).  A pivot without one has its tag truncated away:
+ * minus infinity.
+ */
+static inline IndexVersionTag
+BarkPivotGetTag(const IndexTupleData *itup)
+{
+	IndexVersionTag tag;
+
+	if ((ItemPointerGetOffsetNumberNoCheck(&itup->t_tid) &
+		 BARK_PIVOT_TAG) == 0)
+		return InvalidIndexVersionTag;
+	memcpy(&tag, (const char *) itup + IndexTupleSize(itup) -
+		   sizeof(ItemPointerData) - sizeof(IndexVersionTag), sizeof(tag));
+	return tag;
 }
 
 /* Stamp a pivot tuple's status bits and attribute count into t_tid. */
@@ -1218,6 +1389,111 @@ BarkEntryGetPivotNAtts(IndexTupleData *itup)
 	return BarkPivotGetNAtts(itup);
 }
 
+/* ----------------------------------------------------------------------------
+ * Version tags (see "Versioned locators" in amlocator.h)
+ *
+ * A tagged SINGLE is a key tuple with the alt-TID bit set and BARK_HAS_TAG
+ * as its only status bit.  Its t_tid block field holds the offset of its
+ * trailer, the MAXALIGNed end of the key, as a LIST's holds its body offset;
+ * the trailer is the heap TID followed by the 4-byte tag (BarkTagTrailer),
+ * so the entry is MAXALIGN(key) + 16 bytes.  The t_tid offset field's low
+ * bits are zero.
+ *
+ * A tagged OVERSIZED entry sets BARK_HAS_TAG with BARK_IS_OVERFLOW, and its
+ * tag follows the BarkOverflowRef, padded to MAXALIGN: the ref has no free
+ * bytes, and an untagged OVERSIZED entry stays the size it was.
+ *
+ * Every reader of a leaf entry's heap TID goes through BarkEntryGetHeapTid
+ * (or bark_entry_get_tids / bark_entry_tid_range, which use it), and of its
+ * tag through BarkEntryGetTag, which is 0 for every untagged entry and for
+ * every LIST and POSTING.
+ * ----------------------------------------------------------------------------
+ */
+typedef struct BarkTagTrailer
+{
+	ItemPointerData htid;		/* the entry's heap TID */
+	IndexVersionTag tag;		/* its version tag, never 0 */
+}			BarkTagTrailer;
+
+StaticAssertDecl(offsetof(BarkTagTrailer, tag) == 8 &&
+				 sizeof(BarkTagTrailer) == 12,
+				 "BarkTagTrailer's on-disk layout changed");
+
+#define BARK_TAG_TRAILER_SIZE	MAXALIGN(sizeof(BarkTagTrailer))
+
+/* Does the leaf entry (SINGLE or OVERSIZED) carry a version tag? */
+static inline bool
+BarkEntryHasTag(const IndexTupleData *itup)
+{
+	if (!BarkEntryIsAltTID(itup))
+		return false;
+	if ((ItemPointerGetOffsetNumberNoCheck(&itup->t_tid) &
+		 BARK_STATUS_OFFSET_MASK) == BARK_HAS_TAG)
+		return true;			/* a tagged SINGLE */
+	return (ItemPointerGetOffsetNumberNoCheck(&itup->t_tid) &
+			(BARK_IS_OVERFLOW | BARK_HAS_TAG)) ==
+		(BARK_IS_OVERFLOW | BARK_HAS_TAG);
+}
+
+/* The trailer of a tagged SINGLE. */
+static inline BarkTagTrailer *
+BarkSingleGetTrailer(IndexTupleData *itup)
+{
+	return (BarkTagTrailer *) ((char *) itup +
+							   ItemPointerGetBlockNumberNoCheck(&itup->t_tid));
+}
+
+/* The tag of a tagged OVERSIZED entry, after its ref. */
+static inline IndexVersionTag *
+BarkOverflowGetTagPtr(IndexTupleData *itup)
+{
+	return (IndexVersionTag *) ((char *) BarkOverflowGetRef(itup) +
+								MAXALIGN(sizeof(BarkOverflowRef)));
+}
+
+/*
+ * The heap TID of a SINGLE or OVERSIZED leaf entry: in t_tid for an
+ * untagged SINGLE, in the trailer for a tagged one, in the ref for an
+ * OVERSIZED entry.
+ */
+static inline ItemPointer
+BarkEntryGetHeapTid(IndexTupleData *itup)
+{
+	if (!BarkEntryIsAltTID(itup))
+		return &itup->t_tid;
+	if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED)
+		return &BarkOverflowGetRef(itup)->locator;
+	Assert(BarkEntryHasTag(itup));
+	return &BarkSingleGetTrailer(itup)->htid;
+}
+
+/* The version tag of a leaf entry; 0 for every untagged shape. */
+static inline IndexVersionTag
+BarkEntryGetTag(IndexTupleData *itup)
+{
+	IndexVersionTag tag;
+
+	if (!BarkEntryHasTag(itup))
+		return InvalidIndexVersionTag;
+	if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED)
+		memcpy(&tag, BarkOverflowGetTagPtr(itup), sizeof(tag));
+	else
+		memcpy(&tag, &BarkSingleGetTrailer(itup)->tag, sizeof(tag));
+	return tag;
+}
+
+/*
+ * The size of the key part of a SINGLE or tagged SINGLE: everything before
+ * the trailer.
+ */
+static inline Size
+BarkSingleKeySize(IndexTupleData *itup)
+{
+	if (BarkEntryIsAltTID(itup))
+		return ItemPointerGetBlockNumberNoCheck(&itup->t_tid);
+	return IndexTupleSize(itup);
+}
+
 /*
  * Bytes of the full tuple a single overflow page can hold: the page's whole
  * data area between the standard header and the BARK page opaque.
@@ -1255,11 +1531,23 @@ typedef struct BarkKeyInfo
 	int			nkeys;			/* number of key columns */
 	uint16		tidstride;		/* bark_index_tid_stride: the TID mappings'
 								 * stride */
+	bool		versioned;		/* bark_index_versioned: the 16-byte reserve */
+	bool		canversion;		/* bark_indexcanversion: may hold tags */
+	IndexVersionTag instag;		/* the version tag of the entries an insert is
+								 * placing; set by bark_insert_entries */
 	BarkKeyColumn cols[FLEXIBLE_ARRAY_MEMBER];
 } BarkKeyInfo;
 
 extern BarkKeyInfo *bark_build_keyinfo(Relation index);
-extern BarkKeyInfo *bark_build_keyinfo_stride(Relation index, uint16 stride);
+extern BarkKeyInfo *bark_build_keyinfo_stride(Relation index, uint16 stride,
+											  bool versioned);
+extern bool bark_index_versioned(Relation index);
+extern bool bark_indexcanversion(Relation index);
+extern bool bark_heap_versioned(Relation heap);
+extern IndexTuple bark_entry_untag(IndexTuple itup);
+extern IndexTuple bark_form_tagged(IndexTuple key, ItemPointer tid,
+								   IndexVersionTag tag);
+extern int	bark_compare_tag(IndexVersionTag a, IndexVersionTag b);
 extern bool bark_allequalimage(Relation index);
 extern bool bark_index_may_coalesce(Relation index);
 extern bool bark_column_is_extracted(Relation index, int attno);
@@ -1342,7 +1630,8 @@ BarkEntryIsMarker(const IndexTupleData *itup)
 
 extern void bark_extract_row_keys(Relation index, BarkKeyInfo *keyinfo,
 								  Datum value, bool isnull, BarkRowKeys *rk);
-extern IndexTuple bark_form_marker(Relation index, Datum key, Size *fulllen);
+extern IndexTuple bark_form_marker(Relation index, BarkKeyInfo *keyinfo,
+								   Datum key, Size *fulllen);
 extern bool bark_marker_cached(Relation index, BarkKeyInfo *keyinfo,
 							   Datum key);
 extern void bark_cache_marker(Relation index, BarkKeyInfo *keyinfo,
@@ -1352,7 +1641,8 @@ extern int	bark_compare_itups(BarkKeyInfo *keyinfo, Relation index,
 							   IndexTuple a, IndexTuple b);
 extern int	bark_compare_itups_tid(BarkKeyInfo *keyinfo, Relation index,
 								   IndexTuple key, ItemPointer scantid,
-								   IndexTuple itup);
+								   IndexVersionTag scantag, IndexTuple itup);
+extern IndexVersionTag bark_pivot_tag(IndexTuple pivot);
 extern ItemPointer bark_pivot_heap_tid(IndexTuple pivot);
 extern void bark_entry_tid_range(IndexTuple itup, ItemPointer lo,
 								 ItemPointer hi, uint16 stride);
@@ -1422,30 +1712,39 @@ extern int	bark_entry_get_tids(IndexTuple itup, ItemPointer out, int maxout,
 								uint16 stride);
 
 /*
- * Leaf prefix compression (barkutils.c; see BARK_PREFIX for the format).
+ * Leaf key prefix compression (barkprefix.c; see BARK_PREFIX for the format).
  *
- * bark_prefix_encode returns `itup` coded for `page`, palloc'd, or `itup`
- * itself when the page has no prefix or the entry is stored plain.
- * bark_coded_size is the MAXALIGNed size the entry takes on `page`.
- * bark_page_set_prefix adds the PREFIX item to a page that holds nothing
- * after its high key yet, and flags the page.  bark_prefix_shared is the
- * length of the common prefix of `prefix` and the entry's first-column
- * bytes, or -1 when the entry would not be coded; bark_prefix_candidate
- * gives the bytes a page prefix may be taken from (NULL when it has none).
- * bark_prefix_choose decides, for the items a page is about to be built
- * from, whether to give it a prefix, and returns the prefix's length (0 for
- * none) with *prefix pointing into items[0].
+ * bark_prefix_encode returns `itup` coded for `page` (against the group of the
+ * item at the last data offset), palloc'd, or `itup` itself when the page has
+ * no prefix or the entry is not codable.  bark_coded_size is the MAXALIGNed
+ * size the entry takes on `page`.  bark_prefix_decode is the read-path hook
+ * BarkPageGetItem calls.  bark_prefix_form_page lays out a whole coded leaf;
+ * the est_* routines size a coded page as CREATE INDEX fills it;
+ * bark_prefix_split_needed keeps the split-fit invariant; bark_prefix_recount
+ * and bark_prefix_note_insert refresh the directory's cached decoded sizes;
+ * bark_prefix_check validates a whole coded page for amcheck and pageinspect.
  */
+extern bool bark_prefix_enabled(Relation index);
+extern bool bark_prefix_codable(IndexTuple itup);
 extern IndexTuple bark_prefix_encode(Page page, IndexTuple itup);
 extern Size bark_coded_size(Page page, IndexTuple itup);
-extern void bark_page_set_prefix(Page page, const char *prefix, Size len);
-extern const char *bark_page_get_prefix(Page page, Size *len);
-extern int	bark_prefix_shared(const char *prefix, Size prefixlen,
-							   IndexTuple itup);
-extern const char *bark_prefix_candidate(IndexTuple itup, Size *len);
-extern bool bark_prefix_enabled(Relation index);
-extern Size bark_prefix_choose(Relation index, IndexTuple *items, int n,
-							   const char **prefix);
+extern IndexTuple bark_prefix_decode_mem(Page page, IndexTuple coded, int group,
+										 BarkItemBuf *buf);
+extern bool bark_prefix_form_page(Page newpage, IndexTuple hikey,
+								  IndexTuple *items, int n,
+								  const BarkPrefixAttr * attrs, int natts,
+								  bool force);
+extern void bark_prefix_recount(Page page);
+extern void bark_prefix_note_insert(Page page, IndexTuple coded);
+extern void bark_prefix_check(Page page);
+extern int	bark_prefix_build_layout(Relation index, BarkPrefixAttr * attrs);
+extern void bark_prefix_est_add(BarkPrefixPageEst *est,
+								const BarkPrefixAttr * attrs, int natts,
+								IndexTuple itup);
+extern Size bark_prefix_est_coded(const BarkPrefixPageEst *est);
+extern bool bark_prefix_est_representable(const BarkPrefixPageEst *est);
+extern bool bark_prefix_worthwhile(Size codedsz, Size plainsz);
+extern bool bark_prefix_split_needed(Page page, Size newitemsz);
 
 /* The left half of a page split, for bark_split and its redo (barkutils.c). */
 extern bool bark_split_build_left(Page page, Page origpage, IndexTuple hikey,
@@ -1501,6 +1800,9 @@ extern bool bark_entry_has_tid(IndexTuple itup, ItemPointer tid,
 extern void bark_entry_swap_tid(IndexTuple entry, ItemPointer tid,
 								IndexTuple *left, IndexTuple *right,
 								uint16 stride);
+extern void bark_entry_divide(IndexTuple entry, ItemPointer tid,
+							  IndexTuple *left, IndexTuple *right,
+							  uint16 stride);
 extern bool bark_entry_cut(IndexTuple entry, ItemPointer tid, Size leftmax,
 						   IndexTuple *left, IndexTuple *right,
 						   uint16 stride);
@@ -1528,8 +1830,11 @@ extern int	bark_posting_get_tids(IndexTuple itup, ItemPointer out, int maxout,
 extern IndexTuple bark_form_full_tuple(TupleDesc tupdesc, const Datum *values,
 									   const bool *isnull, Size *fulllen);
 
-/* True when `fulllen` bytes cannot sit inline and need overflow storage. */
-extern bool bark_len_is_oversized(Size fulllen);
+/*
+ * True when a leaf entry of `fulllen` bytes cannot sit inline and needs
+ * overflow storage, in an index with keyinfo's pivot suffix reserve.
+ */
+extern bool bark_len_is_oversized(BarkKeyInfo *keyinfo, Size fulllen);
 
 /*
  * Checks of one page by itself (barkverify.c), shared by amcheck and the
@@ -1584,7 +1889,8 @@ extern BlockNumber bark_overflow_nchunks(Size fulllen);
  */
 extern IndexTuple bark_form_oversized_entry(ItemPointer locator, Size fulllen,
 											BlockNumber firstblk,
-											bool is_leaf, uint16 natts);
+											bool is_leaf, uint16 natts,
+											IndexVersionTag tag);
 extern void bark_set_oversized_prefix(IndexTuple entry, Relation index,
 									  IndexTuple full);
 
@@ -1619,18 +1925,59 @@ extern IndexTuple bark_fetch_oversized(Relation index, IndexTuple entry);
  * Returns the number of pages freed.
  */
 extern BlockNumber bark_free_oversized(Relation index, IndexTuple entry);
+extern BlockNumber bark_free_overflow_page(Relation index, BlockNumber blkno);
+
+/*
+ * The overflow chains of an index, as a census of all its blocks finds them
+ * (bark_chains_note, then bark_chains_follow), indexed by block: each
+ * overflow page's next link, the length in pages of the chain that an
+ * OVERSIZED entry starts at the block, and BARK_CHAIN_* flags.  An overflow
+ * page that no chain reaches is an orphan (BarkChainOrphan).  The census is
+ * exact only while nothing writes or frees a chain, as under a lock that
+ * conflicts with RowExclusiveLock (bark_index_parent_check,
+ * bark_reclaim_orphans).
+ */
+typedef struct BarkChains
+{
+	BlockNumber npages;
+	bool		skippivots;		/* a test's broken mark pass (amcheck) */
+	BlockNumber *next;			/* an overflow page's bark_next, or
+								 * InvalidBlockNumber for any other page */
+	BlockNumber *nchunks;		/* 0 where no entry's chain starts */
+	uint8	   *flags;
+} BarkChains;
+
+#define BARK_CHAIN_REACHED	0x01	/* an entry's chain reaches the page */
+#define BARK_CHAIN_LINKED	0x02	/* an orphaned page links to the page */
+#define BARK_CHAIN_COUNTED	0x04	/* counted in an orphaned chain */
+
+static inline bool
+BarkChainOrphan(const BarkChains *chains, BlockNumber blkno)
+{
+	return chains->next[blkno] != InvalidBlockNumber &&
+		(chains->flags[blkno] & BARK_CHAIN_REACHED) == 0;
+}
+
+extern void bark_chains_init(BarkChains *chains, BlockNumber npages);
+extern void bark_chains_free(BarkChains *chains);
+extern void bark_chains_note(Relation index, BarkChains *chains, Page page,
+							 BlockNumber blkno);
+extern void bark_chains_follow(Relation index, BarkChains *chains);
 
 /*
  * Bottom-up deletion, re-forming entries that lose members, and merging a
  * leaf's equal-key entries before a split (barkdelete.c).
  */
-extern Size bark_leaf_free_space(Page page);
+extern Size bark_leaf_free_space(BarkKeyInfo *keyinfo, Page page);
 extern bool bark_simple_delete(Relation index, Relation heapRel,
 							   BarkKeyInfo *keyinfo, Buffer buf,
 							   IndexTuple newitem, Size newitemsz);
 extern bool bark_bottomup_delete(Relation index, Relation heapRel,
 								 BarkKeyInfo *keyinfo, Buffer buf,
 								 IndexTuple newitem, Size newitemsz);
+extern bool bark_tagged_delete(Relation index, Relation heapRel,
+							   BarkKeyInfo *keyinfo, Buffer buf,
+							   IndexTuple newitem, Size newitemsz);
 extern IndexTuple bark_reform_entry(Relation index, Buffer buf,
 									OffsetNumber off, IndexTuple itup,
 									ItemPointer tids, int nlive);
@@ -1680,9 +2027,9 @@ typedef BarkStackData *BarkStack;
  * Descend to the leaf that should contain `key`, returning that leaf's buffer
  * (write-locked when forwrite) and, when stack is non-NULL, the parent path.
  * key is an index tuple whose key columns are compared with bark_compare_itups;
- * with a heap TID `scantid`, (key, scantid) is compared with
- * bark_compare_itups_tid, which places it within a run of equal keys, and
- * nextkey must be true.
+ * with a heap TID `scantid` and version tag `scantag`, (key, scantid,
+ * scantag) is compared with bark_compare_itups_tid, which places it within a
+ * run of equal keys, and nextkey must be true.
  *
  * nextkey chooses which leaf a run of equal keys lands on: true (insert / true
  * key) descends to the rightmost leaf that can hold the key; false (lower-bound
@@ -1691,7 +2038,8 @@ typedef BarkStackData *BarkStack;
  * spans several leaves.
  */
 extern Buffer bark_search(Relation index, BarkKeyInfo *keyinfo,
-						  IndexTuple key, ItemPointer scantid, bool forwrite,
+						  IndexTuple key, ItemPointer scantid,
+						  IndexVersionTag scantag, bool forwrite,
 						  bool nextkey, BarkStack *stack);
 
 /*
@@ -1777,6 +2125,7 @@ typedef struct BarkAmCache
 	int			extracted;
 	bool		multikey;		/* BARK_META_MULTIKEY seen set */
 	uint16		tidstride;		/* bark_index_tid_stride, or 0 until read */
+	int8		versioned;		/* bark_index_versioned, or -1 until read */
 	int			nmarkers;		/* markers seen present */
 	Size		markerlen;		/* bytes of markerdata in use */
 	int			nl1;			/* level-1 slots in use */
@@ -1806,6 +2155,8 @@ extern bool bark_insert(Relation index, Datum *values, bool *isnull,
 						ItemPointer ht_ctid, Relation heapRel,
 						IndexUniqueCheck checkUnique,
 						bool indexUnchanged, IndexInfo *indexInfo);
+extern void bark_check_can_tag(Relation index, BarkKeyInfo *keyinfo,
+							   IndexVersionTag tag);
 extern void bark_insert_oversized_keys(Relation index, Datum *values,
 									   bool *isnull, ItemPointer ht_ctid,
 									   Relation heapRel,
@@ -1825,6 +2176,8 @@ extern int	bark_findsplitloc(Relation index, BarkKeyInfo *keyinfo,
 							  IndexTuple *items, const Size *sizes,
 							  Size reserve, int n, int newitemidx,
 							  bool isleaf, IndexTuple orighikey);
+extern bool bark_entries_in_run(Relation index, BarkKeyInfo *keyinfo,
+								IndexTuple lastleft, IndexTuple firstright);
 extern bool bark_singleval_cut(Relation index, BarkKeyInfo *keyinfo,
 							   Page page, OffsetNumber off, IndexTuple newitem,
 							   IndexTuple *left, IndexTuple *right);
@@ -1879,6 +2232,7 @@ typedef struct BarkKnnItem
 	double		dist;			/* distance of the entry's key from const */
 	int			firstTid;		/* the entry's heap TIDs are tids[firstTid]... */
 	int			ntids;			/* ...and there are this many, ascending */
+	IndexVersionTag tag;		/* the entry's version tag, 0 if untagged */
 	uint32		tupleOffset;	/* entry's key copy in tuples (IOS only) */
 	bool		recheck;		/* return its members with xs_recheck */
 } BarkKnnItem;
@@ -2018,6 +2372,7 @@ typedef struct BarkArrayKeyState
 typedef struct BarkScanPosItem
 {
 	ItemPointerData heapTid;	/* one member TID */
+	IndexVersionTag tag;		/* the entry's version tag, 0 if untagged */
 	OffsetNumber indexOffset;	/* entry's offset on the page when read */
 	uint32		tupleOffset;	/* entry's copy in currTuples (IOS only) */
 	bool		recheck;		/* return it with xs_recheck (multikey) */

@@ -17,6 +17,7 @@ OBJS = \
 	barkdelete.o \
 	barkinsert.o \
 	barkknn.o \
+	barkprefix.o \
 	barkscan.o \
 	barksearch.o \
 	barksort.o \
