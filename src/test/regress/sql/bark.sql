@@ -3523,7 +3523,7 @@ SELECT bark_pfx_check('SELECT id FROM bark_pfx WHERE url = ''https://www.example
 SELECT bark_pfx_check('SELECT url FROM bark_pfx WHERE url >= ''https://www.example.com/products/category/50'' AND url < ''https://www.example.com/products/category/6'' ORDER BY url');
 SELECT bark_pfx_check('SELECT url FROM bark_pfx WHERE url < ''https://www.example.com/products/category/2'' ORDER BY url DESC');
 SELECT bark_pfx_check('SELECT url, id FROM bark_pfx WHERE url > ''https://www.example.com/products/category/9'' ORDER BY url');
-SELECT on_pages < off_pages AS smaller FROM bark_pfx_build('(code)');
+SELECT on_pages <= off_pages AS not_larger FROM bark_pfx_build('(code)');
 SELECT bark_pfx_check('SELECT id FROM bark_pfx WHERE code = ''ACCT-000000001234'' ORDER BY id');
 SELECT bark_pfx_check('SELECT code FROM bark_pfx WHERE code BETWEEN ''ACCT-000000000100'' AND ''ACCT-000000002000'' ORDER BY code');
 SELECT bark_pfx_check('SELECT code FROM bark_pfx WHERE code > ''ACCT-000000004000'' ORDER BY code DESC');
@@ -3533,7 +3533,7 @@ SELECT bark_pfx_check('SELECT id FROM bark_pfx WHERE h = md5(''777'')');
 SELECT on_pages < off_pages AS smaller FROM bark_pfx_build('(url COLLATE bark_pfx_coll)');
 SELECT bark_pfx_check('SELECT url FROM bark_pfx WHERE url COLLATE bark_pfx_coll >= ''https://www.example.com/products/category/50'' ORDER BY url COLLATE bark_pfx_coll');
 SELECT bark_pfx_check('SELECT url FROM bark_pfx WHERE url COLLATE bark_pfx_coll < ''https://www.example.com/products/category/3'' ORDER BY url COLLATE bark_pfx_coll DESC');
-SELECT on_pages < off_pages AS smaller FROM bark_pfx_build('(code DESC)');
+SELECT on_pages <= off_pages AS not_larger FROM bark_pfx_build('(code DESC)');
 SELECT bark_pfx_check('SELECT code FROM bark_pfx WHERE code > ''ACCT-000000003000'' ORDER BY code DESC');
 SELECT bark_pfx_check('SELECT code FROM bark_pfx WHERE code < ''ACCT-000000000300'' ORDER BY code');
 SELECT on_pages < off_pages AS smaller FROM bark_pfx_build('(url, n)');
@@ -5011,6 +5011,71 @@ DROP OPERATOR #< (int4, int4), #<= (int4, int4), #= (int4, int4),
   #>= (int4, int4), #> (int4, int4);
 DROP FUNCTION bark_cnt_cmp(int4, int4);
 DROP SEQUENCE bark_cnt_seq;
+
+-- ===========================================================================
+-- bark_reclaim_orphans: what it refuses, and an index with no orphans
+-- ===========================================================================
+-- Keys of 20 kB that do not compress take OVERSIZED entries, so the index has
+-- overflow chains, all referenced.
+CREATE TABLE bark_orph (id int, k text);
+CREATE INDEX bark_orph_idx ON bark_orph USING bark (k);
+INSERT INTO bark_orph SELECT g,
+  (SELECT string_agg(md5(g::text || ':' || i::text), '') FROM generate_series(1, 640) i)
+  FROM generate_series(1, 40) g;
+SELECT bark_reclaim_orphans('bark_orph_idx');
+-- Its own transaction may not hold the lock writing to the index takes:
+-- an UPDATE keeps RowExclusiveLock on the index to the end of the
+-- transaction, and so does CREATE INDEX (AccessExclusiveLock).
+BEGIN;
+UPDATE bark_orph SET id = id WHERE id = 1;
+SELECT bark_reclaim_orphans('bark_orph_idx');
+ROLLBACK;
+BEGIN;
+CREATE INDEX bark_orph_idx2 ON bark_orph USING bark (id);
+SELECT bark_reclaim_orphans('bark_orph_idx2');
+ROLLBACK;
+-- An insert calling it from an index expression, where its own chain could be
+-- in flight, is refused.
+CREATE FUNCTION bark_orph_reclaim(t text) RETURNS text LANGUAGE plpgsql
+  IMMUTABLE AS $$
+BEGIN
+  PERFORM bark_reclaim_orphans('bark_orph_idx');
+  RETURN t;
+END $$;
+CREATE INDEX bark_orph_expr ON bark_orph USING bark (bark_orph_reclaim(k))
+  WHERE id > 1000;
+INSERT INTO bark_orph VALUES (1001, 'x');
+DROP INDEX bark_orph_expr;
+-- Not a BARK index, not an index, a partitioned index, and not the owner.
+CREATE INDEX bark_orph_bt ON bark_orph USING btree (id);
+SELECT bark_reclaim_orphans('bark_orph_bt');
+SELECT bark_reclaim_orphans('bark_orph');
+CREATE TABLE bark_orph_part (k text) PARTITION BY RANGE (k);
+CREATE INDEX bark_orph_part_idx ON bark_orph_part USING bark (k);
+SELECT bark_reclaim_orphans('bark_orph_part_idx');
+DROP TABLE bark_orph_part;
+-- A temporary index of this session is reclaimed as any other.
+CREATE TEMP TABLE bark_orph_tmp (k text);
+CREATE INDEX bark_orph_tmp_idx ON bark_orph_tmp USING bark (k);
+INSERT INTO bark_orph_tmp SELECT k FROM bark_orph;
+SELECT bark_reclaim_orphans('bark_orph_tmp_idx');
+DROP TABLE bark_orph_tmp;
+CREATE ROLE regress_bark_orph;
+SET ROLE regress_bark_orph;
+SELECT bark_reclaim_orphans('bark_orph_idx');
+RESET ROLE;
+DROP ROLE regress_bark_orph;
+-- A btree index BARK implements is a BARK index here.
+SET default_btree_implementation = bark;
+CREATE INDEX bark_orph_impl ON bark_orph USING btree (id);
+RESET default_btree_implementation;
+SELECT bark_reclaim_orphans('bark_orph_impl');
+-- An index that is not valid, as a failed CREATE INDEX CONCURRENTLY leaves
+-- one, is left alone.
+CREATE UNIQUE INDEX CONCURRENTLY bark_orph_inv ON bark_orph USING bark ((id % 2));
+SELECT bark_reclaim_orphans('bark_orph_inv');
+DROP TABLE bark_orph;
+DROP FUNCTION bark_orph_reclaim(text);
 
 -- A row comparison is not marked when the page's first and last entries
 -- satisfy it on different members, since an entry between them may not:

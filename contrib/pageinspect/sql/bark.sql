@@ -124,8 +124,13 @@ INSERT INTO bark6 SELECT 'a common prefix for all keys ' || lpad(g::text, 4, '0'
 CREATE INDEX bark6_plain ON bark6 USING bark (k);
 CREATE INDEX bark6_pfx ON bark6 USING bark (k) WITH (prefix_compression = on);
 SELECT flags FROM bark_page_stats('bark6_pfx', 1);
-SELECT itemoffset, shape, ntids, htid, data
+-- The PREFIX item sits once at the first leaf offset and carries no entry
+-- fields of its own (its raw directory bytes are MAXALIGN-padded, so they
+-- differ between 32- and 64-bit builds; the structural facts here do not).
+SELECT itemoffset, shape, ntids IS NULL AS no_ntids, htid IS NULL AS no_htid,
+       data IS NOT NULL AS has_dir
   FROM bark_page_items('bark6_pfx', 1) WHERE shape = 'PREFIX';
+-- The coded items display decoded, so they equal the plain index's keys.
 SELECT (SELECT array_agg(data || htid::text ORDER BY itemoffset)
           FROM bark_page_items('bark6_pfx', 1) WHERE shape <> 'PREFIX') =
        (SELECT array_agg(data || htid::text ORDER BY itemoffset)

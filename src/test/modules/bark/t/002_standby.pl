@@ -285,10 +285,9 @@ INSERT INTO splitp_t SELECT g, md5(g::text) || 'https://x/' || g
 ]);
 $lsn_after = $node_primary->safe_psql($db, 'SELECT pg_current_wal_insert_lsn()');
 
-cmp_ok(waldump_count($lsn_before, $lsn_after, 'SPLIT [^\n]* prefix: L., firstrightoff:'),
-	'>', 0, "$sect: primary logged SPLIT records keeping the left prefix");
 cmp_ok(waldump_count($lsn_before, $lsn_after, 'SPLIT [^\n]* left logged'),
-	'>', 0, "$sect: primary logged SPLIT records with the left half whole");
+	'>', 0,
+	"$sect: primary logged prefix-coded leaf splits, laid out whole");
 
 # One key: each split cuts the last POSTING entry of the left page, whose
 # left part stays there (the replaced entry).  Too many records for

@@ -39,9 +39,11 @@ my $redo = $node->safe_psql('postgres',
 my $start = $node->safe_psql('postgres',
 	'SELECT pg_current_wal_insert_lsn()');
 
-# As in 002_standby.pl: shared-prefix keys split prefix-coded leaves, then
-# unrelated keys make some splits log the left half whole.  Keep the seed
-# fixed, but assert the record forms rather than assume the workload hit them.
+# As in 002_standby.pl: shared-prefix keys split prefix-coded leaves, which
+# are always logged whole, while unrelated plain-index keys split leaves the
+# compact way, logging the original page plus the moved entries.  Keep the
+# seed fixed, but assert the record forms rather than assume the workload hit
+# them.
 $node->safe_psql(
 	'postgres', q[
 SELECT setseed(0.7);
@@ -97,10 +99,10 @@ $stderr =~ s/^pg_waldump: first record is after .*(\n|$)//m;
 is($stderr, '', 'pg_waldump reads the workload WAL without errors');
 append_to_file("$PostgreSQL::Test::Utils::log_path/split_wal.log",
 	"WAL interval: $start .. $end\n$wal\n");
-like($wal, qr/desc: SPLIT level: 0, [^\n]*prefix: L., firstrightoff:/,
-	'workload logged compact splits retaining the left prefix');
-like($wal, qr/desc: SPLIT level: 0, [^\n]*left logged whole/,
-	'workload logged whole-left splits');
+like($wal, qr/desc: SPLIT level: 0, [^\n]*prefix: --, [^\n]*firstrightoff:/,
+	'workload logged compact splits of a plain leaf');
+like($wal, qr/desc: SPLIT level: 0, [^\n]*prefix: (L[-R]|-R), [^\n]*left logged whole/,
+	'workload logged a prefix-coded leaf split half, logged whole');
 like($wal, qr/desc: SPLIT level: [1-9]\d*, leaf: F,/,
 	'workload logged an internal-page split');
 like($wal, qr/desc: NEWROOT root: \d+, level: 2,/,

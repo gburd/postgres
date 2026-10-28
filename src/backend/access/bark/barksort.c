@@ -31,13 +31,15 @@
  * cascade up the tree.  Leaf pages are packed to the index's fillfactor
  * reloption (default 90%) and internal pages to BARK_NONLEAF_FILLFACTOR.
  *
- * The sort uses tuplesort.c with a btree-family ordering comparator.  BARK's
- * operator classes live in btree's operator families (ambtreeopfamilies), so
- * tuplesort_begin_index_btree() produces exactly the total order
- * bark_compare_itups() does: it reads only the index's ordering support proc,
- * collation, and ASC/DESC + NULLS options via the shared family, never a btree
- * meta page (that path of _bt_mkscankey, taken when it is handed a tuple, is
- * not reached here because we pass NULL).  Switching to tuplesort also lets a
+ * The sort is a tuplesort variant of BARK's own (bark_sort_begin), built on
+ * the interface tuplesort.h exports for variants, as tuplesortvariants.c's
+ * are.  It sorts SINGLE entries, untagged or tagged, in the tree's order of
+ * (key, heap TID, version tag): the key by each column's sort support, found
+ * through the index's operator family as tuplesort_begin_index_btree finds
+ * it, so in the order bark_compare_itups() gives; then the heap TID and the
+ * tag, read with BarkEntryGetHeapTid and BarkEntryGetTag, since a tagged
+ * SINGLE keeps its heap TID in its trailer, not in t_tid.  nbtree's sort
+ * compares t_tid, and so cannot sort tagged entries.  tuplesort also lets a
  * build spill to disk, and makes a parallel build possible: multiple workers
  * each scan a slice of the heap into a shared parallel tuplesort, the leader
  * merges the sorted runs, then the single existing bottom-up loader writes the
@@ -68,6 +70,7 @@
 #include "storage/proc.h"
 #include "tcop/tcopprot.h"
 #include "utils/datum.h"
+#include "utils/injection_point.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/tuplesort.h"
@@ -101,14 +104,16 @@ typedef struct BarkPageState
 	struct BarkPageState *parent;	/* next level up; created on demand */
 
 	/*
-	 * Leaf prefix compression (bark_build_place): the prefix the page's first
-	 * data item offers, whether or not the page took it, and how many bytes
-	 * of it the later items share, to decide whether the next leaf takes one.
+	 * Leaf level of a prefix_compression build: tuples are collected here,
+	 * off-page, and laid out as a coded (or plain) leaf when the next tuple
+	 * would overfill it, so a coded leaf is packed by its coded size rather
+	 * than its plain size.  See bark_buildadd_coded.
 	 */
-	char		pcand[BARK_PREFIX_MAX];
-	Size		pcandlen;		/* 0 when the first item offers none */
-	int64		pshared;		/* bytes of pcand the later items share */
-	int			pcoded;			/* number of later items measured */
+	IndexTuple *items;			/* pending leaf tuples, palloc'd copies */
+	int			nitems;
+	int			maxitems;
+	BarkPrefixPageEst est;		/* coded estimate of items */
+	Size		lastkey;		/* worst-case high key from the last item */
 } BarkPageState;
 
 /*
@@ -169,7 +174,8 @@ typedef struct BarkBuildState
 	bool		sizevaries;		/* any variable-width attribute? */
 	IndexInfo  *indexInfo;		/* for the oversized second-pass insert */
 	bool		prefix;			/* bark_prefix_enabled(index) */
-	bool		prefixnext;		/* give the next leaf a prefix? */
+	BarkPrefixAttr prefixattrs[INDEX_MAX_KEYS];	/* key-column layout for coding */
+	int			prefixnatts;	/* key columns, 0 until set in bark_load */
 
 	/* the sort this build feeds; set up by the caller */
 	Tuplesortstate *sortstate;
@@ -263,6 +269,199 @@ typedef struct BarkLeader
 	BufferUsage *bufferusage;
 } BarkLeader;
 
+/*
+ * The build's sort (see the file header): BarkSortArg is its
+ * TuplesortPublic.arg.
+ */
+typedef struct BarkSortArg
+{
+	Relation	index;
+}			BarkSortArg;
+
+/* The (heap TID, tag) order of two SINGLE entries of equal key. */
+static int
+bark_sort_cmp_tid_tag(IndexTuple a, IndexTuple b)
+{
+	int			cmp = ItemPointerCompare(BarkEntryGetHeapTid(a),
+										 BarkEntryGetHeapTid(b));
+
+	if (cmp == 0)
+		cmp = bark_compare_tag(BarkEntryGetTag(a), BarkEntryGetTag(b));
+	return cmp;
+}
+
+/*
+ * Compare two entries on everything but the leading key's datum1, which the
+ * caller found equal (or, abbreviated, not conclusive), as
+ * comparetup_index_btree_tiebreak does, then on (heap TID, tag).  No two
+ * entries the build sorts are equal on all of them.
+ */
+static int
+bark_sort_tiebreak(const SortTuple *a, const SortTuple *b,
+				   Tuplesortstate *state)
+{
+	TuplesortPublic *base = TuplesortstateGetPublic(state);
+	TupleDesc	tupdesc = RelationGetDescr(((BarkSortArg *) base->arg)->index);
+	IndexTuple	t1 = (IndexTuple) a->tuple;
+	IndexTuple	t2 = (IndexTuple) b->tuple;
+	int			cmp;
+
+	for (int attno = 1; attno <= base->nKeys; attno++)
+	{
+		SortSupport ssup = &base->sortKeys[attno - 1];
+		bool		n1;
+		bool		n2;
+		Datum		d1;
+		Datum		d2;
+
+		if (attno == 1 && !ssup->abbrev_converter)
+			continue;
+		d1 = index_getattr(t1, attno, tupdesc, &n1);
+		d2 = index_getattr(t2, attno, tupdesc, &n2);
+		cmp = attno == 1 ?
+			ApplySortAbbrevFullComparator(d1, n1, d2, n2, ssup) :
+			ApplySortComparator(d1, n1, d2, n2, ssup);
+		if (cmp != 0)
+			return cmp;
+	}
+
+	cmp = bark_sort_cmp_tid_tag(t1, t2);
+	Assert(cmp != 0);
+	return cmp;
+}
+
+static int
+bark_sort_compare(const SortTuple *a, const SortTuple *b,
+				  Tuplesortstate *state)
+{
+	TuplesortPublic *base = TuplesortstateGetPublic(state);
+	int			cmp = ApplySortComparator(a->datum1, a->isnull1,
+										  b->datum1, b->isnull1,
+										  base->sortKeys);
+
+	return cmp != 0 ? cmp : bark_sort_tiebreak(a, b, state);
+}
+
+static void
+bark_sort_removeabbrev(Tuplesortstate *state, SortTuple *stups, int count)
+{
+	TuplesortPublic *base = TuplesortstateGetPublic(state);
+	TupleDesc	tupdesc = RelationGetDescr(((BarkSortArg *) base->arg)->index);
+
+	for (int i = 0; i < count; i++)
+		stups[i].datum1 = index_getattr((IndexTuple) stups[i].tuple, 1,
+										tupdesc, &stups[i].isnull1);
+}
+
+/*
+ * Tape I/O as writetup_index and readtup_index do it, but for the trailing
+ * length word a random-access sort needs: bark_sort_begin never asks for one.
+ */
+static void
+bark_sort_writetup(Tuplesortstate *state, LogicalTape *tape, SortTuple *stup)
+{
+	IndexTuple	tuple = (IndexTuple) stup->tuple;
+	unsigned int tuplen = IndexTupleSize(tuple) + sizeof(tuplen);
+
+	LogicalTapeWrite(tape, &tuplen, sizeof(tuplen));
+	LogicalTapeWrite(tape, tuple, IndexTupleSize(tuple));
+}
+
+static void
+bark_sort_readtup(Tuplesortstate *state, SortTuple *stup, LogicalTape *tape,
+				  unsigned int len)
+{
+	TuplesortPublic *base = TuplesortstateGetPublic(state);
+	unsigned int tuplen = len - sizeof(unsigned int);
+	IndexTuple	tuple = (IndexTuple) tuplesort_readtup_alloc(state, tuplen);
+
+	LogicalTapeReadExact(tape, tuple, tuplen);
+	stup->tuple = tuple;
+	stup->datum1 = index_getattr(tuple, 1,
+								 RelationGetDescr(((BarkSortArg *) base->arg)->index),
+								 &stup->isnull1);
+}
+
+/*
+ * Begin a build sort of `index`'s entries.  The sort support of each key
+ * column is set up as tuplesort_begin_index_btree sets it up, from the
+ * column's operator family, collation and ASC/DESC and NULLS options.
+ */
+static Tuplesortstate *
+bark_sort_begin(Relation index, int workMem, SortCoordinate coordinate)
+{
+	Tuplesortstate *state = tuplesort_begin_common(workMem, coordinate,
+												   TUPLESORT_NONE);
+	TuplesortPublic *base = TuplesortstateGetPublic(state);
+	MemoryContext oldcxt = MemoryContextSwitchTo(base->maincontext);
+	BarkSortArg *arg = palloc_object(BarkSortArg);
+
+	arg->index = index;
+	base->nKeys = IndexRelationGetNumberOfKeyAttributes(index);
+	base->removeabbrev = bark_sort_removeabbrev;
+	base->comparetup = bark_sort_compare;
+	base->comparetup_tiebreak = bark_sort_tiebreak;
+	base->writetup = bark_sort_writetup;
+	base->readtup = bark_sort_readtup;
+	base->haveDatum1 = true;
+	base->arg = arg;
+	base->sortKeys = palloc0_array(SortSupportData, base->nKeys);
+	for (int i = 0; i < base->nKeys; i++)
+	{
+		SortSupport ssup = &base->sortKeys[i];
+		int16		indoption = index->rd_indoption[i];
+
+		ssup->ssup_cxt = CurrentMemoryContext;
+		ssup->ssup_collation = index->rd_indcollation[i];
+		ssup->ssup_nulls_first = (indoption & INDOPTION_NULLS_FIRST) != 0;
+		ssup->ssup_attno = i + 1;
+		ssup->abbreviate = (i == 0);
+		PrepareSortSupportFromIndexRel(index, (indoption & INDOPTION_DESC) != 0,
+									   ssup);
+	}
+	MemoryContextSwitchTo(oldcxt);
+	return state;
+}
+
+/*
+ * Add the SINGLE entry of (values, isnull) at heap TID `tid` with version
+ * tag `tag` to the sort: untagged, the formed tuple with the TID in t_tid,
+ * as tuplesort_putindextuplevalues forms it; tagged, the tagged SINGLE
+ * (bark_form_tagged) an insert would place.
+ */
+static void
+bark_sort_put(Tuplesortstate *state, Relation index, ItemPointer tid,
+			  IndexVersionTag tag, const Datum *values, const bool *isnull)
+{
+	TuplesortPublic *base = TuplesortstateGetPublic(state);
+	TupleDesc	tupdesc = RelationGetDescr(index);
+	SortTuple	stup;
+	IndexTuple	tuple;
+
+	if (tag == InvalidIndexVersionTag)
+	{
+		tuple = index_form_tuple_context(tupdesc, values, isnull,
+										 base->tuplecontext);
+		tuple->t_tid = *tid;
+	}
+	else
+	{
+		/* the tuple context is a bump context, which cannot pfree */
+		IndexTuple	key = index_form_tuple(tupdesc, values, isnull);
+		MemoryContext oldcxt = MemoryContextSwitchTo(base->tuplecontext);
+
+		tuple = bark_form_tagged(key, tid, tag);
+		MemoryContextSwitchTo(oldcxt);
+		pfree(key);
+	}
+	stup.tuple = tuple;
+	stup.datum1 = index_getattr(tuple, 1, tupdesc, &stup.isnull1);
+	/* TUPLESORT_NONE: a bump context, which has no GetMemoryChunkSpace */
+	tuplesort_puttuple_common(state, &stup,
+							  base->sortKeys->abbrev_converter && !stup.isnull1,
+							  MAXALIGN(IndexTupleSize(tuple)));
+}
+
 /* True when any key attribute of `itup` is NULL. */
 static bool
 bark_itup_has_null_key(Relation index, int nkeyatts, IndexTuple itup)
@@ -335,7 +534,7 @@ bark_build_may_be_oversized(BarkBuildState *bs, TupleDesc tupdesc,
 			bound += VARSIZE_ANY(val) + att->attalignby - 1;
 		}
 	}
-	return bark_len_is_oversized(bound);
+	return bark_len_is_oversized(bs->keyinfo, bound);
 }
 
 /*
@@ -353,7 +552,7 @@ bark_build_row_oversized(BarkBuildState *bs, TupleDesc tupdesc,
 		return false;
 	full = bark_form_full_tuple(tupdesc, values, isnull, &fulllen);
 	pfree(full);
-	return bark_len_is_oversized(fulllen);
+	return bark_len_is_oversized(bs->keyinfo, fulllen);
 }
 
 /*
@@ -402,7 +601,7 @@ bark_build_marker(BarkBuildState *bs, Datum key)
 	}
 
 	/* Refuse one too large for a page, as an insert would. */
-	pfree(bark_form_marker(index, key, &fulllen));
+	pfree(bark_form_marker(index, bs->keyinfo, key, &fulllen));
 
 	oldcxt = MemoryContextSwitchTo(MemoryContextGetParent(bs->rowcxt));
 	if (bs->nmarkers == bs->markersalloc)
@@ -419,7 +618,8 @@ bark_build_marker(BarkBuildState *bs, Datum key)
 	isnull[attno - 1] = false;
 	ItemPointerSet(&tid, InvalidBlockNumber,
 				   BARK_MARKER_OFFSET + 1 + ParallelWorkerNumber);
-	tuplesort_putindextuplevalues(bs->sortstate, index, &tid, values, isnull);
+	bark_sort_put(bs->sortstate, index, &tid, InvalidIndexVersionTag, values,
+				  isnull);
 }
 
 /*
@@ -449,6 +649,9 @@ bark_build_row_keys(BarkBuildState *bs, ItemPointer tid, Datum *values,
 						  isnull[attno - 1], &rk);
 	if (rk.nkeys > 1)
 		bs->multikey = true;
+
+	/* A multikey index stores no tags (bark_indexcanversion). */
+	Assert(bs->indexInfo->ii_VersionTag == InvalidIndexVersionTag);
 	if (!tupleIsAlive && bs->deadsort != NULL)
 	{
 		sortstate = bs->deadsort;
@@ -466,8 +669,8 @@ bark_build_row_keys(BarkBuildState *bs, ItemPointer tid, Datum *values,
 		if (bark_build_row_oversized(bs, tupdesc, kvalues, knulls))
 			bs->has_oversized = true;
 		else
-			tuplesort_putindextuplevalues(sortstate, index, tid, kvalues,
-										  knulls);
+			bark_sort_put(sortstate, index, tid, InvalidIndexVersionTag,
+						  kvalues, knulls);
 	}
 	bs->indtuples += rk.nkeys;
 
@@ -494,6 +697,7 @@ bark_build_callback(Relation index, ItemPointer tid, Datum *values,
 	Tuplesortstate *sortstate = bs->sortstate;
 
 	bark_check_tid_offset(index, tid, bs->keyinfo->tidstride);
+	bark_check_can_tag(index, bs->keyinfo, bs->indexInfo->ii_VersionTag);
 	if (bs->extracted > 0)
 	{
 		bark_build_row_keys(bs, tid, values, isnull, tupleIsAlive);
@@ -502,10 +706,11 @@ bark_build_callback(Relation index, ItemPointer tid, Datum *values,
 
 	/*
 	 * Classify the row by its formed size.  An oversized key cannot go
-	 * through the sort (tuplesort re-forms via index_form_tuple, which caps a
-	 * tuple at 8191 bytes), nor can the bottom-up loader place it inline;
-	 * such rows are recorded and inserted after the tree is loaded, via the
-	 * normal overflow-aware insert path (bark_build_oversized_pass).
+	 * through the sort (index_form_tuple caps a tuple at 8191 bytes), nor can
+	 * the bottom-up loader place it inline; such rows are recorded and
+	 * inserted after the tree is loaded, via the normal overflow-aware insert
+	 * path (bark_build_oversized_pass), which makes a row the table AM tagged
+	 * a tagged OVERSIZED entry.
 	 */
 	if (bark_build_row_oversized(bs, RelationGetDescr(index), values, isnull))
 	{
@@ -515,16 +720,16 @@ bark_build_callback(Relation index, ItemPointer tid, Datum *values,
 	}
 
 	/*
-	 * Spool a SINGLE-shape entry: the formed index tuple with the heap TID in
-	 * t_tid.  tuplesort_putindextuplevalues forms the tuple and stamps t_tid
-	 * exactly as the serial build did by hand.
+	 * Spool a SINGLE entry, tagged with the tag the table AM gave the row
+	 * (ii_VersionTag) or untagged.
 	 */
 	if (!tupleIsAlive && bs->deadsort != NULL)
 	{
 		sortstate = bs->deadsort;
 		bs->havedead = true;
 	}
-	tuplesort_putindextuplevalues(sortstate, index, tid, values, isnull);
+	bark_sort_put(sortstate, index, tid, bs->indexInfo->ii_VersionTag, values,
+				  isnull);
 	bs->indtuples += 1;
 }
 
@@ -590,58 +795,21 @@ static void bark_buildadd(BarkBuildState *bs, BulkWriteState *bulk,
 /*
  * Add the data item `itup` to st's page at st->nextoff.
  *
- * On a leaf of an index with prefix compression, the page's first item
- * offers its first-column bytes as the page's prefix (bark_prefix_candidate).
- * The page takes it when the leaf before it shared enough of its own
- * (bs->prefixnext; the first leaf always does), and then every item is coded
- * against it.  Taken or not, the page measures how much of it the later items
- * share, which decides for the next leaf (bark_flush_page): the build cannot
- * look ahead at a page's items, so it assumes neighbouring leaves are alike.
+ * The build streams plain items onto non-leaf pages and the leaves of a plain
+ * index this way.  A leaf of a prefix-compression index does not go through
+ * here: bark_buildadd routes it to bark_buildadd_coded, which buffers the
+ * leaf's items and lays them out coded as a whole.
  */
 static void
 bark_build_place(BarkBuildState *bs, BarkPageState *st, IndexTuple itup)
 {
 	Page		page = (Page) st->buf;
-	IndexTuple	coded;
 
-	if (st->level == 0 && bs->prefix)
-	{
-		if (st->nextoff == BARK_P_HIKEY)
-		{
-			const char *cand = bark_prefix_candidate(itup, &st->pcandlen);
-
-			if (cand == NULL)
-				st->pcandlen = 0;
-			else
-			{
-				memcpy(st->pcand, cand, st->pcandlen);
-				if (bs->prefixnext)
-				{
-					bark_page_set_prefix(page, cand, st->pcandlen);
-					st->nextoff = OffsetNumberNext(st->nextoff);
-				}
-			}
-		}
-		else if (st->pcandlen > 0)
-		{
-			int			shared = bark_prefix_shared(st->pcand, st->pcandlen,
-													itup);
-
-			if (shared >= 0)
-			{
-				st->pshared += shared;
-				st->pcoded++;
-			}
-		}
-	}
-
-	coded = bark_prefix_encode(page, itup);
-	if (PageAddItem(page, (char *) coded, IndexTupleSize(coded), st->nextoff,
+	Assert(!(st->level == 0 && bs->prefix));
+	if (PageAddItem(page, (char *) itup, IndexTupleSize(itup), st->nextoff,
 					false, false) == InvalidOffsetNumber)
 		elog(ERROR, "failed to add item to BARK page during build");
 	st->nextoff = OffsetNumberNext(st->nextoff);
-	if (coded != itup)
-		pfree(coded);
 }
 
 /*
@@ -675,6 +843,48 @@ bark_build_hikey(BarkBuildState *bs, BarkPageState *st, IndexTuple firstright)
 }
 
 /*
+ * How many of the last entries of st's leaf form one run of entries equal on
+ * key and heap TID with `firstright`, the entry that starts the next leaf
+ * (bark_entries_in_run): 0 when there is none, or when the run fills the
+ * page, so that cutting inside it is the only cut left, or when it takes
+ * more than a quarter of a page, so that the next leaf can take it with
+ * firstright and the next entry (each at most BarkMaxItemSize).  Such runs
+ * are one row's versions with one key; a table AM's build scan that hands
+ * a row once never makes one.
+ */
+static int
+bark_build_run_tail(BarkBuildState *bs, BarkPageState *st,
+					IndexTuple firstright)
+{
+	Page		page = (Page) st->buf;
+	OffsetNumber first = BarkPageFirstDataKey(BarkPageGetOpaque(page));
+	OffsetNumber off = OffsetNumberPrev(st->nextoff);
+	BarkItemBuf ibuf[2];
+	IndexTuple	right = firstright;
+	Size		bytes = 0;
+	int			n = 0;
+
+	/* Tests break the rule, to show what it keeps (t/002_bark_tags.pl). */
+	if (IS_INJECTION_POINT_ATTACHED("bark-build-ignore-runs"))
+		return 0;
+
+	for (; off >= first; off--)
+	{
+		IndexTuple	left = BarkPageGetItem(page, off, &ibuf[n % 2]);
+
+		if (!bark_entries_in_run(bs->index, bs->keyinfo, left, right))
+			break;
+		bytes += MAXALIGN(ItemIdGetLength(PageGetItemId(page, off))) +
+			sizeof(ItemIdData);
+		n++;
+		right = left;
+	}
+	if (off < first || bytes > BLCKSZ / 4)
+		return 0;
+	return n;
+}
+
+/*
  * Flush st's current page because `firstright` (the item that did not fit)
  * will start a new page: give this page its high key, write the page, chain
  * the right-link, add the page's downlink to the parent, and start a fresh
@@ -690,13 +900,41 @@ bark_flush_page(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *st,
 {
 	Page		page = (Page) st->buf;
 	IndexTuple	hikey;
-	IndexTuple	moved = NULL;
+	IndexTuple *moved;			/* items moved to the next page: */
+	int			mfirst;			/* moved[mfirst .. mend) */
+	int			mend;
+	int			nrun = 0;
 	BlockNumber flushedblk = st->blkno;
 	BulkWriteBuffer flushedbuf = st->buf;
 	BarkPageState *parent = st->parent;
 	BarkPageState *fresh;
 
-	hikey = bark_build_hikey(bs, st, firstright);
+	/*
+	 * Do not cut a leaf inside a run of entries equal on key and heap TID
+	 * (one row's entries of different tags) when the page has another place
+	 * to cut, as bark_findsplitloc does not: move the run's entries on this
+	 * page to the next one with firstright.
+	 */
+	if (st->level == 0)
+		nrun = bark_build_run_tail(bs, st, firstright);
+	moved = palloc_array(IndexTuple, nrun + 1);
+	mfirst = mend = 1;
+	if (nrun > 0)
+	{
+		OffsetNumber off = st->nextoff - nrun;
+
+		for (int i = 0; i < nrun; i++)
+		{
+			BarkItemBuf ibuf;
+
+			moved[mend++] = CopyIndexTuple(BarkPageGetItem(page, off + i,
+														   &ibuf));
+		}
+		for (int i = nrun - 1; i >= 0; i--)
+			PageIndexTupleDelete(page, off + i);
+		st->nextoff = off;
+	}
+	hikey = bark_build_hikey(bs, st, nrun > 0 ? moved[mfirst] : firstright);
 
 	/*
 	 * bark_buildadd reserves room for a high key the size of the item it
@@ -713,11 +951,12 @@ bark_flush_page(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *st,
 		BarkItemBuf ibuf;
 
 		Assert(lastoff > BarkPageFirstDataKey(BarkPageGetOpaque(page)));
-		moved = CopyIndexTuple(BarkPageGetItem(page, lastoff, &ibuf));
+		moved[--mfirst] = CopyIndexTuple(BarkPageGetItem(page, lastoff,
+														 &ibuf));
 		PageIndexTupleDelete(page, lastoff);
 		st->nextoff = lastoff;
 		pfree(hikey);
-		hikey = bark_build_hikey(bs, st, moved);
+		hikey = bark_build_hikey(bs, st, moved[mfirst]);
 		Assert(PageGetFreeSpace(page) >= MAXALIGN(IndexTupleSize(hikey)));
 	}
 
@@ -732,11 +971,6 @@ bark_flush_page(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *st,
 					BARK_P_HIKEY, false, false) == InvalidOffsetNumber)
 		elog(ERROR, "failed to add high key to BARK page during build");
 
-	/* The next leaf takes a prefix if this one's items shared enough of its. */
-	if (st->level == 0 && st->pcoded > 0)
-		bs->prefixnext = st->pshared >=
-			(int64) BARK_PREFIX_MIN_SHARED * st->pcoded;
-
 	/* Add the flushed page's downlink to the parent. */
 	if (parent == NULL)
 	{
@@ -747,10 +981,17 @@ bark_flush_page(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *st,
 	bark_buildadd(bs, bulk, parent, st->lowkey);
 	pfree(st->lowkey);
 
-	/* Start a fresh page at this level and chain siblings both ways. */
+	/*
+	 * Start a fresh page at this level and chain siblings both ways.  A leaf
+	 * whose lower bound, this high key, has a tag says so, as the right half
+	 * of a split does.
+	 */
 	fresh = bark_pagestate(bs, bulk, st->level);
 	BarkPageGetOpaque((Page) flushedbuf)->bark_next = fresh->blkno;
 	BarkPageGetOpaque((Page) fresh->buf)->bark_prev = flushedblk;
+	if (st->level == 0 && bark_pivot_tag(hikey) != InvalidIndexVersionTag)
+		BarkPageGetOpaque((Page) fresh->buf)->bark_flags |=
+			BARK_LOWBOUND_TAGGED;
 
 	/* The flushed page is complete and immutable; write it now. */
 	smgr_bulk_write(bulk, flushedblk, flushedbuf, true);
@@ -763,17 +1004,314 @@ bark_flush_page(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *st,
 	st->prevblk = flushedblk;
 	st->prevbuf = flushedbuf;
 	st->parent = parent;
-	st->pcandlen = 0;
-	st->pshared = 0;
-	st->pcoded = 0;
 	pfree(fresh->lowkey);
 	pfree(fresh);
 
-	/* The item moved off the flushed page leads the new one. */
-	if (moved != NULL)
+	/* The items moved off the flushed page lead the new one. */
+	for (int i = mfirst; i < mend; i++)
 	{
-		bark_build_place(bs, st, moved);
-		pfree(moved);
+		bark_build_place(bs, st, moved[i]);
+		pfree(moved[i]);
+	}
+	pfree(moved);
+}
+
+static void bark_flush_coded(BarkBuildState *bs, BulkWriteState *bulk,
+							 BarkPageState *st, bool last);
+
+/*
+ * bark_buildadd_coded -- add a leaf tuple to a prefix_compression index build.
+ *
+ * Leaf tuples are collected in st->items, off the page, with a running
+ * estimate of the coded leaf they would make (BarkPrefixPageEst).  Before
+ * adding itup, the pending leaf is laid out and written if itup would push it
+ * past either limit:
+ *
+ *	- the leaf fillfactor, applied to the coded (on-disk) size, so a coded leaf
+ *	  leaves the same insert headroom a plain one does; and
+ *	- the split-fit budget (see bark_prefix_split_needed): the decoded items of
+ *	  a coded page must still split into two plain pages.
+ *
+ * A pending leaf that cannot be coded, or would not compress enough to be
+ * worthwhile, is laid out plain and capped at what a plain page holds, exactly
+ * as in a non-prefix build.  Mirrors nbtsort.c's _bt_buildadd_coded.
+ */
+static void
+bark_buildadd_coded(BarkBuildState *bs, BulkWriteState *bulk,
+					BarkPageState *st, IndexTuple itup)
+{
+	Size		usable = BLCKSZ - SizeOfPageHeaderData -
+		MAXALIGN(sizeof(BarkPageOpaqueData));
+	Size		fillsz = usable - st->full;
+	Size		itupsz = MAXALIGN(IndexTupleSize(itup));
+	Size		keyend = BarkEntryIsAltTID(itup) ? BarkEntryGetBodyOffset(itup) :
+		IndexTupleSize(itup);
+	Size		itupkey = MAXALIGN(keyend) + BarkPivotSuffixReserve(bs->keyinfo) +
+		sizeof(ItemIdData);
+	BarkPrefixPageEst est;
+
+	if (st->items == NULL)
+	{
+		st->maxitems = 2 * MaxIndexTuplesPerPage;
+		st->items = palloc_array(IndexTuple, st->maxitems);
+	}
+
+	/*
+	 * Copy itup before estimating: the running estimate keeps a pointer to
+	 * its group's anchor tuple, which may be this one, so it must point at the
+	 * copy that is kept.
+	 */
+	itup = CopyIndexTuple(itup);
+	est = st->est;
+	bark_prefix_est_add(&est, bs->prefixattrs, bs->prefixnatts, itup);
+
+	if (st->nitems >= 2)
+	{
+		BarkPrefixPageEst *pend = &st->est;
+		Size		lastplain = MAXALIGN(IndexTupleSize(st->items[st->nitems - 1])) +
+			sizeof(ItemIdData);
+		Size		itupplain = itupsz + sizeof(ItemIdData);
+		Size		leafnow,
+					leafwith;
+		bool		full;
+
+		/*
+		 * Mirror bark_buildadd's two tests, in terms of the leaf the pending
+		 * tuples would make.  A finished leaf keeps all pending tuples but the
+		 * last, which moves to the next leaf and supplies the new high key (at
+		 * most its key part plus the pivot suffix reserve).  The soft limit
+		 * finishes the leaf once it is fillfactor-full as it stands; the hard
+		 * limit finishes it if admitting itup could leave it unable to hold
+		 * its tuples and high key, or (coded) beyond the split-fit budget, or
+		 * out of line pointers.
+		 */
+		if (bark_prefix_est_representable(pend) &&
+			bark_prefix_worthwhile(bark_prefix_est_coded(pend), pend->plainsz))
+			leafnow = bark_prefix_est_coded(pend) - pend->lastcoded + st->lastkey;
+		else
+			leafnow = pend->plainsz - lastplain + st->lastkey;
+		full = leafnow > fillsz;
+
+		if (!full)
+		{
+			if (bark_prefix_est_representable(&est) &&
+				bark_prefix_worthwhile(bark_prefix_est_coded(&est), est.plainsz))
+			{
+				leafwith = bark_prefix_est_coded(&est) - est.lastcoded + itupkey;
+				/* the final leaf keeps the last item, body and all */
+				full = est.plainsz - itupplain + Max(itupplain, itupkey) +
+					2 * est.maxplain + MAXALIGN(sizeof(ItemPointerData)) > 2 * usable ||
+					bark_prefix_est_coded(&est) > usable;
+			}
+			else
+			{
+				leafwith = est.plainsz - itupplain + itupkey;
+				full = est.plainsz > usable;
+			}
+			full = full || leafwith > usable ||
+				st->nitems >= MaxIndexTuplesPerPage - 2;
+		}
+
+		if (full)
+		{
+			/* itup starts the next leaf: its estimate starts over */
+			bark_flush_coded(bs, bulk, st, false);
+			est = st->est;
+			bark_prefix_est_add(&est, bs->prefixattrs, bs->prefixnatts, itup);
+		}
+	}
+
+	if (st->nitems >= st->maxitems)
+	{
+		st->maxitems *= 2;
+		st->items = repalloc_array(st->items, IndexTuple, st->maxitems);
+	}
+	st->items[st->nitems++] = itup;
+	st->est = est;
+	st->lastkey = itupkey;
+}
+
+/*
+ * bark_flush_coded -- lay out and write the pending leaf of a coded build.
+ *
+ * All pending tuples but the last go on the leaf (the last one starts the
+ * next leaf and supplies the new high key, as in bark_flush_page).  When
+ * `last' the whole pending set makes the final, rightmost leaf, which is left
+ * in st->buf for bark_finish to write.  Mirrors nbtsort.c's _bt_flush_coded.
+ */
+static void
+bark_flush_coded(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *st,
+				 bool last)
+{
+	Page		page = (Page) st->buf;
+	BarkPageOpaque opaque = BarkPageGetOpaque(page);
+	int			nleaf = last ? st->nitems : st->nitems - 1;
+	IndexTuple	firstright;
+	IndexTuple	hikey = NULL;
+	BarkPageOpaqueData saveopaque;
+	Size		usable = BLCKSZ - SizeOfPageHeaderData -
+		MAXALIGN(sizeof(BarkPageOpaqueData));
+	Size		plainsz;
+	bool		trycode;
+	BarkPageState *fresh = NULL;
+
+	Assert(nleaf >= 1);
+
+	/*
+	 * Do not end a leaf inside a run of entries equal on key and heap TID
+	 * (one row's versions of different tags), as bark_build_run_tail does for
+	 * the streamed build and bark_findsplitloc for a split: move the trailing
+	 * run to the next leaf with firstright, unless it fills the leaf or takes
+	 * more than a quarter of a page (then the next leaf could not take it with
+	 * firstright and the item after).  A tagged high key would otherwise make
+	 * VACUUM's lower-bound bookkeeping harder.
+	 */
+	if (!last)
+	{
+		int			nrun = 0;
+		Size		runbytes = 0;
+
+		if (!IS_INJECTION_POINT_ATTACHED("bark-build-ignore-runs"))
+		{
+			for (int i = nleaf - 1; i >= 0; i--)
+			{
+				if (!bark_entries_in_run(bs->index, bs->keyinfo, st->items[i],
+										 st->items[i + 1]))
+					break;
+				runbytes += MAXALIGN(IndexTupleSize(st->items[i])) +
+					sizeof(ItemIdData);
+				nrun++;
+			}
+			if (nrun < nleaf && runbytes <= BLCKSZ / 4)
+				nleaf -= nrun;
+		}
+	}
+	firstright = last ? NULL : st->items[nleaf];
+
+	/*
+	 * A finished leaf is not rightmost: allocate and link the next leaf before
+	 * laying it out, since the layout (high key, the directory's offset)
+	 * depends on whether the page is rightmost.
+	 */
+	if (!last)
+	{
+		fresh = bark_pagestate(bs, bulk, 0);
+		opaque->bark_next = fresh->blkno;
+		BarkPageGetOpaque((Page) fresh->buf)->bark_prev = st->blkno;
+	}
+	saveopaque = *opaque;
+
+	if (!last)
+		hikey = bark_truncate_pivot(bs->index, bs->keyinfo,
+								   st->items[nleaf - 1], firstright);
+
+	/*
+	 * Lay out the leaf: coded if worthwhile, else plain.  The running
+	 * estimate covers all pending tuples, so leaving out the last one can tip
+	 * the worthwhile test; if the plain layout would then overflow a page,
+	 * force coding (admission in bark_buildadd_coded guaranteed the coded
+	 * layout fits).
+	 */
+	plainsz = hikey ? MAXALIGN(IndexTupleSize(hikey)) + sizeof(ItemIdData) : 0;
+	for (int i = 0; i < nleaf; i++)
+		plainsz += MAXALIGN(IndexTupleSize(st->items[i])) + sizeof(ItemIdData);
+	trycode = plainsz > usable ||
+		(bark_prefix_est_representable(&st->est) &&
+		 bark_prefix_worthwhile(bark_prefix_est_coded(&st->est),
+								st->est.plainsz));
+	PageInit(page, BLCKSZ, sizeof(BarkPageOpaqueData));
+	*BarkPageGetOpaque(page) = saveopaque;
+	opaque = BarkPageGetOpaque(page);
+	if (!trycode ||
+		!bark_prefix_form_page(page, hikey, st->items, nleaf,
+							   bs->prefixattrs, bs->prefixnatts,
+							   plainsz > usable))
+	{
+		OffsetNumber off = BARK_P_FIRSTKEY;
+
+		if (plainsz > usable)
+			elog(ERROR, "could not lay out prefix-compressed leaf during build of index \"%s\"",
+				 RelationGetRelationName(bs->index));
+
+		PageInit(page, BLCKSZ, sizeof(BarkPageOpaqueData));
+		*BarkPageGetOpaque(page) = saveopaque;
+		if (hikey)
+		{
+			if (PageAddItem(page, (char *) hikey, IndexTupleSize(hikey),
+							BARK_P_HIKEY, false, false) == InvalidOffsetNumber)
+				elog(ERROR, "failed to add high key to BARK page during build");
+		}
+		else
+			off = BARK_P_HIKEY;		/* rightmost: no high key */
+		for (int i = 0; i < nleaf; i++, off = OffsetNumberNext(off))
+			if (PageAddItem(page, (char *) st->items[i],
+							IndexTupleSize(st->items[i]), off, false,
+							false) == InvalidOffsetNumber)
+				elog(ERROR, "failed to add item to BARK page during build");
+	}
+
+	if (!last)
+	{
+		BarkPageState *parent = st->parent;
+
+		/* link the finished leaf into its parent, using its low key */
+		if (parent == NULL)
+		{
+			parent = bark_pagestate(bs, bulk, 1);
+			st->parent = parent;
+		}
+		if (bark_pivot_tag(hikey) != InvalidIndexVersionTag)
+			BarkPageGetOpaque((Page) fresh->buf)->bark_flags |=
+				BARK_LOWBOUND_TAGGED;
+		BarkPivotSetDownLink(st->lowkey, st->blkno);
+		bark_buildadd(bs, bulk, parent, st->lowkey);
+		pfree(st->lowkey);
+
+		smgr_bulk_write(bulk, st->blkno, st->buf, true);
+
+		/* Move the fresh leaf's state into st; the hikey is its low key. */
+		st->buf = fresh->buf;
+		st->blkno = fresh->blkno;
+		st->nextoff = fresh->nextoff;
+		st->lowkey = hikey;
+		st->prevblk = fresh->prevblk;
+		st->prevbuf = fresh->prevbuf;
+		pfree(fresh->lowkey);
+		pfree(fresh);
+	}
+
+	/* keep the carried-over tail (the run moved off, then firstright) */
+	{
+		int			ncarry = last ? 0 : st->nitems - nleaf;
+		IndexTuple *carry = NULL;
+
+		if (ncarry > 0)
+		{
+			carry = palloc_array(IndexTuple, ncarry);
+			for (int i = 0; i < ncarry; i++)
+				carry[i] = st->items[nleaf + i];
+		}
+		for (int i = 0; i < nleaf; i++)
+			pfree(st->items[i]);
+		st->nitems = 0;
+		memset(&st->est, 0, sizeof(BarkPrefixPageEst));
+		for (int i = 0; i < ncarry; i++)
+		{
+			st->items[i] = carry[i];
+			bark_prefix_est_add(&st->est, bs->prefixattrs, bs->prefixnatts,
+								carry[i]);
+		}
+		st->nitems = ncarry;
+		if (ncarry > 0)
+		{
+			IndexTuple	lastitem = carry[ncarry - 1];
+			Size		keyend = BarkEntryIsAltTID(lastitem) ?
+				BarkEntryGetBodyOffset(lastitem) : IndexTupleSize(lastitem);
+
+			st->lastkey = MAXALIGN(keyend) +
+				BarkPivotSuffixReserve(bs->keyinfo) + sizeof(ItemIdData);
+			pfree(carry);
+		}
 	}
 }
 
@@ -792,6 +1330,12 @@ bark_buildadd(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *st,
 	Size		hikeysz = IndexTupleSize(itup);
 	int			ndata;
 
+	if (st->level == 0 && bs->prefix)
+	{
+		bark_buildadd_coded(bs, bulk, st, itup);
+		return;
+	}
+
 	/*
 	 * Flush when the page already holds a data item and the new item plus a
 	 * high key would not fit.  The high key is formed from the next item and
@@ -808,11 +1352,13 @@ bark_buildadd(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *st,
 	 * the minimum keeps a low fillfactor with wide keys from producing pages
 	 * of a single entry.
 	 */
-	if (BarkEntryGetShape(itup) == BARK_SHAPE_LIST ||
-		BarkEntryGetShape(itup) == BARK_SHAPE_POSTING)
-		hikeysz = BarkEntryGetBodyOffset(itup);
 	if (st->level == 0)
-		hikeysz = MAXALIGN(hikeysz) + BarkPivotSuffixReserve;
+	{
+		/* a LIST's, POSTING's or tagged SINGLE's key ends at its body */
+		if (BarkEntryIsAltTID(itup))
+			hikeysz = BarkEntryGetBodyOffset(itup);
+		hikeysz = MAXALIGN(hikeysz) + BarkPivotSuffixReserve(bs->keyinfo);
+	}
 
 	ndata = st->nextoff - BarkPageFirstDataKey(BarkPageGetOpaque(page));
 	if (ndata >= 1 &&
@@ -835,6 +1381,10 @@ bark_finish(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *leaf)
 	uint32		rootlevel = 0;
 	BulkWriteBuffer metabuf;
 	BarkMetaPageData *meta;
+
+	/* Lay out the final, rightmost leaf of a prefix_compression build. */
+	if (leaf->items != NULL && leaf->nitems > 0)
+		bark_flush_coded(bs, bulk, leaf, true);
 
 	/*
 	 * Walk the level stack bottom to top, writing each level's last page. The
@@ -893,7 +1443,8 @@ bark_finish(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *leaf)
 	meta->bark_root = rootblk;
 	meta->bark_level = rootlevel;
 	meta->bark_allequalimage = bs->allequalimage;
-	meta->bark_flags = bs->multikey ? BARK_META_MULTIKEY : 0;
+	meta->bark_flags = (bs->multikey ? BARK_META_MULTIKEY : 0) |
+		(bs->keyinfo->versioned ? BARK_META_VERSIONED : 0);
 	meta->bark_nkeys = (uint64) bs->indtuples;
 	meta->bark_tid_stride = bs->keyinfo->tidstride;
 	((PageHeader) metabuf)->pd_lower =
@@ -1038,11 +1589,11 @@ bark_build_flush_run(BarkBuildState *bs, BulkWriteState *bulk,
 }
 
 /*
- * The next tuple for bark_load, in (key, heap TID) order, or NULL at the end.
- * A unique index's not-alive rows (bs->deadsort) are merged into the main
- * sort's, as nbtsort.c's _bt_load merges spool2 into spool, and *isdead says
- * the tuple came from them.  Both sorts order by key and then heap TID, as
- * bark_compare_itups and ItemPointerCompare do, and no heap TID is in both.
+ * The next tuple for bark_load, in (key, heap TID, tag) order, or NULL at the
+ * end.  A unique index's not-alive rows (bs->deadsort) are merged into the
+ * main sort's, as nbtsort.c's _bt_load merges spool2 into spool, and *isdead
+ * says the tuple came from them.  Both sorts order by key, then heap TID,
+ * then tag, as bark_compare_itups and bark_sort_cmp_tid_tag do.
  * A tuple stays valid until its own sort is read again, which is why each
  * sort is read only when the tuple it last returned has been used.
  */
@@ -1068,8 +1619,7 @@ bark_load_next(BarkBuildState *bs, bool *isdead)
 			cmp = bark_compare_itups(bs->keyinfo, bs->index, bs->nextlive,
 									 bs->nextdead);
 			if (cmp == 0)
-				cmp = ItemPointerCompare(&bs->nextlive->t_tid,
-										 &bs->nextdead->t_tid);
+				cmp = bark_sort_cmp_tid_tag(bs->nextlive, bs->nextdead);
 			Assert(cmp != 0);
 		}
 		if (cmp > 0)
@@ -1096,7 +1646,9 @@ bark_load_next(BarkBuildState *bs, bool *isdead)
  * ties on the heap TID, so a run's locators arrive ascending, as both shapes
  * store them.  Every entry of a run takes the image of the run's first key,
  * the lowest TID's, which is what insert keeps too when equal keys have
- * different images (a GIN-interface column).
+ * different images (a GIN-interface column).  A tagged SINGLE never
+ * coalesces: it ends the run of its key, and the untagged entries after it
+ * start another, as insert would divide a LIST around it.
  */
 static void
 bark_load(BarkBuildState *bs)
@@ -1145,6 +1697,13 @@ bark_load(BarkBuildState *bs)
 			continue;
 		}
 
+		if (coalesce && BarkEntryHasTag(itup))
+		{
+			if (run.ntids > 0)
+				bark_build_flush_run(bs, bulk, leaf, &run, true);
+			bark_buildadd(bs, bulk, leaf, itup);
+			continue;
+		}
 		if (coalesce)
 		{
 			if (run.ntids > 0 &&
@@ -1243,10 +1802,12 @@ bark_load(BarkBuildState *bs)
 }
 
 /*
- * Second-pass callback: insert one oversized row into the just-loaded tree via
- * the normal overflow-aware insert path.  Non-oversized rows are already in the
- * tree from bark_load, so they are skipped here.  As in the first pass, every
- * row the table AM passes is indexed (bark_build_callback).
+ * Second-pass callback: insert one oversized row into the just-loaded tree
+ * via the normal insert path, which forms OVERSIZED entries, tagged when the
+ * table AM set the row's tag in ii_VersionTag, which bark_insert reads, for
+ * this scan too.  Other rows are already in the tree from bark_load, so they
+ * are skipped here.  As in the first pass, every row the table AM passes is
+ * indexed (bark_build_callback).
  */
 static void
 bark_oversized_pass_callback(Relation index, ItemPointer tid, Datum *values,
@@ -1344,14 +1905,13 @@ bark_parallel_scan_and_sort(Relation heap, Relation index,
 	coordinate->sharedsort = sharedsort;
 
 	/* Begin a "partial" tuplesort that contributes to the shared sort. */
-	sortstate = tuplesort_begin_index_btree(heap, index, false, false,
-											sortmem, coordinate,
-											TUPLESORT_NONE);
+	sortstate = bark_sort_begin(index, sortmem, coordinate);
 
 	memset(&bs, 0, sizeof(bs));
 	bs.heap = heap;
 	bs.index = index;
-	bs.keyinfo = bark_build_keyinfo_stride(index, bark_heap_tid_stride(heap));
+	bs.keyinfo = bark_build_keyinfo_stride(index, bark_heap_tid_stride(heap),
+										   bark_heap_versioned(heap));
 	bs.keyinfo->heaprel = heap;
 	bs.nkeyatts = IndexRelationGetNumberOfKeyAttributes(index);
 	bs.isunique = false;		/* leader enforces uniqueness during load */
@@ -1369,16 +1929,15 @@ bark_parallel_scan_and_sort(Relation heap, Relation index,
 		coordinatedead->isWorker = true;
 		coordinatedead->nParticipants = -1;
 		coordinatedead->sharedsort = sharedsortdead;
-		bs.deadsort = tuplesort_begin_index_btree(heap, index, false, false,
-												  Min(sortmem, work_mem),
-												  coordinatedead,
-												  TUPLESORT_NONE);
+		bs.deadsort = bark_sort_begin(index, Min(sortmem, work_mem),
+									  coordinatedead);
 	}
 	bark_build_init_sizebound(&bs);
 	bark_build_init_multikey(&bs);
 
 	indexInfo = BuildIndexInfo(index);
 	indexInfo->ii_Concurrent = barkshared->isconcurrent;
+	bs.indexInfo = indexInfo;	/* the table AM's tags, ii_VersionTag */
 	scan = table_beginscan_parallel(heap,
 									ParallelTableScanFromBarkShared(barkshared),
 									SO_NONE);
@@ -1749,7 +2308,8 @@ bark_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	memset(&bs, 0, sizeof(bs));
 	bs.heap = heap;
 	bs.index = index;
-	bs.keyinfo = bark_build_keyinfo_stride(index, bark_heap_tid_stride(heap));
+	bs.keyinfo = bark_build_keyinfo_stride(index, bark_heap_tid_stride(heap),
+										   bark_heap_versioned(heap));
 	bs.keyinfo->heaprel = heap;
 	bs.nkeyatts = IndexRelationGetNumberOfKeyAttributes(index);
 	bs.nblocks = 1;				/* block 0 is reserved for the meta page */
@@ -1759,7 +2319,8 @@ bark_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	bs.coalesce = bark_index_coalesces(index);
 	bs.indexInfo = indexInfo;	/* for the oversized second-pass insert */
 	bs.prefix = bark_prefix_enabled(index);
-	bs.prefixnext = true;
+	bs.prefixnatts = bs.prefix ?
+		bark_prefix_build_layout(index, bs.prefixattrs) : 0;
 	bark_build_init_sizebound(&bs);
 	bark_build_init_multikey(&bs);
 
@@ -1779,13 +2340,11 @@ bark_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	}
 
 	/*
-	 * Begin the leader (or serial) tuplesort.  enforceUnique is false: BARK
-	 * checks for duplicates in the load phase, where it can emit a precise
-	 * error with the offending key, rather than during the sort.
+	 * Begin the leader (or serial) tuplesort.  BARK checks for duplicates in
+	 * the load phase, where it can emit a precise error with the offending
+	 * key, rather than during the sort.
 	 */
-	leadersort = tuplesort_begin_index_btree(heap, index, false, false,
-											 maintenance_work_mem, coordinate,
-											 TUPLESORT_NONE);
+	leadersort = bark_sort_begin(index, maintenance_work_mem, coordinate);
 	bs.sortstate = leadersort;
 
 	/*
@@ -1805,9 +2364,7 @@ bark_build(Relation heap, Relation index, IndexInfo *indexInfo)
 				bs.barkleader->nparticipanttuplesorts;
 			coordinatedead->sharedsort = bs.barkleader->sharedsortdead;
 		}
-		bs.deadsort = tuplesort_begin_index_btree(heap, index, false, false,
-												  work_mem, coordinatedead,
-												  TUPLESORT_NONE);
+		bs.deadsort = bark_sort_begin(index, work_mem, coordinatedead);
 	}
 
 	/* Fill the sort: serial scan, or wait for the parallel participants. */
@@ -1863,10 +2420,12 @@ bark_buildempty(Relation index)
 	BarkPageOpaque opaque;
 	Relation	heap;
 	uint16		stride;
+	bool		versioned;
 
 	/* index_build, the only caller, holds a lock on the table. */
 	heap = table_open(index->rd_index->indrelid, NoLock);
 	stride = bark_heap_tid_stride(heap);
+	versioned = bark_heap_versioned(heap);
 	table_close(heap, NoLock);
 
 	bulk = smgr_bulk_start_rel(index, INIT_FORKNUM);
@@ -1888,6 +2447,7 @@ bark_buildempty(Relation index)
 	meta->bark_level = 0;
 	meta->bark_allequalimage = bark_allequalimage(index);
 	meta->bark_tid_stride = stride;
+	meta->bark_flags = versioned ? BARK_META_VERSIONED : 0;
 	((PageHeader) metabuf)->pd_lower =
 		((char *) meta + sizeof(BarkMetaPageData)) - (char *) metabuf;
 
