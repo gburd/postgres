@@ -104,8 +104,7 @@
 #define reporting_enabled (*PgCurrentGUCReportingEnabledRef())
 #define GUCNestLevel (*PgCurrentGUCNestLevelRef())
 
-static PG_GLOBAL_RUNTIME List *reserved_class_prefix = NIL;
-static PG_GLOBAL_RUNTIME MemoryContext GUCReservedPrefixMemoryContext = NULL;
+#define reserved_class_prefix (PgCurrentSessionGUCState()->reserved_prefixes)
 
 #ifndef WIN32
 /*
@@ -701,21 +700,6 @@ GUCShowOptionNeedsThreadedLock(const struct config_generic *record)
 	return true;
 }
 
-static MemoryContext
-GUCReservedPrefixContext(void)
-{
-	if (GUCReservedPrefixMemoryContext == NULL)
-	{
-		GUCReservedPrefixMemoryContext =
-			AllocSetContextCreate(PgCurrentRuntimeExtensionModuleMemoryContext(),
-								  "reserved GUC prefixes",
-								  ALLOCSET_DEFAULT_SIZES);
-	}
-
-	return GUCReservedPrefixMemoryContext;
-}
-
-
 /*
  * Unit conversion tables.
  *
@@ -888,7 +872,6 @@ static bool ThreadedGUCLock(void);
 static void ThreadedGUCUnlock(bool locked);
 static bool GUCSetOptionNeedsThreadedLock(const struct config_generic *record);
 static bool GUCShowOptionNeedsThreadedLock(const struct config_generic *record);
-static MemoryContext GUCReservedPrefixContext(void);
 static int	set_config_with_handle_internal(const char *name,
 											config_handle *handle,
 											const char *value,
@@ -2311,9 +2294,26 @@ guc_custom_variable_count(void)
  */
 static PG_GLOBAL_RUNTIME struct config_generic **preload_custom_gucs = NULL;
 static PG_GLOBAL_RUNTIME int num_preload_custom_gucs = 0;
+static PG_GLOBAL_RUNTIME List *preload_reserved_prefixes = NIL;
+
+/* Copy both list storage and strings; neither may borrow a session's lifetime. */
+static List *
+CopyGUCPrefixes(List *prefixes, MemoryContext context)
+{
+	List	   *result = NIL;
+	ListCell   *lc;
+	MemoryContext oldcontext;
+
+	oldcontext = MemoryContextSwitchTo(context);
+	foreach(lc, prefixes)
+		result = lappend(result, pstrdup(lfirst(lc)));
+	MemoryContextSwitchTo(oldcontext);
+
+	return result;
+}
 
 /*
- * SnapshotPreloadCustomGUCs --- capture the postmaster's custom GUC descriptors.
+ * SnapshotPreloadCustomGUCs --- capture startup custom descriptors and prefixes.
  *
  * Called once, in the postmaster, at the end of process_shared_preload_libraries.
  * Only under multithreaded (process mode inherits the hashtab via fork).  Each
@@ -2334,8 +2334,19 @@ SnapshotPreloadCustomGUCs(void)
 	int			n = 0;
 	int			idx;
 
-	if (!multithreaded)
+	if (!multithreaded || !IsPostmasterEnvironment || IsUnderPostmaster)
 		return;
+
+	/*
+	 * Publish once, before carriers start.  Exec children also run shared
+	 * preload, but reconstruct only their own effective list.  Capture prefixes
+	 * even when a preload module defines no custom GUCs.
+	 */
+	Assert(preload_reserved_prefixes == NIL);
+	preload_reserved_prefixes =
+		CopyGUCPrefixes(reserved_class_prefix,
+					   PgCurrentRuntimeExtensionModuleMemoryContext());
+
 	if (guc_hashtab == NULL)
 		return;
 
@@ -2966,6 +2977,11 @@ InitializeThreadedSessionGUCOptions(void)
 		InitializeThreadedSessionReboundGUCOptions();
 
 		SeedPreloadCustomGUCs();
+
+		/* Install descriptors before reserving names or replaying settings. */
+		Assert(reserved_class_prefix == NIL);
+		reserved_class_prefix =
+			CopyGUCPrefixes(preload_reserved_prefixes, GUCMemoryContext);
 
 		InitializeThreadedSessionCompatibilityGUCOptions();
 done:
@@ -7295,7 +7311,7 @@ MarkGUCPrefixReserved(const char *className)
 		}
 
 		/* And remember the name so we can prevent future mistakes. */
-		oldcontext = MemoryContextSwitchTo(GUCReservedPrefixContext());
+		oldcontext = MemoryContextSwitchTo(GUCMemoryContext);
 		reserved_class_prefix = lappend(reserved_class_prefix, pstrdup(className));
 		MemoryContextSwitchTo(oldcontext);
 	}

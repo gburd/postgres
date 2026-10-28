@@ -4,6 +4,43 @@ This file holds source-orientation, local build/test, platform, and terminology
 notes split out of `AGENTS.md`. Use it when working in a specific subsystem or
 when local build/test friction repeats.
 
+## Reserved GUC Prefix Ownership (2026-10-28)
+
+The October 28 fail-first probe confirms that a runtime-global reservation
+rejects a valid `SET plpgsql.extra_warnings` in B after A alone loads PL/pgSQL:
+SQLSTATE 42602 in fiber-1 and fiber-2, while the fork control passes. Effective
+reservations now belong to `PgSession.guc.reserved_prefixes`; list storage and
+strings share the session's `GUCMemoryContext` lifetime. Existing whole-bucket
+adoption moves the list and clears the fallback; context deletion and bucket
+initialization clear it at close. RESET and transaction cleanup do not clear it.
+
+Postmaster shared preload captures a separate immutable prefix snapshot in the
+runtime extension context, including modules that define no custom descriptors.
+Fresh threaded sessions copy its cells and strings after descriptor seeding and
+before startup settings. Client LOAD never publishes to it. Fork inheritance and
+exec-child preload reconstruction retain their process-private effective lists.
+This supersedes the runtime-global effective-prefix classification in the Phase
+12 guide and ledger, not their evidence of dangling-list bugs: a surviving list
+head must never refer to another session's reclaimed storage.
+
+`test_backend_runtime/t/022_guc_prefix.pl` covers client isolation, placeholder
+conversion and typo rejection, startup options, disconnect/reconnect, and supported
+preload with and without custom descriptors. Its activity-removal wait is not a
+memory-reclamation barrier. The split GUC state test separately checks actual
+Mark allocations, early move-and-clear, and B use after synchronous A reset. It requires `pg_stat_statements` and the
+reservation-only `test_backend_runtime_prefix` fixture. PL/pgSQL shared preload
+still lacks registered custom-GUC session accessors and remains unsupported in
+threaded mode; the fail-closed check is unchanged. New candidate validation is
+required; historical pass counts below are not evidence for this repair.
+
+Defer with invariant: parallel custom-GUC handoff remains Phase 16 /
+Gate E2-Extensions. Library serialization still walks the runtime-global loaded
+library list, and GUC serialization can skip heap-backed session values. This
+repair changes neither wire format nor replay order (libraries before GUCs).
+It makes no worker-parity claim: a leader/worker value-and-reservation test must
+cover unrelated-client LOAD, leader placeholders, and shared preload before
+that matrix can be closed. No existing runtime guard proves that parity.
+
 ## Source Orientation
 
 Important current files:
@@ -742,9 +779,10 @@ Important current files:
   should match the normal expected output, not a leader-only threaded
   alternate. Anonymous temp-file names include the logical backend id in
   threaded mode so parallel worker threads with the same OS PID cannot truncate
-  each other's private spill files. The remaining threaded expected-output
-  shim is `guc_0.out`, where `plpgsql` has already reserved its GUC prefix in
-  the shared runtime before the later `guc` test.
+  each other's private spill files. The former `guc_0.out` alternate encoded
+  another client's premature prefix reservation and is removed by the October
+  28 ownership repair. `guc` must match canonical fork-compatible `guc.out`,
+  including the upstream octal-display tests; do not restore an early-error shim.
 
   The worker-settings threaded core-regression visibility target is:
 
