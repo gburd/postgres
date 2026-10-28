@@ -1,0 +1,73 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1_begin s1_upd s1_hot s2_ins s1_commit s2_check
+step s1_begin: BEGIN;
+step s1_upd: UPDATE bark_xh SET t = t || '' WHERE id = 1;
+step s1_hot: SELECT pg_stat_get_xact_tuples_hot_updated('bark_xh'::regclass) AS hot;
+hot
+---
+  1
+(1 row)
+
+step s2_ins: INSERT INTO bark_xh VALUES (2, repeat('e', 3000)); <waiting ...>
+step s1_commit: COMMIT;
+step s2_ins: <... completed>
+ERROR:  conflicting key value violates exclusion constraint "bark_xh_t_excl"
+step s2_check: 
+	SET enable_seqscan = off;
+	SET enable_bitmapscan = off;
+	SELECT id, length(t) FROM bark_xh WHERE t = repeat('e', 3000) ORDER BY id;
+	RESET enable_seqscan;
+	RESET enable_bitmapscan;
+
+id|length
+--+------
+ 1|  3000
+(1 row)
+
+
+starting permutation: s1_begin s1_upd s2_ins s1_abort s2_check
+step s1_begin: BEGIN;
+step s1_upd: UPDATE bark_xh SET t = t || '' WHERE id = 1;
+step s2_ins: INSERT INTO bark_xh VALUES (2, repeat('e', 3000)); <waiting ...>
+step s1_abort: ROLLBACK;
+step s2_ins: <... completed>
+ERROR:  conflicting key value violates exclusion constraint "bark_xh_t_excl"
+step s2_check: 
+	SET enable_seqscan = off;
+	SET enable_bitmapscan = off;
+	SELECT id, length(t) FROM bark_xh WHERE t = repeat('e', 3000) ORDER BY id;
+	RESET enable_seqscan;
+	RESET enable_bitmapscan;
+
+id|length
+--+------
+ 1|  3000
+(1 row)
+
+
+starting permutation: s1_begin s1_upd s1_hot s1_commit s1_vacuum s2_ins s2_check
+step s1_begin: BEGIN;
+step s1_upd: UPDATE bark_xh SET t = t || '' WHERE id = 1;
+step s1_hot: SELECT pg_stat_get_xact_tuples_hot_updated('bark_xh'::regclass) AS hot;
+hot
+---
+  1
+(1 row)
+
+step s1_commit: COMMIT;
+step s1_vacuum: VACUUM bark_xh;
+step s2_ins: INSERT INTO bark_xh VALUES (2, repeat('e', 3000));
+ERROR:  conflicting key value violates exclusion constraint "bark_xh_t_excl"
+step s2_check: 
+	SET enable_seqscan = off;
+	SET enable_bitmapscan = off;
+	SELECT id, length(t) FROM bark_xh WHERE t = repeat('e', 3000) ORDER BY id;
+	RESET enable_seqscan;
+	RESET enable_bitmapscan;
+
+id|length
+--+------
+ 1|  3000
+(1 row)
+

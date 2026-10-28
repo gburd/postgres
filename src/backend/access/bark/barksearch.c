@@ -336,6 +336,7 @@ bark_get_amcache(Relation index)
 		cache->level = 0;
 		cache->extracted = -1;
 		cache->multikey = false;
+		cache->tidstride = 0;
 		cache->nmarkers = 0;
 		cache->markerlen = 0;
 		cache->nl1 = cache->maxl1 = 0;
@@ -584,10 +585,9 @@ uint32
 bark_get_root_level(Relation index)
 {
 	uint32		level;
+	BarkAmCache *cache = bark_get_amcache(index);
 
-	BarkAmCache *cache = (BarkAmCache *) index->rd_amcache;
-
-	if (cache != NULL && cache->root != BARK_P_NONE)
+	if (cache->root != BARK_P_NONE)
 		return cache->level;
 	(void) bark_get_root(index, &level);
 	return level;
@@ -608,11 +608,11 @@ bark_get_root_level(Relation index)
 Buffer
 bark_get_root_buffer(Relation index, BufferLockMode access)
 {
-	BarkAmCache *cache = (BarkAmCache *) index->rd_amcache;
+	BarkAmCache *cache = bark_get_amcache(index);
 	BlockNumber root;
 	Buffer		buf;
 
-	if (cache != NULL && cache->root != BARK_P_NONE)
+	if (cache->root != BARK_P_NONE)
 	{
 		Page		page;
 
@@ -650,12 +650,12 @@ static Buffer
 bark_l1_start(Relation index, BarkKeyInfo *keyinfo, const BarkSearchKey * key,
 			  bool nextkey)
 {
-	BarkAmCache *cache = (BarkAmCache *) index->rd_amcache;
+	BarkAmCache *cache = bark_get_amcache(index);
 	int			slot;
 	Buffer		buf;
 	Page		page;
 
-	if (cache == NULL || cache->nl1 == 0)
+	if (cache->nl1 == 0)
 		return InvalidBuffer;
 	slot = bark_l1_find(index, keyinfo, cache, key, nextkey);
 	if (slot < 0)
