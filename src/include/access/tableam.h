@@ -244,6 +244,16 @@ typedef struct TM_FailureData
  * ndeltids is 0 on return from call to tableam, in which case no index tuple
  * deletions are possible.  Simple deletion callers can rely on any entries
  * they know to be deletable appearing in the final array as deletable.
+ *
+ * If the table's locator is versioned (see amlocator.h), an index AM with
+ * amcanversion puts each entry's version tag in its TM_IndexStatus, and an
+ * entry is deletable when no snapshot can see a version for which the entry
+ * (tid, tag) is valid.  That lets the table AM reclaim the stale entries of
+ * a row whose current version is still live.  Every other caller leaves the
+ * tag InvalidIndexVersionTag.  The tag is in TM_IndexStatus, not in
+ * TM_IndexDelete, to keep the array that the table AM sorts small; a table
+ * AM reaches it through the entry's id.  Heap ignores it: its locator is not
+ * versioned, so its verdict for a TID holds for every entry naming it.
  */
 typedef struct TM_IndexDelete
 {
@@ -259,6 +269,8 @@ typedef struct TM_IndexStatus
 	/* Bottom-up index deletion specific fields follow */
 	bool		promising;		/* Promising (duplicate) index tuple? */
 	int16		freespace;		/* Space freed in index if deleted */
+
+	IndexVersionTag tag;		/* entry's version tag; see above */
 } TM_IndexStatus;
 
 /*
