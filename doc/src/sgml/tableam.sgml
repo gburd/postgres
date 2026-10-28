@@ -381,6 +381,75 @@ my_tableam_handler(PG_FUNCTION_ARGS)
      </para>
     </listitem>
    </itemizedlist>
+
+   <para>
+    Entries made for a new row (by <command>INSERT</command>,
+    <command>COPY</command>, or an <command>UPDATE</command> that moved the
+    row) are untagged; a new row has no history, so that is valid.  Tags
+    come only from the table access method: from an
+    <command>UPDATE</command> that keeps the row's locator, and from its index
+    build and validation scans, which set
+    <structfield>ii_VersionTag</structfield> in the
+    <structname>IndexInfo</structname> before handing each row to the index.
+   </para>
+
+   <para>
+    The table access method's obligations are:
+   </para>
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      For an entry of an index whose access method sets
+      <structfield>amcanversion</structfield>, decide whether it is valid for
+      the version of the row a snapshot sees, that is, whether its key is
+      that version's key.  The rule this interface was designed for: the
+      entry is valid if its tag names that version or an earlier one, and no
+      version since then changed an attribute the index reads; an untagged
+      entry counts as naming the oldest version the access method keeps
+      history for.  An entry of any other index is resolved by locator
+      alone: the executor never lets a row keep its locator across an update
+      that affects such an index, so its entries describe every version
+      their locator reaches, as with <literal>heap</literal>.  Every caller
+      that hands an entry to the table access method also identifies the
+      index.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      When building or validating an <structfield>amcanversion</structfield>
+      index, tag a row whose history changed an attribute the index reads
+      with the current version's tag; leave it untagged only if there is no
+      such history.  Otherwise the new entry would be judged older than that
+      history, and rejected.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      When building any index from a row's current version while an older
+      version with different values for the index may still be visible to
+      some transaction, set <structfield>ii_BrokenHotChain</structfield>, as
+      <literal>heap</literal> does for a broken <acronym>HOT</acronym> chain,
+      so that such transactions do not use the index.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Keep enough history to decide validity for every entry any index still
+      holds, and discard history only once no entry depends on it.
+     </para>
+    </listitem>
+   </itemizedlist>
+
+   <para>
+    The <acronym>TID</acronym> bitmap of a bitmap scan holds locators without
+    tags, so <function>scan_bitmap_next_tuple</function> must ask for a recheck
+    of any row whose locator a bitmap may hold only through an entry that is
+    not valid for the visible version.  Plain and index-only scans need
+    nothing beyond the validity rule: the table access method's
+    <structfield>xs_getnext_slot</structfield> callback sees the entry's tag
+    in <structfield>xs_heaptag</structfield>.
+   </para>
   </sect2>
  </sect1>
 
