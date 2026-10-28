@@ -153,6 +153,46 @@ bark_xlog_insert(bool isleaf, XLogReaderState *record)
 }
 
 /*
+ * Replay the insertion of several entries of one row on a leaf
+ * (bark_insert_multi): add them in order at the logged offsets, each of which
+ * counts the entries added before it, as the primary did.
+ */
+static void
+bark_xlog_insert_multi(XLogReaderState *record)
+{
+	XLogRecPtr	lsn = record->EndRecPtr;
+	xl_bark_insert_multi *xlrec = (xl_bark_insert_multi *) XLogRecGetData(record);
+	OffsetNumber *offsets = (OffsetNumber *)
+		(XLogRecGetData(record) + SizeOfBarkInsertMulti);
+	Buffer		buffer;
+
+	if (XLogReadBufferForRedo(record, 0, &buffer) == BLK_NEEDS_REDO)
+	{
+		Page		page = BufferGetPage(buffer);
+		char	   *datapos = XLogRecGetBlockData(record, 0, NULL);
+
+		for (int i = 0; i < xlrec->nentries; i++)
+		{
+			IndexTupleData itupdata;
+			Size		itemsz;
+
+			/* As in bark_restore_page, read t_info into an aligned copy. */
+			memcpy(&itupdata, datapos, sizeof(IndexTupleData));
+			itemsz = IndexTupleSize(&itupdata);
+			if (PageAddItem(page, datapos, itemsz, offsets[i],
+							false, false) == InvalidOffsetNumber)
+				elog(PANIC, "failed to add BARK entry during replay");
+			datapos += itemsz;
+		}
+
+		PageSetLSN(page, lsn);
+		MarkBufferDirty(buffer);
+	}
+	if (BufferIsValid(buffer))
+		UnlockReleaseBuffer(buffer);
+}
+
+/*
  * Replay a page split (bark_split).  The right half is rebuilt from the
  * record alone.  The left half, the original block, is rebuilt as
  * btree_xlog_split does, from the page as it was before the split and the
@@ -736,6 +776,9 @@ bark_redo(XLogReaderState *record)
 			break;
 		case XLOG_BARK_INSERT_UPPER:
 			bark_xlog_insert(false, record);
+			break;
+		case XLOG_BARK_INSERT_MULTI:
+			bark_xlog_insert_multi(record);
 			break;
 		case XLOG_BARK_OVERWRITE:
 			bark_xlog_overwrite(record);

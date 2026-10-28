@@ -225,5 +225,8 @@ CREATE EXTENSION amcheck VERSION '1.6';
 SELECT bark_index_check('bark_check_empty_idx');
 ALTER EXTENSION amcheck UPDATE TO '1.7';
 SELECT bark_index_check('bark_check_empty_idx');
+SELECT bark_index_parent_check('bark_check_empty_idx');
 SELECT bark_index_check('bark_check_empty_idx', false);
 DROP TABLE bark_check_empty;
+-- Leave the extension at the current version for the tests after this one.
+ALTER EXTENSION amcheck UPDATE TO '1.8';

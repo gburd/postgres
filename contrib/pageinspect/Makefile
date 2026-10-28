@@ -28,6 +28,7 @@ PGFILEDESC = "pageinspect - functions to inspect contents of database pages"
 REGRESS = \
 	page \
 	bark \
+	bark_pages \
 	brin \
 	btree \
 	checksum \
@@ -36,6 +37,8 @@ REGRESS = \
 	hash \
 	oldextversions \
 	hot_updates
+
+TAP_TESTS = 1
 
 ifdef USE_PGXS
 PG_CONFIG = pg_config
