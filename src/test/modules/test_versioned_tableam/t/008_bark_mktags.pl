@@ -2,7 +2,8 @@
 # Copyright (c) 2026, PostgreSQL Global Development Group
 
 # Versioned multikey BARK indexes: BARK_META_MKTAGS and its build rule,
-# tagged key entries, untagged markers, and the checks of the meta page.
+# tagged key entries, untagged markers, and the checks of the meta page,
+# with the conversion bits BARK_META_CONVERTING and BARK_META_SETTLED.
 # A multikey index built on a versioned table that is neither GIN-interface,
 # unique nor exclusion gets BARK_META_MKTAGS (4); any other gets none, and
 # keeps moving a row whose column an update changes.
@@ -178,6 +179,25 @@ like(amcheck_err('tm_g2'),
 	qr/with version tags on its keys but answers scans through GIN's interface/,
 	'amcheck: MKTAGS on a GIN-interface index');
 
+# "Conversion" in the README: a conversion runs only on an index with
+# MKTAGS (8 = CONVERTING) and settles only after it began (16 = SETTLED).
+$node->safe_psql(
+	'postgres', q{
+	CREATE INDEX tm_c1 ON tm USING bark (a bark_int4_array_ops);
+	CREATE INDEX tm_c2 ON tm USING bark (a bark_int4_array_ops);
+	CREATE INDEX tm_c3 ON tm USING bark (a bark_int4_array_ops);
+});
+set_meta_flags('tm_c1', 2 | 8);
+like(amcheck_err('tm_c1'),
+	qr/has a meta page 0 converting an index without version tags on its keys/,
+	'amcheck: CONVERTING without MKTAGS');
+set_meta_flags('tm_c2', 2 | 4 | 16);
+like(amcheck_err('tm_c2'),
+	qr/has a meta page 0 with a settled conversion that has not begun/,
+	'amcheck: SETTLED without CONVERTING');
+set_meta_flags('tm_c3', 2 | 4 | 8 | 16);
+is(amcheck_err('tm_c3'), '', 'amcheck: a settled conversion is sound');
+
 # A tagged key entry in an index whose meta page claims no MKTAGS is
 # corruption (bark_verify_tag follows canversion).
 set_meta_flags('tm_a', 2);
@@ -210,7 +230,7 @@ SKIP:
 	# a change writes (VACUUM storing a new key count, bark_set_nkeys), the
 	# change reports MKTAGS without VERSIONED, and on a versioned table
 	# MKTAGS on a scalar index.
-	skip 'the page validator exists only in cassert builds', 5
+	skip 'the page validator exists only in cassert builds', 9
 	  unless check_pg_config('#define USE_ASSERT_CHECKING 1');
 	my ($ret, $out, $err) = $node->psql(
 		'postgres', q{
@@ -236,6 +256,27 @@ SKIP:
 	like($err,
 		qr/ERROR:  BARK index "tq3_k" has a meta page 0 with version tags on its keys but no extracted column/,
 		'validator: MKTAGS on a scalar index');
+	# The conversion bits, planted in the meta page VACUUM writes,
+	# each in an index of its own (a planted fault stays in the page)
+	foreach my $c (
+		[ 'converting', 'converting an index without version tags on its keys',
+		  'CONVERTING without MKTAGS' ],
+		[ 'settled', 'with a settled conversion that has not begun',
+		  'SETTLED without CONVERTING' ])
+	{
+		my ($point, $msg, $what) = @$c;
+		($ret, $out, $err) = $node->psql(
+			'postgres', qq{
+			CREATE TABLE tv_$point (a int4[]);
+			CREATE INDEX tv_${point}_a ON tv_$point USING bark (a bark_int4_array_ops);
+			INSERT INTO tv_$point SELECT ARRAY[g, g + 1] FROM generate_series(1, 100) g;
+			SELECT injection_points_attach('bark-verify-fault-$point', 'notice');
+			VACUUM tv_$point;});
+		$node->safe_psql('postgres',
+			"SELECT injection_points_detach('bark-verify-fault-$point')");
+		like($err, qr/ERROR:  BARK index "tv_${point}_a" has a meta page 0 $msg/,
+			"validator: $what");
+	}
 
 	# Redo has no relation, so it checks only what the page shows: MKTAGS
 	# without VERSIONED.  The standby plants the fault as it replays the
@@ -263,6 +304,35 @@ SKIP:
 			$off),
 		'redo: the standby PANICs on MKTAGS without VERSIONED');
 	$standby->stop('immediate', fail_ok => 1);
+
+	# The same in redo: a standby that replays a meta page with SETTLED and no
+	# CONVERTING, or CONVERTING and no MKTAGS, PANICs.  One standby each,
+	# with the fault planted as above, in the meta page of a root's first
+	# split.
+	foreach my $c (
+		[ 'settled', 'with a settled conversion that has not begun' ],
+		[ 'converting', 'converting an index without version tags on its keys' ])
+	{
+		my ($point, $msg) = @$c;
+		$node->backup("b_$point");
+		my $sb = PostgreSQL::Test::Cluster->new("standby_$point");
+		$sb->init_from_backup($node, "b_$point", has_streaming => 1);
+		$sb->start;
+		$node->safe_psql('postgres', qq{
+			CREATE TABLE tq_$point (a int4[]);
+			CREATE INDEX tq_${point}_a ON tq_$point USING bark (a bark_int4_array_ops);
+			INSERT INTO tq_$point VALUES ('{1,2}');
+		});
+		$node->wait_for_replay_catchup($sb);
+		$sb->safe_psql('postgres',
+			"SELECT injection_points_attach('bark-verify-fault-$point', 'notice')");
+		my $soff = -s $sb->logfile;
+		$node->safe_psql('postgres',
+			"INSERT INTO tq_$point SELECT ARRAY[g, g + 1] FROM generate_series(1, 2000) g");
+		ok($sb->wait_for_log(qr/PANIC:  BARK index "\d+" has a meta page 0 $msg/, $soff),
+			"redo: the standby PANICs on $point");
+		$sb->stop('immediate', fail_ok => 1);
+	}
 	is($node->safe_psql('postgres', "SELECT bark_index_check('tq4_a')"),
 		'', 'redo: the primary meta page is sound');
 	pass('validator checks done');
