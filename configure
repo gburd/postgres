@@ -5037,8 +5037,12 @@ fi
   { $as_echo "$as_me:${as_lineno-$LINENO}: using llvm $pgac_llvm_version" >&5
 $as_echo "$as_me: using llvm $pgac_llvm_version" >&6;}
 
-  # need clang to create some bitcode files
+  # need clang to create some bitcode files.  Prefer the one belonging to the
+  # LLVM installation found above, like meson does, as LLVM can't read
+  # bitcode produced by a newer clang, and an older one isn't guaranteed to
+  # work either.
 
+  LLVM_BINPATH=`$LLVM_CONFIG --bindir`
   if test -z "$CLANG"; then
   for ac_prog in clang
 do
@@ -5055,7 +5059,7 @@ else
   ;;
   *)
   as_save_IFS=$IFS; IFS=$PATH_SEPARATOR
-for as_dir in $PATH
+for as_dir in $LLVM_BINPATH$PATH_SEPARATOR$PATH
 do
   IFS=$as_save_IFS
   test -z "$as_dir" && as_dir=.
@@ -5150,8 +5154,6 @@ fi
       -l*) LLVM_LIBS="$LLVM_LIBS $pgac_option";;
     esac
   done
-
-  LLVM_BINPATH=`$LLVM_CONFIG --bindir`
 
 
 

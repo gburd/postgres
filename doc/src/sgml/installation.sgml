@@ -972,7 +972,11 @@ build-postgresql:
          <command>clang</command> compiler (specified, if necessary, using the
          <envar>CLANG</envar> environment variable), and a working C++
          compiler (specified, if necessary, using the <envar>CXX</envar>
-         environment variable).
+         environment variable).  If <envar>CLANG</envar> is not set, the
+         <command>clang</command> in the directory reported by
+         <literal>llvm-config --bindir</literal> is used if it exists,
+         otherwise <command>clang</command> is searched for in your
+         <envar>PATH</envar>.
         </para>
        </listitem>
       </varlistentry>
