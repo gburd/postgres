@@ -140,6 +140,12 @@ static bool check_exclusion_or_unique_constraint(Relation heap, Relation index,
 static bool index_recheck_constraint(Relation index, const Oid *constr_procs,
 									 const Datum *existing_values, const bool *existing_isnull,
 									 const Datum *new_values);
+static bool check_exclusion_for_insert(Relation heapRelation,
+									   Relation indexRelation,
+									   IndexInfo *indexInfo,
+									   ItemPointer tupleid,
+									   const Datum *values, const bool *isnull,
+									   EState *estate, bool applyNoDupErr);
 static bool index_unchanged_by_update(ResultRelInfo *resultRelInfo,
 									  EState *estate, IndexInfo *indexInfo,
 									  Relation indexRelation);
@@ -471,33 +477,10 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 		 * need to preserve the prior state of satisfiesConstraint.
 		 */
 		if (indexInfo->ii_ExclusionOps != NULL)
-		{
-			bool		violationOK;
-			CEOUC_WAIT_MODE waitMode;
-
-			if (applyNoDupErr)
-			{
-				violationOK = true;
-				waitMode = CEOUC_LIVELOCK_PREVENTING_WAIT;
-			}
-			else if (!indexRelation->rd_index->indimmediate)
-			{
-				violationOK = true;
-				waitMode = CEOUC_NOWAIT;
-			}
-			else
-			{
-				violationOK = false;
-				waitMode = CEOUC_WAIT;
-			}
-
 			satisfiesConstraint =
-				check_exclusion_or_unique_constraint(heapRelation,
-													 indexRelation, indexInfo,
-													 tupleid, values, isnull,
-													 estate, false,
-													 waitMode, violationOK, NULL);
-		}
+				check_exclusion_for_insert(heapRelation, indexRelation,
+										   indexInfo, tupleid, values, isnull,
+										   estate, applyNoDupErr);
 
 		if ((checkUnique == UNIQUE_CHECK_PARTIAL ||
 			 indexInfo->ii_ExclusionOps != NULL) &&
@@ -511,6 +494,132 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 			 */
 			result = lappend_oid(result, RelationGetRelid(indexRelation));
 			if (indexRelation->rd_index->indimmediate && specConflict)
+				*specConflict = true;
+		}
+	}
+
+	return result;
+}
+
+/*
+ * Check the exclusion constraint of indexRelation for a tuple whose entry has
+ * just been inserted, or whose entries are those an earlier version of the
+ * row had (a HOT update; see ExecCheckHotExclusion()).  Returns false if the
+ * constraint may be violated and the caller is to recheck it later.
+ *
+ * If the constraint is deferred, check now anyway, but don't throw error on
+ * violation or wait for a conclusive outcome from a concurrent insertion;
+ * the caller queues a recheck event.  Similarly, noDupErr callers
+ * (speculative inserters) will recheck later, and wait for a conclusive
+ * outcome then.
+ */
+static bool
+check_exclusion_for_insert(Relation heapRelation, Relation indexRelation,
+						   IndexInfo *indexInfo, ItemPointer tupleid,
+						   const Datum *values, const bool *isnull,
+						   EState *estate, bool applyNoDupErr)
+{
+	bool		violationOK;
+	CEOUC_WAIT_MODE waitMode;
+
+	if (applyNoDupErr)
+	{
+		violationOK = true;
+		waitMode = CEOUC_LIVELOCK_PREVENTING_WAIT;
+	}
+	else if (!indexRelation->rd_index->indimmediate)
+	{
+		violationOK = true;
+		waitMode = CEOUC_NOWAIT;
+	}
+	else
+	{
+		violationOK = false;
+		waitMode = CEOUC_WAIT;
+	}
+
+	return check_exclusion_or_unique_constraint(heapRelation, indexRelation,
+												indexInfo, tupleid,
+												values, isnull, estate, false,
+												waitMode, violationOK, NULL);
+}
+
+/* ----------------------------------------------------------------
+ *		ExecCheckHotExclusion
+ *
+ *		After an UPDATE that inserted no index entries (a HOT update),
+ *		check the exclusion constraints that ExecUpdateModifiedIdxAttrs()
+ *		noted in ri_HotExclusionCheck: those whose index keeps the old row's
+ *		entries although a value it is built from changed.  Only
+ *		constraints checked immediately are noted; see IndexDatumsDiffer().
+ *
+ *		The check is the one ExecInsertIndexTuples() makes after inserting
+ *		an entry, with the new row's values, and it is right for the same
+ *		reasons.  The access method said the new values give the same
+ *		entries as the old, so every index scan that would find the entry
+ *		the new row would get finds the old row's entries, which lead to
+ *		the new row through the HOT chain; they were inserted before the
+ *		new row existed, earlier than the new entry would have been.  A
+ *		transaction that inserts a conflicting row concurrently either
+ *		inserted its entry before our check, and our check finds it and
+ *		waits for it, or checks after we updated the row, and finds the old
+ *		entries.  A scan with a non-MVCC snapshot, as the check uses,
+ *		returns every member of the HOT chain those lead to: the old
+ *		version, which our update deleted, and the new one, which it
+ *		inserted, both in progress.  So the inserter compares its value with
+ *		the new row's too, and waits for us if they conflict.
+ *
+ *		Like ExecInsertIndexTuples(), this returns the OIDs of indexes whose
+ *		constraint may be violated when EIIT_NO_DUPE_ERROR is given, and
+ *		honors arbiterIndexes.  specConflict is set as there.
+ * ----------------------------------------------------------------
+ */
+List *
+ExecCheckHotExclusion(ResultRelInfo *resultRelInfo, EState *estate,
+					  uint32 flags, TupleTableSlot *slot,
+					  List *arbiterIndexes, bool *specConflict)
+{
+	ItemPointer tupleid = &slot->tts_tid;
+	Relation	heapRelation = resultRelInfo->ri_RelationDesc;
+	ExprContext *econtext;
+	List	   *result = NIL;
+	int			i = -1;
+
+	if (bms_is_empty(resultRelInfo->ri_HotExclusionCheck))
+		return NIL;
+	Assert(ItemPointerIsValid(tupleid));
+
+	econtext = GetPerTupleExprContext(estate);
+	econtext->ecxt_scantuple = slot;
+
+	while ((i = bms_next_member(resultRelInfo->ri_HotExclusionCheck, i)) >= 0)
+	{
+		Relation	indexRelation = resultRelInfo->ri_IndexRelationDescs[i];
+		IndexInfo  *indexInfo = resultRelInfo->ri_IndexRelationInfo[i];
+		Datum		values[INDEX_MAX_KEYS];
+		bool		isnull[INDEX_MAX_KEYS];
+		bool		applyNoDupErr;
+
+		Assert(indexInfo->ii_ExclusionOps != NULL);
+		Assert(indexRelation->rd_index->indimmediate);
+
+		/*
+		 * ExecUpdateModifiedIdxAttrs() only notes an index the row is in, so
+		 * a partial index's predicate holds.
+		 */
+		FormIndexDatum(indexInfo, slot, estate, values, isnull);
+
+		applyNoDupErr = (flags & EIIT_NO_DUPE_ERROR) &&
+			(arbiterIndexes == NIL ||
+			 list_member_oid(arbiterIndexes,
+							 indexRelation->rd_index->indexrelid));
+
+		if (!check_exclusion_for_insert(heapRelation, indexRelation, indexInfo,
+										tupleid, values, isnull, estate,
+										applyNoDupErr))
+		{
+			result = lappend_oid(result, RelationGetRelid(indexRelation));
+			if (specConflict)
 				*specConflict = true;
 		}
 	}
