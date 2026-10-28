@@ -3904,6 +3904,28 @@ get_index_isreplident(Oid index_oid)
 }
 
 /*
+ * get_index_implam
+ *
+ *		Given the index OID, return pg_index.indimplam: the index AM whose
+ *		code implements the index, or InvalidOid for its own.
+ */
+Oid
+get_index_implam(Oid index_oid)
+{
+	HeapTuple	tuple;
+	Oid			result;
+
+	tuple = SearchSysCache1(INDEXRELID, ObjectIdGetDatum(index_oid));
+	if (!HeapTupleIsValid(tuple))
+		elog(ERROR, "cache lookup failed for index %u", index_oid);
+
+	result = ((Form_pg_index) GETSTRUCT(tuple))->indimplam;
+	ReleaseSysCache(tuple);
+
+	return result;
+}
+
+/*
  * get_index_isvalid
  *
  *		Given the index OID, return pg_index.indisvalid.

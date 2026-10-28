@@ -266,7 +266,9 @@ typedef struct opclasscacheent
 {
 	Oid			opclassoid;		/* lookup key: OID of opclass */
 	bool		valid;			/* set true after successful fill-in */
-	StrategyNumber numSupport;	/* max # of support procs (from pg_am) */
+	StrategyNumber numSupport;	/* # of support procs loaded, the most any
+								 * caller asked for */
+	StrategyNumber maxProcNum;	/* highest support proc number found */
 	Oid			opcfamily;		/* OID of opclass's family */
 	Oid			opcintype;		/* OID of opclass's declared input type */
 	RegProcedure *supportProcs; /* OIDs of support procedures */
@@ -1442,6 +1444,7 @@ RelationInitIndexAccessInfo(Relation relation)
 {
 	HeapTuple	tuple;
 	Form_pg_am	aform;
+	Oid			implam;
 	Datum		indcollDatum;
 	Datum		indclassDatum;
 	Datum		indoptionDatum;
@@ -1472,13 +1475,16 @@ RelationInitIndexAccessInfo(Relation relation)
 	ReleaseSysCache(tuple);
 
 	/*
-	 * Look up the index's access method, save the OID of its handler function
+	 * Look up the access method whose code implements the index, normally the
+	 * index's own (relam), and save the OID of its handler function.  System
+	 * catalog indexes, the only ones in the relcache init file, never have a
+	 * separate implementation.
 	 */
 	Assert(relation->rd_rel->relam != InvalidOid);
-	tuple = SearchSysCache1(AMOID, ObjectIdGetDatum(relation->rd_rel->relam));
+	implam = IndexRelationGetImplAm(relation);
+	tuple = SearchSysCache1(AMOID, ObjectIdGetDatum(implam));
 	if (!HeapTupleIsValid(tuple))
-		elog(ERROR, "cache lookup failed for access method %u",
-			 relation->rd_rel->relam);
+		elog(ERROR, "cache lookup failed for access method %u", implam);
 	aform = (Form_pg_am) GETSTRUCT(tuple);
 	relation->rd_amhandler = aform->amhandler;
 	ReleaseSysCache(tuple);
@@ -1649,7 +1655,15 @@ IndexSupportInitialize(oidvector *indclass,
  *
  * The information from pg_am about expected range of support function
  * numbers is passed in, rather than being looked up, mainly because the
- * caller will have it already.
+ * caller will have it already.  It need not be the same for every caller:
+ * an index implemented by another access method's code (pg_index.indimplam)
+ * takes it from the implementation, which may define more support
+ * procedures than the access method it implements, so indexes of one
+ * opclass can ask for different counts.  The entry keeps the procedures
+ * for the largest count asked for; a caller asking for more reloads them
+ * into a larger array, and one asking for fewer reads only its prefix.
+ * Support procedure numbers above the count asked for are an error for
+ * that caller.
  *
  * Note there is no provision for flushing the cache.  This is OK at the
  * moment because there is no way to ALTER any interesting properties of an
@@ -1697,9 +1711,14 @@ LookupOpclassInfo(Oid operatorClassOid,
 		opcentry->numSupport = numSupport;
 		opcentry->supportProcs = NULL;	/* filled below */
 	}
-	else
+	else if (numSupport > opcentry->numSupport)
 	{
-		Assert(numSupport == opcentry->numSupport);
+		/* Reload into a larger array; callers copy it, so free the old. */
+		opcentry->valid = false;
+		opcentry->numSupport = numSupport;
+		if (opcentry->supportProcs)
+			pfree(opcentry->supportProcs);
+		opcentry->supportProcs = NULL;
 	}
 
 	/*
@@ -1717,16 +1736,17 @@ LookupOpclassInfo(Oid operatorClassOid,
 #endif
 
 	if (opcentry->valid)
-		return opcentry;
+		goto done;
 
 	/*
 	 * Need to fill in new entry.  First allocate space, unless we already did
 	 * so in some previous attempt.
 	 */
-	if (opcentry->supportProcs == NULL && numSupport > 0)
+	if (opcentry->supportProcs == NULL && opcentry->numSupport > 0)
 		opcentry->supportProcs = (RegProcedure *)
 			MemoryContextAllocZero(CacheMemoryContext,
-								   numSupport * sizeof(RegProcedure));
+								   opcentry->numSupport * sizeof(RegProcedure));
+	opcentry->maxProcNum = 0;
 
 	/*
 	 * To avoid infinite recursion during startup, force heap scans if we're
@@ -1768,7 +1788,7 @@ LookupOpclassInfo(Oid operatorClassOid,
 	 * Scan pg_amproc to obtain support procs for the opclass.  We only fetch
 	 * the default ones (those with lefttype = righttype = opcintype).
 	 */
-	if (numSupport > 0)
+	if (opcentry->numSupport > 0)
 	{
 		ScanKeyInit(&skey[0],
 					Anum_pg_amproc_amprocfamily,
@@ -1791,12 +1811,14 @@ LookupOpclassInfo(Oid operatorClassOid,
 			Form_pg_amproc amprocform = (Form_pg_amproc) GETSTRUCT(htup);
 
 			if (amprocform->amprocnum <= 0 ||
-				(StrategyNumber) amprocform->amprocnum > numSupport)
+				(StrategyNumber) amprocform->amprocnum > opcentry->numSupport)
 				elog(ERROR, "invalid amproc number %d for opclass %u",
 					 amprocform->amprocnum, operatorClassOid);
 
 			opcentry->supportProcs[amprocform->amprocnum - 1] =
 				amprocform->amproc;
+			opcentry->maxProcNum = Max(opcentry->maxProcNum,
+									   (StrategyNumber) amprocform->amprocnum);
 		}
 
 		systable_endscan(scan);
@@ -1804,6 +1826,12 @@ LookupOpclassInfo(Oid operatorClassOid,
 	}
 
 	opcentry->valid = true;
+
+done:
+	/* As above, for a caller expecting fewer procs than were loaded. */
+	if (opcentry->maxProcNum > numSupport)
+		elog(ERROR, "invalid amproc number %d for opclass %u",
+			 opcentry->maxProcNum, operatorClassOid);
 	return opcentry;
 }
 
