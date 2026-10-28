@@ -88,7 +88,7 @@ typedef struct PVSharedCostParams
 	int			cost_page_dirty;
 	int			cost_page_hit;
 	int			cost_page_miss;
-	bool		track_cost_delay_timing;
+	bool		track_cost_delay_timing_value;
 } PVSharedCostParams;
 
 /*
@@ -646,7 +646,7 @@ parallel_vacuum_set_cost_parameters(PVSharedCostParams *params)
 	params->cost_page_dirty = VacuumCostPageDirty;
 	params->cost_page_hit = VacuumCostPageHit;
 	params->cost_page_miss = VacuumCostPageMiss;
-	params->track_cost_delay_timing = track_cost_delay_timing;
+	params->track_cost_delay_timing_value = track_cost_delay_timing;
 }
 
 /*
@@ -679,7 +679,7 @@ parallel_vacuum_update_shared_delay_params(void)
 	VacuumCostPageDirty = pv_shared_cost_params->cost_page_dirty;
 	VacuumCostPageHit = pv_shared_cost_params->cost_page_hit;
 	VacuumCostPageMiss = pv_shared_cost_params->cost_page_miss;
-	track_cost_delay_timing = pv_shared_cost_params->track_cost_delay_timing;
+	track_cost_delay_timing = pv_shared_cost_params->track_cost_delay_timing_value;
 	SpinLockRelease(&pv_shared_cost_params->mutex);
 
 	VacuumUpdateCosts();
@@ -721,7 +721,7 @@ parallel_vacuum_propagate_shared_delay_params(void)
 		VacuumCostPageDirty == pv_shared_cost_params->cost_page_dirty &&
 		VacuumCostPageHit == pv_shared_cost_params->cost_page_hit &&
 		VacuumCostPageMiss == pv_shared_cost_params->cost_page_miss &&
-		track_cost_delay_timing == pv_shared_cost_params->track_cost_delay_timing)
+		track_cost_delay_timing == pv_shared_cost_params->track_cost_delay_timing_value)
 		return;
 
 	/* Update the shared delay parameters */
