@@ -1,5 +1,5 @@
 # Concurrent inserts into a unique BARK index with an extracted column
-# ("When the check runs" in M4 of BARK-Design.mediawiki).  Each key of a row
+# ("When the check runs" in BARK-Design.mediawiki).  Each key of a row
 # is checked and inserted under its leaf's lock, in ascending key order; a
 # conflict with an in-progress row waits, then checks that key again.
 #
