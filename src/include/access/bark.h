@@ -700,12 +700,33 @@ typedef struct BarkMetaPageData
  * key entries may carry version tags.  Set by a build that sets
  * BARK_META_VERSIONED, for an index that is neither GIN-interface
  * (bark_index_gin_query), unique nor exclusion in the catalog
- * (bark_build_mktags); never changed otherwise.  Its scans settle each
+ * (bark_build_mktags); cleared otherwise only by a conversion's
+ * completion (BARK_META_CONVERTING, below).  Its scans settle each
  * returned entry by the table AM's verdict ("Versioned multikey scans" in
  * the README).  Markers are never tagged.  A meta page written before the
  * bit existed reads 0, which is right: such an index holds no tag.
  */
 #define BARK_META_MKTAGS	(1 << 2)
+
+/*
+ * BARK_META_CONVERTING: an index with BARK_META_MKTAGS that the catalog has
+ * been seen to make unique or exclusion, a constraint added after its build
+ * ("Conversion" in the README).  Set by the first writer that sees it
+ * (bark_note_conversion): an insert, a constraint check's scan, or VACUUM.
+ * From then on no update keeps a locator in the index; tagged entries may
+ * remain, and VACUUM works them off.  Cleared, with the other two bits, when
+ * the conversion is complete.
+ *
+ * BARK_META_SETTLED: set with BARK_META_CONVERTING by VACUUM's barrier
+ * (bark_convert_barrier), when no update that began before the conversion
+ * can still be keeping a locator.  From then on every entry is stored
+ * untagged, and a VACUUM that finds no tagged entry left clears all three
+ * bits (bark_convert_complete).
+ *
+ * CONVERTING without MKTAGS, or SETTLED without CONVERTING, is corruption.
+ */
+#define BARK_META_CONVERTING	(1 << 3)
+#define BARK_META_SETTLED	(1 << 4)
 
 /*
  * bark_tid_stride is the largest locator offset of the table, its
@@ -1476,6 +1497,11 @@ extern bool bark_index_mktags(Relation index);
 extern bool bark_build_mktags(Relation index, bool versioned);
 extern bool bark_indexcanversion(Relation index);
 extern bool bark_indexmaykeeplocator(Relation index);
+extern uint32 bark_index_conversion_flags(Relation index);
+extern uint32 bark_change_conversion_flags(Relation index, uint32 need,
+										   uint32 set, uint32 clear);
+extern bool bark_index_converting(Relation index);
+extern uint32 bark_note_conversion(Relation index);
 extern bool bark_heap_versioned(Relation heap);
 extern IndexTuple bark_entry_untag(IndexTuple itup);
 extern IndexTuple bark_form_tagged(IndexTuple key, ItemPointer tid,
@@ -2036,6 +2062,8 @@ typedef struct BarkAmCache
 	uint16		tidstride;		/* bark_index_tid_stride, or 0 until read */
 	int8		versioned;		/* bark_index_versioned, or -1 until read */
 	int8		mktags;			/* bark_index_mktags, or -1 until read */
+	int8		converting;		/* bark_index_converting, or -1 until read */
+	LocalTransactionId convlxid;	/* the transaction that read converting */
 	int			nmarkers;		/* markers seen present */
 	Size		markerlen;		/* bytes of markerdata in use */
 	int			nl1;			/* level-1 slots in use */
@@ -2080,6 +2108,7 @@ extern bool bark_insert(Relation index, Datum *values, bool *isnull,
 						ItemPointer ht_ctid, Relation heapRel,
 						IndexUniqueCheck checkUnique,
 						bool indexUnchanged, IndexInfo *indexInfo);
+extern bool bark_is_last_insert(Relation index, ItemPointer tid);
 extern void bark_check_can_tag(Relation index, BarkKeyInfo *keyinfo,
 							   IndexVersionTag tag);
 extern void bark_insert_oversized_keys(Relation index, Datum *values,
