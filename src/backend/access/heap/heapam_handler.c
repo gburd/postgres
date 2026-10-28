@@ -1773,6 +1773,8 @@ heapam_index_validate_scan(Relation heapRelation,
 	 * sanity checks
 	 */
 	Assert(OidIsValid(indexRelation->rd_rel->relam));
+	/* heap's locator is not versioned, so the index holds plain TIDs */
+	Assert(!state->versioned);
 
 	/*
 	 * Need an EState for evaluation of index expressions and partial-index
