@@ -298,6 +298,7 @@ dihandler(PG_FUNCTION_ARGS)
 		.amstrategies = 0,
 		.amsupport = 1,
 		.amcanorder = false,
+		.ambtreeopfamilies = false,
 		.amcanorderbyop = false,
 		.amcanhash = false,
 		.amconsistentequality = false,
