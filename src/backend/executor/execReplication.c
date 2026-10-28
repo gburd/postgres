@@ -989,6 +989,7 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 	bool		skip_tuple = false;
 	Relation	rel = resultRelInfo->ri_RelationDesc;
 	ItemPointer tid = &(searchslot->tts_tid);
+	Bitmapset  *modified_idx_attrs;
 
 	/*
 	 * We support only non-system tables, with
@@ -1027,6 +1028,9 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 		if (rel->rd_rel->relispartition)
 			ExecPartitionCheck(resultRelInfo, slot, estate, true);
 
+		modified_idx_attrs = ExecUpdateModifiedIdxAttrs(resultRelInfo,
+														searchslot, slot);
+
 		/*
 		 * The conflict report and AFTER ROW triggers below read searchslot
 		 * after the update.  If the table's AM overwrites rows in place, copy
@@ -1035,8 +1039,9 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 		if (RelationUpdatesInPlace(rel))
 			ExecMaterializeSlot(searchslot);
 
-		simple_table_tuple_update(rel, tid, slot, estate->es_snapshot,
-								  &update_indexes);
+		simple_table_tuple_update_ext(rel, tid, slot, estate->es_snapshot,
+									  modified_idx_attrs, &update_indexes);
+		bms_free(modified_idx_attrs);
 
 		conflictindexes = resultRelInfo->ri_onConflictArbiterIndexes;
 
