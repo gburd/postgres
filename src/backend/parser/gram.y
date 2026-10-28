@@ -8360,6 +8360,8 @@ IndexStmt:	CREATE opt_unique INDEX opt_concurrently opt_single_name
 					n->oldNumber = InvalidRelFileNumber;
 					n->oldCreateSubid = InvalidSubTransactionId;
 					n->oldFirstRelfilelocatorSubid = InvalidSubTransactionId;
+					n->oldImplRels = NIL;
+					n->oldImplAms = NIL;
 					n->primary = false;
 					n->isconstraint = false;
 					n->deferrable = false;
@@ -8392,6 +8394,8 @@ IndexStmt:	CREATE opt_unique INDEX opt_concurrently opt_single_name
 					n->oldNumber = InvalidRelFileNumber;
 					n->oldCreateSubid = InvalidSubTransactionId;
 					n->oldFirstRelfilelocatorSubid = InvalidSubTransactionId;
+					n->oldImplRels = NIL;
+					n->oldImplAms = NIL;
 					n->primary = false;
 					n->isconstraint = false;
 					n->deferrable = false;

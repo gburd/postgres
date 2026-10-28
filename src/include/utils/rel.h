@@ -570,6 +570,15 @@ typedef struct ViewOptions
 		((relation)->rd_index->indnkeyatts)
 
 /*
+ * IndexRelationGetImplAm
+ *		The OID of the index access method whose code implements the index:
+ *		pg_index.indimplam if set, else the index's own access method.
+ */
+#define IndexRelationGetImplAm(relation) \
+	(OidIsValid((relation)->rd_index->indimplam) ? \
+	 (relation)->rd_index->indimplam : (relation)->rd_rel->relam)
+
+/*
  * RelationGetDescr
  *		Returns tuple descriptor for a relation.
  */
