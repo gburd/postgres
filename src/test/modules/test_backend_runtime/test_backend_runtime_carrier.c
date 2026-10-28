@@ -18,6 +18,11 @@
 #include "xtc_loop.h"
 #include "xtc_proc.h"
 
+StaticAssertDecl(sizeof(((Latch *) 0)->owner_fiber_gen) == sizeof(((xtc_pid_t *) 0)->gen),
+				 "latch fiber generation must preserve the libxtc generation");
+StaticAssertDecl(sizeof(((PGPROC *) 0)->sem_fiber_gen) == sizeof(((xtc_pid_t *) 0)->gen),
+				 "semaphore fiber generation must preserve the libxtc generation");
+
 /* One private loop/thread: no PG roots or error stack in these callbacks. */
 typedef struct FiberIdentityTest
 {
@@ -109,13 +114,14 @@ static void
 fiber_identity_supervisor(void *arg)
 {
 	FiberIdentityTest *test = arg;
+	xtc_proc_opts_t opts = XTC_PROC_OPTS_INIT;
 	xtc_pid_t	child;
 	uint64_t	ref;
 
 	test->supervisor = xtc_self();
 	FIBER_IDENTITY_CHECK(test, !xtc_pg_in_backend_fiber());
 	FIBER_IDENTITY_CHECK(test, xtc_proc_spawn_monitor(test->loop, fiber_identity_backend,
-													 test, NULL, &test->backend, &ref) == XTC_OK);
+													 test, &opts, &test->backend, &ref) == XTC_OK);
 	fiber_identity_receive(test);
 	FIBER_IDENTITY_CHECK(test, !xtc_pg_in_backend_fiber());
 	FIBER_IDENTITY_CHECK(test, !xtc_pg_backend_fiber_is_migratable());
@@ -126,13 +132,13 @@ fiber_identity_supervisor(void *arg)
 	{
 		void	   *msg = NULL;
 		size_t		len = 0;
-		int			reason;
+		xtc_down_info_t di = XTC_DOWN_INFO_INIT;
 
 		FIBER_IDENTITY_CHECK(test, xtc_recv(&msg, &len, 1000000000) == XTC_OK);
 		if (msg != NULL)
 		{
-			if (xtc_down_decode(msg, len, &child, &reason) == XTC_OK)
-				FIBER_IDENTITY_CHECK(test, reason == 0);
+			if (xtc_down_decode_ex(msg, len, &di) == XTC_OK)
+				FIBER_IDENTITY_CHECK(test, di.reason == 0);
 			else
 				test->failures++;
 			xtc_free(msg);

@@ -112,8 +112,8 @@ static int	xtc_park_trace_on = -1;
 		{ \
 			xtc_pid_t	self_ = xtc_self(); \
 			fprintf(stderr, \
-					"PARKTRACE pid=%u.%u.%u efd=%d timeout=%ld wl=0x%x rc=%d nev=%d %s\n", \
-					self_.loop_id, self_.local_id, self_.gen, \
+					"PARKTRACE pid=%u.%u." UINT64_FORMAT " efd=%d timeout=%ld wl=0x%x rc=%d nev=%d %s\n", \
+					self_.loop_id, self_.local_id, (uint64) self_.gen, \
 					(set_)->epoll_fd, (long) (to_), (unsigned) (wl_), (rc_), \
 					(set_)->nevents, (tag_)); \
 		} \
@@ -129,8 +129,8 @@ static int	xtc_park_trace_on = -1;
 		{ \
 			xtc_pid_t	self2_ = xtc_self(); \
 			fprintf(stderr, \
-					"PARKTRACE2 pid=%u.%u.%u efd=%d timeout=%ld rc=%d pos=%d pgev=0x%x epev=0x%x\n", \
-					self2_.loop_id, self2_.local_id, self2_.gen, \
+					"PARKTRACE2 pid=%u.%u." UINT64_FORMAT " efd=%d timeout=%ld rc=%d pos=%d pgev=0x%x epev=0x%x\n", \
+					self2_.loop_id, self2_.local_id, (uint64) self2_.gen, \
 					(set_)->epoll_fd, (long) (to_), (rc_), (pos_), \
 					(unsigned) (ev_), (unsigned) (epev_)); \
 		} \

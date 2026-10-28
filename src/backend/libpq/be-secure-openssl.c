@@ -2826,8 +2826,8 @@ be_tls_xtc_available(void)
  *
  * ssl_ver_min / ssl_ver_max are the raw TLS wire versions already computed by
  * be_tls_init (TLS1_2_VERSION==0x0303==XTC_TLS_VER_12, TLS1_3_VERSION==0x0304==
- * XTC_TLS_VER_13); 0 means "backend default".  A zeroed xtc_tls_opts_t is
- * byte-for-byte the library default, so we only set what PG configures.
+ * XTC_TLS_VER_13); 0 means "backend default".  Start with the library
+ * defaults and set only what PG configures.
  *
  * P2 deliberately does NOT set: verify_peer_mode (client-cert verify is P5),
  * alpn_protos (P5), the SNI callback (P6).  Encrypted server keys
@@ -2838,7 +2838,7 @@ static void
 build_xtc_tls_context(HostsLine *default_host, int ssl_ver_min,
 					  int ssl_ver_max, bool isServerStart)
 {
-	xtc_tls_opts_t opts;
+	xtc_tls_opts_t opts = XTC_TLS_OPTS_INIT;
 	xtc_tls_ctx_t *ctx = NULL;
 	int			rc;
 
@@ -2871,7 +2871,6 @@ build_xtc_tls_context(HostsLine *default_host, int ssl_ver_min,
 		return;
 	}
 
-	memset(&opts, 0, sizeof(opts));
 	opts.cert_file = default_host->ssl_cert;
 	opts.key_file = default_host->ssl_key;
 	/*
@@ -2993,7 +2992,7 @@ xtc_tls_transport_write_cb(void *userdata, const void *buf, size_t len)
 static int
 be_tls_open_server_xtc(Port *port)
 {
-	xtc_tls_transport_t transport;
+	xtc_tls_transport_t transport = XTC_TLS_TRANSPORT_INIT;
 	xtc_tls_t  *tls = NULL;
 	int			rc;
 
