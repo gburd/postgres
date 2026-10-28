@@ -70,6 +70,7 @@ CREATE FUNCTION bark_page_items(IN relname text, IN blkno int8,
     OUT tids tid[],
     OUT downlink int8,
     OUT overflow_blkno int8,
+    OUT tag int8,
     OUT data text)
 RETURNS SETOF record
 AS 'MODULE_PATHNAME', 'bark_page_items'
@@ -85,6 +86,7 @@ CREATE FUNCTION bark_page_items(IN page bytea,
     OUT tids tid[],
     OUT downlink int8,
     OUT overflow_blkno int8,
+    OUT tag int8,
     OUT data text)
 RETURNS SETOF record
 AS 'MODULE_PATHNAME', 'bark_page_items_bytea'

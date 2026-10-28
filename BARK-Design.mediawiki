@@ -1115,6 +1115,13 @@ RethinkDB's B-tree influenced four pieces of BARK.
   that writes an oversized key's chain on the fast path's cached leaf and
   then gives the leaf up frees that chain. Orphans are now left only by a
   crash, or an error between writing a chain and placing its entry.
+  ''Done:'' <code>bark_reclaim_orphans(index)</code> frees them under
+  ShareRowExclusiveLock, by the parent check's census of chains, page by
+  page and never along an orphan's links (README, "Tools", has the safety
+  argument). VACUUM reclaiming them was rejected: it would rest on an
+  unenforced invariant about internal pivots' chains and need the writer's
+  XID on every overflow page; one WAL record for chain and entry would not
+  cover the ERROR case.
 * ''A chunk directory on overflow chains (not adopted).'' A list of
   the chain's blocks on its first page, read through a read_stream
   (after RethinkDB's blob reference), was built and measured: release build,
