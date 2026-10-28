@@ -499,6 +499,22 @@ my_tableam_handler(PG_FUNCTION_ARGS)
    </para>
 
    <para>
+    For <command>CREATE INDEX CONCURRENTLY</command>,
+    <function>validate_index</function> collects the entries of the index
+    being built and hands them, sorted, to the access method's
+    <function>index_validate_scan</function> in a
+    <structname>ValidateIndexState</structname>, whose
+    <structfield>tuplesort</structfield> holds the entries' locators as
+    <type>int8</type> datums.  If the index access method sets
+    <structfield>amcanversion</structfield>, it instead sets
+    <structfield>versioned</structfield> and collects one tuple per entry,
+    with descriptor <structfield>tupdesc</structfield>: the locator, encoded
+    in the same way, then the tag, both <type>int8</type>, sorted by locator
+    and then tag.  The scan inserts every row version visible to the
+    reference snapshot for which no collected entry is valid.
+   </para>
+
+   <para>
     History is discarded the way <literal>heap</literal> reclaims dead line
     pointers: only after an index pass has dealt with every entry that
     depends on it.  For that, the access method's own
