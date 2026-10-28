@@ -24,6 +24,8 @@ my $blksz = int($node->safe_psql('postgres', 'SHOW block_size'));
 # Blocks per relation file (--with-segsize-blocks can make it small).
 my $segblks = int($node->safe_psql('postgres',
 	"SELECT setting FROM pg_settings WHERE name = 'segment_size'"));
+# The server runs on this machine, so its pages are in Perl's byte order.
+my $little_endian = pack('L', 1) eq pack('V', 1);
 
 $node->safe_psql(
 	'postgres', q(
@@ -40,6 +42,8 @@ $node->safe_psql(
 	-- Uncompressed in the index too (it copies the column's storage), so the
 	-- oversized entry keeps an inline prefix of the key's own bytes.
 	ALTER TABLE t_big ALTER COLUMN k SET STORAGE EXTERNAL;
+	-- Compressed in the index: the prefix is still the value's own bytes.
+	CREATE TABLE t_bigz (k text COLLATE "C");
 ));
 
 # name => table, column
@@ -54,10 +58,11 @@ my %idx = (
 	i_post_len => 't_post', i_post_size => 't_post',
 	map({ $_ => 't_big' }
 		qw(i_big_out i_big_nonovf i_big_trunc i_big_prefix i_big_complete
-		  i_big_chain)));
+		  i_big_chain i_big_self)),
+	i_bigz_prefix => 't_bigz');
 for my $i (sort keys %idx)
 {
-	my $col = $idx{$i} eq 't_big' ? 'k' : 'a';
+	my $col = $idx{$i} =~ /^t_big/ ? 'k' : 'a';
 	$node->safe_psql('postgres',
 		"CREATE INDEX $i ON $idx{$i} USING bark ($col)");
 }
@@ -71,6 +76,7 @@ $node->safe_psql(
 	INSERT INTO t_list SELECT g % 20 FROM generate_series(1, 200) g;
 	INSERT INTO t_post SELECT g / 1000 FROM generate_series(0, 4999) g;
 	INSERT INTO t_big VALUES ('A' || bigstr(1, 40000)), ('b1'), ('b2'), ('b3');
+	INSERT INTO t_bigz VALUES ('A' || bigstr(2, 40000)), ('b1');
 ));
 
 # Every index passes before it is corrupted.
@@ -109,7 +115,7 @@ for my $i (sort keys %idx)
 		my $r = $node->safe_psql('postgres',
 			"SELECT itemoffset, overflow_blkno FROM bark_page_items('$i', $c->{root}) WHERE shape = '$shape' ORDER BY itemoffset LIMIT 1"
 		);
-		($c->{"off_$shape"}, $c->{ovf}) = split /\|/, $r if $r ne '';
+		($c->{"off_$shape"}, $c->{"ovf_$shape"}) = split /\|/, $r if $r ne '';
 	}
 }
 is($info{i_order}{level}, 0, 't_small is a single leaf');
@@ -160,8 +166,14 @@ sub g32 { unpack('L', substr(${ $_[0] }, $_[1], 4)) }
 sub s32 { substr(${ $_[0] }, $_[1], 4) = pack('L', $_[2]) }
 sub gi32 { unpack('l', substr(${ $_[0] }, $_[1], 4)) }
 sub si32 { substr(${ $_[0] }, $_[1], 4) = pack('l', $_[2]) }
-# Byte offset of item $off (ItemIdData lp_off: low 15 bits).
-sub item { g32($_[0], 24 + 4 * ($_[1] - 1)) & 0x7fff }
+# Byte offset of item $off: ItemIdData's lp_off, its first 15 bits, which
+# are the word's low bits on a little-endian machine and its high bits on a
+# big-endian one.
+sub item
+{
+	my $w = g32($_[0], 24 + 4 * ($_[1] - 1));
+	return $little_endian ? $w & 0x7fff : $w >> 17;
+}
 sub maxoff { (g16($_[0], 12) - 24) / 4 }
 # BarkPageOpaqueData: prev 0, next 4, level 8, cycleid 10, flags 12.
 sub opq { g16($_[0], 16) + $_[1] }
@@ -248,19 +260,25 @@ patch('i_post_size', $info{i_post_size}{root},
 # locator 4, natts 10, pivottid 12, prefixlen 18, prefixcomplete 20, prefix 21.
 my $broot = $info{i_big_out}{root};
 # The prefix tests need one: prefixlen at 18 of the reference is nonzero.
-for my $i (qw(i_big_prefix i_big_complete))
+# i_bigz_prefix's key is compressed in its full tuple, and its prefix is the
+# value's first 32 bytes all the same.
+for my $i (qw(i_big_prefix i_big_complete i_bigz_prefix))
 {
-	my $p = rd($info{$i}{path}, $broot);
+	my $p = rd($info{$i}{path}, $info{$i}{root});
 	cmp_ok(g16(\$p, item(\$p, 1) + 8 + 18), '>', 0, "$i has an inline prefix");
 }
 patch('i_big_out', $broot, sub { set_tid_blk($_[0], item($_[0], 1), 999999) });
+# A chain that starts at the entry's own leaf, which the check holds locked.
+patch('i_big_self', $broot, sub { set_tid_blk($_[0], item($_[0], 1), $broot) });
 # A zeroed first overflow page: valid as a new page, but not an overflow page.
-patch('i_big_nonovf', $info{i_big_nonovf}{ovf}, sub { ${ $_[0] } = "\0" x $blksz });
+patch('i_big_nonovf', $info{i_big_nonovf}{ovf_OVERSIZED}, sub { ${ $_[0] } = "\0" x $blksz });
 patch('i_big_trunc', $broot,
 	sub { my $it = item($_[0], 1); s32($_[0], $it + 8, g32($_[0], $it + 8) + 100000) });
 patch('i_big_prefix', $broot, sub { substr(${ $_[0] }, item($_[0], 1) + 8 + 21, 1) = '@' });
 patch('i_big_complete', $broot, sub { substr(${ $_[0] }, item($_[0], 1) + 8 + 20, 1) = "\x01" });
-patch('i_big_chain', $info{i_big_chain}{ovf}, sub { s32($_[0], opq($_[0], 4), 999999) });
+patch('i_big_chain', $info{i_big_chain}{ovf_OVERSIZED}, sub { s32($_[0], opq($_[0], 4), 999999) });
+patch('i_bigz_prefix', $info{i_bigz_prefix}{root},
+	sub { substr(${ $_[0] }, item($_[0], 1) + 8 + 21, 1) = '@' });
 
 $node->start;
 
@@ -315,11 +333,14 @@ both('i_list_count', "has a list entry with 1 locators on page $lroot at offset 
 both('i_post_len', "has a corrupt posting set on page $proot at offset $poff");
 both('i_post_size', "posting entry on page $proot at offset $poff, smaller than the \\d+ bytes");
 both('i_big_out', "oversized entry on page $broot at offset 1 points at out-of-range overflow block 999999");
-both('i_big_nonovf', "oversized entry on page $broot at offset 1 references non-overflow block $info{i_big_nonovf}{ovf}");
+both('i_big_nonovf', "oversized entry on page $broot at offset 1 references non-overflow block $info{i_big_nonovf}{ovf_OVERSIZED}");
+both('i_big_self', "oversized entry on page $broot at offset 1 references non-overflow block $broot");
 both('i_big_trunc', "oversized entry on page $broot at offset 1 has a truncated overflow chain");
 both('i_big_prefix', "oversized entry on page $broot at offset 1 has a prefix that does not match its first key column");
 both('i_big_complete', "oversized entry on page $broot at offset 1 claims a complete 32-byte prefix");
 both('i_big_chain', "oversized entry on page $broot at offset 1 points at out-of-range overflow block 999999");
+both('i_bigz_prefix',
+	"oversized entry on page $info{i_bigz_prefix}{root} at offset 1 has a prefix that does not match its first key column");
 
 # No check crashed the server.
 is($node->safe_psql('postgres', 'SELECT 1'), '1', 'server is up');
