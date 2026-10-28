@@ -557,6 +557,14 @@ typedef struct TableAmRoutine
 	 * the scan's snapshot sees.  Index-only scans are no different: the
 	 * callback must not return index data through an entry that is not valid
 	 * for the visible version.
+	 *
+	 * The callback reports what it did with each entry in
+	 * scan->xs_entry_verdict: INDEX_SCAN_ENTRY_VALID when it returns a tuple
+	 * through the entry, INDEX_SCAN_ENTRY_INVALID when it moves on to the
+	 * next entry without returning one (and without having returned one
+	 * through this entry before, as on a HOT chain).  An AM whose locator is
+	 * versioned must do this for indexes for which index_can_version() is
+	 * true; see amlocator.h.
 	 */
 	void		(*index_scan_begin) (IndexScanDesc scan, uint32 flags);
 
