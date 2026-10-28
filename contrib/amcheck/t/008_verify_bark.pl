@@ -43,6 +43,17 @@ $node->safe_psql(
 	-- Uncompressed in the index too (it copies the column's storage), so the
 	-- oversized entry keeps an inline prefix of the key's own bytes.
 	ALTER TABLE t_big ALTER COLUMN k SET STORAGE EXTERNAL;
+	CREATE TABLE t_bigh (k text COLLATE "C");
+	ALTER TABLE t_bigh ALTER COLUMN k SET STORAGE EXTERNAL;
+	-- One index each, for searches that must use it.
+	CREATE TABLE t_bign (k text COLLATE "C");
+	ALTER TABLE t_bign ALTER COLUMN k SET STORAGE EXTERNAL;
+	CREATE TABLE t_big0 (k text COLLATE "C");
+	ALTER TABLE t_big0 ALTER COLUMN k SET STORAGE EXTERNAL;
+	CREATE TABLE t_bigl (k text COLLATE "C");
+	ALTER TABLE t_bigl ALTER COLUMN k SET STORAGE EXTERNAL;
+	-- Compressed in the index: the prefix is still the value's own bytes.
+	CREATE TABLE t_bigz (k text COLLATE "C");
 ));
 
 # name => table, column
@@ -57,10 +68,12 @@ my %idx = (
 	i_post_len => 't_post', i_post_size => 't_post',
 	map({ $_ => 't_big' }
 		qw(i_big_out i_big_nonovf i_big_trunc i_big_prefix i_big_complete
-		  i_big_chain)));
+		  i_big_chain i_big_self)),
+	i_bigz_prefix => 't_bigz', i_big_huge => 't_bigh',
+	i_big_snew => 't_bign', i_big_szero => 't_big0', i_big_long => 't_bigl');
 for my $i (sort keys %idx)
 {
-	my $col = $idx{$i} eq 't_big' ? 'k' : 'a';
+	my $col = $idx{$i} =~ /^t_big/ ? 'k' : 'a';
 	$node->safe_psql('postgres',
 		"CREATE INDEX $i ON $idx{$i} USING bark ($col)");
 }
@@ -75,7 +88,15 @@ $node->safe_psql(
 	INSERT INTO t_list SELECT g % 20 FROM generate_series(1, 200) g;
 	INSERT INTO t_post SELECT g / 1000 FROM generate_series(0, 4999) g;
 	INSERT INTO t_big VALUES ('A' || bigstr(1, 40000)), ('b1'), ('b2'), ('b3');
+	INSERT INTO t_bigz VALUES ('A' || bigstr(2, 40000)), ('b1');
+	INSERT INTO t_bigh VALUES ('A' || bigstr(3, 40000)), ('b1');
+	INSERT INTO t_bign VALUES ('A' || bigstr(4, 40000)), ('b1');
+	INSERT INTO t_big0 VALUES ('A' || bigstr(5, 40000)), ('b1');
 ));
+# A key of about 20 overflow chunks, at any block size.
+my $longlen = 20 * $blksz;
+$node->safe_psql('postgres',
+	"INSERT INTO t_bigl VALUES ('A' || bigstr(6, $longlen)), ('b1')");
 
 # Every index passes before it is corrupted.
 for my $i (sort keys %idx)
@@ -113,7 +134,7 @@ for my $i (sort keys %idx)
 		my $r = $node->safe_psql('postgres',
 			"SELECT itemoffset, overflow_blkno FROM bark_page_items('$i', $c->{root}) WHERE shape = '$shape' ORDER BY itemoffset LIMIT 1"
 		);
-		($c->{"off_$shape"}, $c->{ovf}) = split /\|/, $r if $r ne '';
+		($c->{"off_$shape"}, $c->{"ovf_$shape"}) = split /\|/, $r if $r ne '';
 	}
 }
 is($info{i_order}{level}, 0, 't_small is a single leaf');
@@ -278,19 +299,32 @@ patch('i_post_size', $info{i_post_size}{root},
 # locator 4, natts 10, pivottid 12, prefixlen 18, prefixcomplete 20, prefix 21.
 my $broot = $info{i_big_out}{root};
 # The prefix tests need one: prefixlen at 18 of the reference is nonzero.
-for my $i (qw(i_big_prefix i_big_complete))
+# i_bigz_prefix's key is compressed in its full tuple, and its prefix is the
+# value's first 32 bytes all the same.
+for my $i (qw(i_big_prefix i_big_complete i_bigz_prefix))
 {
-	my $p = rd($info{$i}{path}, $broot);
+	my $p = rd($info{$i}{path}, $info{$i}{root});
 	cmp_ok(g16(\$p, item(\$p, 1) + 8 + 18), '>', 0, "$i has an inline prefix");
 }
 patch('i_big_out', $broot, sub { set_tid_blk($_[0], item($_[0], 1), 999999) });
+# A chain that starts at the entry's own leaf, which the check holds locked.
+patch('i_big_self', $broot, sub { set_tid_blk($_[0], item($_[0], 1), $broot) });
 # A zeroed first overflow page: valid as a new page, but not an overflow page.
-patch('i_big_nonovf', $info{i_big_nonovf}{ovf}, sub { ${ $_[0] } = "\0" x $blksz });
+patch('i_big_nonovf', $info{i_big_nonovf}{ovf_OVERSIZED}, sub { ${ $_[0] } = "\0" x $blksz });
 patch('i_big_trunc', $broot,
 	sub { my $it = item($_[0], 1); s32($_[0], $it + 8, g32($_[0], $it + 8) + 100000) });
 patch('i_big_prefix', $broot, sub { substr(${ $_[0] }, item($_[0], 1) + 8 + 21, 1) = '@' });
 patch('i_big_complete', $broot, sub { substr(${ $_[0] }, item($_[0], 1) + 8 + 20, 1) = "\x01" });
-patch('i_big_chain', $info{i_big_chain}{ovf}, sub { s32($_[0], opq($_[0], 4), 999999) });
+patch('i_big_chain', $info{i_big_chain}{ovf_OVERSIZED}, sub { s32($_[0], opq($_[0], 4), 999999) });
+patch('i_bigz_prefix', $info{i_bigz_prefix}{root},
+	sub { substr(${ $_[0] }, item($_[0], 1) + 8 + 21, 1) = '@' });
+# A length no chain in the index could hold, which a scan would allocate.
+patch('i_big_huge', $info{i_big_huge}{root},
+	sub { s32($_[0], item($_[0], 1) + 8, 0x7ffffff0) });
+# For searches: a zeroed first overflow page, and a chain that starts at
+# block 0, which ends a chain.
+patch('i_big_snew', $info{i_big_snew}{ovf_OVERSIZED}, sub { ${ $_[0] } = "\0" x $blksz });
+patch('i_big_szero', $info{i_big_szero}{root}, sub { set_tid_blk($_[0], item($_[0], 1), 0) });
 
 $node->start;
 
@@ -353,11 +387,43 @@ both('i_list_count', "has a list entry with 1 locators on page $lroot at offset 
 both('i_post_len', "has a corrupt posting set on page $proot at offset $poff");
 both('i_post_size', "posting entry on page $proot at offset $poff, smaller than the \\d+ bytes");
 both('i_big_out', "oversized entry on page $broot at offset 1 points at out-of-range overflow block 999999");
-both('i_big_nonovf', "oversized entry on page $broot at offset 1 references non-overflow block $info{i_big_nonovf}{ovf}");
+both('i_big_nonovf', "oversized entry on page $broot at offset 1 references non-overflow block $info{i_big_nonovf}{ovf_OVERSIZED}");
+both('i_big_self', "oversized entry on page $broot at offset 1 references non-overflow block $broot");
 both('i_big_trunc', "oversized entry on page $broot at offset 1 has a truncated overflow chain");
 both('i_big_prefix', "oversized entry on page $broot at offset 1 has a prefix that does not match its first key column");
 both('i_big_complete', "oversized entry on page $broot at offset 1 claims a complete 32-byte prefix");
 both('i_big_chain', "oversized entry on page $broot at offset 1 points at out-of-range overflow block 999999");
+both('i_bigz_prefix',
+	"oversized entry on page $info{i_bigz_prefix}{root} at offset 1 has a prefix that does not match its first key column");
+
+both('i_big_huge',
+	"oversized entry on page $info{i_big_huge}{root} at offset 1 has a truncated overflow chain");
+# A search that must read the whole key reports the length as corruption,
+# not as a failed allocation.
+my ($src, $sout, $serr) = $node->psql('postgres',
+	"SET enable_seqscan = off; SELECT count(*) FROM t_bigh WHERE k = 'A' || bigstr(3, 40000)"
+);
+like($serr,
+	qr/index "i_big_huge" has an oversized entry of 2147483632 bytes, more than the index holds/,
+	'a search reports an impossible oversized length');
+# A search reads the chain itself, and checks each page it reads.
+($src, $sout, $serr) = $node->psql('postgres',
+	"SET enable_seqscan = off; SELECT count(*) FROM t_bign WHERE k = 'A' || bigstr(4, 40000)"
+);
+like($serr,
+	qr/overflow chain for an oversized entry reaches block $info{i_big_snew}{ovf_OVERSIZED}, which is not an overflow page/,
+	'a search reports a chain page that is not an overflow page');
+($src, $sout, $serr) = $node->psql('postgres',
+	"SET enable_seqscan = off; SELECT count(*) FROM t_big0 WHERE k = 'A' || bigstr(5, 40000)"
+);
+like($serr, qr/overflow chain for an oversized entry is truncated: got 0 of \d+ bytes/,
+	'a search reports a chain that ends at once');
+# A long chain is not mistaken for an impossible length.
+is( $node->safe_psql('postgres',
+		"SET enable_seqscan = off; SELECT count(*) FROM t_bigl WHERE k = 'A' || bigstr(6, $longlen)"
+	),
+	'1',
+	'a search finds a key of 20 overflow chunks');
 
 # No check crashed the server.
 is($node->safe_psql('postgres', 'SELECT 1'), '1', 'server is up');

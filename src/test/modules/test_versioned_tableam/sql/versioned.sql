@@ -253,6 +253,41 @@ SELECT * FROM test_versioned_seen;
 RESET test_versioned_tableam.keep_locator;
 DROP TABLE tx, tz;
 
+-- A row with history in k stands for a row updated in place: its entries in
+-- an index on k are judged by the validity rule, valid only if tagged with
+-- the visible version's xmin.  Row 1 gets a stale entry for its old value
+-- 10, which the index scan, the index-only scan and fetch_tid_version all
+-- judge invalid, and which VACUUM removes; its current entry stays valid.
+CREATE TABLE th (id int, k int) USING heap_versioned;
+CREATE INDEX th_k ON th USING bark (k);
+INSERT INTO th VALUES (1, 10), (2, 20);
+UPDATE th SET k = k + 1;
+SELECT test_versioned_mark_history('th', ctid, 'k') FROM th WHERE id = 1;
+SELECT test_versioned_insert_entry('th_k', ctid, -1, '10') FROM th WHERE id = 1;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT test_versioned_reset();
+SELECT id FROM th WHERE k = 10;
+SELECT id FROM th WHERE k = 11;
+SELECT * FROM test_versioned_seen;
+SELECT test_versioned_reset();
+EXPLAIN (COSTS OFF) SELECT k FROM th WHERE k IN (10, 11);
+SELECT k FROM th WHERE k IN (10, 11);
+SELECT counter, n FROM test_versioned_seen WHERE counter LIKE 'judge%';
+SELECT test_versioned_fetch('th_k', ctid, xmin::text::int8) AS current,
+       test_versioned_fetch('th_k', ctid, 0) AS untagged,
+       test_versioned_fetch('th_k', ctid, xmin::text::int8 - 1) AS stale
+  FROM th WHERE id = 1;
+SELECT test_versioned_reset();
+VACUUM th;
+SELECT counter, n FROM test_versioned_seen WHERE counter LIKE 'vacuum%';
+SELECT id FROM th WHERE k = 10;
+SELECT id FROM th WHERE k = 11;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SELECT test_versioned_mark_history('th', ctid, NULL) FROM th WHERE id = 1;
+DROP TABLE th;
+
 -- The table AM's verdict on each entry an index scan returned
 -- (xs_entry_verdict), as test_versioned_btree reads it at its next
 -- amgettuple call: valid when a row was returned through the entry,

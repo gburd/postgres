@@ -29,6 +29,7 @@ tests += {
     'sql': [
       'bark_wildcard',
       'bark_wildcard_scan',
+      'bark_wildcard_sel',
     ],
     # Paths and strings sort by the database's collation.
     'regress_args': ['--no-locale'],
