@@ -499,6 +499,27 @@ my_tableam_handler(PG_FUNCTION_ARGS)
    </para>
 
    <para>
+    History is discarded the way <literal>heap</literal> reclaims dead line
+    pointers: only after an index pass has dealt with every entry that
+    depends on it.  For that, the access method's own
+    <command>VACUUM</command> can set <structfield>version_callback</structfield>
+    and <structfield>version_state</structfield> in the
+    <structname>IndexVacuumInfo</structname> it passes to
+    <function>index_bulk_delete</function> for an index whose access method
+    sets <structfield>amcanversion</structfield>.  The index access method
+    then asks it about every entry, giving the entry's locator and tag, and
+    the callback answers <literal>INDEX_ENTRY_DEAD</literal> when no snapshot
+    can see a version for which the entry is valid,
+    <literal>INDEX_ENTRY_LIVE</literal>, or
+    <literal>INDEX_ENTRY_LIVE_UNTAG</literal> for a live entry whose tag can
+    be cleared to 0 without changing which versions it is valid for.  The
+    index is reachable through the state.  Indexes whose access method does
+    not set <structfield>amcanversion</structfield> are vacuumed with the
+    usual callback, by locator.  <literal>heap</literal> never sets the
+    callback.
+   </para>
+
+   <para>
     The <acronym>TID</acronym> bitmap of a bitmap scan holds locators without
     tags, so <function>scan_bitmap_next_tuple</function> must ask for a recheck
     of any row whose locator a bitmap may hold only through an entry that is

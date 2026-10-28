@@ -1307,12 +1307,14 @@ IndexBuildCallback
 IndexBuildResult
 IndexBulkDeleteCallback
 IndexBulkDeleteResult
+IndexBulkDeleteVersionCallback
 IndexClause
 IndexClauseSet
 IndexDeleteCounts
 IndexDeletePrefetchState
 IndexDoCheckCallback
 IndexElem
+IndexEntryVerdict
 IndexInfo
 IndexList
 IndexOnlyScan
