@@ -51,6 +51,12 @@
 /* default number of distinct values in a table */
 #define DEFAULT_NUM_DISTINCT  200
 
+/*
+ * CPU cost charged per index page descended through, in multiples of
+ * cpu_operator_cost
+ */
+#define DEFAULT_PAGE_CPU_MULTIPLIER 50.0
+
 /* default selectivity estimate for boolean and null test nodes */
 #define DEFAULT_UNK_SEL			0.005
 #define DEFAULT_NOT_UNK_SEL		(1.0 - DEFAULT_UNK_SEL)
@@ -172,6 +178,8 @@ extern void get_join_variables(PlannerInfo *root, List *args,
 							   VariableStatData *vardata1,
 							   VariableStatData *vardata2,
 							   bool *join_is_reversed);
+extern void examine_indexcol_variable(PlannerInfo *root, IndexOptInfo *index,
+									  int indexcol, VariableStatData *vardata);
 extern double get_variable_numdistinct(VariableStatData *vardata,
 									   bool *isdefault);
 extern double mcv_selectivity(VariableStatData *vardata,
@@ -247,6 +255,8 @@ extern List *add_predicate_to_index_quals(IndexOptInfo *index,
 extern void genericcostestimate(PlannerInfo *root, IndexPath *path,
 								double loop_count,
 								GenericCosts *costs);
+extern double btcost_correlation(IndexOptInfo *index,
+								 VariableStatData *vardata);
 
 /* Functions in array_selfuncs.c */
 
