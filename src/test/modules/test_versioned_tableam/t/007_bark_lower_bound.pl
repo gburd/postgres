@@ -121,7 +121,7 @@ sub vacuum_line
 {
 	my ($idx, $err) = @_;
 	my $line =
-	  $err =~ /index "$idx": untagged (\d+) entries in place, kept (\d+) tagged whose page's lower bound may carry a tag and (\d+) whose untagged position is in another entry, after lowering (\d+) lower bounds/
+	  $err =~ /index "$idx": (\d+) entries untagged in place, (\d+) kept tagged for their page's lower bound, (\d+) kept tagged beside their untagged twin, (\d+) lower bounds lowered/
 	  ? "untagged $1, kept $2, dup $3, lowered $4"
 	  : '';
 	my @why = $err =~ /index "$idx": kept the tagged lower bound of block \d+: ([^\n]*)/g;
