@@ -123,6 +123,16 @@ bark_desc(StringInfo buf, XLogReaderState *record)
 				appendStringInfo(buf, "off: %u", xlrec->offnum);
 				break;
 			}
+		case XLOG_BARK_INSERT_MULTI:
+			{
+				xl_bark_insert_multi *xlrec = (xl_bark_insert_multi *) rec;
+
+				appendStringInfo(buf, "nentries: %u, offsets:",
+								 xlrec->nentries);
+				array_desc(buf, rec + SizeOfBarkInsertMulti, sizeof(OffsetNumber),
+						   xlrec->nentries, &offset_elem_desc, NULL);
+				break;
+			}
 		case XLOG_BARK_OVERWRITE:
 			{
 				xl_bark_overwrite *xlrec = (xl_bark_overwrite *) rec;
@@ -229,6 +239,9 @@ bark_identify(uint8 info)
 			break;
 		case XLOG_BARK_INSERT_UPPER:
 			id = "INSERT_UPPER";
+			break;
+		case XLOG_BARK_INSERT_MULTI:
+			id = "INSERT_MULTI";
 			break;
 		case XLOG_BARK_OVERWRITE:
 			id = "OVERWRITE";
