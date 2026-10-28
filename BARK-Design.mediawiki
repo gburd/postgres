@@ -1248,10 +1248,17 @@ HANDLER barkhandler</code>, which DocumentDB's alternate index AM hook
 needs, since it creates indexes <code>USING documentdb_<am_name></code>). So
 BARK tests a family for not being btree's (bark_opfamily_is_own; with
 ambtreeopfamilies those are the only foreign families a BARK class can name)
-and a relation for its handler (bark_relation_is_bark). Testing for
+and a relation for its routine (bark_relation_is_bark). Testing for
 BARK_AM_OID, as the first version did, read an alias's multikey family as a btree
 family: its strategies taken for btree's, its keys never extracted, and an
-assertion failure in an assert build. amcheck compares handlers too;
+assertion failure in an assert build. The routine, not the handler, because
+DocumentDB's handler is its own function: it returns a copy of BARK's
+routine with the build, insert and scan entry points wrapped, and a handler
+test refused its indexes in pageinspect, pgstattuple and amcheck and failed
+an assertion in the reloption accessors. A routine is BARK's when its
+reloption parser is barkoptions, which every BARK function depends on, so
+a wrapper keeps it. amcheck compares handlers, so bark_index_check names
+the index's own access method as expected when its routine is BARK's;
 pg_amcheck still selects indexes by access method OID.
 
 '''Support procedures.''' Numbered after btree's 1-6, so the scalar classes
