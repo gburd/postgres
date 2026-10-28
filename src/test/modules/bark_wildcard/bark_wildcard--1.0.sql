@@ -142,3 +142,10 @@ FOR TYPE jsonb USING bark FAMILY bark_jsonb_wildcard_ops AS
                                                            internal, internal),
     FUNCTION 9 (jsonb, jsonb) bark_wildcard_recheck(jsonb, int2, internal),
     STORAGE jsonb;
+
+-- For the selectivity tests: the bytes of an index's relcache memory, and
+-- a switch that makes the planner take every index for a hypothetical one.
+CREATE FUNCTION bark_wildcard_cxt_size(index regclass) RETURNS int8
+AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
+CREATE FUNCTION bark_wildcard_hypothetical(on_ bool) RETURNS void
+AS 'MODULE_PATHNAME' LANGUAGE C STRICT;

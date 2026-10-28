@@ -52,7 +52,11 @@ typedef struct BarkSearchKey
 /*
  * Compare a scan bound with an index tuple: <0 or >0 as the bound sorts
  * before or after the tuple in index order (never 0, see below).  Truncated
- * pivot attributes are minus infinity, as in bark_compare_itups.
+ * pivot attributes are minus infinity, as in bark_compare_itups.  An
+ * OVERSIZED tuple is first compared on its inline prefix
+ * (bark_oversized_prefix_cmp), and its overflow chain is read only when that
+ * cannot decide: a tie with a prefix cut short, or a tie on column 1 with
+ * later columns to compare.
  */
 int
 bark_compare_bound(Relation index, BarkKeyInfo *keyinfo,
@@ -75,7 +79,6 @@ bark_compare_bound(Relation index, BarkKeyInfo *keyinfo,
 			natts = BarkOverflowGetRef(itup)->natts;
 			notid = bark_pivot_heap_tid(itup) == NULL;
 		}
-		itup = full = bark_fetch_oversized(index, itup);
 	}
 	else if (BarkEntryGetShape(itup) == BARK_SHAPE_PIVOT)
 	{
@@ -86,6 +89,26 @@ bark_compare_bound(Relation index, BarkKeyInfo *keyinfo,
 		natts = keyinfo->nkeys;
 
 	ncmp = Min(natts, bound->nkeys);
+	if (ncmp > 0 && BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED)
+	{
+		bool		known = false;
+		int32		cmp = 0;
+
+		/* A NULL bound (procs[0] NULL) always reads the chain. */
+		if (bound->procs[0] != NULL)
+			cmp = bark_oversized_prefix_cmp(keyinfo, itup, bound->procs[0],
+											bound->collations[0],
+											bound->args[0], &known);
+		if (cmp != 0)
+		{
+			result = keyinfo->cols[0].reverse ? cmp : -cmp;
+			ncmp = 0;
+		}
+		else if (known && ncmp == 1)
+			ncmp = 0;			/* equal on the one column compared */
+		else
+			itup = full = bark_fetch_oversized(index, itup);
+	}
 	for (int i = 0; i < ncmp; i++)
 	{
 		BarkKeyColumn *col = &keyinfo->cols[i];
@@ -339,10 +362,13 @@ bark_get_amcache(Relation index)
 		cache->multikey = false;
 		cache->tidstride = 0;
 		cache->versioned = -1;
+		cache->mktags = -1;
 		cache->nmarkers = 0;
 		cache->markerlen = 0;
 		cache->nl1 = cache->maxl1 = 0;
 		cache->l1keylen = cache->maxl1keylen = 0;
+		cache->l1epoch = 0;
+		cache->sample = NULL;
 		index->rd_amcache = cache;
 	}
 	return cache;
@@ -655,6 +681,13 @@ bark_get_root_buffer(Relation index, BufferLockMode access)
  * live level-1 internal page; the caller then moves right from it as from
  * any page it reached through a downlink, so a split since it was cached is
  * handled the same way.
+ *
+ * Under the same lock the level-1 epoch must still be the one the table
+ * was filled under.  When it is not, a level-1 page has been deleted since,
+ * and the block may now be a level-1 page for other keys, which the checks
+ * above cannot tell (see bark_l1_epoch).  The table is then forgotten.
+ * Whenever the table is empty, the epoch is read before the descent from
+ * the root, which reads the downlinks that refill it.
  */
 static Buffer
 bark_l1_start(Relation index, BarkKeyInfo *keyinfo, const BarkSearchKey * key,
@@ -664,9 +697,13 @@ bark_l1_start(Relation index, BarkKeyInfo *keyinfo, const BarkSearchKey * key,
 	int			slot;
 	Buffer		buf;
 	Page		page;
+	uint64		epoch;
 
 	if (cache->nl1 == 0)
+	{
+		cache->l1epoch = bark_l1_epoch();
 		return InvalidBuffer;
+	}
 	slot = bark_l1_find(index, keyinfo, cache, key, nextkey);
 	if (slot < 0)
 		return InvalidBuffer;
@@ -674,7 +711,8 @@ bark_l1_start(Relation index, BarkKeyInfo *keyinfo, const BarkSearchKey * key,
 	buf = ReadBuffer(index, bark_l1_slots(cache)[slot].blkno);
 	LockBuffer(buf, BUFFER_LOCK_SHARE);
 	page = BufferGetPage(buf);
-	if (!PageIsNew(page))
+	epoch = bark_l1_epoch();
+	if (epoch == cache->l1epoch && !PageIsNew(page))
 	{
 		BarkPageOpaque opaque = BarkPageGetOpaque(page);
 
@@ -711,12 +749,14 @@ bark_l1_start(Relation index, BarkKeyInfo *keyinfo, const BarkSearchKey * key,
 	}
 
 	/*
-	 * Not a level-1 page any more (an internal page is never freed, so this
-	 * means the index was rebuilt under a cache that survived, which a
-	 * relcache rebuild should prevent): forget the table and use the root.
+	 * A level-1 page was deleted since the table was filled, or the page is
+	 * not a live level-1 page.  The epoch rules the second out but for a
+	 * cache that outlived a rebuild of the index, which a relcache rebuild
+	 * should prevent.  Forget the table and use the root.
 	 */
 	UnlockReleaseBuffer(buf);
 	bark_l1_reset(cache);
+	cache->l1epoch = epoch;
 	return InvalidBuffer;
 }
 
