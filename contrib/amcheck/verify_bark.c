@@ -265,13 +265,15 @@ bark_check_structure(Relation rel, Relation heaprel, void *callback_state,
 	state->heaprel = heaprel;
 	LockBuffer(metabuf, BUFFER_LOCK_SHARE);
 	version = BarkPageGetMeta(BufferGetPage(metabuf))->bark_version;
-	UnlockReleaseBuffer(metabuf);
 	if (version < BARK_MIN_VERSION)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("index \"%s\" was built by an older BARK version",
 						RelationGetRelationName(rel)),
 				 errhint("REINDEX the index.")));
+	/* the meta page's flags against the index's definition */
+	bark_verify_meta(rel, NULL, BufferGetPage(metabuf), BARK_METAPAGE, ERROR);
+	UnlockReleaseBuffer(metabuf);
 
 	/*
 	 * The heap scan must see only tuples whose entries the index walk will
@@ -467,7 +469,14 @@ bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo,
 													 BarkPageFirstDataKey(ropaque),
 													 &ritem);
 
-				if (BarkPageIsLeaf(ropaque) ?
+				/*
+				 * An internal page's first downlink may be minus infinity
+				 * (page deletion truncates it), and then has no key.
+				 */
+				if (!BarkPageIsLeaf(ropaque) &&
+					BarkEntryGetPivotNAtts(rfirst) == 0)
+					;
+				else if (BarkPageIsLeaf(ropaque) ?
 					bark_check_compare_leaf(rel, keyinfo, rfirst, false,
 											hikey) < 0 :
 					bark_compare_itups(keyinfo, rel, rfirst, hikey) < 0)
@@ -616,7 +625,11 @@ bark_check_downlinks(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo)
 													BarkPageFirstDataKey(copaque),
 													&fbuf);
 
-				if (BarkPageIsLeaf(copaque) ?
+				/* A minus-infinity first downlink has no key to compare. */
+				if (!BarkPageIsLeaf(copaque) &&
+					BarkEntryGetPivotNAtts(first) == 0)
+					;
+				else if (BarkPageIsLeaf(copaque) ?
 					bark_check_compare_leaf(rel, keyinfo, first, false,
 											downlink) < 0 :
 					bark_compare_itups(keyinfo, rel, first, downlink) < 0)
@@ -821,6 +834,16 @@ bark_check_levels(Relation rel, BarkKeyInfo *keyinfo, BlockNumber npages,
 							 errmsg("BARK index \"%s\" has a downlink on page %u at offset %u to page %u, where the level below continues at page %u",
 									RelationGetRelationName(rel), blkno, off,
 									child, expect)));
+				else if (off == BarkPageFirstDataKey(opaque) &&
+						 BarkEntryGetPivotNAtts(downlink) == 0)
+				{
+					/*
+					 * A page's first downlink, truncated to minus infinity by
+					 * the deletion of its left neighbour's subtree: the child
+					 * is reached through the left neighbour's high key, which
+					 * the page's high key or downlink checks bound.
+					 */
+				}
 				else if (prevhikey == NULL ||
 						 !bark_check_same_pivot(rel, keyinfo, downlink, prevhikey))
 					ereport(ERROR,
@@ -1062,8 +1085,8 @@ bark_check_leftmost_leaf(Relation rel)
 
 		/*
 		 * A page deleted since its parent's downlink was read cannot be on
-		 * the leftmost edge (VACUUM deletes only interior leaves), but move
-		 * right through one as every descent does.
+		 * the leftmost edge (VACUUM never deletes a level's leftmost page),
+		 * but move right through one as every descent does.
 		 */
 		if (BarkPageIgnore(opaque) && !BarkPageRightmost(opaque))
 		{

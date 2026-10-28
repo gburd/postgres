@@ -255,7 +255,7 @@ bark_knn_readpage(IndexScanDesc scan, BarkKnnCursor *cur, Page page,
 			if (item->ntids > 0)
 				item->ntids = bark_mk_seen(scan, resolved,
 										   cur->tids + cur->ntids,
-										   item->ntids, false);
+										   item->ntids, false, NULL);
 			if (item->ntids == 0)
 			{
 				if (fetched)
@@ -622,6 +622,7 @@ bark_knn_gettuple(IndexScanDesc scan)
 	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
 	BarkKnnScanState *knn = so->knn;
 	BarkKnnCursor *cur;
+	bool		ruled = bark_mk_ruled(scan);
 
 	if (so->firstCall)
 	{
@@ -629,25 +630,41 @@ bark_knn_gettuple(IndexScanDesc scan)
 		bark_knn_position(scan);
 	}
 
-	/* More members of the entry being returned?  Return the next one. */
-	cur = knn->emitCur;
-	if (cur != NULL)
+	/*
+	 * Rule D: settle the entry returned last by the table AM's verdict, and
+	 * pass over entries of rows it returned or entries it rejected (see
+	 * bark_gettuple).  A KNN scan's two cursors interleave groups, so its
+	 * sets never empty for a group.
+	 */
+	if (ruled)
+		bark_mk_settle(scan);
+	for (;;)
 	{
-		if (++knn->emitIdx < cur->items[cur->itemIndex].ntids)
+		/* More members of the entry being returned?  Try the next one. */
+		cur = knn->emitCur;
+		if (cur != NULL &&
+			++knn->emitIdx >= cur->items[cur->itemIndex].ntids)
 		{
-			bark_knn_emit(scan);
-			return true;
+			cur->itemIndex++;
+			knn->emitCur = NULL;
+			cur = NULL;
 		}
-		cur->itemIndex++;
-		knn->emitCur = NULL;
+		if (cur == NULL)
+		{
+			CHECK_FOR_INTERRUPTS();
+			cur = bark_knn_next(scan);
+			if (cur == NULL)
+				return false;	/* both sides exhausted */
+			knn->emitCur = cur;
+			knn->emitIdx = 0;
+		}
+		if (!ruled ||
+			bark_mk_admit(scan,
+						  &cur->tids[cur->items[cur->itemIndex].firstTid +
+									 knn->emitIdx],
+						  cur->items[cur->itemIndex].tag, false))
+			break;
 	}
-
-	CHECK_FOR_INTERRUPTS();
-	cur = bark_knn_next(scan);
-	if (cur == NULL)
-		return false;			/* both sides exhausted */
-	knn->emitCur = cur;
-	knn->emitIdx = 0;
 	bark_knn_emit(scan);
 	return true;
 }
