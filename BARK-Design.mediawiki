@@ -995,7 +995,10 @@ Implemented:
   preprocessing makes them), forward skip scan over one column, per-page
   satisfied keys, the rightmost-leaf fast path, VACUUM in one physical pass
   with cycle IDs and cleanup locks, parallel build, scan and VACUUM, page
-  deletion with safe recycling, bottom-up deletion, dead-entry hints from
+  deletion with safe recycling, including an empty leaf's chain of
+  one-child parents (nbtree's skinny subtrees) in one WAL record, with a
+  shared level-1 epoch that keeps the level-1 entry cache from naming a
+  recycled block; bottom-up deletion, dead-entry hints from
   scans and simple deletion before a split, the merge of a leaf's equal-key
   entries before a split, btcostestimate's cost model and an operator class
   for every btree class.
@@ -1030,6 +1033,18 @@ Not implemented:
   interface is not in this tree.
 * Term containment at scale ("Containment queries" under C-KEYSHAPE).
 * Reclaiming overflow pages orphaned by a crash; only REINDEX does.
+* Deleting the leftmost page of a level, and a chain whose top is its
+  parent's last child together with that parent's subtree, which nbtree
+  does.  The cost is bounded: after deleting the lowest 90% of 10M keys,
+  and in a 10M-row queue at any cycle, BARK keeps two empty leaves (the
+  leftmost level-1 page's) where nbtree keeps none, and <code>min()</code>
+  reads 5 buffers to nbtree's 3.
+* The level-1 epoch is one counter for the cluster: each deletion of a
+  level-1 page in any BARK index makes every backend refill its level-1
+  tables.  Measured in that queue, a VACUUM makes 9 or 10 such deletions,
+  which cost point lookups running at the time 0.03% more buffers.  A
+  small array of counters indexed by a hash of the relation would confine
+  the refills to the index, if a workload ever shows them.
 * Scalar operator classes in a BARK operator family, which no use case
   has needed.
 * Per-locator data (RUM's addInfo), closed as not needed: "Per-locator
