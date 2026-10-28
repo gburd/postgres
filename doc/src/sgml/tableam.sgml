@@ -490,6 +490,15 @@ my_tableam_handler(PG_FUNCTION_ARGS)
    </itemizedlist>
 
    <para>
+    An access method whose locator is versioned must provide the
+    <function>fetch_tid_version</function> callback, which a unique check
+    uses instead of <function>fetch_tid</function>: given an entry's
+    locator, tag and index, it reports whether a version of the row for
+    which that entry is valid is visible to the snapshot, and whether no
+    snapshot needs the entry any more.
+   </para>
+
+   <para>
     The <acronym>TID</acronym> bitmap of a bitmap scan holds locators without
     tags, so <function>scan_bitmap_next_tuple</function> must ask for a recheck
     of any row whose locator a bitmap may hold only through an entry that is

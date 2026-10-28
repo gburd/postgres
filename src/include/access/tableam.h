@@ -585,6 +585,17 @@ typedef struct TableAmRoutine
 							  bool *all_dead);
 
 	/*
+	 * Optional; see table_fetch_tid_version().  An AM whose locator is
+	 * versioned must provide it.
+	 */
+	bool		(*fetch_tid_version) (Relation rel,
+									  ItemPointer tid,
+									  IndexVersionTag tag,
+									  Relation index,
+									  Snapshot snapshot,
+									  bool *all_dead);
+
+	/*
 	 * Fetch tuple at `tid` into `slot`, after doing a visibility test
 	 * according to `snapshot`. If a tuple was found and passed the visibility
 	 * test, returns true, false otherwise.
@@ -1057,6 +1068,9 @@ RelationGetLocatorDesc(Relation rel)
 		rel->rd_locdesc = rel->rd_tableam->relation_locator ?
 			rel->rd_tableam->relation_locator(rel) : &default_locdesc;
 		Assert(OffsetNumberIsValid(rel->rd_locdesc->max_offset));
+		/* a versioned locator needs the callbacks that resolve tags */
+		Assert(!rel->rd_locdesc->versioned ||
+			   rel->rd_tableam->fetch_tid_version != NULL);
 	}
 	return rel->rd_locdesc;
 }
@@ -1518,6 +1532,48 @@ table_fetch_tid(Relation rel,
 		elog(ERROR, "unexpected table_fetch_tid call during logical decoding");
 
 	return rel->rd_tableam->fetch_tid(rel, tid, snapshot, all_dead);
+}
+
+/*
+ * As table_fetch_tid(), for an entry of `index` that names the row version
+ * (tid, tag): is a version for which that entry is valid visible to
+ * `snapshot`?  *all_dead is set true iff no backend needs that entry: no
+ * snapshot can see a version for which it is valid.  Index AMs use this for
+ * unique checks, passing the tag of the entry they found an equal key in.
+ *
+ * If the relation's locator is versioned (see amlocator.h), this asks the
+ * table AM's fetch_tid_version callback, which must exist; the entry's tag
+ * may be InvalidIndexVersionTag.  Otherwise there are no tags, `tag` must be
+ * InvalidIndexVersionTag, and this is table_fetch_tid().
+ *
+ * Only an index AM with amcanversion needs this.  Every other index's
+ * entries are resolved by locator alone, as table_fetch_tid() does, even on
+ * a table whose locator is versioned; see amlocator.h.
+ *
+ * (This and the tepid patch set's fetch_tid_check, which also fills a slot
+ * and reports whether the caller must recheck the key, answer the same
+ * question for different table AMs; they would merge into one callback
+ * taking the tag and the index, with the slot and recheck outputs optional.)
+ */
+static inline bool
+table_fetch_tid_version(Relation rel,
+						ItemPointer tid,
+						IndexVersionTag tag,
+						Relation index,
+						Snapshot snapshot,
+						bool *all_dead)
+{
+	if (!table_locator_is_versioned(rel))
+	{
+		Assert(tag == InvalidIndexVersionTag);
+		return table_fetch_tid(rel, tid, snapshot, all_dead);
+	}
+
+	if (unlikely(TransactionIdIsValid(CheckXidAlive) && !bsysscan))
+		elog(ERROR, "unexpected table_fetch_tid_version call during logical decoding");
+
+	return rel->rd_tableam->fetch_tid_version(rel, tid, tag, index,
+											  snapshot, all_dead);
 }
 
 /*
