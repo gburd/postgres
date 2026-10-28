@@ -1998,6 +1998,12 @@ compile_relation_list_one_db(PGconn *conn, SimplePtrList *relations,
 						  HEAP_TABLE_AM_OID, BTREE_AM_OID,
 						  HEAP_TABLE_AM_OID, BTREE_AM_OID);
 
+	/* As below, skip btree indexes implemented by another AM's code. */
+	if (!opts.allrel && PQserverVersion(conn) >= 200000)
+		appendPQExpBufferStr(&sql,
+							 " AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_index i"
+							 " WHERE i.indexrelid = c.oid AND i.indimplam <> 0)");
+
 	appendPQExpBufferStr(&sql,
 						 "\nORDER BY c.oid)");
 
@@ -2030,7 +2036,8 @@ compile_relation_list_one_db(PGconn *conn, SimplePtrList *relations,
 		/*
 		 * Include a CTE for btree indexes associated with primary heap tables
 		 * selected above, filtering by exclusion patterns (if any) that match
-		 * btree index names.
+		 * btree index names.  Skip btree indexes implemented by another
+		 * access method's code, which bt_index_check() cannot read.
 		 */
 		appendPQExpBufferStr(&sql,
 							 ", index (oid, nspname, relname, relpages) AS ("
@@ -2057,6 +2064,8 @@ compile_relation_list_one_db(PGconn *conn, SimplePtrList *relations,
 						  " AND c.relam = %u "
 						  "AND c.relkind = " CppAsString2(RELKIND_INDEX),
 						  BTREE_AM_OID);
+		if (PQserverVersion(conn) >= 200000)
+			appendPQExpBufferStr(&sql, " AND i.indimplam = 0");
 		if (opts.no_toast_expansion)
 			appendPQExpBuffer(&sql,
 							  " AND c.relnamespace != %u",
