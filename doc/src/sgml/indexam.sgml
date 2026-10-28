@@ -196,6 +196,9 @@ typedef struct IndexAmRoutine
 
     /* which indexes of an amcanversion AM store version tags */
     amindexcanversion_function amindexcanversion;    /* can be NULL */
+
+    /* may an update keep a row's locator, for this index */
+    amindexmaykeeplocator_function amindexmaykeeplocator;    /* can be NULL */
 } IndexAmRoutine;
 </programlisting>
   </para>
@@ -331,6 +334,23 @@ amindexcanversion (Relation indexRelation);
    In what follows, <quote>an access method that sets
    <structfield>amcanversion</structfield></quote> means an index for which
    <function>index_can_version()</function> is true.
+  </para>
+
+  <para>
+   An index that stores tags may still refuse to let an update keep a
+   row's locator, for example after a constraint is added that its checks
+   cannot serve under a versioned locator.  Its access method then provides
+<programlisting>
+bool
+amindexmaykeeplocator (Relation indexRelation);
+</programlisting>
+   which the executor asks, through
+   <function>index_may_keep_locator()</function>, before it lets a
+   versioned table keep a locator across an update that needs a new entry
+   in the index.  When it returns <literal>false</literal> the row moves,
+   and the index's entries stay tagged and are judged as before.  NULL
+   means the answer of <function>amindexcanversion</function>.  Unlike
+   that one, this answer may change during the life of the index.
   </para>
 
   <sect2 id="index-implementations">
