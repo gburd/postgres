@@ -380,7 +380,11 @@ extern double *PgCurrentLogXactSampleRateRef(void);
 #ifndef PgCurrentBacktraceFunctionsRef
 extern char **PgCurrentBacktraceFunctionsRef(void);
 #endif
+#ifndef PgCurrentLogStatementMaxLengthRef
+extern int *PgCurrentLogStatementMaxLengthRef(void);
+#endif
 #define log_duration (*PgCurrentLogDurationRef())
+#define log_statement_max_length (*PgCurrentLogStatementMaxLengthRef())
 #define log_parameter_max_length (*PgCurrentLogParameterMaxLengthRef())
 #define log_parameter_max_length_on_error (*PgCurrentLogParameterMaxLengthOnErrorRef())
 #define log_min_error_statement (*PgCurrentLogMinErrorStatementRef())
@@ -392,14 +396,6 @@ extern char **PgCurrentBacktraceFunctionsRef(void);
 #define log_statement_sample_rate (*PgCurrentLogStatementSampleRateRef())
 #define log_xact_sample_rate (*PgCurrentLogXactSampleRateRef())
 #define backtrace_functions (*PgCurrentBacktraceFunctionsRef())
-
-/*
- * ponytail: log_statement_max_length is a new upstream GUC (post-19beta1)
- * the threading fork has not yet migrated to a per-session accessor.  It
- * stays a plain process-global for now; Phase 16 / the GUC matrix owns
- * folding it into PgCurrentLog*Ref() session state.
- */
-extern PGDLLIMPORT int log_statement_max_length;
 
 #ifndef PgCurrentTempFileLimitRef
 extern int *PgCurrentTempFileLimitRef(void);

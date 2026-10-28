@@ -128,15 +128,6 @@
  */
 #define MAXIMUM_ROWCOUNT 1e100
 
-/*
- * enable_groupagg is a new upstream GUC (merged from heikki/master, commit
- * e01b23b84e4).  The other planner cost/enable_* GUCs are relocated to
- * per-session storage (backend_runtime_session.c); enable_groupagg is not yet
- * relocated, so it stays a plain global for now.
- * ponytail: relocate it with the rest in a Phase 16 GUC pass if concurrent
- * sessions need independent values.
- */
-bool		enable_groupagg = true;
 typedef struct
 {
 	PlannerInfo *root;

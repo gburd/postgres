@@ -76,6 +76,7 @@ tests += {
       't/018_dead_end_backend.pl',
       't/019_same_loop_latch.pl',
       't/020_parallel_attach.pl',
+      't/021_session_guc_owners.pl',
     ],
   },
 }
