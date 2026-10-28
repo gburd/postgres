@@ -632,12 +632,6 @@ PgCurrentExtraFloatDigitsRef(void)
 	return &PgCurrentSessionGeneralGUCState()->extra_float_digits_value;
 }
 
-bool *
-PgCurrentArrayNullsRef(void)
-{
-	return &PgCurrentSessionGeneralGUCState()->array_nulls_value;
-}
-
 int *
 PgCurrentByteaOutputRef(void)
 {

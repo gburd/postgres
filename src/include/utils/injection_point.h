@@ -61,7 +61,7 @@ extern bool InjectionPointDetach(const char *name);
 /* Get the current set of injection points attached */
 extern List *InjectionPointList(void);
 
-#ifdef EXEC_BACKEND
+#ifdef FORKEXEC_BACKEND
 extern PGDLLIMPORT PG_GLOBAL_SHMEM struct InjectionPointsCtl *ActiveInjectionPoints;
 #endif
 

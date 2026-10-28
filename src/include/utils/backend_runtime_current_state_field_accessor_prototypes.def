@@ -7,7 +7,6 @@ extern bool * PgCurrentAllowAlterSystemRef(void);
 extern bool * PgCurrentAllowInPlaceTablespacesRef(void);
 extern char ** PgCurrentApplicationNameRef(void);
 extern char ** PgCurrentArchModuleCheckErrdetailStringRef(void);
-extern bool * PgCurrentArrayNullsRef(void);
 extern HTAB ** PgCurrentAsyncLocalChannelTableRef(void);
 extern bool * PgCurrentAsyncRegisteredListenerRef(void);
 extern int * PgCurrentBackendFlushAfterRef(void);
