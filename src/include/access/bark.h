@@ -30,6 +30,7 @@
 #include "catalog/pg_am_d.h"
 #include "catalog/pg_class.h"
 #include "storage/block.h"
+#include "storage/bufmgr.h"
 #include "storage/bufpage.h"
 #include "storage/condition_variable.h"
 #include "storage/lwlock.h"
@@ -102,6 +103,7 @@ typedef BarkPageOpaqueData *BarkPageOpaque;
 #define BARK_INCOMPLETE_SPLIT (1 << 5)	/* right sibling's downlink is missing */
 #define BARK_HAS_GARBAGE	(1 << 6)	/* page has known-dead entries */
 #define BARK_OVERFLOW		(1 << 7)	/* holds a chunk of an oversized value */
+#define BARK_PREFIX			(1 << 10)	/* leaf keys coded against a prefix */
 
 #define BarkPageIsLeaf(opaque)		(((opaque)->bark_flags & BARK_LEAF) != 0)
 #define BarkPageIsRoot(opaque)		(((opaque)->bark_flags & BARK_ROOT) != 0)
@@ -164,6 +166,28 @@ BarkPageGetDeletedContents(Page page)
 		   MAXALIGN(sizeof(BarkDeletedPageData)));
 	return (BarkDeletedPageData *) ((char *) page +
 									((PageHeader) page)->pd_upper);
+}
+
+/*
+ * Initialize `page` as an empty BARK page with the given sibling links,
+ * level, flags and vacuum cycle ID.  Splits, new roots and their WAL redo all
+ * build pages here, so a replayed page gets the opaque the primary wrote.
+ */
+static inline void
+BarkPageInit(Page page, BlockNumber prev, BlockNumber next, uint32 level,
+			 uint16 flags, uint16 cycleid)
+{
+	BarkPageOpaque opaque;
+
+	PageInit(page, BLCKSZ, sizeof(BarkPageOpaqueData));
+	opaque = BarkPageGetOpaque(page);
+	opaque->bark_prev = prev;
+	opaque->bark_next = next;
+	Assert(level <= PG_UINT16_MAX); /* bark_level keeps 16 bits */
+	opaque->bark_level = level;
+	opaque->bark_cycleid = cycleid;
+	opaque->bark_flags = flags;
+	opaque->bark_page_id = BARK_PAGE_ID;
 }
 
 /*
@@ -239,8 +263,180 @@ BarkPageIsRecyclable(Page page, Relation heaprel)
 
 #define BARK_P_HIKEY		((OffsetNumber) 1)	/* high key, if present */
 #define BARK_P_FIRSTKEY		((OffsetNumber) 2)	/* first data item after it */
-#define BarkPageFirstDataKey(opaque) \
+
+/*
+ * Leaf key prefix compression (see barkprefix.c for the code).
+ *
+ * A leaf of an index whose prefix_compression reloption is on may be flagged
+ * BARK_PREFIX.  Its data items are organized in GROUPS of consecutive items;
+ * each group has an ANCHOR, a copy of the key part of the group's first item,
+ * and each member is stored "coded": without the data-area bytes it shares
+ * with the anchor.  Sharing is by stored bytes, never by the opclass notion of
+ * equality, so it is sound for any column type (an index-only scan gets back
+ * exactly the bytes that were stored) and needs no equalimage support.  Within
+ * a group every member shares the anchor's leading key columns whole, then
+ * diverges inside one column (the DIVERGENT column: a common value prefix, a
+ * differing full value, hence a differing varlena length header).  Only that
+ * column's length header is kept with the member; the fully-shared leading
+ * columns and their headers share from the anchor as ordinary bytes.  Walking
+ * to the divergent column needs the key-column layout, which the directory
+ * carries (see BarkPrefixDirHdr).
+ *
+ * Page layout.  At BarkPagePrefixOff(opaque) (right after the high key) is a
+ * single PREFIX DIRECTORY item that holds every group's anchor; the data items
+ * follow it, in key order, starting at BarkPageFirstDataKey.  One item before
+ * the data keeps BarkPageFirstDataKey a function of the page flag alone, so
+ * neither BarkPageOpaqueData nor the on-disk page header changes, and binary
+ * search over the data items is unaffected.  The directory item is an
+ * IndexTupleData header (invalid t_tid; t_info = its size) followed by the
+ * group count, the cached decoded size of the page's data items (see
+ * bark_prefix_split_needed), the key-column layout, the anchor offsets, and the
+ * anchors (BarkPrefixDirHdr, BarkPrefixAnchorDisk).
+ *
+ * Coded member.  An IndexTupleData header whose t_tid is the member's own heap
+ * locator (or alt-TID body offset), a small code header (group, the
+ * fully-shared leading byte count, the divergent column's shared value byte
+ * count, the original's t_info, key end and total size), the original's null
+ * bitmap, the residual (the original's key data-area bytes from the divergent
+ * column on, minus the shared value bytes) and, for a LIST or POSTING entry,
+ * its body (locator array or sbm blob) in the standard layout at the coded
+ * entry's own body offset.  Decoding splices the anchor's fully-shared leading
+ * columns, then the member's own divergent-column header, then the anchor's
+ * shared value bytes, then the member's remaining residual, then the body,
+ * reproducing the original entry byte for byte.  Coding and decoding use only
+ * the page and the tuple, never the catalog, so WAL redo repeats them.  NULL
+ * is handled column by column (the null bitmap travels with the member); an
+ * OVERSIZED entry keeps its key out of line and is never coded, as pivots are.
+ */
+#define BARK_PREFIX_MAXGROUPS	0xFFFE	/* group-id ceiling (uint16) */
+
+/*
+ * Most bytes a coded member can take beyond its plain tuple (see the static
+ * assertion in barkprefix.c).  Insert reserves this on a prefix page so the
+ * coded PageAddItem cannot fail after the fit check.
+ */
+#define BARK_PREFIX_CODE_OVERHEAD	MAXALIGN(24)
+
+/* by-value flag in a stored BarkPrefixAttr. */
+#define BARK_PREFIX_ATTR_BYVAL	0x01
+
+/*
+ * On-disk per-key-attribute layout, enough to parse a tuple's data area
+ * without the catalog.  The primary fills it from RelationGetDescr(index);
+ * decode reads it from the directory so decoding stays page-only.  The column
+ * walk uses every key column's attlen, attalignby, and by-value flag to find
+ * where two tuples diverge, so the whole key-column layout is stored.
+ */
+typedef struct BarkPrefixAttr
+{
+	int16		attlen;
+	uint8		attalignby;
+	uint8		flags;			/* BARK_PREFIX_ATTR_BYVAL */
+}			BarkPrefixAttr;
+
+/*
+ * On-disk directory item header.  decodedsz and maxdecoded cache the decoded
+ * (plain) size of the page's data items, each counted with its line pointer:
+ * their sum and the largest.  They make bark_prefix_split_needed O(1).  Every
+ * change to the data items keeps them exact, through page-only routines that
+ * WAL redo repeats (bark_prefix_recount).
+ *
+ * The variable tail is, in order: `natts' BarkPrefixAttr records (the
+ * key-column layout), the `ngroups' anchor offsets, and the packed anchors.
+ */
+typedef struct BarkPrefixDirHdr
+{
+	IndexTupleData header;		/* t_tid invalid; t_info = whole item size */
+	uint16		ngroups;
+	uint16		decodedsz;		/* sum of decoded item sizes + line pointers */
+	uint16		maxdecoded;		/* largest of those */
+	uint16		natts;			/* key-column count, layout records that follow */
+	BarkPrefixAttr attrs[FLEXIBLE_ARRAY_MEMBER];	/* [natts], then anchoroff[] */
+} BarkPrefixDirHdr;
+
+/* One packed anchor in the directory item. */
+typedef struct BarkPrefixAnchorDisk
+{
+	uint16		repsz;			/* size of the representative tuple blob */
+	/* IndexTupleData rep[repsz] follows, MAXALIGN'd */
+} BarkPrefixAnchorDisk;
+
+/*
+ * Code header of a coded member, right after its IndexTupleData header.
+ *
+ * lead_shared (= D) is the key data-area byte offset of the divergent column:
+ * the first key column whose value differs from the anchor's.  Every byte
+ * before it, the fully-shared leading columns and their length headers, is
+ * identical across the group and comes from the anchor.  shared_len (= sv) is
+ * the divergent column's shared value bytes, after its length header.  orig_*
+ * records the plain entry's t_info flags, key-part end, and total size, so
+ * decode rebuilds the exact plain entry (including an alt-TID body).
+ */
+typedef struct BarkPrefixCode
+{
+	uint16		group;			/* anchor index in the directory */
+	uint16		lead_shared;	/* data-area bytes of fully-shared leading cols */
+	uint16		shared_len;		/* divergent column's shared value bytes */
+	uint16		orig_info;		/* original t_info flags + key-part end (size) */
+	uint16		orig_total;		/* original tuple's whole size */
+} BarkPrefixCode;
+
+/*
+ * Running estimate of a BARK_PREFIX page's coded size while CREATE INDEX fills
+ * it (bark_prefix_est_add).  Mirrors nbtree's BTPrefixPageEst.
+ */
+typedef struct BarkPrefixPageEst
+{
+	IndexTuple	grouprep;		/* current group's representative */
+	IndexTuple	prev;			/* previous tuple seen */
+	int			natts;			/* key-column count */
+	int			ngroups;		/* groups so far */
+	Size		anchorsz;		/* total packed-anchor bytes */
+	Size		codedsz;		/* coded data items + line pointers */
+	Size		plainsz;		/* plain data items + line pointers */
+	Size		lastcoded;		/* last item's coded size + line pointer */
+	Size		maxcoded;		/* largest coded item (no line pointer) */
+	Size		maxplain;		/* largest plain item + line pointer */
+} BarkPrefixPageEst;
+
+#define BarkPageHasPrefix(opaque)	(((opaque)->bark_flags & BARK_PREFIX) != 0)
+#define BarkPagePrefixOff(opaque) \
 	(BarkPageRightmost(opaque) ? BARK_P_HIKEY : BARK_P_FIRSTKEY)
+#define BarkPageFirstDataKey(opaque) \
+	(BarkPagePrefixOff(opaque) + (BarkPageHasPrefix(opaque) ? 1 : 0))
+
+/*
+ * Workspace for BarkPageGetItem.  Every read of a data item (any item but
+ * the high key) goes through that function rather than PageGetItem, so that
+ * a page format whose items are stored encoded (leaf prefix compression) has
+ * one place to decode them.  The workspace holds a decoded copy; the
+ * returned tuple is valid until the workspace is reused or the page is
+ * unlocked.  High keys, and items a caller changes in place, are read with
+ * PageGetItem.
+ */
+typedef PGAlignedBlock BarkItemBuf;
+
+extern IndexTuple bark_prefix_decode(Page page, IndexTuple itup,
+									 BarkItemBuf *buf);
+
+/*
+ * Return the data item at `off` on `page` as a BARK entry: on a BARK_PREFIX
+ * page, the entry decoded into `buf`; otherwise the on-page tuple, and `buf`
+ * is not used.  Callers must not write through the result.
+ */
+static inline IndexTuple
+BarkPageGetItem(Page page, OffsetNumber off, BarkItemBuf *buf)
+{
+	IndexTuple	itup = (IndexTuple) PageGetItem(page, PageGetItemId(page, off));
+	BarkPageOpaque opaque = BarkPageGetOpaque(page);
+
+	if (unlikely(BarkPageHasPrefix(opaque)))
+	{
+		Assert(off > BarkPagePrefixOff(opaque));
+		return bark_prefix_decode(page, itup, buf);
+	}
+	return itup;
+}
 
 /*
  * The largest item BARK will place on a page.  Like nbtree's BTMaxItemSize,
@@ -264,12 +460,13 @@ BarkPageIsRecyclable(Page page, Relation heaprel)
  *
  * A leaf page holding a single key value is split leaving the left page
  * BARK_SINGLEVAL_FILLFACTOR full, whether or not it is rightmost, provided no
- * later page holds the same key.  BARK has no heap-TID tiebreaker, but an
- * equal key is always inserted at the end of its run (the insert descent uses
- * nextkey), so such a page only receives appends.  After the split they all
- * go to the right page, whose downlink equals the key: the insert descent
- * follows the last downlink that is <= its key.  The left page receives no
- * more inserts of the key, so space left free there would mostly stay free.
+ * later page holds the same key, as nbtree's single-value strategy does.
+ * Equal keys are in heap TID order, and new rows mostly take higher heap
+ * TIDs, so such a page mostly receives appends, which after the split go to
+ * the right page; space left free on the left would mostly stay free.  Its
+ * last LIST or POSTING entry is cut to reach that fill (bark_singleval_cut):
+ * a split point falls between entries, and with entries a third of a page
+ * wide the left page would otherwise be left nearly full.
  */
 #define BARK_MIN_FILLFACTOR		10
 #define BARK_DEFAULT_FILLFACTOR	90
@@ -284,7 +481,14 @@ typedef struct BarkOptions
 {
 	int32		vl_len_;		/* varlena header (do not touch directly!) */
 	int			fillfactor;		/* leaf page fill factor in percent (10..100) */
+	bool		prefix_compression; /* code leaf keys against a page prefix? */
 } BarkOptions;
+
+#define BarkGetPrefixCompression(relation) \
+	(AssertMacro(relation->rd_rel->relkind == RELKIND_INDEX && \
+				 relation->rd_rel->relam == BARK_AM_OID), \
+	 (relation)->rd_options ? \
+	 ((BarkOptions *) (relation)->rd_options)->prefix_compression : false)
 
 #define BarkGetFillFactor(relation) \
 	(AssertMacro(relation->rd_rel->relkind == RELKIND_INDEX && \
@@ -304,23 +508,101 @@ typedef struct BarkOptions
  */
 #define BARK_METAPAGE		0	/* block number of the meta page */
 #define BARK_MAGIC			0x5241424B	/* "BARK" as a big-endian uint32 */
-#define BARK_VERSION		1	/* current on-disk version */
+#define BARK_VERSION		2	/* current on-disk version */
+
+/*
+ * The oldest version this code reads.  Version 2 orders the entries of a run
+ * of equal keys by heap TID and gives pivots a heap TID; a version 1 index
+ * has neither, so it must be rebuilt with REINDEX (bark_get_root refuses it).
+ */
+#define BARK_MIN_VERSION	2
 
 /*
  * BARK uses the btree strategy numbers and support-function convention: its
- * operator classes live in the btree operator families (see
+ * scalar operator classes live in the btree operator families (see
  * ambtreeopfamilies), so it shares btree's numbering.  Strategies 1..5 are
  * <, <=, =, >=, >.  Support function 1 is the ordering comparator (btree's
  * BTORDER_PROC), the only one BARK requires; the remaining btree support
  * functions (2..6: sortsupport, in_range, equalimage, options, skipsupport)
  * are optional and may be present in the shared family without BARK using
- * them, so amsupport covers the whole btree range.
+ * them.
  */
 #define BARK_NSTRATEGIES	5	/* number of strategies (btree's set) */
 #define BARK_NPROCS			6	/* btree's support-function range (BTNProcs) */
 #define BARK_ORDER_PROC		1	/* support function 1: 3-way comparator */
+#define BARK_SORTSUPPORT_PROC 2 /* support function 2: sortsupport */
+#define BARK_INRANGE_PROC	3	/* support function 3: in_range */
 #define BARK_EQUALIMAGE_PROC 4	/* support function 4: equalimage
 								 * (BTEQUALIMAGE_PROC) */
+#define BARK_OPTIONS_PROC	5	/* support function 5: options */
+#define BARK_SKIPSUPPORT_PROC 6 /* support function 6: skipsupport */
+
+/*
+ * Multikey operator classes ("Multikey keys" in BARK-Design.mediawiki).
+ * A class in an operator family of BARK's own (opfmethod = bark, never a
+ * btree family) that has procedure 7 extracts several keys of its storage
+ * type from one column value; such a column is an extracted column.
+ * Procedures 1, 2, 4, 5 and 6 keep btree's meanings over the key type.
+ * Procedures 7-9 are DocumentDB's pg_extended_btree interface (its 101-103),
+ * 10-13 GIN's extractQuery, consistent, comparePartial and triConsistent
+ * (its 3-6), and 14 GiST's fetch.  amsupport covers all fourteen, and
+ * amstrategies is 0, so a BARK family's operators may carry any strategy
+ * number; the number only reaches procedures 8 and 9.
+ */
+#define BARK_EXTRACTVALUE_PROC			7
+#define BARK_EXTRACTQUERY_PROC			8
+#define BARK_INDEXRECHECK_PROC			9
+#define BARK_GIN_EXTRACTQUERY_PROC		10
+#define BARK_GIN_CONSISTENT_PROC		11
+#define BARK_GIN_COMPAREPARTIAL_PROC	12
+#define BARK_GIN_TRICONSISTENT_PROC		13
+#define BARK_FETCH_PROC					14
+#define BARK_MULTIKEY_NPROCS			14
+
+/*
+ * The types procedures 8 and 9 exchange with BARK.  They are laid out as
+ * pg_extended_btree's, so a class written for it ports by renumbering its
+ * procedures.
+ *
+ * Procedure 8 returns an array of boundaries.  Each is a lower and an upper
+ * search element; a NULL pointer means unbounded on that side, and a point
+ * has BTEqualStrategyNumber in both.  The argument is of the class's
+ * storage (key) type and the strategy is a btree strategy, 1-5.
+ */
+typedef struct BarkSearchElement
+{
+	Datum		argument;
+	StrategyNumber strategy;
+} BarkSearchElement;
+
+typedef struct BarkBoundary
+{
+	BarkSearchElement *lower;
+	BarkSearchElement *upper;
+} BarkBoundary;
+
+/*
+ * Procedure 8's optional seventh argument.  BARK zeroes it before the call;
+ * a class declared with six arguments never sees it.  backward asks an
+ * ordering operator's scan to walk its boundaries in descending key order.
+ * searchnulls asks the scan to read the NULL entries as well (a NULL value,
+ * an empty value or a NULL element), where the column's NULLS option puts
+ * them, and to return those rows with xs_recheck set, as GIN's
+ * INCLUDE_EMPTY search mode does.  Fields are only ever appended.
+ */
+typedef struct BarkQueryFlags
+{
+	bool		backward;
+	bool		searchnulls;
+} BarkQueryFlags;
+
+/* Procedure 9's answer for one entry, as an int2. */
+typedef enum BarkRecheckResult
+{
+	BARK_RECHECK_TRUE = 0,
+	BARK_RECHECK_MAYBE = 1,
+	BARK_RECHECK_FALSE = 2,
+} BarkRecheckResult;
 
 /*
  * Ordered-operator (KNN) scans.  Strategy 6 is BARK's distance ordering
@@ -392,7 +674,14 @@ typedef struct BarkMetaPageData
  * contract): BARK_IS_DELETE_MARKED records that the entry is logically
  * deleted but retained for UNDO rollback, matching nbtree's
  * BT_IS_DELETE_MARKED.  It is a property of an entry, orthogonal to its shape,
- * so it shares the status-bit region and must never be set on a PIVOT.
+ * so it shares the status-bit region and must never be set on a PIVOT: on a
+ * pivot the same bit is BARK_PIVOT_HEAP_TID, so the two meanings never meet.
+ *
+ * Within a run of equal keys, leaf entries are ordered by heap TID, as
+ * nbtree's are since version 4: each entry covers a range of heap TIDs (see
+ * bark_entry_tid_range), and the ranges of successive entries of one key are
+ * disjoint and ascending, across pages too.  A pivot separating two entries
+ * of the same key carries the first right entry's lowest TID.
  * ----------------------------------------------------------------------------
  */
 
@@ -412,6 +701,10 @@ typedef struct BarkMetaPageData
 #define BARK_PIVOT_META				0x1000	/* pivot carries extra metadata */
 #define BARK_IS_POSTING				0x2000	/* leaf entry is a posting set */
 #define BARK_IS_DELETE_MARKED		0x4000	/* leaf entry is delete-marked */
+#define BARK_PIVOT_HEAP_TID			0x4000	/* pivot carries a heap TID; the
+											 * same bit as
+											 * BARK_IS_DELETE_MARKED, which is
+											 * never set on a pivot */
 #define BARK_IS_LIST				0x8000	/* leaf entry is a sorted list */
 
 /*
@@ -496,12 +789,29 @@ BarkEntryIsLeafData(const IndexTupleData *itup)
  * ----------------------------------------------------------------------------
  */
 
-/* Number of key attributes recorded in a pivot tuple. */
+/* Number of key attributes recorded in a pivot tuple (not the heap TID). */
 static inline uint16
 BarkPivotGetNAtts(const IndexTupleData *itup)
 {
 	return (ItemPointerGetOffsetNumberNoCheck(&itup->t_tid) &
 			BARK_OFFSET_MASK);
+}
+
+/*
+ * The heap TID of a plain PIVOT, or NULL when it has none.  A pivot keeps one
+ * only when it separates two entries equal on every key attribute (so it has
+ * all of them); it is the last ItemPointerData of the MAXALIGNed tuple, after
+ * the key data, as in nbtree.  A pivot without one has its heap TID truncated
+ * away: minus infinity.
+ */
+static inline ItemPointer
+BarkPivotGetHeapTID(IndexTupleData *itup)
+{
+	if ((ItemPointerGetOffsetNumberNoCheck(&itup->t_tid) &
+		 BARK_PIVOT_HEAP_TID) == 0)
+		return NULL;
+	return (ItemPointer) ((char *) itup + IndexTupleSize(itup) -
+						  sizeof(ItemPointerData));
 }
 
 /* Stamp a pivot tuple's status bits and attribute count into t_tid. */
@@ -713,22 +1023,36 @@ typedef struct BarkOverflowRef
 	uint16		natts;			/* pivot key-attr count, or BARK_OVERFLOW_LEAF */
 
 	/*
+	 * A pivot's heap TID, as BarkPivotGetHeapTID's for a plain pivot; invalid
+	 * when the pivot has none (or for a leaf entry, whose TID is locator).
+	 */
+	ItemPointerData pivottid;
+
+	/*
 	 * Inline comparison prefix: the leading bytes of the first key column's
 	 * datum, used to order two OVERSIZED entries without fetching the
 	 * overflow chain when the prefixes already decide the order.  Only
 	 * populated (and only consulted) when the first key column compares
-	 * bytewise -- i.e. a C/POSIX collation or a non-collatable
-	 * binary-sortable type -- where a leading-byte difference determines the
-	 * full order.  For any other column (locale-aware text, etc.) prefixlen
-	 * is 0 and comparison always fetches the full tuple.  prefixcomplete is
-	 * true when the whole first column fit in the prefix, so an exhausted
-	 * prefix with equal bytes is a genuine tie on that column rather than a
-	 * truncation.
+	 * bytewise -- text under a C/POSIX collation -- where a leading-byte
+	 * difference determines the full order.  For any other column
+	 * (locale-aware text, bpchar, arrays, name, etc.) prefixlen is 0 and
+	 * comparison always fetches the full tuple.  prefixcomplete is true when
+	 * the whole first column fit in the prefix, so an exhausted prefix with
+	 * equal bytes is a genuine tie on that column rather than a truncation.
 	 */
 	uint16		prefixlen;		/* bytes of prefix stored (0 = no prefix) */
 	bool		prefixcomplete; /* the whole first column fit in the prefix */
 	uint8		prefix[BARK_OVERSIZED_PREFIX_LEN];
 } BarkOverflowRef;
+
+StaticAssertDecl(offsetof(BarkOverflowRef, locator) == 4 &&
+				 offsetof(BarkOverflowRef, natts) == 10 &&
+				 offsetof(BarkOverflowRef, pivottid) == 12 &&
+				 offsetof(BarkOverflowRef, prefixlen) == 18 &&
+				 offsetof(BarkOverflowRef, prefixcomplete) == 20 &&
+				 offsetof(BarkOverflowRef, prefix) == 21 &&
+				 sizeof(BarkOverflowRef) == 56,
+				 "BarkOverflowRef's on-disk layout changed");
 
 /* The first overflow block of an OVERSIZED entry's chain. */
 static inline BlockNumber
@@ -814,10 +1138,8 @@ typedef struct BarkKeyColumn
 	bool		reverse;		/* DESC: invert the comparison result */
 	bool		nulls_first;	/* NULLs sort before non-NULLs */
 	bool		bytewise;		/* first-column prefix compare is byte-exact
-								 * (C/POSIX collation or a non-collatable
-								 * binary-sortable type); enables the
-								 * OVERSIZED inline-prefix fast path for this
-								 * column */
+								 * (text under a C/POSIX collation); enables
+								 * the OVERSIZED inline-prefix fast path */
 } BarkKeyColumn;
 
 typedef struct BarkKeyInfo
@@ -831,8 +1153,18 @@ typedef struct BarkKeyInfo
 
 extern BarkKeyInfo *bark_build_keyinfo(Relation index);
 extern bool bark_allequalimage(Relation index);
+extern bool bark_column_is_extracted(Relation index, int attno);
+extern int	bark_index_extracted_column(Relation index);
+extern bool bark_opfamily_extracts(Oid opfamily, Oid opcintype);
+extern void bark_check_multikey_index(Relation index, IndexInfo *indexInfo);
 extern int	bark_compare_itups(BarkKeyInfo *keyinfo, Relation index,
 							   IndexTuple a, IndexTuple b);
+extern int	bark_compare_itups_tid(BarkKeyInfo *keyinfo, Relation index,
+								   IndexTuple key, ItemPointer scantid,
+								   IndexTuple itup);
+extern ItemPointer bark_pivot_heap_tid(IndexTuple pivot);
+extern void bark_entry_tid_range(IndexTuple itup, ItemPointer lo,
+								 ItemPointer hi);
 extern int	bark_keep_natts(Relation index, BarkKeyInfo *keyinfo,
 							IndexTuple lastleft, IndexTuple firstright);
 
@@ -872,6 +1204,48 @@ extern IndexTuple bark_form_list(TupleDesc tupdesc, IndexTuple key,
  */
 extern int	bark_entry_get_tids(IndexTuple itup, ItemPointer out, int maxout);
 
+/*
+ * Leaf key prefix compression (barkprefix.c; see BARK_PREFIX for the format).
+ *
+ * bark_prefix_encode returns `itup` coded for `page` (against the group of the
+ * item at the last data offset), palloc'd, or `itup` itself when the page has
+ * no prefix or the entry is not codable.  bark_coded_size is the MAXALIGNed
+ * size the entry takes on `page`.  bark_prefix_decode is the read-path hook
+ * BarkPageGetItem calls.  bark_prefix_form_page lays out a whole coded leaf;
+ * the est_* routines size a coded page as CREATE INDEX fills it;
+ * bark_prefix_split_needed keeps the split-fit invariant; bark_prefix_recount
+ * and bark_prefix_note_insert refresh the directory's cached decoded sizes;
+ * bark_prefix_check validates a whole coded page for amcheck and pageinspect.
+ */
+extern bool bark_prefix_enabled(Relation index);
+extern bool bark_prefix_codable(IndexTuple itup);
+extern IndexTuple bark_prefix_encode(Page page, IndexTuple itup);
+extern Size bark_coded_size(Page page, IndexTuple itup);
+extern IndexTuple bark_prefix_decode_mem(Page page, IndexTuple coded, int group,
+										 BarkItemBuf *buf);
+extern bool bark_prefix_form_page(Page newpage, IndexTuple hikey,
+								  IndexTuple *items, int n,
+								  const BarkPrefixAttr * attrs, int natts,
+								  bool force);
+extern void bark_prefix_recount(Page page);
+extern void bark_prefix_note_insert(Page page, IndexTuple coded);
+extern void bark_prefix_check(Page page);
+extern int	bark_prefix_build_layout(Relation index, BarkPrefixAttr * attrs);
+extern void bark_prefix_est_add(BarkPrefixPageEst *est,
+								const BarkPrefixAttr * attrs, int natts,
+								IndexTuple itup);
+extern Size bark_prefix_est_coded(const BarkPrefixPageEst *est);
+extern bool bark_prefix_est_representable(const BarkPrefixPageEst *est);
+extern bool bark_prefix_worthwhile(Size codedsz, Size plainsz);
+extern bool bark_prefix_split_needed(Page page, Size newitemsz);
+
+/* The left half of a page split, for bark_split and its redo (barkutils.c). */
+extern bool bark_split_build_left(Page page, Page origpage, IndexTuple hikey,
+								  OffsetNumber firstrightoff,
+								  IndexTuple newitem, OffsetNumber newitemoff,
+								  IndexTuple replaceitem,
+								  OffsetNumber replaceoff);
+
 /* Number of locators a leaf entry holds. */
 extern int	bark_entry_count_tids(IndexTuple itup);
 
@@ -910,6 +1284,12 @@ extern IndexTuple bark_posting_add_tid(IndexTuple key, IndexTuple posting,
  */
 extern IndexTuple bark_entry_add_tid(IndexTuple entry, ItemPointer tid,
 									 Size maxsz);
+extern bool bark_entry_has_tid(IndexTuple itup, ItemPointer tid);
+extern void bark_entry_swap_tid(IndexTuple entry, ItemPointer tid,
+								IndexTuple *left, IndexTuple *right);
+extern bool bark_entry_cut(IndexTuple entry, ItemPointer tid, Size leftmax,
+						   IndexTuple *left, IndexTuple *right);
+extern IndexTuple bark_form_entry(IndexTuple key, ItemPointer tids, int n);
 extern int	bark_posting_count(IndexTuple itup);
 extern int	bark_posting_get_tids(IndexTuple itup, ItemPointer out, int maxout);
 
@@ -953,22 +1333,18 @@ extern void bark_set_oversized_prefix(IndexTuple entry, Relation index,
 
 /*
  * Write `full` (fulllen bytes) across a chain of BARK_OVERFLOW pages via the
- * buffer pool (bark_get_free_page + generic WAL), returning the first block.
- * Used by the insert path; the build path uses bark_init_overflow_page
- * directly against its bulk-write buffers.  heaprel is passed on to
- * bark_get_free_page.
+ * buffer pool (bark_get_free_page, XLOG_BARK_OVERFLOW records), returning
+ * the first block.  heaprel is passed on to bark_get_free_page.
  */
 extern BlockNumber bark_write_overflow_chain(Relation index, Relation heaprel,
 											 IndexTuple full, Size fulllen);
 
 /*
- * Lay out the `which`'th overflow chunk of a tuple of `fulllen` bytes into
- * `page` (already palloc'd / bulk-reserved), copying its slice of `full` and
- * linking it to `nextblk`.  The build path calls this to format bulk-write
- * buffers; the insert path uses bark_write_overflow_chain.
+ * Lay out an overflow page holding `len` bytes of a tuple, `chunk`, linked to
+ * `nextblk`.  Used by bark_write_overflow_chain and its redo.
  */
-extern void bark_init_overflow_page(Page page, const char *full, Size fulllen,
-									BlockNumber which, BlockNumber nextblk);
+extern void bark_init_overflow_page(Page page, const char *chunk, Size len,
+									BlockNumber nextblk);
 
 /*
  * Reconstruct the full index tuple an OVERSIZED entry references by walking its
@@ -982,15 +1358,31 @@ extern IndexTuple bark_fetch_oversized(Relation index, IndexTuple entry);
 /*
  * Free the overflow chain an OVERSIZED entry references (its pages become
  * deleted pages, recycled once safe), as part of VACUUM removing the owning
- * leaf entry.  WAL-logged under its own generic-WAL records.  Returns the
- * number of pages freed.
+ * leaf entry.  Each page is freed in its own XLOG_BARK_MARK_DELETED record.
+ * Returns the number of pages freed.
  */
 extern BlockNumber bark_free_oversized(Relation index, IndexTuple entry);
+
+/*
+ * Bottom-up deletion, re-forming entries that lose members, and merging a
+ * leaf's equal-key entries before a split (barkdelete.c).
+ */
+extern Size bark_leaf_free_space(Page page);
+extern bool bark_bottomup_delete(Relation index, Relation heapRel,
+								 BarkKeyInfo *keyinfo, Buffer buf,
+								 IndexTuple newitem, Size newitemsz);
+extern IndexTuple bark_reform_entry(Relation index, Buffer buf,
+									OffsetNumber off, IndexTuple itup,
+									ItemPointer tids, int nlive);
+extern bool bark_merge_page(Relation index, BarkKeyInfo *keyinfo, Buffer buf,
+							OffsetNumber newitemoff, Size newitemsz);
 
 extern IndexBuildResult *bark_build(Relation heap, Relation index,
 									IndexInfo *indexInfo);
 extern void bark_buildempty(Relation index);
 extern bool barkvalidate(Oid opclassoid);
+extern void barkadjustmembers(Oid opfamilyoid, Oid opclassoid,
+							  List *operators, List *functions);
 
 /*
  * Parallel index-build worker entry point.  Reachable by name from
@@ -1020,7 +1412,10 @@ typedef BarkStackData *BarkStack;
 /*
  * Descend to the leaf that should contain `key`, returning that leaf's buffer
  * (write-locked when forwrite) and, when stack is non-NULL, the parent path.
- * key is an index tuple whose key columns are compared with bark_compare_itups.
+ * key is an index tuple whose key columns are compared with bark_compare_itups;
+ * with a heap TID `scantid`, (key, scantid) is compared with
+ * bark_compare_itups_tid, which places it within a run of equal keys, and
+ * nextkey must be true.
  *
  * nextkey chooses which leaf a run of equal keys lands on: true (insert / true
  * key) descends to the rightmost leaf that can hold the key; false (lower-bound
@@ -1029,8 +1424,8 @@ typedef BarkStackData *BarkStack;
  * spans several leaves.
  */
 extern Buffer bark_search(Relation index, BarkKeyInfo *keyinfo,
-						  IndexTuple key, bool forwrite, bool nextkey,
-						  BarkStack *stack);
+						  IndexTuple key, ItemPointer scantid, bool forwrite,
+						  bool nextkey, BarkStack *stack);
 
 /*
  * A scan's bound on the leading key columns, for descending to the leaf
@@ -1041,12 +1436,15 @@ extern Buffer bark_search(Relation index, BarkKeyInfo *keyinfo,
  * int8 column) compares correctly.  The bound has a value for the first
  * nkeys columns only; on the columns after them it is minus infinity, or
  * plus infinity when `upper` (so that every entry equal to it on the bounded
- * columns sorts before it).
+ * columns sorts before it).  `backward` says a backward scan descends to it,
+ * which only changes how it compares with a truncated pivot
+ * (bark_compare_bound).
  */
 typedef struct BarkScanBound
 {
 	int			nkeys;
 	bool		upper;
+	bool		backward;
 	Datum		args[INDEX_MAX_KEYS];
 	FmgrInfo   *procs[INDEX_MAX_KEYS];
 	Oid			collations[INDEX_MAX_KEYS];
@@ -1056,9 +1454,37 @@ typedef struct BarkScanBound
  * Descend to the leaf where a scan with this bound starts, share-locked;
  * InvalidBuffer for an empty index.  nextkey as for bark_search.
  */
+extern OffsetNumber bark_binsrch_bound(Relation index, BarkKeyInfo *keyinfo,
+									   const BarkScanBound * bound, Page page);
 extern Buffer bark_search_bound(Relation index, BarkKeyInfo *keyinfo,
 								const BarkScanBound * bound, bool nextkey);
+extern int	bark_compare_bound(Relation index, BarkKeyInfo *keyinfo,
+							   const BarkScanBound * bound, IndexTuple itup);
+
+/*
+ * What a backend caches about an index in its relcache entry's rd_amcache.
+ * A relcache rebuild (REINDEX, TRUNCATE, an invalidation) drops it.
+ *
+ * root and level are the root as last read from the meta page (root is
+ * BARK_P_NONE until then), so that a descent need not read the meta page,
+ * as nbtree caches its meta page.  They may be stale: bark_get_root_buffer
+ * checks the page it names before using it.
+ *
+ * extracted is the key column whose operator class extracts several keys
+ * from a value (bark_index_extracted_column), 0 for none, or -1 until first
+ * asked.  It comes from the catalog, which an index keeps for its life.
+ */
+typedef struct BarkAmCache
+{
+	BlockNumber root;
+	uint32		level;
+	int			extracted;
+} BarkAmCache;
+
+extern BarkAmCache *bark_get_amcache(Relation index);
 extern BlockNumber bark_get_root(Relation index, uint32 *level_out);
+extern uint32 bark_get_root_level(Relation index);
+extern Buffer bark_get_root_buffer(Relation index, BufferLockMode access);
 extern void bark_freestack(BarkStack stack);
 
 extern bool bark_insert(Relation index, Datum *values, bool *isnull,
@@ -1073,8 +1499,12 @@ extern IndexTuple bark_truncate_pivot(Relation index, BarkKeyInfo *keyinfo,
 
 /* Split-point choice for bark_split (barksplitloc.c). */
 extern int	bark_findsplitloc(Relation index, BarkKeyInfo *keyinfo,
-							  IndexTuple *items, int n, int newitemidx,
+							  IndexTuple *items, const Size *sizes,
+							  Size reserve, int n, int newitemidx,
 							  bool isleaf, IndexTuple orighikey);
+extern bool bark_singleval_cut(Relation index, BarkKeyInfo *keyinfo,
+							   Page page, OffsetNumber off, IndexTuple newitem,
+							   IndexTuple *left, IndexTuple *right);
 
 /*
  * Finish the interrupted split of `lbuf` (write-locked, flagged
@@ -1087,7 +1517,7 @@ extern void bark_finish_split(Relation index, BarkKeyInfo *keyinfo,
 /*
  * KNN (ordered-operator) scan state (barkknn.c).
  *
- * `ORDER BY col <-> const` over a scalar B-tree key is answered by descending
+ * `ORDER BY col <~> const` over a scalar B-tree key is answered by descending
  * to const and expanding OUTWARD in both directions: the nearest key values
  * to const are the ones immediately at/after it (walking the leaf chain
  * forward) merged with the ones immediately before it (walking backward).  At
@@ -1097,43 +1527,67 @@ extern void bark_finish_split(Relation index, BarkKeyInfo *keyinfo,
  * and stops as soon as the caller's LIMIT is satisfied -- it never scans the
  * whole index.
  *
- * Each side is an independent position cursor over the leaf chain: a pinned
- * leaf buffer and the offset of the entry it last produced.  The forward
- * cursor starts at the first entry whose key is >= const on the center leaf
- * and steps toward higher keys; the backward cursor starts just before it and
- * steps toward lower keys.  A matched entry may be a LIST/POSTING holding
- * several heap TIDs at one key (hence one distance): those are emitted one per
- * gettuple call, all before the merge advances.
+ * Each side is a cursor that reads the leaf chain a page at a time, as a
+ * plain scan's BarkScanPosData does: under one share lock it copies every
+ * matching entry on its current page, in its own direction, into items[]
+ * (with the entry's heap TIDs in tids[] and, for an index-only scan, its key
+ * in the tuples workspace), records the page's sibling link in its direction,
+ * and releases the lock.  The merge then takes candidates from these copies
+ * without touching the page again, so a concurrent insert or split on it
+ * cannot make the scan repeat or skip entries; the cursor moves on by the
+ * saved link once its copy is used up.  On the center leaf the forward cursor
+ * copies the entries from the first one whose key is >= const upward and the
+ * backward cursor the entries before it, downward, both under the lock the
+ * descent left on the page.
  *
- * This handles one ordering key (the first ORDER BY <-> clause); multi-key
+ * A matched entry may be a LIST/POSTING holding several heap TIDs at one key
+ * (hence one distance): those are emitted one per gettuple call, all before
+ * the merge advances.
+ *
+ * This handles one ordering key (the first ORDER BY <~> clause); multi-key
  * KNN would need a priority queue like GiST's, but a scalar B-tree has a
  * single distance axis, so one key is the whole useful case here.  KNN is
  * likewise never parallel -- that is intrinsic to a single-center outward
  * merge, not a deferred optimization; see the barkknn.c header for why a
  * two-sided split would buy nothing on an output-bounded scan.
  */
+typedef struct BarkKnnItem
+{
+	double		dist;			/* distance of the entry's key from const */
+	int			firstTid;		/* the entry's heap TIDs are tids[firstTid]... */
+	int			ntids;			/* ...and there are this many, ascending */
+	uint32		tupleOffset;	/* entry's key copy in tuples (IOS only) */
+} BarkKnnItem;
+
 typedef struct BarkKnnCursor
 {
-	Buffer		buf;			/* pinned leaf, or InvalidBuffer when
-								 * exhausted */
-	OffsetNumber off;			/* offset last examined on buf */
 	bool		backward;		/* true: this cursor walks toward lower keys */
-	bool		primed;			/* true once positioned on its first entry */
-	bool		centerleaf;		/* buf is still the shared center leaf (the
-								 * one step where backward must start one
-								 * entry before the forward cursor so the
-								 * sides don't overlap) */
-	OffsetNumber splitoff;		/* on the center leaf, the first offset whose
-								 * key is >= center: forward starts here,
-								 * backward one entry earlier (meaningful only
-								 * when centerleaf) */
-	bool		have;			/* a buffered candidate is ready in dist/key */
-	double		dist;			/* distance of the buffered candidate */
-	ItemPointer tids;			/* buffered candidate's heap locators */
+	Buffer		buf;			/* currPage, pinned; InvalidBuffer if unpinned */
+
+	/* page details as of the read that filled items[] */
+	BlockNumber currPage;		/* page read, or InvalidBlockNumber if none */
+	BlockNumber nextPage;		/* its sibling in our direction when read;
+								 * BARK_P_NONE when no page is left to read */
+
+	/*
+	 * Distance of the last entry examined on currPage, matching or not: the
+	 * entries on the pages not yet read are no closer to const than this.
+	 * Minus infinity before any entry has been examined.
+	 */
+	double		bound;
+
+	BarkKnnItem *items;			/* matching entries of currPage, nearest first */
+	int			nitems;			/* number of them */
+	int			itemIndex;		/* next one to merge (== nitems: used up) */
+	int			maxItems;		/* allocated size of items */
+
+	ItemPointer tids;			/* heap TIDs of all the items */
 	int			ntids;			/* number of them */
-	int			ntidsAlloc;		/* capacity of tids */
-	char	   *keytup;			/* buffered candidate's key tuple (IOS), or
-								 * NULL */
+	int			maxTids;		/* allocated size of tids */
+
+	char	   *tuples;			/* IOS: key copies of the items, or NULL */
+	uint32		tuplesSize;		/* allocated size of tuples */
+	uint32		nextTupleOffset;	/* first free byte in tuples */
 } BarkKnnCursor;
 
 typedef struct BarkKnnScanState
@@ -1146,12 +1600,14 @@ typedef struct BarkKnnScanState
 	BarkKnnCursor fwd;			/* forward (>= center) cursor */
 	BarkKnnCursor bwd;			/* backward (< center) cursor */
 
-	/* Members of the entry currently being emitted (one TID per gettuple). */
-	ItemPointer emitTids;		/* locators of the entry being emitted */
-	int			nEmit;			/* number of them */
-	int			emitIdx;		/* next one to return */
-	double		emitDist;		/* their shared distance */
-	char	   *emitKey;		/* their shared key tuple (IOS), or NULL */
+	/*
+	 * The cursor whose current item (items[itemIndex]) is being returned, one
+	 * heap TID per gettuple call, or NULL; emitIdx is the member returned
+	 * last.  The cursor moves past the item only once all its members are
+	 * returned, so it never reads its next page under an item in flight.
+	 */
+	BarkKnnCursor *emitCur;
+	int			emitIdx;
 } BarkKnnScanState;
 
 /*
@@ -1164,21 +1620,35 @@ typedef struct BarkKnnScanState
  * BY stays correct) exactly as a merged sequence of equality scans would.
  *
  * Every array key filters per tuple by membership (bark_array_contains, a
- * binary search over `elems`), which alone makes the scan correct.  The array
- * key on the leading index column additionally drives positioning: `cur` walks
- * the sorted elements, the scan seeks to each in turn, so it starts at the
- * first element rather than the leftmost leaf and skips the gaps between
- * elements instead of filtering every tuple in between.
+ * binary search over `elems`), which alone makes the scan correct.  The
+ * required keys also drive positioning (nbtree's required array keys): on
+ * index columns 1..m, each with an equality array or a scalar equality (an
+ * array of one element, built for the purpose), stopping at the first column
+ * with neither, each key's `cur` is one digit of an odometer.  The
+ * combinations of the digits' elements, in column order, are in index order,
+ * and the scan visits them in turn, descending to a combination when it
+ * starts beyond the page being read, so it skips the gaps between them
+ * instead of filtering every tuple in between.
+ *
+ * The elements may be of another type than the column (an int4 column with
+ * an int8[] array), so they are compared through two ORDER procs from the
+ * column's opfamily, as in nbtree's _bt_setup_array_cmp: sortproc compares
+ * two elements and only sorts and de-duplicates them; cmpproc compares a
+ * column value (first argument) with an element, for everything the scan
+ * does with them.  Both are the column's own comparator when the types
+ * agree.  Only equality arrays get this state: bark_rescan reduces an
+ * inequality array (col < ANY(array)) to a plain key on its extreme element,
+ * unless it has no non-NULL element, when it stays an array with no elements.
  */
 typedef struct BarkArrayKeyState
 {
 	int			scankeyidx;		/* index into scan->keyData of the SAOP key */
 	AttrNumber	attno;			/* 1-based index column the array constrains */
+	FmgrInfo	sortproc;		/* ORDER proc for (element, element) */
+	FmgrInfo	cmpproc;		/* ORDER proc for (column, element) */
 	Datum	   *elems;			/* sorted, de-duplicated array elements */
 	int			nelems;			/* number of them (0: empty array, no matches) */
-	int			cur;			/* leading-array cursor: element the scan is
-								 * on */
-	bool		elmbyval;		/* element type pass-by-value (for pfree care) */
+	int			cur;			/* required key: element the scan is on */
 } BarkArrayKeyState;
 
 /*
@@ -1224,15 +1694,13 @@ typedef struct BarkScanPosData
 	bool		moreRight;
 
 	/*
-	 * Leading-array (SAOP) cursor as of the end of a forward read, and
-	 * whether the next element lies beyond the immediate right sibling, so
-	 * the next forward step should re-descend to it rather than read
-	 * nextPage.  Kept in the position, not only in the array state, so that a
-	 * scroll cursor that reverses direction cannot leave the cursor ahead of
-	 * the position.  A backward read leaves arrayCur at 0 and arrayReseek
-	 * false (see barkscan.c).
+	 * The required keys' cursors (so->reqKeys[k]->cur) as of the end of the
+	 * read, and whether the next step in dir should re-descend to their
+	 * combination rather than read the sibling page.  Kept in the position,
+	 * not only in the array state, so that restoring a mark restores where
+	 * the scan goes next.  A skip scan also sets arrayReseek.
 	 */
-	int			arrayCur;
+	int			arrayCur[INDEX_MAX_KEYS];
 	bool		arrayReseek;
 
 	int			firstItem;		/* first valid index in items[] */
@@ -1290,9 +1758,21 @@ typedef struct BarkScanOpaqueData
 
 	BarkScanPosData currPos;	/* current position */
 
-	/* index-only scans: key tuples of the entries in currPos.items */
+	/*
+	 * Mark/restore (nbtree's markItemIndex/markPos).  A mark on the page in
+	 * currPos only records markItemIndex; bark_steppage copies currPos into
+	 * markPos when the scan is about to leave that page.  So a mark is in
+	 * markItemIndex when it is >= 0, else in markPos.  markPos has its own
+	 * items array and, for an index-only scan, its own tuple workspace.
+	 */
+	int			markItemIndex;	/* itemIndex, or -1 if not valid */
+	BarkScanPosData markPos;	/* marked position, if any */
+
+	/* index-only scans: key tuples of the entries in currPos/markPos.items */
 	char	   *currTuples;		/* palloc'd workspace, or NULL */
 	uint32		currTuplesSize; /* its allocated size */
+	char	   *markTuples;		/* palloc'd workspace, or NULL */
+	uint32		markTuplesSize; /* its allocated size */
 
 	/* scratch buffer for one entry's member TIDs while reading a page */
 	ItemPointer entryTids;
@@ -1301,17 +1781,43 @@ typedef struct BarkScanOpaqueData
 	/*
 	 * ScalarArrayOp (SAOP) state: one BarkArrayKeyState per SK_SEARCHARRAY
 	 * scankey, built by bark_rescan.  numArrayKeys == 0 for a plain scan.
-	 * leadArray points at the array key (if any) on the leading index column,
-	 * which drives positioning; it is NULL when no array constrains column 1.
+	 * reqKeys[k] is the required key on index column k + 1, for k <
+	 * numReqKeys (see BarkArrayKeyState); numReqKeys is 0 unless one of them
+	 * is an array.  All of it lives in arrayCxt, which each rescan resets.
 	 */
+	MemoryContext arrayCxt;		/* child of scanCxt, or NULL if never needed */
 	BarkArrayKeyState *arrayKeys;	/* palloc'd array, or NULL */
 	int			numArrayKeys;	/* number of SAOP keys */
-	BarkArrayKeyState *leadArray;	/* the array key on column 1, or NULL */
+	BarkArrayKeyState **reqKeys;	/* required keys, or NULL */
+	int			numReqKeys;		/* number of them */
 
 	/*
-	 * KNN (ordered-operator) scan state, allocated lazily on the first
-	 * ordered gettuple when the scan has ORDER BY <-> keys; NULL for a plain
-	 * scan, which takes exactly the same path as before.
+	 * Skip scan: no key on column 1, but a key that bounds column 2.  A
+	 * forward read whose page ends inside a column-1 group, on an entry past
+	 * column 2's bounds (or before them), re-descends to the next group (or
+	 * to the bounds within the same group) rather than reading every page in
+	 * between; bark_readpage builds that descent's bound in skipBound and
+	 * sets the position's arrayReseek.  skipValue is skipBound's copy of the
+	 * column-1 value, freed when replaced unless skipValueByVal.
+	 */
+	bool		skip;
+	bool		skipReseeking;	/* the next descent uses skipBound */
+	bool		skipValueByVal;
+	Datum		skipValue;
+	BarkScanBound skipBound;
+
+	/*
+	 * Column 1's skip support (BTSKIPSUPPORT_PROC), or NULL when its opclass
+	 * has none: for a discrete type it gives the next possible value, so the
+	 * scan can descend straight to (next value, column 2's lower bound).
+	 * skipSupportReady says whether it has been looked up yet.
+	 */
+	struct SkipSupportData *skipSupport;
+	bool		skipSupportReady;
+
+	/*
+	 * KNN (ordered-operator) scan state, allocated by the first rescan of a
+	 * scan with ORDER BY <~> keys; NULL for a plain scan.
 	 */
 	BarkKnnScanState *knn;
 } BarkScanOpaqueData;
@@ -1354,9 +1860,21 @@ extern void bark_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 						ScanKey orderbys, int norderbys);
 extern bool bark_gettuple(IndexScanDesc scan, ScanDirection dir);
 extern bool bark_canreturn(Relation index, int attno);
-extern bool bark_tuple_matches(IndexScanDesc scan, IndexTuple itup);
+extern bool bark_tuple_matches(IndexScanDesc scan, IndexTuple itup,
+							   uint64 skipkeys);
 extern int64 bark_getbitmap(IndexScanDesc scan, TIDBitmap *tbm);
 extern void bark_endscan(IndexScanDesc scan);
+extern void bark_markpos(IndexScanDesc scan);
+extern void bark_restrpos(IndexScanDesc scan);
+
+/* Leaf-read helpers shared by the plain and KNN scans (barkscan.c). */
+extern IndexTuple bark_scan_resolve(Relation index, IndexTuple itup,
+									bool *fetched);
+extern uint32 bark_save_tuple(BarkScanOpaque so, char **tuples,
+							  uint32 *tuplesSize, uint32 *nextoff,
+							  IndexTuple entry, IndexTuple resolved);
+extern Buffer bark_lock_and_validate_left(Relation index, BlockNumber *blkno,
+										  BlockNumber lastcurrblkno);
 
 /* KNN (ordered-operator) scan (barkknn.c). */
 extern void bark_knn_rescan(IndexScanDesc scan, ScanKey orderbys, int norderbys);

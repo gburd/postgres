@@ -462,6 +462,58 @@ free_percent   | 61.8005949100872
    <varlistentry>
     <term>
      <indexterm>
+      <primary>pgstatbarkindex</primary>
+     </indexterm>
+     <function>pgstatbarkindex(regclass) returns record</function>
+    </term>
+
+    <listitem>
+     <para>
+      <function>pgstatbarkindex</function> returns a record showing
+      information about a BARK index: the columns
+      <function>pgstatindex</function> returns for a B-tree index, computed
+      the same way, plus the number of overflow pages (which hold the keys
+      of <literal>OVERSIZED</literal> entries) and the number of leaf entries
+      of each shape.  A <literal>LIST</literal> or <literal>POSTING</literal>
+      entry holds the heap TIDs of many rows with one key, so the number of
+      entries is not the number of rows.  For example:
+<programlisting>
+test=&gt; SELECT * FROM pgstatbarkindex('bark_idx');
+-[ RECORD 1 ]------+-------
+version            | 2
+tree_level         | 1
+index_size         | 65536
+root_block_no      | 2
+internal_pages     | 1
+leaf_pages         | 6
+empty_pages        | 0
+deleted_pages      | 0
+overflow_pages     | 0
+avg_leaf_density   | 82.61
+leaf_fragmentation | 0
+single_entries     | 1980
+list_entries       | 1
+posting_entries    | 1
+oversized_entries  | 0
+</programlisting>
+     </para>
+
+    <para>
+     <structfield>index_size</structfield> counts every page of the index,
+     including the meta page.  <structfield>empty_pages</structfield> counts
+     half-dead pages and pages that were allocated but never initialized.
+     The density and fragmentation columns cover leaf pages only, as for
+     <function>pgstatindex</function>.  As with
+     <function>pgstatindex</function>, the results are accumulated
+     page-by-page, and should not be expected to represent an instantaneous
+     snapshot of the whole index.
+    </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>
+     <indexterm>
       <primary>pg_relpages</primary>
      </indexterm>
      <function>pg_relpages(regclass) returns bigint</function>

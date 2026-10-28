@@ -6,14 +6,17 @@
  * A BARK scan positions on a leaf and walks the right-link chain, returning
  * the heap TID of each entry that satisfies the scan keys.  When the keys
  * provide a lower bound on the leading index columns (an =, >, or >= qual, or
- * a `col = ANY(array)` SAOP whose current element bounds column 1), the scan
+ * the current element of a `col = ANY(array)` SAOP; see below), the scan
  * descends the tree to the first leaf that can contain a match: the descent
  * key uses every usable leading column (bark_make_bound), so a selective
  * second-column bound such as WHERE a = 5 AND b >= 100 lands near the match
  * rather than at the first a = 5 leaf.  Otherwise it starts at the leftmost
  * leaf.  A forward scan also stops early once the leading column passes an
- * upper bound (an =, <, or <= qual: bark_past_upper_bound), so a bounded scan
- * reads only the matching span, not the rest of the index.
+ * upper bound (an =, <, or <= qual: bark_past_bound), so a bounded scan
+ * reads only the matching span, not the rest of the index.  A row comparison
+ * such as (a, b) > (5, 10) positions and stops the scan the same way on its
+ * leading members (bark_row_prefix), so keyset pagination reads only the
+ * pages it returns.
  *
  * Modeled on nbtree's scan (nbtsearch.c _bt_first / _bt_next / _bt_readpage),
  * simplified for the SINGLE entry shape: every leaf entry is one heap TID in
@@ -23,14 +26,17 @@
  * into a single scan: bark_rescan sorts and de-duplicates each array into the
  * index's key order (see BarkArrayKeyState in bark.h) and the scan visits the
  * matching keys in index order -- a merged sequence of equality scans.  Every
- * array key filters per tuple by membership; an array on the leading column
- * also drives positioning, so the scan seeks to each element in turn rather
- * than reading the whole index.
+ * array key filters per tuple by membership.  The equality keys of the
+ * leading columns, when one of them is an array, also drive positioning
+ * (nbtree's required array keys): the scan visits the combinations of their
+ * elements in index order, in either direction, and re-descends to the next
+ * one when it starts beyond the page, rather than reading the whole index.
+ * An inequality array (`col < ANY(array)`) is reduced to a plain key on its
+ * extreme element instead.
  *
- * A backward scan starts at the rightmost leaf rather than descending to an
- * upper bound, and does not terminate early at a lower bound; sharper backward
- * positioning would be an optimization (symmetric to the forward case), with
- * no effect on correctness.
+ * A backward scan is the mirror image: it descends to the last leaf that can
+ * hold a match under an upper bound, and stops once the leading column passes
+ * a lower bound.
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
@@ -56,13 +62,15 @@
 #include "utils/array.h"
 #include "utils/datum.h"
 #include "utils/lsyscache.h"
+#include "utils/memutils.h"
 #include "utils/rel.h"
+#include "utils/skipsupport.h"
 #include "utils/snapmgr.h"
 #include "utils/wait_event.h"
 
-static int	bark_lead_cmp(IndexScanDesc scan, IndexTuple itup, Datum elem);
-static bool bark_array_reseek(IndexScanDesc scan, ScanDirection dir);
 static int	bark_key_cmp(IndexScanDesc scan, int i, IndexTuple itup);
+static bool bark_key_bounds(IndexScanDesc scan, ScanKey sk, bool *lower,
+							bool *upper);
 
 /*
  * Resolve a leaf entry to a tuple whose key and INCLUDE attributes can be read
@@ -71,7 +79,7 @@ static int	bark_key_cmp(IndexScanDesc scan, int i, IndexTuple itup);
  * when *fetched is set.  Every other shape carries its attributes inline, so
  * the entry is returned unchanged.
  */
-static IndexTuple
+IndexTuple
 bark_scan_resolve(Relation index, IndexTuple itup, bool *fetched)
 {
 	if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED)
@@ -90,17 +98,19 @@ bark_scan_resolve(Relation index, IndexTuple itup, bool *fetched)
  * A SAOP scankey (SK_SEARCHARRAY) carries an array Datum in sk_argument.  We
  * sort its elements into the index's key order for that column and remove
  * duplicates once, at rescan time, into a BarkArrayKeyState.  The scan then
- * (a) filters every tuple by array membership and (b) for an array on the
- * leading column, seeks to each element in turn so it visits the matching
- * keys in index order without reading the whole index -- a merged sequence of
- * equality scans.
+ * (a) filters every tuple by array membership and (b) when the equality keys
+ * of the leading columns include an array, walks the combinations of those
+ * keys' elements in index order, so it visits the matching keys without
+ * reading the whole index -- a merged sequence of equality scans.  An
+ * inequality array (col < ANY(array)) is not a set of values but a single
+ * bound, so it is reduced to a plain key instead.
  * ---------------------------------------------------------------------------
  */
 
-/* Per-column comparator state for sorting/searching array elements. */
+/* Comparator state for sorting/searching array elements. */
 typedef struct BarkArraySortCtx
 {
-	FmgrInfo   *cmp;			/* support-1 three-way comparator */
+	FmgrInfo   *cmp;			/* ORDER proc (sortproc or cmpproc) */
 	Oid			collation;		/* collation to pass it */
 	bool		reverse;		/* DESC column: invert the result */
 } BarkArraySortCtx;
@@ -120,7 +130,10 @@ bark_array_cmp(const void *a, const void *b, void *arg)
 	return c;
 }
 
-/* Is `datum` one of the array key's elements?  Binary search over the sort. */
+/*
+ * Is column value `datum` one of the array key's elements?  Binary search
+ * over the sorted elements, comparing through cmpproc.
+ */
 static bool
 bark_array_contains(BarkScanOpaque so, BarkArrayKeyState *ak, Datum datum)
 {
@@ -129,7 +142,7 @@ bark_array_contains(BarkScanOpaque so, BarkArrayKeyState *ak, Datum datum)
 	int			lo = 0;
 	int			hi = ak->nelems - 1;
 
-	ctx.cmp = &col->cmp;
+	ctx.cmp = &ak->cmpproc;
 	ctx.collation = col->collation;
 	ctx.reverse = col->reverse;
 
@@ -149,23 +162,68 @@ bark_array_contains(BarkScanOpaque so, BarkArrayKeyState *ak, Datum datum)
 }
 
 /*
- * Preprocess every SK_SEARCHARRAY scankey into a BarkArrayKeyState: deconstruct
- * its array, sort the elements into the index's key order for the column, drop
- * duplicates, and record the array key that constrains the leading column.  A
- * NULL array element is dropped (a NULL never satisfies an equality qual).  An
- * empty array leaves nelems == 0, which makes the scan return nothing.
+ * Set *finfo, in the array context, to the ORDER proc of index column attno's
+ * opfamily that compares lefttype with righttype.  The planner only builds a
+ * SAOP index qual from an operator of the column's opfamily, and a btree
+ * opfamily has an ORDER proc for each pair of types it has operators for, so
+ * a missing one means a broken opfamily.
+ */
+static void
+bark_array_proc(IndexScanDesc scan, AttrNumber attno, Oid lefttype,
+				Oid righttype, FmgrInfo *finfo)
+{
+	Relation	index = scan->indexRelation;
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	Oid			opcintype = index->rd_opcintype[attno - 1];
+	Oid			proc;
+
+	if (lefttype == opcintype && righttype == opcintype)
+	{
+		fmgr_info_copy(finfo, &so->keyinfo->cols[attno - 1].cmp, so->arrayCxt);
+		return;
+	}
+	proc = get_opfamily_proc(index->rd_opfamily[attno - 1], lefttype,
+							 righttype, BARK_ORDER_PROC);
+	if (!OidIsValid(proc))
+		elog(ERROR, "missing support function %d(%u,%u) for attribute %d of index \"%s\"",
+			 BARK_ORDER_PROC, lefttype, righttype, attno,
+			 RelationGetRelationName(index));
+	fmgr_info_cxt(proc, finfo, so->arrayCxt);
+}
+
+/*
+ * Preprocess every SK_SEARCHARRAY scankey, as nbtree's
+ * _bt_preprocess_array_keys does.  NULL array elements are dropped: btree
+ * operators are strict, so a NULL element never matches.
  *
- * Called from bark_rescan; freed by bark_free_array_keys (endscan/rescan).
+ * An equality array becomes a BarkArrayKeyState: its elements sorted into
+ * the index's key order for the column, without duplicates.  An array with no
+ * non-NULL element leaves nelems == 0, which makes the scan return nothing.
+ *
+ * An inequality array is satisfied exactly when the column satisfies the
+ * operator against the array's extreme element in value order (whatever the
+ * column's DESC option): the greatest for < and <=, the least for > and >=.
+ * The key is rewritten in place into that plain key, keeping its strategy
+ * and subtype, so bark_setup_key_procs gives it an ORDER proc and it bounds
+ * the scan like any other key.  Its argument is a copy of the element in the
+ * array context, which lives until bark_rescan next overwrites scan->keyData
+ * with the executor's keys.  An inequality array with no non-NULL element
+ * stays an array key with no elements.
+ *
+ * Elements are of the operator's right-hand type, sk_subtype, which can
+ * differ from the column's type; see BarkArrayKeyState.  Everything built
+ * here lives in so->arrayCxt, reset by bark_free_array_keys.
  */
 static void
 bark_setup_array_keys(IndexScanDesc scan)
 {
+	Relation	index = scan->indexRelation;
 	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
 	int			narrays = 0;
+	MemoryContext oldcxt;
 
 	so->arrayKeys = NULL;
 	so->numArrayKeys = 0;
-	so->leadArray = NULL;
 
 	for (int i = 0; i < scan->numberOfKeys; i++)
 		if (scan->keyData[i].sk_flags & SK_SEARCHARRAY)
@@ -173,92 +231,369 @@ bark_setup_array_keys(IndexScanDesc scan)
 	if (narrays == 0)
 		return;
 
-	so->arrayKeys = (BarkArrayKeyState *)
-		palloc0(narrays * sizeof(BarkArrayKeyState));
+	if (so->arrayCxt == NULL)
+		so->arrayCxt = AllocSetContextCreate(so->scanCxt, "BARK array keys",
+											 ALLOCSET_SMALL_SIZES);
+	oldcxt = MemoryContextSwitchTo(so->arrayCxt);
+	so->arrayKeys = palloc0_array(BarkArrayKeyState, narrays);
 
 	for (int i = 0; i < scan->numberOfKeys; i++)
 	{
 		ScanKey		sk = &scan->keyData[i];
 		BarkArrayKeyState *ak;
-		ArrayType  *arr;
-		int16		elmlen;
-		bool		elmbyval;
+		Oid			opcintype;
+		Oid			elemtype;
+		int16		elmlen = 0;
+		bool		elmbyval = true;
 		char		elmalign;
-		Datum	   *rawelems;
-		bool	   *rawnulls;
-		int			nrawelems;
-		int			nelems;
-		BarkKeyColumn *col;
+		Datum	   *elems = NULL;
+		bool	   *nulls;
+		int			nelems = 0;
 		BarkArraySortCtx ctx;
 
 		if (!(sk->sk_flags & SK_SEARCHARRAY))
 			continue;
 
+		opcintype = index->rd_opcintype[sk->sk_attno - 1];
+		elemtype = OidIsValid(sk->sk_subtype) ? sk->sk_subtype : opcintype;
+
+		/* A NULL array argument matches nothing: leave nelems == 0. */
+		if (!(sk->sk_flags & SK_ISNULL))
+		{
+			ArrayType  *arr = DatumGetArrayTypeP(sk->sk_argument);
+			int			nraw;
+
+			get_typlenbyvalalign(ARR_ELEMTYPE(arr), &elmlen, &elmbyval,
+								 &elmalign);
+			deconstruct_array(arr, ARR_ELEMTYPE(arr), elmlen, elmbyval,
+							  elmalign, &elems, &nulls, &nraw);
+			for (int e = 0; e < nraw; e++)
+				if (!nulls[e])
+					elems[nelems++] = elems[e];
+		}
+
+		ctx.collation = so->keyinfo->cols[sk->sk_attno - 1].collation;
+
+		if (sk->sk_strategy != BTEqualStrategyNumber && nelems > 0)
+		{
+			FmgrInfo	sortproc;
+			bool		greatest = (sk->sk_strategy == BTLessStrategyNumber ||
+									sk->sk_strategy == BTLessEqualStrategyNumber);
+			Datum		extreme = elems[0];
+
+			bark_array_proc(scan, sk->sk_attno, elemtype, elemtype, &sortproc);
+			for (int e = 1; e < nelems; e++)
+			{
+				int32		c = DatumGetInt32(FunctionCall2Coll(&sortproc,
+																ctx.collation,
+																elems[e],
+																extreme));
+
+				if (greatest ? c > 0 : c < 0)
+					extreme = elems[e];
+			}
+			sk->sk_argument = datumCopy(extreme, elmbyval, elmlen);
+			sk->sk_flags &= ~SK_SEARCHARRAY;
+			continue;
+		}
+
 		ak = &so->arrayKeys[so->numArrayKeys++];
 		ak->scankeyidx = i;
 		ak->attno = sk->sk_attno;
 		ak->cur = 0;
-
-		/* A NULL array argument matches nothing: leave nelems == 0. */
-		if (sk->sk_flags & SK_ISNULL)
-		{
-			ak->elems = NULL;
-			ak->nelems = 0;
-			ak->elmbyval = true;
-			if (ak->attno == 1)
-				so->leadArray = ak;
+		ak->elems = elems;
+		ak->nelems = nelems;
+		if (nelems == 0)
 			continue;
-		}
 
-		arr = DatumGetArrayTypeP(sk->sk_argument);
-		get_typlenbyvalalign(ARR_ELEMTYPE(arr), &elmlen, &elmbyval, &elmalign);
-		ak->elmbyval = elmbyval;
-		deconstruct_array(arr, ARR_ELEMTYPE(arr), elmlen, elmbyval, elmalign,
-						  &rawelems, &rawnulls, &nrawelems);
-
-		/* Drop NULL elements (a NULL never satisfies an equality qual). */
-		nelems = 0;
-		for (int e = 0; e < nrawelems; e++)
-		{
-			if (rawnulls[e])
-				continue;
-			rawelems[nelems++] = rawelems[e];
-		}
-
-		col = &so->keyinfo->cols[ak->attno - 1];
-		ctx.cmp = &col->cmp;
-		ctx.collation = col->collation;
-		ctx.reverse = col->reverse;
-
+		/*
+		 * Sort with the element type's comparator, then walk the index with
+		 * the cross-type one: the two agree, by the btree opfamily contract.
+		 */
+		bark_array_proc(scan, ak->attno, opcintype, elemtype, &ak->cmpproc);
+		bark_array_proc(scan, ak->attno, elemtype, elemtype, &ak->sortproc);
+		ctx.cmp = &ak->sortproc;
+		ctx.reverse = so->keyinfo->cols[ak->attno - 1].reverse;
 		if (nelems > 1)
 		{
-			qsort_arg(rawelems, nelems, sizeof(Datum), bark_array_cmp, &ctx);
-			nelems = qunique_arg(rawelems, nelems, sizeof(Datum),
-								 bark_array_cmp, &ctx);
+			qsort_arg(elems, nelems, sizeof(Datum), bark_array_cmp, &ctx);
+			ak->nelems = qunique_arg(elems, nelems, sizeof(Datum),
+									 bark_array_cmp, &ctx);
 		}
-
-		ak->elems = rawelems;	/* deconstruct_array palloc'd this */
-		ak->nelems = nelems;
-		pfree(rawnulls);
-
-		if (ak->attno == 1)
-			so->leadArray = ak;
 	}
+	MemoryContextSwitchTo(oldcxt);
 }
 
-/* Release SAOP state (endscan, and before rebuilding it on rescan). */
+/* Release SAOP state before rebuilding it on rescan. */
 static void
 bark_free_array_keys(BarkScanOpaque so)
 {
-	if (so->arrayKeys == NULL)
-		return;
-	for (int i = 0; i < so->numArrayKeys; i++)
-		if (so->arrayKeys[i].elems)
-			pfree(so->arrayKeys[i].elems);
-	pfree(so->arrayKeys);
+	if (so->arrayCxt != NULL)
+		MemoryContextReset(so->arrayCxt);
 	so->arrayKeys = NULL;
 	so->numArrayKeys = 0;
-	so->leadArray = NULL;
+	so->reqKeys = NULL;
+	so->numReqKeys = 0;
+}
+
+/*
+ * Choose the scan's required keys (see BarkArrayKeyState), as nbtree marks
+ * the keys of the leading columns with equalities required: on index columns
+ * 1..m in order, one equality per column, stopping at the first column that
+ * has none.  An equality array with elements or a scalar equality that has an
+ * ORDER proc qualifies; when a column has several, the one with the fewest
+ * elements is used, and the others only filter.  A scalar equality becomes an
+ * array of one element, so that one cursor walks every column.  Unless one of
+ * the keys is an array, the scan has no required keys: bark_make_bound and
+ * bark_past_bound handle an equality prefix of scalars on their own.  A KNN
+ * scan reads in distance order and has none either.
+ *
+ * Runs after bark_setup_key_procs, whose ORDER procs the scalar keys use.
+ */
+static void
+bark_setup_req_keys(IndexScanDesc scan)
+{
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	int			chosen[INDEX_MAX_KEYS];
+	int			nreq = 0;
+	bool		anyarray = false;
+	MemoryContext oldcxt;
+
+	so->reqKeys = NULL;
+	so->numReqKeys = 0;
+	if (so->numArrayKeys == 0 || scan->numberOfOrderBys > 0)
+		return;
+
+	/* chosen[k]: the scan key used on column k + 1 */
+	for (int col = 1; col <= so->keyinfo->nkeys; col++)
+	{
+		int			nextarray = 0;
+		int			best = -1;
+		int			bestelems = 0;
+
+		for (int i = 0; i < scan->numberOfKeys; i++)
+		{
+			ScanKey		sk = &scan->keyData[i];
+			int			nelems;
+			bool		lower;
+			bool		upper;
+
+			if (sk->sk_flags & SK_SEARCHARRAY)
+			{
+				BarkArrayKeyState *ak = &so->arrayKeys[nextarray++];
+
+				if (sk->sk_attno != col || ak->nelems == 0)
+					continue;
+				nelems = ak->nelems;
+			}
+			else if (sk->sk_attno == col &&
+					 sk->sk_strategy == BTEqualStrategyNumber &&
+					 bark_key_bounds(scan, sk, &lower, &upper))
+				nelems = 1;
+			else
+				continue;
+			if (best < 0 || nelems < bestelems)
+			{
+				best = i;
+				bestelems = nelems;
+			}
+		}
+		if (best < 0)
+			break;
+		chosen[nreq++] = best;
+		if (scan->keyData[best].sk_flags & SK_SEARCHARRAY)
+			anyarray = true;
+	}
+	if (!anyarray)
+		return;
+
+	oldcxt = MemoryContextSwitchTo(so->arrayCxt);
+	so->reqKeys = palloc_array(BarkArrayKeyState *, nreq);
+	for (int k = 0; k < nreq; k++)
+	{
+		ScanKey		sk = &scan->keyData[chosen[k]];
+		BarkArrayKeyState *req = NULL;
+
+		if (sk->sk_flags & SK_SEARCHARRAY)
+		{
+			for (int a = 0; a < so->numArrayKeys; a++)
+				if (so->arrayKeys[a].scankeyidx == chosen[k])
+					req = &so->arrayKeys[a];
+		}
+		else
+		{
+			req = palloc0_object(BarkArrayKeyState);
+			req->scankeyidx = chosen[k];
+			req->attno = sk->sk_attno;
+			fmgr_info_copy(&req->cmpproc, &so->keyCmp[chosen[k]],
+						   so->arrayCxt);
+			req->elems = palloc_object(Datum);
+			req->elems[0] = sk->sk_argument;
+			req->nelems = 1;
+		}
+		Assert(req != NULL && req->attno == k + 1);
+		so->reqKeys[k] = req;
+	}
+	so->numReqKeys = nreq;
+	MemoryContextSwitchTo(oldcxt);
+}
+
+/*
+ * Put the required keys' cursors on the first combination in direction dir:
+ * every cursor on its first element forward, on its last backward.
+ */
+static void
+bark_req_reset(BarkScanOpaque so, int from, ScanDirection dir)
+{
+	for (int k = from; k < so->numReqKeys; k++)
+		so->reqKeys[k]->cur = ScanDirectionIsForward(dir) ? 0 :
+			so->reqKeys[k]->nelems - 1;
+}
+
+/*
+ * Compare a column value with element e of required key k (on column k + 1)
+ * in index order: <0, 0 or >0 as the value sorts before, with or after it.
+ * A NULL value sorts per the column's NULLS option.
+ */
+static int
+bark_req_cmp(BarkScanOpaque so, int k, Datum datum, bool isnull, int e)
+{
+	BarkArrayKeyState *req = so->reqKeys[k];
+	BarkKeyColumn *col = &so->keyinfo->cols[k];
+	int32		c;
+
+	if (isnull)
+		return col->nulls_first ? -1 : 1;
+	c = DatumGetInt32(FunctionCall2Coll(&req->cmpproc, col->collation,
+										datum, req->elems[e]));
+	if (col->reverse)
+		INVERT_COMPARE_RESULT(c);
+	return c;
+}
+
+/*
+ * Move required key k's cursor one element on in direction dir, carrying
+ * into the keys before it as an odometer does (a key that wraps goes back to
+ * its first element in dir and moves the one before it).  Returns false when
+ * the carry runs off column 1: no combination is left in dir.
+ */
+static bool
+bark_req_step(BarkScanOpaque so, int k, ScanDirection dir)
+{
+	for (; k >= 0; k--)
+	{
+		BarkArrayKeyState *req = so->reqKeys[k];
+
+		if (ScanDirectionIsForward(dir) ? ++req->cur < req->nelems :
+			--req->cur >= 0)
+			return true;
+		bark_req_reset(so, k, dir);
+	}
+	return false;
+}
+
+/*
+ * Move the required keys' cursors to the first combination at or after entry
+ * itup in direction dir, on columns 1..m: for each column in order, the
+ * first element in dir at or after the entry's value.  An equal element
+ * goes on to the next column; one after it ends the search, with the later
+ * keys on their first element; none carries into the column before.
+ * Returns -1 when no combination is left (the carry ran off column 1), 0 when
+ * the new combination equals the entry on columns 1..m, and 1 when it sorts
+ * after it in dir.
+ */
+static int
+bark_req_seek(IndexScanDesc scan, IndexTuple itup, ScanDirection dir)
+{
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	TupleDesc	tupdesc = RelationGetDescr(scan->indexRelation);
+	bool		forward = ScanDirectionIsForward(dir);
+
+	for (int k = 0; k < so->numReqKeys; k++)
+	{
+		BarkArrayKeyState *req = so->reqKeys[k];
+		bool		isnull;
+		Datum		datum = index_getattr(itup, k + 1, tupdesc, &isnull);
+		int			lo = 0;
+		int			hi = req->nelems;
+
+		/* lo: the first element that sorts at or after the value */
+		while (lo < hi)
+		{
+			int			mid = lo + (hi - lo) / 2;
+
+			if (bark_req_cmp(so, k, datum, isnull, mid) > 0)
+				lo = mid + 1;
+			else
+				hi = mid;
+		}
+		if (lo < req->nelems && bark_req_cmp(so, k, datum, isnull, lo) == 0)
+		{
+			req->cur = lo;
+			continue;
+		}
+
+		/* Backward, the element in dir after the value is the one before lo. */
+		if (!forward)
+			lo--;
+		if (lo < 0 || lo >= req->nelems)
+		{
+			bark_req_reset(so, k, dir);
+			return bark_req_step(so, k - 1, dir) ? 1 : -1;
+		}
+		req->cur = lo;
+		bark_req_reset(so, k + 1, dir);
+		return 1;
+	}
+	return 0;
+}
+
+/*
+ * Compare entry itup with the required keys' current combination on columns
+ * 1..m, in direction dir: <0, 0 or >0 as the entry comes before, within or
+ * after the combination's run.
+ */
+static int
+bark_req_compare(IndexScanDesc scan, IndexTuple itup, ScanDirection dir)
+{
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	TupleDesc	tupdesc = RelationGetDescr(scan->indexRelation);
+
+	for (int k = 0; k < so->numReqKeys; k++)
+	{
+		bool		isnull;
+		Datum		datum = index_getattr(itup, k + 1, tupdesc, &isnull);
+		int			c = bark_req_cmp(so, k, datum, isnull, so->reqKeys[k]->cur);
+
+		if (c != 0)
+			return ScanDirectionIsForward(dir) ? c : -c;
+	}
+	return 0;
+}
+
+/*
+ * Does three-way result cmpresult, of a row member's column value against the
+ * member's argument, satisfy the member's strategy?  nbtree's
+ * _bt_rowcompare_cmpresult.
+ */
+static bool
+bark_rowcompare_cmpresult(ScanKey subkey, int32 cmpresult)
+{
+	switch (subkey->sk_strategy)
+	{
+		case BTLessStrategyNumber:
+			return cmpresult < 0;
+		case BTLessEqualStrategyNumber:
+			return cmpresult <= 0;
+		case BTGreaterEqualStrategyNumber:
+			return cmpresult >= 0;
+		case BTGreaterStrategyNumber:
+			return cmpresult > 0;
+		default:
+			elog(ERROR, "unexpected strategy number %d in BARK row comparison",
+				 subkey->sk_strategy);
+			return false;		/* keep compiler quiet */
+	}
 }
 
 /*
@@ -274,8 +609,9 @@ bark_free_array_keys(BarkScanOpaque so)
  * preprocessing, so the comparison here is in value order with the strategy
  * the executor gave.
  *
- * A row comparison never positions or stops the scan (bark_key_bounds rejects
- * it): the scan reads the whole range the other keys allow and filters.
+ * A row comparison only filters here; bark_make_bound and bark_past_bound
+ * position and stop the scan on its leading members (bark_row_prefix), and
+ * this test still decides every entry they let through.
  */
 static bool
 bark_rowcompare_matches(ScanKey header, IndexTuple itup, TupleDesc tupdesc)
@@ -303,32 +639,100 @@ bark_rowcompare_matches(ScanKey header, IndexTuple itup, TupleDesc tupdesc)
 		subkey++;
 	}
 
-	switch (subkey->sk_strategy)
+	return bark_rowcompare_cmpresult(subkey, cmpresult);
+}
+
+/*
+ * Does every data entry of a leaf satisfy row comparison header, as shown by
+ * the page's first and last data entries?  keepnatts is bark_keep_natts of
+ * the two.  The row case of nbtree's _bt_set_startikey.
+ *
+ * Members are compared in order on both entries, as bark_rowcompare_matches
+ * compares one.  A member is considered only when every index column before
+ * its own is equal across the page, so the page's values on its column lie
+ * between the first entry's and the last's.  The row holds for every entry
+ * when both entries satisfy it as a whole on the same deciding member: the
+ * members before it are equal to their arguments on every entry, and every
+ * entry is on the same side of the deciding member's argument as the two.
+ * When the two are decided by different members, an entry between them can
+ * fail the row: under (a, b) > (7, 5) a page running from (7, 9) to (8, 1)
+ * holds (7, NULL) when b sorts NULLs last, and an index on (a DESC, b) puts
+ * (7, 1) between (8, 1) and (7, 9).  A NULL argument or value never
+ * satisfies a member, so it is never marked either.
+ */
+static bool
+bark_row_page_satisfied(ScanKey header, IndexTuple first, IndexTuple last,
+						TupleDesc tupdesc, int keepnatts)
+{
+	ScanKey		subkey = (ScanKey) DatumGetPointer(header->sk_argument);
+
+	for (;;)
 	{
-		case BTLessStrategyNumber:
-			return cmpresult < 0;
-		case BTLessEqualStrategyNumber:
-			return cmpresult <= 0;
-		case BTGreaterEqualStrategyNumber:
-			return cmpresult >= 0;
-		case BTGreaterStrategyNumber:
-			return cmpresult > 0;
-		default:
-			elog(ERROR, "unexpected strategy number %d in BARK row comparison",
-				 subkey->sk_strategy);
-			return false;		/* keep compiler quiet */
+		bool		decides = (subkey->sk_flags & SK_ROW_END) != 0;
+		Datum		datum;
+		bool		isnull;
+		int32		firstcmp;
+		int32		lastcmp;
+
+		Assert(subkey->sk_flags & SK_ROW_MEMBER);
+		if (subkey->sk_attno > keepnatts || (subkey->sk_flags & SK_ISNULL))
+			return false;
+
+		datum = index_getattr(first, subkey->sk_attno, tupdesc, &isnull);
+		if (isnull)
+			return false;
+		firstcmp = DatumGetInt32(FunctionCall2Coll(&subkey->sk_func,
+												   subkey->sk_collation,
+												   datum,
+												   subkey->sk_argument));
+		datum = index_getattr(last, subkey->sk_attno, tupdesc, &isnull);
+		if (isnull)
+			return false;
+		lastcmp = DatumGetInt32(FunctionCall2Coll(&subkey->sk_func,
+												  subkey->sk_collation,
+												  datum,
+												  subkey->sk_argument));
+
+		if (firstcmp != 0 || lastcmp != 0 || decides)
+			return (firstcmp != 0 || decides) && (lastcmp != 0 || decides) &&
+				bark_rowcompare_cmpresult(subkey, firstcmp) &&
+				bark_rowcompare_cmpresult(subkey, lastcmp);
+		subkey++;
 	}
 }
 
 /*
- * Test one index tuple against all scan keys.  Returns true when every key is
- * satisfied.  A NULL index value never satisfies an ordinary (non-IS NULL)
- * comparison key.  A SK_SEARCHARRAY key is satisfied when the tuple's value is
- * a member of its (preprocessed, sorted) array.  Also used by the KNN scan to
- * filter its candidates.
+ * Does index value datum (isnull) satisfy scan key key, which is neither a
+ * SAOP array nor a row comparison?  IS NULL and IS NOT NULL test only
+ * isnull; any other key with a NULL argument matches nothing, and a NULL
+ * value fails every comparison key.
+ */
+static inline bool
+bark_scalar_key_matches(ScanKey key, Datum datum, bool isnull)
+{
+	if (key->sk_flags & SK_ISNULL)
+	{
+		if (key->sk_flags & SK_SEARCHNULL)
+			return isnull;
+		if (key->sk_flags & SK_SEARCHNOTNULL)
+			return !isnull;
+		return false;
+	}
+	if (isnull)
+		return false;
+	return DatumGetBool(FunctionCall2Coll(&key->sk_func, key->sk_collation,
+										  datum, key->sk_argument));
+}
+
+/*
+ * Test one index tuple against all scan keys except those whose bit is set in
+ * skipkeys (bit i for scan key i; see bark_page_satisfied_keys).  Returns
+ * true when every tested key is satisfied.  A SK_SEARCHARRAY key is satisfied
+ * when the tuple's value is a member of its (preprocessed, sorted) array.
+ * Also used by the KNN scan to filter its candidates, with no keys skipped.
  */
 bool
-bark_tuple_matches(IndexScanDesc scan, IndexTuple itup)
+bark_tuple_matches(IndexScanDesc scan, IndexTuple itup, uint64 skipkeys)
 {
 	Relation	index = scan->indexRelation;
 	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
@@ -340,6 +744,14 @@ bark_tuple_matches(IndexScanDesc scan, IndexTuple itup)
 		ScanKey		key = &scan->keyData[i];
 		Datum		datum;
 		bool		isnull;
+
+		if (i < 64 && (skipkeys & (UINT64CONST(1) << i)))
+		{
+			/* Keep the array keys in lockstep with the scan keys. */
+			if (key->sk_flags & SK_SEARCHARRAY)
+				nextarray++;
+			continue;
+		}
 
 		if (key->sk_flags & SK_ROW_HEADER)
 		{
@@ -367,33 +779,107 @@ bark_tuple_matches(IndexScanDesc scan, IndexTuple itup)
 			continue;
 		}
 
-		if (key->sk_flags & SK_ISNULL)
-		{
-			/* IS NULL / IS NOT NULL searches are not handled yet. */
-			if (key->sk_flags & SK_SEARCHNULL)
-			{
-				if (!isnull)
-					return false;
-				continue;
-			}
-			if (key->sk_flags & SK_SEARCHNOTNULL)
-			{
-				if (isnull)
-					return false;
-				continue;
-			}
-			/* Ordinary key with NULL argument: never matches. */
-			return false;
-		}
-
-		if (isnull)
-			return false;		/* NULL index value fails a comparison key */
-
-		if (!DatumGetBool(FunctionCall2Coll(&key->sk_func, key->sk_collation,
-											datum, key->sk_argument)))
+		if (!bark_scalar_key_matches(key, datum, isnull))
 			return false;
 	}
 	return true;
+}
+
+/*
+ * Which scan keys does every data entry of a share-locked leaf satisfy, as
+ * shown by its first and last data entries (at minoff and maxoff)?  Returns
+ * a mask with bit i set for each such key i, for bark_tuple_matches to skip
+ * while the page is read: nbtree's _bt_set_startikey, for BARK's keys.
+ *
+ * Entries on a leaf are in index order.  When the first and last entries are
+ * equal on columns 1..k-1, so is every entry between them, and those
+ * entries' column-k values lie between the first's and the last's in the
+ * column's order (NULLs sort together at one end).  A key on column k that
+ * both entries satisfy then holds for all of them: its operator belongs to
+ * the column's opfamily and so agrees with that order, and IS [NOT] NULL
+ * holds because the NULLs cannot sit between two values.  Equality of the
+ * earlier columns is the opclass comparator's, as in bark_keep_natts.
+ *
+ * An equality array is marked when its column holds one value across the
+ * page and that value is one of its elements; that covers the required
+ * arrays on a page inside one combination's run, as nbtree marks a SAOP
+ * array.  A row comparison is marked as bark_row_page_satisfied decides.
+ * Each key is decided on its own, so a key on a later column is marked only
+ * when its own test holds, which needs the columns before it to be equal
+ * across the page whatever happened to the keys before it; nbtree's rule
+ * for keys after a row comparison asks no less.  Keys after the 64th are
+ * never marked; bark_tuple_matches tests them on every entry.  An OVERSIZED
+ * entry is read from its overflow chain, as the caller's loop does.
+ */
+static uint64
+bark_page_satisfied_keys(IndexScanDesc scan, Page page, OffsetNumber minoff,
+						 OffsetNumber maxoff)
+{
+	Relation	index = scan->indexRelation;
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	TupleDesc	tupdesc = RelationGetDescr(index);
+	BarkItemBuf firstbuf;
+	BarkItemBuf lastbuf;
+	bool		firstfetched;
+	bool		lastfetched;
+	IndexTuple	first;
+	IndexTuple	last;
+	int			keepnatts;
+	int			nextarray = 0;
+	uint64		satisfied = 0;
+
+	first = bark_scan_resolve(index, BarkPageGetItem(page, minoff, &firstbuf),
+							  &firstfetched);
+	last = bark_scan_resolve(index, BarkPageGetItem(page, maxoff, &lastbuf),
+							 &lastfetched);
+	keepnatts = bark_keep_natts(index, so->keyinfo, first, last);
+
+	for (int i = 0; i < Min(scan->numberOfKeys, 64); i++)
+	{
+		ScanKey		key = &scan->keyData[i];
+		Datum		datum;
+		bool		isnull;
+
+		if (key->sk_flags & SK_SEARCHARRAY)
+		{
+			BarkArrayKeyState *ak = &so->arrayKeys[nextarray++];
+
+			/*
+			 * An array's elements need not be adjacent in the column's order,
+			 * so both ends being members says nothing of the entries between
+			 * them; the column must instead hold one value across the page.
+			 */
+			Assert(ak->scankeyidx == i);
+			if (key->sk_attno >= keepnatts)
+				continue;
+			datum = index_getattr(first, key->sk_attno, tupdesc, &isnull);
+			if (isnull || !bark_array_contains(so, ak, datum))
+				continue;
+		}
+		else if (key->sk_flags & SK_ROW_HEADER)
+		{
+			if (!bark_row_page_satisfied(key, first, last, tupdesc, keepnatts))
+				continue;
+		}
+		else
+		{
+			if (key->sk_attno > keepnatts)
+				continue;
+			datum = index_getattr(first, key->sk_attno, tupdesc, &isnull);
+			if (!bark_scalar_key_matches(key, datum, isnull))
+				continue;
+			datum = index_getattr(last, key->sk_attno, tupdesc, &isnull);
+			if (!bark_scalar_key_matches(key, datum, isnull))
+				continue;
+		}
+		satisfied |= UINT64CONST(1) << i;
+	}
+
+	if (firstfetched)
+		pfree(first);
+	if (lastfetched)
+		pfree(last);
+	return satisfied;
 }
 
 /*
@@ -406,8 +892,9 @@ bark_tuple_matches(IndexScanDesc scan, IndexTuple itup)
  *
  * Returns false for a key that cannot position or stop the scan; such a key
  * is still applied by bark_tuple_matches as a filter.  That covers a key with
- * a NULL argument (including IS [NOT] NULL), a SAOP array (the leading-array
- * logic positions on those), a row comparison, and a cross-type key whose
+ * a NULL argument (including IS [NOT] NULL), a SAOP array (the required
+ * keys position on those), a row comparison (bark_row_prefix handles
+ * those), and a cross-type key whose
  * opfamily has no ORDER proc for its pair of types.  Every other key, cross-
  * type ones included, is compared through so->keyCmp, the ORDER proc for
  * the column type and the argument's type (bark_setup_key_procs), so a qual
@@ -446,39 +933,153 @@ bark_key_bounds(IndexScanDesc scan, ScanKey sk, bool *lower, bool *upper)
 }
 
 /*
- * Can a scan moving in direction dir stop at tuple itup, because itup's
- * leading column is already past a bound in that direction?
+ * The usable prefix of row comparison header, for positioning and stopping
+ * the scan: the number of its leading members that each sit on the next index
+ * column after the previous one, are not NULL, and bound their column in the
+ * same role as the first member, as nbtree's _bt_first uses a row comparison.
+ * Every member has the row's strategy, so the role changes only where a
+ * column's DESC option differs from the first member's.  Sets *lower and
+ * *upper for the first member's column as bark_key_bounds does (a row
+ * comparison is never an equality, so exactly one is set).  Returns 0 when
+ * the first member is NULL: the row then matches nothing and only filters.
+ *
+ * Members' sk_func is already the three-way ORDER proc for the column type
+ * and the member's type (ExecIndexBuildScanKeys looks it up for row
+ * comparisons), so a prefix compares through it directly, cross-type members
+ * included.
+ */
+static int
+bark_row_prefix(IndexScanDesc scan, ScanKey header, bool *lower, bool *upper)
+{
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	ScanKey		member = (ScanKey) DatumGetPointer(header->sk_argument);
+	bool		reverse = so->keyinfo->cols[member->sk_attno - 1].reverse;
+	bool		less = (member->sk_strategy == BTLessStrategyNumber ||
+						member->sk_strategy == BTLessEqualStrategyNumber);
+	int			n = 0;
+
+	*upper = (less != reverse);
+	*lower = !*upper;
+	for (;;)
+	{
+		Assert(member->sk_flags & SK_ROW_MEMBER);
+		if ((member->sk_flags & SK_ISNULL) ||
+			member->sk_attno != header->sk_attno + n ||
+			so->keyinfo->cols[member->sk_attno - 1].reverse != reverse)
+			break;
+		n++;
+		if (member->sk_flags & SK_ROW_END)
+			break;
+		member++;
+	}
+	return n;
+}
+
+/*
+ * Put the first n members of row comparison header into bound as its columns
+ * from the header's column on, making them the bound's last columns.
+ */
+static void
+bark_row_bound(ScanKey header, int n, BarkScanBound * bound)
+{
+	ScanKey		member = (ScanKey) DatumGetPointer(header->sk_argument);
+	int			first = header->sk_attno - 1;
+
+	for (int m = 0; m < n; m++)
+	{
+		bound->args[first + m] = member[m].sk_argument;
+		bound->procs[first + m] = &member[m].sk_func;
+		bound->collations[first + m] = member[m].sk_collation;
+	}
+	bound->nkeys = first + n;
+}
+
+/*
+ * Can a scan moving in direction dir stop at tuple itup, because itup is
+ * already past a bound in that direction that every later entry is past too?
  *
  * Entries are visited in index order (forward) or its reverse (backward).
  * Once the leading value sorts strictly after an upper bound on column 1
  * (forward), or strictly before a lower bound (backward), every later entry in
  * that direction does too, so nothing further can match.  A value equal to the
- * bound is left to bark_tuple_matches.  A NULL leading value sorts where the
- * column's NULLS option puts it, and fails every bounding key, so it ends the
- * scan exactly when the NULLs lie beyond the bound.
+ * bound is left to bark_tuple_matches.  A NULL value sorts where the column's
+ * NULLS option puts it, and fails every bounding key, so it ends the scan
+ * exactly when the NULLs lie beyond the bound.
  *
- * Only column 1 is used: a bound on a later column cannot end the scan, since
- * a later leading value may still have matching trailing values.
+ * A bound on a later column ends the scan the same way while every column
+ * before it has an equality key that itup's value equals, as nbtree's
+ * "required" keys do (_bt_check_compare): the scan then is inside one run of
+ * those leading values, ordered by the later column.  So a = 1 AND b = 2
+ * stops at the first entry after (1, 2), and a = 1 AND b < 5 at the first
+ * entry of a = 1 with b >= 5, instead of reading the rest of a = 1.  The walk
+ * stops at the first column with no such equality key, or whose value is not
+ * equal to it (an entry before the run, which a filter rejects without ending
+ * the scan).  Arrays, NULL tests and row comparisons are not equalities here;
+ * bark_req_advance ends the runs of required array keys.
+ *
+ * A row comparison on column 1 stops the scan the same way, on its usable
+ * prefix (bark_row_prefix) compared column by column: (a, b) < (5, 3) ends a
+ * forward scan at the first entry after (5, 3).  An entry equal to the prefix
+ * may still match (<=, or a longer row), so it is left to the filter too.
  */
 static bool
 bark_past_bound(IndexScanDesc scan, IndexTuple itup, ScanDirection dir)
 {
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
 	bool		forward = ScanDirectionIsForward(dir);
 
-	for (int i = 0; i < scan->numberOfKeys; i++)
+	for (int col = 1; col <= so->keyinfo->nkeys; col++)
 	{
-		ScanKey		sk = &scan->keyData[i];
-		bool		lower;
-		bool		upper;
-		int			c;
+		bool		haveeq = false;
+		bool		noteq = false;
 
-		if (sk->sk_attno != 1 || !bark_key_bounds(scan, sk, &lower, &upper))
-			continue;
-		if (forward ? !upper : !lower)
-			continue;
-		c = bark_key_cmp(scan, i, itup);
-		if (forward ? c > 0 : c < 0)
-			return true;
+		for (int i = 0; i < scan->numberOfKeys; i++)
+		{
+			ScanKey		sk = &scan->keyData[i];
+			bool		lower;
+			bool		upper;
+			int			c;
+
+			if (sk->sk_attno != col)
+				continue;
+			if (col == 1 && (sk->sk_flags & SK_ROW_HEADER))
+			{
+				int			n = bark_row_prefix(scan, sk, &lower, &upper);
+				BarkScanBound rowbound;
+
+				if (n == 0 || (forward ? !upper : !lower))
+					continue;
+
+				/*
+				 * An upper bound sorts after the entries equal to it and a
+				 * lower bound before them, so the entry is past exactly when
+				 * the bound sorts before it (forward) or after it (backward).
+				 */
+				bark_row_bound(sk, n, &rowbound);
+				rowbound.upper = forward;
+				rowbound.backward = !forward;
+				c = bark_compare_bound(scan->indexRelation, so->keyinfo,
+									   &rowbound, itup);
+				if (forward ? c < 0 : c > 0)
+					return true;
+				continue;
+			}
+			if (!bark_key_bounds(scan, sk, &lower, &upper))
+				continue;
+			if (forward ? !upper : !lower)
+				continue;
+			c = bark_key_cmp(scan, i, itup);
+			if (forward ? c > 0 : c < 0)
+				return true;
+			if (lower && upper)
+			{
+				haveeq = true;
+				if (c != 0)
+					noteq = true;
+			}
+		}
+		if (!haveeq || noteq)
+			break;
 	}
 	return false;
 }
@@ -509,21 +1110,296 @@ bark_key_cmp(IndexScanDesc scan, int i, IndexTuple itup)
 }
 
 /*
+ * Can this scan skip over column 1's values?  It can when no key constrains
+ * column 1 and some key bounds column 2 (nbtree's skip scan, for the case
+ * that matters most; nbtree can also skip over several leading columns).  An
+ * ordered-operator scan has its own reads.
+ */
+static bool
+bark_skip_eligible(IndexScanDesc scan)
+{
+	bool		bounded = false;
+
+	if (IndexRelationGetNumberOfKeyAttributes(scan->indexRelation) < 2 ||
+		scan->numberOfOrderBys > 0)
+		return false;
+	for (int i = 0; i < scan->numberOfKeys; i++)
+	{
+		ScanKey		sk = &scan->keyData[i];
+		bool		lower;
+		bool		upper;
+
+		if (sk->sk_attno == 1)
+			return false;
+		if (sk->sk_attno == 2 && bark_key_bounds(scan, sk, &lower, &upper))
+			bounded = true;
+	}
+	return bounded;
+}
+
+/*
+ * Skip scan: where does the next possible match after entry itup start?
+ * Returns false when it may be the very next entry; otherwise builds in
+ * *bound a lower bound for it.
+ *
+ * Within one column-1 group the entries are in column-2 order.  When itup's
+ * column-2 value is past an upper bound on column 2, so is every later entry
+ * of its group: the next match is in a later group, at or after (the next
+ * column-1 value, column 2's lower bound) when column 1's opclass has skip
+ * support for a discrete type, or after the whole group (a column-1 bound
+ * that sorts after every equal entry) otherwise.  When itup's value is before
+ * a lower bound on column 2, the next match is at or after (itup's column-1
+ * value, that bound).  A NULL column-1 value is not a bound, so a NULL group
+ * is read through.  The bound's column-1 value may be itup's own: the caller
+ * copies it before letting go of the page.  *palloced says the value is
+ * instead a fresh skip-support result of a by-reference type, which the
+ * caller frees.
+ */
+static bool
+bark_skip_bound(IndexScanDesc scan, IndexTuple itup, BarkScanBound * bound,
+				bool *palloced)
+{
+	Relation	index = scan->indexRelation;
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	bool		isnull;
+	Datum		value = index_getattr(itup, 1, RelationGetDescr(index), &isnull);
+	bool		past = false;
+	bool		before = false;
+	int			lowkey = -1;
+
+	*palloced = false;
+	if (isnull)
+		return false;
+	for (int i = 0; i < scan->numberOfKeys; i++)
+	{
+		ScanKey		sk = &scan->keyData[i];
+		bool		lower;
+		bool		upper;
+		int			c;
+
+		if (sk->sk_attno != 2 || !bark_key_bounds(scan, sk, &lower, &upper))
+			continue;
+		c = bark_key_cmp(scan, i, itup);
+		if (upper && c > 0)
+			past = true;
+		if (lower && lowkey < 0)
+		{
+			lowkey = i;
+			before = c < 0;
+		}
+	}
+	if (!past && !before)
+		return false;
+
+	bound->args[0] = value;
+	bound->procs[0] = &so->keyinfo->cols[0].cmp;
+	bound->collations[0] = so->keyinfo->cols[0].collation;
+	bound->nkeys = 1;
+	bound->upper = false;
+	bound->backward = false;
+	if (past)
+	{
+		bool		overflow = true;
+
+		if (!so->skipSupportReady)
+		{
+			MemoryContext oldcxt = MemoryContextSwitchTo(so->scanCxt);
+
+			so->skipSupport =
+				PrepareSkipSupportFromOpclass(index->rd_opfamily[0],
+											  index->rd_opcintype[0],
+											  so->keyinfo->cols[0].reverse);
+			so->skipSupportReady = true;
+			MemoryContextSwitchTo(oldcxt);
+		}
+		if (so->skipSupport != NULL)
+			bound->args[0] = so->skipSupport->increment(index, value, &overflow);
+		if (overflow)
+		{
+			/* No next value to name: descend past every equal entry. */
+			bound->args[0] = value;
+			bound->upper = true;
+			return true;
+		}
+		*palloced = !TupleDescAttr(RelationGetDescr(index), 0)->attbyval;
+	}
+	if (lowkey >= 0)
+	{
+		bound->nkeys = 2;
+		bound->args[1] = scan->keyData[lowkey].sk_argument;
+		bound->procs[1] = &so->keyCmp[lowkey];
+		bound->collations[1] = scan->keyData[lowkey].sk_collation;
+	}
+	return true;
+}
+
+/*
+ * Keep bound as the skip scan's next re-descent, in so->skipBound.  The page
+ * is unlocked before the descent, so the column-1 value is copied.  palloced
+ * is bark_skip_bound's: the value is a fresh skip-support result, freed here.
+ */
+static void
+bark_skip_save(IndexScanDesc scan, BarkScanBound * bound, bool palloced)
+{
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	TupleDesc	tupdesc = RelationGetDescr(scan->indexRelation);
+	Form_pg_attribute att = TupleDescAttr(tupdesc, 0);
+	MemoryContext oldcxt;
+
+	if (!so->skipValueByVal && so->skipValue != (Datum) 0)
+		pfree(DatumGetPointer(so->skipValue));
+	oldcxt = MemoryContextSwitchTo(so->scanCxt);
+	so->skipValue = datumCopy(bound->args[0], att->attbyval, att->attlen);
+	MemoryContextSwitchTo(oldcxt);
+	so->skipValueByVal = att->attbyval;
+	if (palloced)
+		pfree(DatumGetPointer(bound->args[0]));
+	bound->args[0] = so->skipValue;
+	so->skipBound = *bound;
+}
+
+/*
+ * Skip scan, reading page forward from entry itup at offnum, which failed the
+ * scan keys: return the offset to continue from, past the entries that
+ * bark_skip_bound shows cannot match.  maxoff + 1 when none of the rest can
+ * match; *reseek then says whether the next read re-descends (with the bound
+ * in so->skipBound) rather than step right, as bark_skip_plan decides.
+ *
+ * The high key is tested first: when the next possible match sorts after it,
+ * nothing else on the page can match, and the scan re-descends.  That is the
+ * usual case whenever skipping pays (a column-1 group spans pages), and one
+ * comparison settles it, as nbtree's skip scan settles it by testing the
+ * page's final tuple.  Otherwise the next match may be on this page, and a
+ * binary search over the rest of the page finds where.
+ */
+static OffsetNumber
+bark_skip_on_page(IndexScanDesc scan, Page page, IndexTuple itup,
+				  OffsetNumber offnum, OffsetNumber maxoff, bool *reseek)
+{
+	Relation	index = scan->indexRelation;
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	BarkScanBound bound;
+	bool		palloced;
+	OffsetNumber low = OffsetNumberNext(offnum);
+	OffsetNumber high = OffsetNumberNext(maxoff);
+
+	*reseek = false;
+	if (!bark_skip_bound(scan, itup, &bound, &palloced))
+		return OffsetNumberNext(offnum);
+
+	if (scan->parallel_scan == NULL &&
+		!BarkPageRightmost(BarkPageGetOpaque(page)))
+	{
+		IndexTuple	hikey = (IndexTuple) PageGetItem(page,
+													 PageGetItemId(page, BARK_P_HIKEY));
+
+		if (bark_compare_bound(index, so->keyinfo, &bound, hikey) > 0)
+		{
+			bark_skip_save(scan, &bound, palloced);
+			*reseek = true;
+			return high;
+		}
+	}
+
+	/* The first offset in [low, high) whose entry the bound sorts before. */
+	while (low < high)
+	{
+		OffsetNumber mid = low + (high - low) / 2;
+		BarkItemBuf ibuf;
+		IndexTuple	cur = BarkPageGetItem(page, mid, &ibuf);
+
+		if (bark_compare_bound(index, so->keyinfo, &bound, cur) > 0)
+			low = OffsetNumberNext(mid);
+		else
+			high = mid;
+	}
+	if (palloced)
+		pfree(DatumGetPointer(bound.args[0]));
+	return low;
+}
+
+/*
+ * Skip scan, after a forward read of page that did not end in
+ * bark_skip_on_page: should the next read re-descend rather than step right?
+ * If so, build that descent's bound in so->skipBound and return true.
+ *
+ * The page's last entry decides, through bark_skip_bound.  The descent is
+ * taken only when its bound sorts after the page's high key, which keeps it
+ * from landing on the page just read; otherwise the next match can start on
+ * the right sibling and the plain step reaches it.
+ */
+static bool
+bark_skip_plan(IndexScanDesc scan, Page page, OffsetNumber lastoff)
+{
+	Relation	index = scan->indexRelation;
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	BarkItemBuf ibuf;
+	IndexTuple	last = BarkPageGetItem(page, lastoff, &ibuf);
+	IndexTuple	hikey = (IndexTuple) PageGetItem(page,
+												 PageGetItemId(page, BARK_P_HIKEY));
+	bool		fetched;
+	IndexTuple	resolved = bark_scan_resolve(index, last, &fetched);
+	bool		reseek;
+	bool		palloced = false;
+	BarkScanBound bound;
+
+	reseek = bark_skip_bound(scan, resolved, &bound, &palloced) &&
+		bark_compare_bound(index, so->keyinfo, &bound, hikey) > 0;
+
+	if (reseek)
+		bark_skip_save(scan, &bound, palloced);
+	else if (palloced)
+		pfree(DatumGetPointer(bound.args[0]));
+	if (fetched)
+		pfree(resolved);
+	return reseek;
+}
+
+/*
+ * A bound whose last column comes from a strict inequality (< or >, or a row
+ * comparison whose usable prefix is the whole row) excludes the entries equal
+ * to it on the bounded columns, so the scan starts past them, as nbtree's
+ * _bt_first descends with nextkey for > (and for < backward): forward, the
+ * bound sorts after those entries, backward before them.  Otherwise a
+ * forward scan's bound sorts before them and a backward one's after.
+ */
+static inline void
+bark_bound_strict(StrategyNumber strategy, bool forward, BarkScanBound * bound)
+{
+	if (strategy == BTLessStrategyNumber ||
+		strategy == BTGreaterStrategyNumber)
+		bound->upper = forward;
+}
+
+/*
  * Build the bound a scan in direction dir starts from: the leading index
  * columns the keys bound in index order, for bark_search_bound.  Returns
  * false when column 1 is unbounded in that direction; the scan then starts
  * at the end of the index.
  *
- * Forward, the bound is a lower bound; backward, an upper bound.  It uses the
- * longest run of leading columns 1..k where columns 1..k-1 each have an
- * equality key (or, on column 1, a SAOP whose current element is the equality
- * value) and column k has a key that bounds it in the scan direction.  For
+ * The bound sorts before the entries equal to it on its columns when a
+ * forward scan may match them, after them when a backward one may (a lower
+ * and an upper bound), and the other way around when its last column's key
+ * is a strict inequality (bark_bound_strict).  It uses the longest run of
+ * leading columns 1..k where columns 1..k-1 each have an equality key and
+ * column k has a key that bounds it in the scan direction.
+ * Under required keys (see BarkArrayKeyState), columns 1..m are the current
+ * combination of their elements, one equality scan of the merged sequence.  For
  * WHERE a = 5 AND b >= 100 on (a, b) a forward scan descends to (5, 100), not
  * to the first a = 5 leaf.  Columns after k are minus infinity in a lower
  * bound and plus infinity in an upper one, so the descent lands at or before
  * the first match in scan order, never past it.  A key's argument may be of
  * any type the opfamily has an ORDER proc for, as nbtree's _bt_first allows.
  * When several keys bound one column, the first is used; the others filter.
+ *
+ * A row comparison bounds the scan from its first member's column on, with
+ * every column of its usable prefix (bark_row_prefix), and ends the bound
+ * there as a range key does: (a, b) > (5, 10) descends past (5, 10).  The
+ * prefix of a longer row is still a correct start, but not a strict one: the
+ * bound only has to sort at or before the first match, so under (a, c) >
+ * (5, 10) on (a, b, c) it sorts before the entries equal to (5).  An equality
+ * on the column wins over a row, as over a range key; a row wins over a range
+ * key when its prefix bounds more than one column.
  */
 static bool
 bark_make_bound(IndexScanDesc scan, ScanDirection dir, BarkScanBound * bound)
@@ -533,22 +1409,35 @@ bark_make_bound(IndexScanDesc scan, ScanDirection dir, BarkScanBound * bound)
 	int			nkeyatts = IndexRelationGetNumberOfKeyAttributes(index);
 	bool		forward = ScanDirectionIsForward(dir);
 
+	/* A skip scan's re-descent to its next column-1 group (bark_skip_plan). */
+	if (so->skipReseeking)
+	{
+		Assert(forward);
+		*bound = so->skipBound;
+		so->skipReseeking = false;
+		return true;
+	}
+
 	bound->nkeys = 0;
 	bound->upper = !forward;
+	bound->backward = !forward;
 
 	for (int col = 1; col <= nkeyatts; col++)
 	{
 		int			found = -1;
 		bool		equality = false;
+		int			row = -1;
+		int			rowlen = 0;
 
-		if (col == 1 && so->leadArray != NULL && so->leadArray->nelems > 0 &&
-			forward)
+		if (col <= so->numReqKeys)
 		{
-			bound->args[0] = so->leadArray->elems[so->leadArray->cur];
-			bound->procs[0] = &so->keyinfo->cols[0].cmp;
-			bound->collations[0] = so->keyinfo->cols[0].collation;
-			bound->nkeys = 1;
-			continue;			/* an equality, one element at a time */
+			BarkArrayKeyState *req = so->reqKeys[col - 1];
+
+			bound->args[col - 1] = req->elems[req->cur];
+			bound->procs[col - 1] = &req->cmpproc;
+			bound->collations[col - 1] = so->keyinfo->cols[col - 1].collation;
+			bound->nkeys = col;
+			continue;			/* the current combination's element */
 		}
 
 		for (int i = 0; i < scan->numberOfKeys; i++)
@@ -557,6 +1446,17 @@ bark_make_bound(IndexScanDesc scan, ScanDirection dir, BarkScanBound * bound)
 			bool		lower;
 			bool		upper;
 
+			if (sk->sk_attno == col && (sk->sk_flags & SK_ROW_HEADER))
+			{
+				int			n = bark_row_prefix(scan, sk, &lower, &upper);
+
+				if (n > rowlen && (forward ? lower : upper))
+				{
+					row = i;
+					rowlen = n;
+				}
+				continue;
+			}
 			if (sk->sk_attno != col ||
 				!bark_key_bounds(scan, sk, &lower, &upper) ||
 				!(forward ? lower : upper))
@@ -569,6 +1469,16 @@ bark_make_bound(IndexScanDesc scan, ScanDirection dir, BarkScanBound * bound)
 			if (equality)
 				break;			/* prefer an equality on this column */
 		}
+		if (row >= 0 && !equality && (found < 0 || rowlen > 1))
+		{
+			ScanKey		header = &scan->keyData[row];
+			ScanKey		member = (ScanKey) DatumGetPointer(header->sk_argument);
+
+			bark_row_bound(header, rowlen, bound);
+			if (member[rowlen - 1].sk_flags & SK_ROW_END)
+				bark_bound_strict(header->sk_strategy, forward, bound);
+			break;				/* the row's prefix ends the bound */
+		}
 		if (found < 0)
 			break;
 
@@ -577,9 +1487,116 @@ bark_make_bound(IndexScanDesc scan, ScanDirection dir, BarkScanBound * bound)
 		bound->collations[col - 1] = scan->keyData[found].sk_collation;
 		bound->nkeys = col;
 		if (!equality)
+		{
+			bark_bound_strict(scan->keyData[found].sk_strategy, forward, bound);
 			break;				/* a range bound is the last usable column */
+		}
 	}
 	return bound->nkeys > 0;
+}
+
+/*
+ * Is entry itup, equal to the required keys' combination, past a bound on
+ * the next column (m + 1) in direction dir?  Within the combination's run the
+ * entries are in that column's order, so every later entry of the run is past
+ * it too.
+ */
+static bool
+bark_req_past_range(IndexScanDesc scan, IndexTuple itup, ScanDirection dir)
+{
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	bool		forward = ScanDirectionIsForward(dir);
+
+	for (int i = 0; i < scan->numberOfKeys; i++)
+	{
+		ScanKey		sk = &scan->keyData[i];
+		bool		lower;
+		bool		upper;
+		int			c;
+
+		if (sk->sk_attno != so->numReqKeys + 1 ||
+			!bark_key_bounds(scan, sk, &lower, &upper) ||
+			!(forward ? upper : lower))
+			continue;
+		c = bark_key_cmp(scan, i, itup);
+		if (forward ? c > 0 : c < 0)
+			return true;
+	}
+	return false;
+}
+
+/*
+ * Required keys, at entry itup read in direction dir: move the cursors on
+ * when the entry shows their combination's run is over, as nbtree's
+ * _bt_advance_array_keys does for required arrays.  An entry before the
+ * combination in dir leaves it alone (the filter rejects the entry).  An
+ * entry equal to it on columns 1..m that is past a bound on column m + 1
+ * exhausts it: the cursors move to the next combination.  An entry after it
+ * moves them to the first combination at or after the entry.
+ *
+ * Returns -1 when no combination is left in dir, so the scan is over; 1 when
+ * the cursors moved to a combination that sorts after the entry, so the
+ * caller decides where it starts (bark_req_next_page); 0 otherwise.
+ */
+static int
+bark_req_advance(IndexScanDesc scan, IndexTuple itup, ScanDirection dir)
+{
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	bool		advanced = false;
+
+	for (;;)
+	{
+		int			c = bark_req_compare(scan, itup, dir);
+
+		if (c < 0)
+			return advanced ? 1 : 0;
+		if (c == 0 && !bark_req_past_range(scan, itup, dir))
+			return 0;
+		advanced = true;
+		if (c > 0 ? bark_req_seek(scan, itup, dir) < 0 :
+			!bark_req_step(so, so->numReqKeys - 1, dir))
+			return -1;
+	}
+}
+
+/*
+ * After bark_req_advance moved the required keys past an entry of page:
+ * where does the new combination start?  Returns 0 when it may start on the
+ * page, so the scan reads on; 1 when it starts beyond the page in the scan
+ * direction, so nothing more on the page can match and the scan re-descends
+ * to it (bark_make_bound); -1 when no page in that direction can hold it.
+ *
+ * Forward, the combination starts beyond the page when its start bound sorts
+ * after the page's high key, as for a skip scan's next group.  A page has no
+ * low key, so backward the test is against the page's first entry, as
+ * nbtree's array advancement uses a backward scan's first tuple.  The
+ * combination may start on the very next page; the descent lands there
+ * then, at the cost of the inner pages.
+ */
+static int
+bark_req_next_page(IndexScanDesc scan, Page page, ScanDirection dir)
+{
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	BarkPageOpaque opaque = BarkPageGetOpaque(page);
+	BarkScanBound bound;
+	BarkItemBuf ibuf;
+
+	(void) bark_make_bound(scan, dir, &bound);
+	if (ScanDirectionIsForward(dir))
+	{
+		IndexTuple	hikey;
+
+		if (BarkPageRightmost(opaque))
+			return 0;
+		hikey = (IndexTuple) PageGetItem(page, PageGetItemId(page, BARK_P_HIKEY));
+		return bark_compare_bound(scan->indexRelation, so->keyinfo, &bound,
+								  hikey) > 0 ? 1 : 0;
+	}
+	if (bark_compare_bound(scan->indexRelation, so->keyinfo, &bound,
+						   BarkPageGetItem(page, BarkPageFirstDataKey(opaque),
+										   &ibuf)) > 0)
+		return 0;
+	return BarkPageLeftmost(opaque) ? -1 : 1;
 }
 
 /*
@@ -610,9 +1627,15 @@ bark_setup_key_procs(IndexScanDesc scan)
 		Oid			subtype;
 		Oid			proc;
 
+		/*
+		 * An inequality SAOP key gets its proc too: bark_setup_array_keys
+		 * reduces it to a plain key whenever its array has a non-NULL
+		 * element, which can change from one rescan to the next.
+		 */
 		so->keyCmp[i].fn_oid = InvalidOid;
-		if (sk->sk_flags & (SK_SEARCHARRAY | SK_ROW_HEADER | SK_SEARCHNULL |
-							SK_SEARCHNOTNULL))
+		if ((sk->sk_flags & (SK_ROW_HEADER | SK_SEARCHNULL | SK_SEARCHNOTNULL)) ||
+			((sk->sk_flags & SK_SEARCHARRAY) &&
+			 sk->sk_strategy == BTEqualStrategyNumber))
 			continue;
 		subtype = OidIsValid(sk->sk_subtype) ? sk->sk_subtype :
 			index->rd_opcintype[col];
@@ -645,6 +1668,10 @@ bark_beginscan(Relation index, int nkeys, int norderbys)
 	BarkScanPosInvalidate(so->currPos);
 	so->currPos.items = NULL;
 	so->currPos.maxItems = 0;
+	so->markItemIndex = -1;
+	BarkScanPosInvalidate(so->markPos);
+	so->markPos.items = NULL;
+	so->markPos.maxItems = 0;
 
 	/*
 	 * Index-only scans read the key columns from xs_itup, described by the
@@ -678,6 +1705,9 @@ bark_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 
 	BarkScanPosUnpinIfPinned(so->currPos);
 	BarkScanPosInvalidate(so->currPos);
+	so->markItemIndex = -1;
+	BarkScanPosUnpinIfPinned(so->markPos);
+	BarkScanPosInvalidate(so->markPos);
 	so->firstCall = true;
 
 	/*
@@ -700,12 +1730,18 @@ bark_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 
 	/*
 	 * Rebuild ScalarArrayOp state from the (possibly new) scan keys: sort and
-	 * de-duplicate each SK_SEARCHARRAY array once, so the scan can visit the
-	 * matching keys in index order.  A plain scan builds nothing here.
+	 * de-duplicate each equality array once, so the scan can visit the
+	 * matching keys in index order, and reduce each inequality array to a
+	 * plain key in scan->keyData.  That must come before
+	 * bark_setup_key_procs, which gives the reduced keys their ORDER procs.
+	 * A plain scan builds nothing here.
 	 */
 	bark_free_array_keys(so);
 	bark_setup_array_keys(scan);
 	bark_setup_key_procs(scan);
+	bark_setup_req_keys(scan);
+	so->skip = bark_skip_eligible(scan);
+	so->skipReseeking = false;
 
 	/*
 	 * An ordered-operator (KNN) scan carries ORDER BY <~> keys; copy them in
@@ -721,15 +1757,18 @@ bark_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 
 /*
  * Descend to the leaf where a scan in direction dir must start, and return it
- * share-locked; InvalidBuffer for an empty index.
+ * share-locked; InvalidBuffer for an empty index.  *startoff is set to the
+ * offset on that leaf where the scan's read starts.
  *
  * A scan bounded in its direction on the leading columns descends to the
- * first leaf in that direction that can hold a match (bark_make_bound);
- * otherwise it starts at the leftmost or rightmost leaf.  The returned leaf
- * is never deleted or half-dead.
+ * first leaf in that direction that can hold a match (bark_make_bound), and
+ * starts its read at the bound's place on the leaf (bark_binsrch_bound), as
+ * nbtree's _bt_first starts at _bt_binsrch's offset rather than at the
+ * page's first item; otherwise it starts at the end of the leftmost or
+ * rightmost leaf.  The returned leaf is never deleted or half-dead.
  */
 static Buffer
-bark_start_leaf(IndexScanDesc scan, ScanDirection dir)
+bark_start_leaf(IndexScanDesc scan, ScanDirection dir, OffsetNumber *startoff)
 {
 	Relation	index = scan->indexRelation;
 	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
@@ -741,27 +1780,43 @@ bark_start_leaf(IndexScanDesc scan, ScanDirection dir)
 	BarkPageOpaque opaque;
 
 	/*
-	 * A lower bound descends to the leftmost leaf that can hold a match
-	 * (nextkey = false); an upper bound, to the rightmost (nextkey = true),
-	 * from which a backward scan reads leftward.
+	 * A lower bound descends to the leftmost leaf that can hold an entry
+	 * after it (nextkey = false); an upper bound, to the rightmost (nextkey =
+	 * true).  A forward scan reads rightward from there and a backward one
+	 * leftward, whichever the bound is (bark_bound_strict).
 	 */
 	if (bark_make_bound(scan, dir, &bound))
-		return bark_search_bound(index, so->keyinfo, &bound, backward);
+	{
+		OffsetNumber off;
+
+		buf = bark_search_bound(index, so->keyinfo, &bound, bound.upper);
+		if (!BufferIsValid(buf))
+			return InvalidBuffer;
+
+		/*
+		 * The first entry after the bound: a forward scan starts there, a
+		 * backward one just before it.  bark_readpage clamps an offset past
+		 * either end of the page.
+		 */
+		off = bark_binsrch_bound(index, so->keyinfo, &bound,
+								 BufferGetPage(buf));
+		*startoff = backward ? OffsetNumberPrev(off) : off;
+		return buf;
+	}
 
 	/*
 	 * No usable bound: walk down the edge of the tree, as nbtree's
 	 * _bt_get_endpoint does, stepping right past ignorable pages and, for the
 	 * rightmost edge, past any page that split since we read its downlink.
 	 */
-	blkno = bark_get_root(index, NULL);
-	if (blkno == BARK_P_NONE)
+	buf = bark_get_root_buffer(index, BUFFER_LOCK_SHARE);
+	if (!BufferIsValid(buf))
 		return InvalidBuffer;
-	buf = ReadBuffer(index, blkno);
-	LockBuffer(buf, BUFFER_LOCK_SHARE);
 	for (;;)
 	{
 		OffsetNumber off;
 		IndexTuple	itup;
+		BarkItemBuf ibuf;
 
 		page = BufferGetPage(buf);
 		opaque = BarkPageGetOpaque(page);
@@ -779,11 +1834,15 @@ bark_start_leaf(IndexScanDesc scan, ScanDirection dir)
 			opaque = BarkPageGetOpaque(page);
 		}
 		if (BarkPageIsLeaf(opaque))
+		{
+			*startoff = backward ? PageGetMaxOffsetNumber(page) :
+				BarkPageFirstDataKey(opaque);
 			return buf;
+		}
 
 		off = backward ? PageGetMaxOffsetNumber(page) :
 			BarkPageFirstDataKey(opaque);
-		itup = (IndexTuple) PageGetItem(page, PageGetItemId(page, off));
+		itup = BarkPageGetItem(page, off, &ibuf);
 		blkno = BarkEntryGetDownLink(itup);
 		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
 		buf = ReleaseAndReadBuffer(buf, index, blkno);
@@ -914,35 +1973,10 @@ bark_parallel_release(IndexScanDesc scan, BlockNumber next_page,
 	ConditionVariableSignal(&bps->bps_cv);
 }
 
-/*
- * Compare index tuple `itup`'s leading-column value against a leading-array
- * element `elem`, in the index's key order (DESC inverted).  A NULL leading
- * value sorts per the column's NULLS option.  Returns <0, 0, >0 as itup's
- * leading value is before, equal to, or after `elem`.
- */
-static int
-bark_lead_cmp(IndexScanDesc scan, IndexTuple itup, Datum elem)
-{
-	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
-	TupleDesc	tupdesc = RelationGetDescr(scan->indexRelation);
-	BarkKeyColumn *col = &so->keyinfo->cols[0];
-	bool		isnull;
-	Datum		datum = index_getattr(itup, 1, tupdesc, &isnull);
-	int			c;
-
-	if (isnull)
-		return col->nulls_first ? -1 : 1;	/* NULL vs non-NULL elem */
-	c = DatumGetInt32(FunctionCall2Coll(&col->cmp, col->collation, datum, elem));
-	return col->reverse ? -c : c;
-}
-
-/* Make room for at least n more items in currPos.items. */
+/* Make room for at least `need` items in pos->items. */
 static void
-bark_pos_reserve(BarkScanOpaque so, int n)
+bark_pos_reserve(BarkScanOpaque so, BarkScanPosData *pos, int need)
 {
-	BarkScanPosData *pos = &so->currPos;
-	int			need = pos->lastItem + 1 + n;
-
 	if (need <= pos->maxItems)
 		return;
 	pos->maxItems = Max(need, Max(pos->maxItems * 2, 256));
@@ -955,19 +1989,73 @@ bark_pos_reserve(BarkScanOpaque so, int n)
 }
 
 /*
- * Copy the key columns of a matching entry into the tuple workspace for an
- * index-only scan, once per entry, and return its offset there.  `resolved`
- * is the entry with its attributes readable (the full tuple of an OVERSIZED
- * entry).  A LIST or POSTING entry is copied without its body; nothing reads
- * xs_itup's t_tid, so its members all share the one copy.
+ * Make an index-only scan's tuple workspace (currTuples or markTuples) hold
+ * at least `need` bytes, keeping its contents.
  */
-static uint32
-bark_save_tuple(BarkScanOpaque so, IndexTuple entry, IndexTuple resolved)
+static void
+bark_tuples_reserve(BarkScanOpaque so, char **tuples, uint32 *size, Size need)
 {
-	BarkScanPosData *pos = &so->currPos;
+	Size		newsize;
+
+	if (*tuples != NULL && need <= *size)
+		return;
+	newsize = Max((Size) BLCKSZ, Max((Size) *size * 2, need));
+	if (*tuples == NULL)
+		*tuples = MemoryContextAlloc(so->scanCxt, newsize);
+	else
+		*tuples = repalloc(*tuples, newsize);
+	*size = newsize;
+}
+
+/*
+ * Copy position src into dst, as nbtree's mark/restore copies a BTScanPosData:
+ * the page details, the items read from the page and, for an index-only scan,
+ * the tuple workspace those items refer to (srctuples, into *dsttuples).  dst
+ * keeps its own items array, grown to fit.  When src holds a pin, dst gets a
+ * pin of its own on the same buffer.
+ */
+static void
+bark_copy_pos(BarkScanOpaque so, BarkScanPosData *dst, char **dsttuples,
+			  uint32 *dsttuplessize, BarkScanPosData *src, char *srctuples)
+{
+	BarkScanPosItem *items;
+	int			maxItems;
+
+	Assert(!BarkScanPosIsPinned(*dst));
+	bark_pos_reserve(so, dst, src->lastItem + 1);
+	items = dst->items;
+	maxItems = dst->maxItems;
+	*dst = *src;
+	dst->items = items;
+	dst->maxItems = maxItems;
+	if (src->lastItem >= 0)
+		memcpy(dst->items, src->items,
+			   (src->lastItem + 1) * sizeof(BarkScanPosItem));
+	if (src->nextTupleOffset > 0)
+	{
+		bark_tuples_reserve(so, dsttuples, dsttuplessize, src->nextTupleOffset);
+		memcpy(*dsttuples, srctuples, src->nextTupleOffset);
+	}
+	if (BarkScanPosIsPinned(*src))
+		IncrBufferRefCount(src->buf);
+}
+
+/*
+ * Copy the key columns of a matching entry into an index-only scan's tuple
+ * workspace (*tuples, *tuplesSize, grown as needed; *nextoff is its first
+ * free byte), once per entry, and return its offset there.  `resolved` is
+ * the entry with its attributes readable (the full tuple of an OVERSIZED
+ * entry).  A LIST or POSTING entry is copied without its body; nothing reads
+ * xs_itup's t_tid, so its members all share the one copy.  The plain scan
+ * and each KNN cursor have their own workspace.
+ */
+uint32
+bark_save_tuple(BarkScanOpaque so, char **tuples, uint32 *tuplesSize,
+				uint32 *nextoff, IndexTuple entry, IndexTuple resolved)
+{
 	BarkEntryShape shape = BarkEntryGetShape(entry);
 	Size		len;
-	uint32		off = pos->nextTupleOffset;
+	uint32		off = *nextoff;
 	IndexTuple	copy;
 
 	if (shape == BARK_SHAPE_LIST || shape == BARK_SHAPE_POSTING)
@@ -977,19 +2065,8 @@ bark_save_tuple(BarkScanOpaque so, IndexTuple entry, IndexTuple resolved)
 	else
 		len = IndexTupleSize(entry);
 
-	if (so->currTuples == NULL || off + MAXALIGN(len) > so->currTuplesSize)
-	{
-		Size		newsize = Max((Size) BLCKSZ,
-								  Max(so->currTuplesSize * 2, off + MAXALIGN(len)));
-
-		if (so->currTuples == NULL)
-			so->currTuples = MemoryContextAlloc(so->scanCxt, newsize);
-		else
-			so->currTuples = repalloc(so->currTuples, newsize);
-		so->currTuplesSize = newsize;
-	}
-
-	copy = (IndexTuple) (so->currTuples + off);
+	bark_tuples_reserve(so, tuples, tuplesSize, off + MAXALIGN(len));
+	copy = (IndexTuple) (*tuples + off);
 	memcpy(copy, resolved, len);
 	if (shape == BARK_SHAPE_LIST || shape == BARK_SHAPE_POSTING)
 	{
@@ -997,7 +2074,7 @@ bark_save_tuple(BarkScanOpaque so, IndexTuple entry, IndexTuple resolved)
 		copy->t_info = (copy->t_info & ~(INDEX_SIZE_MASK | INDEX_AM_RESERVED_BIT)) |
 			(uint16) len;
 	}
-	pos->nextTupleOffset = off + MAXALIGN(len);
+	*nextoff = off + MAXALIGN(len);
 	return off;
 }
 
@@ -1017,9 +2094,16 @@ bark_save_tuple(BarkScanOpaque so, IndexTuple entry, IndexTuple resolved)
  *
  * items[] is in index order whatever the direction: a backward read fills it
  * from the top down, ending with firstItem at the lowest slot used.
+ *
+ * firstpage says the page is the first one a descent reached.  On any later
+ * page the keys every entry satisfies are found once and not tested again
+ * per entry (bark_page_satisfied_keys).  As in nbtree, the first page goes
+ * without: a selective lookup, which reads only that page, would mostly pay
+ * for the check without gaining from it.
  */
 static bool
-bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum)
+bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
+			  bool firstpage)
 {
 	Relation	index = scan->indexRelation;
 	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
@@ -1029,9 +2113,12 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum)
 	bool		forward = ScanDirectionIsForward(dir);
 	OffsetNumber minoff = BarkPageFirstDataKey(opaque);
 	OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
-	BarkArrayKeyState *lead = so->leadArray;
 	int			nmatched = 0;
 	int			nitems = 0;
+	uint64		skipkeys = 0;
+	bool		allsatisfied = false;
+	bool		skipdone = false;	/* bark_skip_on_page reached the page end */
+	bool		skipreseek = false; /* ... and asked for a re-descent */
 
 	Assert(!BarkPageIgnore(opaque));
 	pos->currPage = BufferGetBlockNumber(pos->buf);
@@ -1054,58 +2141,66 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum)
 	 */
 	PredicateLockPage(index, pos->currPage, scan->xs_snapshot);
 
-	/* A leading SAOP whose elements are all behind us matches nothing more. */
-	if (lead != NULL && lead->cur >= lead->nelems)
-	{
-		if (forward)
-			pos->moreRight = false;
-		else
-			pos->moreLeft = false;
-		return false;
-	}
-
 	if (forward)
 		offnum = Max(offnum, minoff);
 	else
 		offnum = Min(offnum, maxoff);
 
+	if (!firstpage && minoff < maxoff && scan->numberOfKeys > 0)
+	{
+		skipkeys = bark_page_satisfied_keys(scan, page, minoff, maxoff);
+		allsatisfied = scan->numberOfKeys < 64 &&
+			skipkeys == (UINT64CONST(1) << scan->numberOfKeys) - 1;
+	}
+
 	for (; forward ? offnum <= maxoff : offnum >= minoff;
 		 offnum = forward ? OffsetNumberNext(offnum) : OffsetNumberPrev(offnum))
 	{
-		IndexTuple	itup = (IndexTuple) PageGetItem(page,
-													PageGetItemId(page, offnum));
+		BarkItemBuf ibuf;
+		IndexTuple	itup = BarkPageGetItem(page, offnum, &ibuf);
 		bool		fetched;
 		IndexTuple	resolved = bark_scan_resolve(index, itup, &fetched);
 		int			ntids;
 		uint32		tupoff = 0;
 
-		/*
-		 * Leading-array cursor, forward only: once the leading value is past
-		 * the current element, that element's run is over; move the cursor to
-		 * the first element not before this value.  The membership filter
-		 * returns later elements' entries on this page correctly; the cursor
-		 * only decides when to stop and where the next page should
-		 * re-descend.
-		 */
-		if (lead != NULL && forward)
+		if (!allsatisfied && !bark_tuple_matches(scan, resolved, skipkeys))
 		{
-			while (lead->cur < lead->nelems &&
-				   bark_lead_cmp(scan, resolved, lead->elems[lead->cur]) > 0)
-				lead->cur++;
-			if (lead->cur >= lead->nelems)
+			bool		stop = bark_past_bound(scan, resolved, dir);
+			bool		leave = false;
+
+			/*
+			 * Required keys: an entry that fails the keys may show that the
+			 * current combination's run is over.  The cursors then move on,
+			 * and when the new combination starts beyond this page the scan
+			 * stops reading it and re-descends.  An entry that matches is
+			 * equal to some combination, perhaps not the current one: the
+			 * cursors may lag behind such entries, never run ahead of them,
+			 * which is all bark_req_advance needs.  The membership filter
+			 * decides what matches; the cursors only decide when to stop and
+			 * where to re-descend.  A parallel scan stops reading the page
+			 * the same way, but reads every page the shared cursor hands it
+			 * rather than re-descending (bark_readnextpage).
+			 */
+			if (!stop && so->numReqKeys > 0)
 			{
-				if (fetched)
-					pfree(resolved);
-				pos->moreRight = false;
-				break;
+				int			r = bark_req_advance(scan, resolved, dir);
+				int			np = r > 0 ? bark_req_next_page(scan, page, dir) : 0;
+
+				stop = r < 0 || np < 0;
+				leave = np > 0;
 			}
-		}
 
-		if (!bark_tuple_matches(scan, resolved))
-		{
-			bool		stop = (lead == NULL || !forward) &&
-				bark_past_bound(scan, resolved, dir);
-
+			/*
+			 * Skip scan: jump over the entries of this page that cannot
+			 * match.  The loop's increment then lands on the entry found.
+			 */
+			if (so->skip && forward && !stop)
+			{
+				offnum = bark_skip_on_page(scan, page, resolved, offnum, maxoff,
+										   &skipreseek);
+				skipdone = offnum > maxoff;
+				offnum = OffsetNumberPrev(offnum);
+			}
 			if (fetched)
 				pfree(resolved);
 			if (stop)
@@ -1114,6 +2209,11 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum)
 					pos->moreRight = false;
 				else
 					pos->moreLeft = false;
+				break;
+			}
+			if (leave)
+			{
+				pos->arrayReseek = true;
 				break;
 			}
 			continue;
@@ -1131,11 +2231,12 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum)
 		}
 		ntids = bark_entry_get_tids(itup, so->entryTids, so->entryTidsAlloc);
 		if (scan->xs_want_itup)
-			tupoff = bark_save_tuple(so, itup, resolved);
+			tupoff = bark_save_tuple(so, &so->currTuples, &so->currTuplesSize,
+									 &pos->nextTupleOffset, itup, resolved);
 		if (fetched)
 			pfree(resolved);
 
-		bark_pos_reserve(so, ntids);
+		bark_pos_reserve(so, pos, pos->lastItem + 1 + ntids);
 		if (forward)
 		{
 			for (int i = 0; i < ntids; i++)
@@ -1180,27 +2281,13 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum)
 		}
 	}
 
-	/*
-	 * Forward leading-array scan: when the next element sorts strictly after
-	 * this page's high key, it lies beyond the right sibling; re-descend to
-	 * it instead of reading every page in between.  Strictly: an element
-	 * equal to the high key starts on the right sibling (or, in a run of
-	 * equal keys that crosses the boundary, already on this page), and the
-	 * plain step right reaches it.  A truncated or OVERSIZED high key does
-	 * not carry the leading column inline, so take the plain step then.
-	 */
-	if (lead != NULL && forward && pos->moreRight &&
-		!BarkPageRightmost(opaque) && lead->cur < lead->nelems)
-	{
-		IndexTuple	hikey = (IndexTuple) PageGetItem(page,
-													 PageGetItemId(page, BARK_P_HIKEY));
+	for (int k = 0; k < so->numReqKeys; k++)
+		pos->arrayCur[k] = so->reqKeys[k]->cur;
 
-		if (BarkEntryGetShape(hikey) != BARK_SHAPE_OVERSIZED &&
-			BarkEntryGetPivotNAtts(hikey) >= 1 &&
-			bark_lead_cmp(scan, hikey, lead->elems[lead->cur]) < 0)
-			pos->arrayReseek = true;
-	}
-	pos->arrayCur = lead != NULL ? lead->cur : 0;
+	if (so->skip && forward && pos->moreRight && scan->parallel_scan == NULL &&
+		!BarkPageRightmost(opaque) && maxoff >= minoff)
+		pos->arrayReseek = skipdone ? skipreseek :
+			bark_skip_plan(scan, page, maxoff);
 
 	if (nitems == 0)
 		return false;
@@ -1249,7 +2336,7 @@ bark_drop_lock_and_maybe_pin(BarkScanOpaque so)
  * share-locked, with *blkno set, or InvalidBuffer when there is no page to
  * the left.  The page returned may be half-dead; the caller steps past it.
  */
-static Buffer
+Buffer
 bark_lock_and_validate_left(Relation index, BlockNumber *blkno,
 							BlockNumber lastcurrblkno)
 {
@@ -1347,8 +2434,25 @@ bark_readnextpage(IndexScanDesc scan, BlockNumber blkno,
 	Relation	index = scan->indexRelation;
 	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
 	bool		forward = ScanDirectionIsForward(dir);
+	bool		reseek;
+	OffsetNumber startoff;
+	OffsetNumber readoff = InvalidOffsetNumber; /* where a re-descent starts */
+	bool		firstpage = false;	/* the page is a re-descent's first */
 
 	Assert(!BarkScanPosIsPinned(so->currPos));
+
+	/*
+	 * A read in dir of the page we leave may have asked to re-descend rather
+	 * than step to the sibling: a scan with required keys whose next
+	 * combination starts beyond the sibling (bark_req_next_page), or a
+	 * forward skip scan whose next group does.  The descent goes to the
+	 * required keys' current combination, which the caller has restored from
+	 * currPos.  A parallel scan reads whatever page the shared cursor hands
+	 * it instead.  Each re-descent happens in this loop, so a long run of
+	 * pages without matches costs no stack.
+	 */
+	reseek = so->currPos.dir == dir && so->currPos.arrayReseek &&
+		scan->parallel_scan == NULL;
 
 	if (forward)
 		so->currPos.moreLeft = true;
@@ -1360,30 +2464,48 @@ bark_readnextpage(IndexScanDesc scan, BlockNumber blkno,
 		Page		page;
 		BarkPageOpaque opaque;
 
-		if (blkno == BARK_P_NONE ||
-			(forward ? !so->currPos.moreRight : !so->currPos.moreLeft))
+		if (reseek)
+		{
+			CHECK_FOR_INTERRUPTS();
+			reseek = false;
+			pgstat_count_index_scan(index);
+			if (scan->instrument)
+				scan->instrument->nsearches++;
+			if (so->skip)
+				so->skipReseeking = true;
+			so->currPos.buf = bark_start_leaf(scan, dir, &startoff);
+			if (!BufferIsValid(so->currPos.buf))
+			{
+				BarkScanPosInvalidate(so->currPos);
+				return false;
+			}
+			blkno = BufferGetBlockNumber(so->currPos.buf);
+			readoff = startoff;
+			firstpage = true;
+		}
+		else if (blkno == BARK_P_NONE ||
+				 (forward ? !so->currPos.moreRight : !so->currPos.moreLeft))
 		{
 			BarkScanPosInvalidate(so->currPos);
 			bark_parallel_done(scan);
 			return false;
 		}
-
-		if (!seized && scan->parallel_scan != NULL &&
-			!bark_parallel_seize(scan, &blkno, &lastcurrblkno))
+		else if (!seized && scan->parallel_scan != NULL &&
+				 !bark_parallel_seize(scan, &blkno, &lastcurrblkno))
 		{
 			BarkScanPosInvalidate(so->currPos);
 			return false;
 		}
-		Assert(BlockNumberIsValid(blkno));
-
-		if (forward)
+		else if (forward)
 		{
+			Assert(BlockNumberIsValid(blkno));
 			CHECK_FOR_INTERRUPTS();
 			so->currPos.buf = ReadBuffer(index, blkno);
 			LockBuffer(so->currPos.buf, BUFFER_LOCK_SHARE);
 		}
 		else
 		{
+			Assert(BlockNumberIsValid(blkno));
 			so->currPos.buf = bark_lock_and_validate_left(index, &blkno,
 														  lastcurrblkno);
 			if (so->currPos.buf == InvalidBuffer)
@@ -1399,10 +2521,13 @@ bark_readnextpage(IndexScanDesc scan, BlockNumber blkno,
 		lastcurrblkno = blkno;
 		if (!BarkPageIgnore(opaque))
 		{
-			if (bark_readpage(scan, dir, forward ? BarkPageFirstDataKey(opaque) :
-							  PageGetMaxOffsetNumber(page)))
+			if (readoff == InvalidOffsetNumber)
+				readoff = forward ? BarkPageFirstDataKey(opaque) :
+					PageGetMaxOffsetNumber(page);
+			if (bark_readpage(scan, dir, readoff, firstpage))
 				break;
 			blkno = forward ? so->currPos.nextPage : so->currPos.prevPage;
+			reseek = so->currPos.arrayReseek && scan->parallel_scan == NULL;
 		}
 		else
 		{
@@ -1414,6 +2539,8 @@ bark_readnextpage(IndexScanDesc scan, BlockNumber blkno,
 		UnlockReleaseBuffer(so->currPos.buf);
 		so->currPos.buf = InvalidBuffer;
 		seized = false;
+		readoff = InvalidOffsetNumber;
+		firstpage = false;
 	}
 
 	bark_drop_lock_and_maybe_pin(so);
@@ -1434,8 +2561,6 @@ bark_first(IndexScanDesc scan, ScanDirection dir)
 	BlockNumber blkno = InvalidBlockNumber;
 	BlockNumber lastcurrblkno = InvalidBlockNumber;
 	Buffer		buf;
-	Page		page;
-	BarkPageOpaque opaque;
 	OffsetNumber offnum;
 
 	Assert(!BarkScanPosIsValid(so->currPos));
@@ -1444,9 +2569,11 @@ bark_first(IndexScanDesc scan, ScanDirection dir)
 	if (scan->instrument)
 		scan->instrument->nsearches++;
 
-	/* An empty IN-list (or all-NULL array) on the leading column: no rows. */
-	if (so->leadArray != NULL && so->leadArray->nelems == 0)
-		return false;
+	/* An empty IN-list (or all-NULL array) on any column: no rows. */
+	for (int a = 0; a < so->numArrayKeys; a++)
+		if (so->arrayKeys[a].nelems == 0)
+			return false;
+	bark_req_reset(so, 0, dir);
 
 	if (scan->parallel_scan != NULL)
 	{
@@ -1462,10 +2589,8 @@ bark_first(IndexScanDesc scan, ScanDirection dir)
 
 	so->currPos.moreLeft = ScanDirectionIsBackward(dir);
 	so->currPos.moreRight = ScanDirectionIsForward(dir);
-	if (so->leadArray != NULL && ScanDirectionIsBackward(dir))
-		so->leadArray->cur = 0;
 
-	buf = bark_start_leaf(scan, dir);
+	buf = bark_start_leaf(scan, dir, &offnum);
 	if (!BufferIsValid(buf))
 	{
 		/* Empty index.  A serializable scan must lock the whole relation. */
@@ -1474,13 +2599,9 @@ bark_first(IndexScanDesc scan, ScanDirection dir)
 		return false;
 	}
 
-	page = BufferGetPage(buf);
-	opaque = BarkPageGetOpaque(page);
-	offnum = ScanDirectionIsForward(dir) ? BarkPageFirstDataKey(opaque) :
-		PageGetMaxOffsetNumber(page);
 	so->currPos.buf = buf;
 
-	if (bark_readpage(scan, dir, offnum))
+	if (bark_readpage(scan, dir, offnum, true))
 	{
 		bark_drop_lock_and_maybe_pin(so);
 		return true;
@@ -1492,26 +2613,7 @@ bark_first(IndexScanDesc scan, ScanDirection dir)
 	lastcurrblkno = so->currPos.currPage;
 	UnlockReleaseBuffer(so->currPos.buf);
 	so->currPos.buf = InvalidBuffer;
-	if (so->currPos.arrayReseek && ScanDirectionIsForward(dir))
-		return bark_array_reseek(scan, dir);
 	return bark_readnextpage(scan, blkno, lastcurrblkno, dir, false);
-}
-
-/*
- * Forward leading-array scan whose next element lies beyond the right
- * sibling: re-descend to it.  The cursor was left on that element by
- * bark_readpage.  A parallel scan never takes this path (each worker reads
- * whatever page the shared cursor hands it).
- */
-static bool
-bark_array_reseek(IndexScanDesc scan, ScanDirection dir)
-{
-	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
-
-	Assert(scan->parallel_scan == NULL && so->leadArray != NULL);
-	so->leadArray->cur = so->currPos.arrayCur;
-	BarkScanPosInvalidate(so->currPos);
-	return bark_first(scan, dir);
 }
 
 /*
@@ -1527,26 +2629,44 @@ bark_steppage(IndexScanDesc scan, ScanDirection dir)
 	BlockNumber lastcurrblkno;
 
 	Assert(BarkScanPosIsValid(so->currPos));
+
+	/*
+	 * A mark on this page is only an itemIndex so far; before leaving the
+	 * page, make it a full copy of the position (nbtree's _bt_steppage); the
+	 * required keys' cursors and the re-descent flag travel with the copy, so
+	 * restoring the mark also restores where the scan goes next.
+	 */
+	if (so->markItemIndex >= 0)
+	{
+		Assert(scan->parallel_scan == NULL);
+		bark_copy_pos(so, &so->markPos, &so->markTuples, &so->markTuplesSize,
+					  &so->currPos, so->currTuples);
+		so->markPos.itemIndex = so->markItemIndex;
+		so->markItemIndex = -1;
+	}
+
 	BarkScanPosUnpinIfPinned(so->currPos);
 
 	blkno = ScanDirectionIsForward(dir) ? so->currPos.nextPage :
 		so->currPos.prevPage;
 	lastcurrblkno = so->currPos.currPage;
 
-	if (so->leadArray != NULL)
+	/*
+	 * The required keys' cursors continue from where the page's read left
+	 * them, or, when the scan reverses direction, from the first combination
+	 * in the new one.  That never skips a match: the first entry read moves
+	 * the cursors to where it sorts (bark_req_advance).  The cursors in the
+	 * array state may describe another page (a restored mark is read from its
+	 * copy).  A re-descent the page asked for (arrayReseek) is taken by
+	 * bark_readnextpage.
+	 */
+	if (so->currPos.dir == dir)
 	{
-		if (ScanDirectionIsForward(dir) && so->currPos.dir == dir &&
-			so->currPos.arrayReseek && scan->parallel_scan == NULL)
-			return bark_array_reseek(scan, dir);
-
-		/*
-		 * The cursor drives only forward reads; a forward read after a
-		 * backward one, or after a reversal, restarts it from the position's
-		 * saved value (0 after a backward read), which is never ahead of the
-		 * page we step to.
-		 */
-		so->leadArray->cur = so->currPos.dir == dir ? so->currPos.arrayCur : 0;
+		for (int k = 0; k < so->numReqKeys; k++)
+			so->reqKeys[k]->cur = so->currPos.arrayCur[k];
 	}
+	else
+		bark_req_reset(so, 0, dir);
 
 	return bark_readnextpage(scan, blkno, lastcurrblkno, dir, false);
 }
@@ -1640,20 +2760,108 @@ bark_endscan(IndexScanDesc scan)
 	if (so == NULL)
 		return;
 	bark_knn_endscan(scan);
-	bark_free_array_keys(so);
+	if (so->arrayCxt != NULL)
+		MemoryContextDelete(so->arrayCxt);
 	BarkScanPosUnpinIfPinned(so->currPos);
+	BarkScanPosUnpinIfPinned(so->markPos);
 	if (so->currPos.items)
 		pfree(so->currPos.items);
+	if (so->markPos.items)
+		pfree(so->markPos.items);
 	if (so->currTuples)
 		pfree(so->currTuples);
+	if (so->markTuples)
+		pfree(so->markTuples);
 	if (so->entryTids)
 		pfree(so->entryTids);
 	if (so->keyCmp)
 		pfree(so->keyCmp);
+	if (!so->skipValueByVal && so->skipValue != (Datum) 0)
+		pfree(DatumGetPointer(so->skipValue));
+	if (so->skipSupport)
+		pfree(so->skipSupport);
 	if (so->keyinfo)
 		pfree(so->keyinfo);
 	pfree(so);
 	scan->opaque = NULL;
+}
+
+/*
+ * bark_markpos -- remember the current scan position (nbtree's btmarkpos).
+ *
+ * Only the itemIndex is recorded.  If the scan leaves the page before the
+ * mark is moved, bark_steppage makes the full copy in markPos; a merge join
+ * usually moves its mark first, so that copy is rarely needed.
+ */
+void
+bark_markpos(IndexScanDesc scan)
+{
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+
+	/* The planner never asks a parallel or an ordered-operator scan. */
+	Assert(scan->parallel_scan == NULL);
+	Assert(scan->numberOfOrderBys == 0);
+
+	/* An older mark may hold a pin (never a lock). */
+	BarkScanPosUnpinIfPinned(so->markPos);
+
+	if (BarkScanPosIsValid(so->currPos))
+		so->markItemIndex = so->currPos.itemIndex;
+	else
+	{
+		BarkScanPosInvalidate(so->markPos);
+		so->markItemIndex = -1;
+	}
+}
+
+/*
+ * bark_restrpos -- return the scan to the marked position (nbtree's
+ * btrestrpos).  The next bark_gettuple advances from the marked item in the
+ * scan direction.  An item inside a LIST or POSTING entry is restored to the
+ * same member, since every member is its own item.
+ */
+void
+bark_restrpos(IndexScanDesc scan)
+{
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+
+	/* The planner never asks a parallel or an ordered-operator scan. */
+	Assert(scan->parallel_scan == NULL);
+	Assert(scan->numberOfOrderBys == 0);
+
+	if (so->markItemIndex >= 0)
+	{
+		/*
+		 * The scan has not left the marked page, so currPos still holds it;
+		 * markPos may be stale and is not used.
+		 */
+		so->currPos.itemIndex = so->markItemIndex;
+	}
+	else
+	{
+		BarkScanPosUnpinIfPinned(so->currPos);
+		if (BarkScanPosIsValid(so->markPos))
+		{
+			bark_copy_pos(so, &so->currPos, &so->currTuples,
+						  &so->currTuplesSize, &so->markPos, so->markTuples);
+
+			/*
+			 * skipBound describes the page read last, not the marked one; the
+			 * restored scan steps right from the marked page instead.
+			 */
+			if (so->skip)
+				so->currPos.arrayReseek = false;
+		}
+		else
+		{
+			/*
+			 * No mark was taken on a page, so the next gettuple starts the
+			 * scan again (bark_first), as nbtree's does, with the required
+			 * keys on their first combination.
+			 */
+			BarkScanPosInvalidate(so->currPos);
+		}
+	}
 }
 
 /*
