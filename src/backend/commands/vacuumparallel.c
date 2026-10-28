@@ -1149,6 +1149,8 @@ parallel_vacuum_process_one_index(ParallelVacuumState *pvs, Relation indrel,
 	ivinfo.estimated_count = pvs->shared->estimated_count;
 	ivinfo.num_heap_tuples = pvs->shared->reltuples;
 	ivinfo.strategy = pvs->bstrategy;
+	ivinfo.version_callback = NULL;
+	ivinfo.version_state = NULL;
 
 	/* Update error traceback information */
 	pvs->indname = pstrdup(RelationGetRelationName(indrel));
