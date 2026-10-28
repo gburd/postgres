@@ -273,6 +273,21 @@ my_tableam_handler(PG_FUNCTION_ARGS)
    </varlistentry>
 
    <varlistentry>
+    <term><structfield>versioned</structfield></term>
+    <listitem>
+     <para>
+      Whether an index entry names a row version as a locator and a 4-byte
+      <firstterm>version tag</firstterm>, rather than by the locator alone.
+      For <literal>heap</literal> it does not: an update that changes an
+      indexed column gives the new version a new <acronym>TID</acronym>, and
+      no entry carries a tag.  An access method that updates rows in place
+      can say it does, and so keep a row's locator across an update of
+      indexed columns; see <xref linkend="tableam-versioned-locators"/>.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
     <term><structfield>bitmap_and_inexact</structfield>, <structfield>bitmap_or_inexact</structfield></term>
     <listitem>
      <para>
@@ -327,6 +342,46 @@ my_tableam_handler(PG_FUNCTION_ARGS)
     </para>
    </listitem>
   </itemizedlist>
+
+  <sect2 id="tableam-versioned-locators">
+   <title>Versioned Locators</title>
+
+   <para>
+    An index entry for a table whose locator is
+    <structfield>versioned</structfield> carries a
+    <firstterm>version tag</firstterm>, of type
+    <type>IndexVersionTag</type> (a 4-byte unsigned integer).  The contract
+    between the table access method, index access methods and core code is:
+   </para>
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      Tag 0 (<symbol>InvalidIndexVersionTag</symbol>) means
+      <quote>untagged</quote>: the entry was made by an access method that
+      does not tag, or for a row version older than the oldest one the table
+      access method keeps history for.  It does not mean <quote>the current
+      version</quote>.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      The table access method hands out tags and alone defines what they
+      mean.  Only it can tell whether an entry (key, locator, tag) is valid
+      for the version of the row a snapshot sees, and when old tags may be
+      forgotten.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      An index access method that sets
+      <structfield>amcanversion</structfield> stores, orders and returns tags,
+      but never interprets them (see <xref linkend="index-api"/>).  Other
+      index access methods store no tags.
+     </para>
+    </listitem>
+   </itemizedlist>
+  </sect2>
  </sect1>
 
 </chapter>
