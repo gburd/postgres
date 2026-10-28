@@ -1,0 +1,136 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1_attach s1_vacuum s2_split s3_wakeup s1_check
+injection_points_set_local
+--------------------------
+                          
+(1 row)
+
+step s1_attach: 
+	SELECT injection_points_attach('bark-bulkdelete-after-page', 'wait',
+		(SELECT max(blkno) + 1 FROM bark_vs_free)::text);
+
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+step s1_vacuum: VACUUM (INDEX_CLEANUP ON) bark_vs; <waiting ...>
+step s2_split: 
+	INSERT INTO bark_vs SELECT 10 * g + 5 FROM generate_series(2300, 2500) g;
+	SELECT count(*) > 0 AS split_reused_free_block
+	  FROM bark_vs_free f
+	 WHERE pg_freespace('bark_vs_idx', f.blkno) = 0;
+
+split_reused_free_block
+-----------------------
+t                      
+(1 row)
+
+step s3_wakeup: 
+	SELECT injection_points_detach('bark-bulkdelete-after-page');
+	SELECT injection_points_wakeup('bark-bulkdelete-after-page');
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+injection_points_wakeup
+-----------------------
+                       
+(1 row)
+
+step s1_vacuum: <... completed>
+step s1_check: 
+	SELECT bark_index_check('bark_vs_idx');
+	SET enable_seqscan = off;
+	SET enable_bitmapscan = off;
+	EXPLAIN (COSTS OFF) SELECT count(*) FROM bark_vs WHERE a > 0;
+	SELECT count(*) AS index_only_count FROM bark_vs WHERE a > 0;
+	RESET enable_seqscan;
+	RESET enable_bitmapscan;
+	SELECT count(*) AS heap_count FROM bark_vs;
+
+bark_index_check
+----------------
+                
+(1 row)
+
+QUERY PLAN                                        
+--------------------------------------------------
+Aggregate                                         
+  ->  Index Only Scan using bark_vs_idx on bark_vs
+        Index Cond: (a > 0)                       
+(3 rows)
+
+index_only_count
+----------------
+            1801
+(1 row)
+
+heap_count
+----------
+      1801
+(1 row)
+
+
+starting permutation: s2_pin s1_vacuum s2_unpin s1_check
+injection_points_set_local
+--------------------------
+                          
+(1 row)
+
+step s2_pin: 
+	BEGIN;
+	DECLARE c CURSOR FOR SELECT a FROM bark_vs WHERE a > 0 ORDER BY a;
+	FETCH 1 FROM c;
+
+ a
+--
+10
+(1 row)
+
+step s1_vacuum: VACUUM (INDEX_CLEANUP ON) bark_vs; <waiting ...>
+step s2_unpin: 
+	SELECT bark_wait_for_cleanup_lock('s1');
+	COMMIT;
+
+bark_wait_for_cleanup_lock
+--------------------------
+waiting for cleanup lock  
+(1 row)
+
+step s1_vacuum: <... completed>
+step s1_check: 
+	SELECT bark_index_check('bark_vs_idx');
+	SET enable_seqscan = off;
+	SET enable_bitmapscan = off;
+	EXPLAIN (COSTS OFF) SELECT count(*) FROM bark_vs WHERE a > 0;
+	SELECT count(*) AS index_only_count FROM bark_vs WHERE a > 0;
+	RESET enable_seqscan;
+	RESET enable_bitmapscan;
+	SELECT count(*) AS heap_count FROM bark_vs;
+
+bark_index_check
+----------------
+                
+(1 row)
+
+QUERY PLAN                                        
+--------------------------------------------------
+Aggregate                                         
+  ->  Index Only Scan using bark_vs_idx on bark_vs
+        Index Cond: (a > 0)                       
+(3 rows)
+
+index_only_count
+----------------
+            1600
+(1 row)
+
+heap_count
+----------
+      1600
+(1 row)
+
