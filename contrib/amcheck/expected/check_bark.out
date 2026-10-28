@@ -449,6 +449,12 @@ SELECT bark_index_check('bark_check_empty_idx');
  
 (1 row)
 
+SELECT bark_index_parent_check('bark_check_empty_idx');
+ bark_index_parent_check 
+-------------------------
+ 
+(1 row)
+
 SELECT bark_index_check('bark_check_empty_idx', false);
  bark_index_check 
 ------------------
@@ -456,3 +462,5 @@ SELECT bark_index_check('bark_check_empty_idx', false);
 (1 row)
 
 DROP TABLE bark_check_empty;
+-- Leave the extension at the current version for the tests after this one.
+ALTER EXTENSION amcheck UPDATE TO '1.8';

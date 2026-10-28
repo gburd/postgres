@@ -14,13 +14,19 @@ AS 'MODULE_PATHNAME', 'bark_index_check'
 LANGUAGE C STRICT PARALLEL RESTRICTED;
 
 --
--- bark_index_parent_check()
+-- bark_index_parent_check(), in the same two forms
 --
+CREATE FUNCTION bark_index_parent_check(index regclass)
+RETURNS VOID
+AS 'MODULE_PATHNAME', 'bark_index_parent_check'
+LANGUAGE C STRICT PARALLEL RESTRICTED;
+
 CREATE FUNCTION bark_index_parent_check(index regclass,
-    heapallindexed boolean DEFAULT false)
+    heapallindexed boolean)
 RETURNS VOID
 AS 'MODULE_PATHNAME', 'bark_index_parent_check'
 LANGUAGE C STRICT PARALLEL RESTRICTED;
 
 REVOKE ALL ON FUNCTION bark_index_check(regclass, boolean) FROM PUBLIC;
+REVOKE ALL ON FUNCTION bark_index_parent_check(regclass) FROM PUBLIC;
 REVOKE ALL ON FUNCTION bark_index_parent_check(regclass, boolean) FROM PUBLIC;
