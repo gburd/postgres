@@ -17,7 +17,7 @@ SELECT version, tree_level, internal_pages, empty_pages, deleted_pages,
   FROM pgstatbarkindex('bark_stat_bark');
  version | tree_level | internal_pages | empty_pages | deleted_pages | overflow_pages | leaf_fragmentation | single_entries | list_entries | posting_entries | oversized_entries | size_ok | pages_ok | root_ok 
 ---------+------------+----------------+-------------+---------------+----------------+--------------------+----------------+--------------+-----------------+-------------------+---------+----------+---------
-       2 |          1 |              1 |           0 |             0 |              0 |                  0 |          10000 |            0 |               0 |                 0 | t       | t        | t
+       3 |          1 |              1 |           0 |             0 |              0 |                  0 |          10000 |            0 |               0 |                 0 | t       | t        | t
 (1 row)
 
 SELECT abs(b.leaf_pages - t.leaf_pages) <= 1 AS leaves_like_btree,

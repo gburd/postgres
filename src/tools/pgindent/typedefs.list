@@ -264,6 +264,7 @@ BarkArrayKeyState
 BarkArraySortCtx
 BarkBoundary
 BarkBuildRun
+BarkChains
 BarkCoalesceResult
 BarkDeletedPageData
 BarkEntryShape
