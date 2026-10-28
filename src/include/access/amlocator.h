@@ -99,6 +99,20 @@
  *   xs_heaptag holds the entry's tag), and the index is passed wherever else
  *   core code asks the table AM about an entry.
  *
+ * - In an index scan of an index for which index_can_version() is true,
+ *   the table AM's xs_getnext_slot sets scan->xs_entry_verdict before it
+ *   next asks the index AM for a TID: VALID when it returned a row through
+ *   the entry (xs_heaptid, xs_heaptag), INVALID when it rejected the entry,
+ *   because no visible version exists or the entry is not valid for the
+ *   visible one.  This holds for index-only scans as well.  When one entry
+ *   yields several tuples (xs_heap_continue), the verdict is about the
+ *   entry: VALID once any tuple was returned through it, never lowered by
+ *   later calls.  An index AM that holds several entries per row, such as
+ *   a multikey index, reads it at the start of its next amgettuple call to
+ *   decide whether the row was returned, and so whether its other entries
+ *   may be skipped.  Core resets it to UNKNOWN after each amgettuple call,
+ *   and at rescan and restore.
+ *
  * - When the table AM's index build or validation scan hands an index that
  *   can store tags a row whose history since its base changed some
  *   attribute the index reads, it must set ii_VersionTag to the current
