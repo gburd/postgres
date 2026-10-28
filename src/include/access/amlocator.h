@@ -56,11 +56,14 @@
  * names a row version as (key, locator, tag).
  *
  * - A tag is an IndexVersionTag.  InvalidIndexVersionTag (0) means untagged.
- *   In an index whose AM can store tags (amcanversion), an untagged entry
- *   was made for a version older than whatever history the table AM keeps
- *   for the row (its "base"); it does not mean "the current version".  An
- *   index AM without amcanversion stores no tags, so all its entries are
- *   untagged.
+ *   In an index that can store tags (index_can_version()), an untagged
+ *   entry was made for a version older than whatever history the table AM
+ *   keeps for the row (its "base"); it does not mean "the current version".
+ *   Any other index stores no tags, so all its entries are untagged.
+ *   amcanversion says an index AM may store tags; amindexcanversion says
+ *   which of its indexes do, since an AM may support tags for only some of
+ *   them (by the format an index was built in, or by the kind of its
+ *   operator classes).
  *
  * - The table AM hands out tags and alone defines what they mean.  Entries
  *   made by INSERT, COPY and other insertions of a new row are untagged,
@@ -68,7 +71,7 @@
  *   table AM: with each new row version table_tuple_update() makes, and
  *   from its own index build and validation scans (IndexInfo.ii_VersionTag).
  *
- * - An index AM with amcanversion stores each entry's tag, orders equal
+ * - An index that can store tags stores each entry's tag, orders equal
  *   (key, locator) entries by it as an unsigned integer, and returns it
  *   with the locator, but never interprets it.
  *
@@ -85,8 +88,9 @@
  *   no version after it up to v changed an attribute that i reads; an
  *   untagged entry counts as naming the base.
  *
- * - The validity rule applies only to entries of indexes with amcanversion.
- *   Every other index keeps the invariant heap keeps (its entries' keys
+ * - The validity rule applies only to entries of indexes for which
+ *   index_can_version() is true.  Every other index keeps the invariant heap
+ *   keeps (its entries' keys
  *   describe every version their locator reaches), because the executor
  *   makes the table AM move the row whenever an update affects one of its
  *   attributes.  So the table AM resolves such an index's entries by
@@ -95,8 +99,8 @@
  *   xs_heaptag holds the entry's tag), and the index is passed wherever else
  *   core code asks the table AM about an entry.
  *
- * - When the table AM's index build or validation scan hands an
- *   amcanversion index a row whose history since its base changed some
+ * - When the table AM's index build or validation scan hands an index that
+ *   can store tags a row whose history since its base changed some
  *   attribute the index reads, it must set ii_VersionTag to the current
  *   version's tag; it may leave it untagged only if that history is empty.
  *   Otherwise the new entry would be judged as older than the base and

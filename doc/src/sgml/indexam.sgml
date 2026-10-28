@@ -193,6 +193,9 @@ typedef struct IndexAmRoutine
 
     /* interface function to support HOT updates */
     amcomparedatums_function amcomparedatums;    /* can be NULL */
+
+    /* which indexes of an amcanversion AM store version tags */
+    amindexcanversion_function amindexcanversion;    /* can be NULL */
 } IndexAmRoutine;
 </programlisting>
   </para>
@@ -307,6 +310,27 @@ typedef struct IndexAmRoutine
    stores no tags, so all its entries are untagged; the executor then never
    lets a versioned table keep a row's locator across an update that
    changes the index's columns.
+  </para>
+
+  <para>
+   An access method may support tags for only some of its indexes, for
+   example by the format an index was built in or by the kind of its
+   operator classes.  It then sets <structfield>amcanversion</structfield>
+   and provides
+<programlisting>
+bool
+amindexcanversion (Relation indexRelation);
+</programlisting>
+   which says whether this index stores tags.  Core code asks
+   <function>index_can_version()</function>, which is true if the access
+   method sets <structfield>amcanversion</structfield> and either has no
+   <function>amindexcanversion</function> or it returns
+   <literal>true</literal>.  An index for which it is false is treated as
+   an index of an access method without <structfield>amcanversion</structfield>.
+   The answer must not change during the life of the index's relfilenode.
+   In what follows, <quote>an access method that sets
+   <structfield>amcanversion</structfield></quote> means an index for which
+   <function>index_can_version()</function> is true.
   </para>
 
   <sect2 id="index-implementations">
