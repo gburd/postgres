@@ -486,6 +486,12 @@ int2 translate_cmptype(int4 cmptype)
    of a key that any of its index keys satisfies alone (a partial match,
    an <literal>OR</literal>) adds each index entry's rows straight to the
    bitmap, whose size <xref linkend="guc-work-mem"/> bounds, as in GIN.
+   Otherwise the rows of each index key are collected into a bitmap of
+   their own, each bounded by <xref linkend="guc-work-mem"/> in the same
+   way, and merged; so the memory such a scan uses does not grow with the
+   number of rows it matches, but a scan whose bitmaps outgrow
+   <varname>work_mem</varname> rechecks more rows against the table, as a
+   lossy GIN scan does.
   </para>
 
   <para>
