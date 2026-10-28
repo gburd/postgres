@@ -1,0 +1,520 @@
+Parsed test spec with 4 sessions
+
+starting permutation: s2_delete_t s1_attach_descend s1_range s2_vacuum s4_wake_descend s1_state
+?column?
+--------
+t       
+(1 row)
+
+injection_points_set_local
+--------------------------
+                          
+(1 row)
+
+injection_points_set_local
+--------------------------
+                          
+(1 row)
+
+step s2_delete_t: DELETE FROM sdi USING sdi_saved WHERE n BETWEEN tlo AND thi;
+step s1_attach_descend: SELECT injection_points_attach('bark-search-descend', 'wait');
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+step s1_range: 
+	SELECT n FROM sdi WHERE k >= sdk(sdi_tlo()) AND k < sdk(sdi_thi() + 30)
+	   AND pg_backend_pid() <> 0 ORDER BY k;
+ <waiting ...>
+step s2_vacuum: VACUUM sdi;
+step s4_wake_descend: 
+	SELECT injection_points_detach('bark-search-descend');
+	SELECT injection_points_wakeup('bark-search-descend');
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+injection_points_wakeup
+-----------------------
+                       
+(1 row)
+
+step s1_range: <... completed>
+  n
+---
+790
+800
+(2 rows)
+
+step s1_state: SELECT sdi_state(), sdi_same();
+sdi_state            |sdi_same
+---------------------+--------
+T deleted, C1 deleted|t       
+(1 row)
+
+
+starting permutation: s2_attach_locked s2_delete_t s2_vacuum s3_insert_r s4_wake_locked s3_state
+?column?
+--------
+t       
+(1 row)
+
+injection_points_set_local
+--------------------------
+                          
+(1 row)
+
+injection_points_set_local
+--------------------------
+                          
+(1 row)
+
+step s2_attach_locked: SELECT injection_points_attach('bark-delete-subtree-locked', 'wait');
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+step s2_delete_t: DELETE FROM sdi USING sdi_saved WHERE n BETWEEN tlo AND thi;
+step s2_vacuum: VACUUM sdi; <waiting ...>
+step s3_insert_r: INSERT INTO sdi VALUES (sdk(sdi_thi() + 10) || 'x', 0); <waiting ...>
+step s4_wake_locked: 
+	SELECT injection_points_detach('bark-delete-subtree-locked');
+	SELECT injection_points_wakeup('bark-delete-subtree-locked');
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+injection_points_wakeup
+-----------------------
+                       
+(1 row)
+
+step s2_vacuum: <... completed>
+step s3_insert_r: <... completed>
+step s3_state: SELECT sdi_state(), sdi_same();
+sdi_state            |sdi_same
+---------------------+--------
+T deleted, C1 deleted|t       
+(1 row)
+
+
+starting permutation: s2_prev s2_attach_found s2_delete_t s2_vacuum s3_attach_split s3_split_left s4_wake_split s4_wake_found s2_moved s3_state
+?column?
+--------
+t       
+(1 row)
+
+injection_points_set_local
+--------------------------
+                          
+(1 row)
+
+injection_points_set_local
+--------------------------
+                          
+(1 row)
+
+step s2_prev: 
+	CREATE TABLE sdi_prev AS SELECT bark_prev AS p FROM sdi_saved, bark_page_stats('sdi_idx', t);
+
+step s2_attach_found: SELECT injection_points_attach('bark-delete-subtree-found', 'wait');
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+step s2_delete_t: DELETE FROM sdi USING sdi_saved WHERE n BETWEEN tlo AND thi;
+step s2_vacuum: VACUUM sdi; <waiting ...>
+step s3_attach_split: SELECT injection_points_attach('bark-leave-leaf-split-incomplete', 'wait');
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+step s3_split_left: 
+	INSERT INTO sdi SELECT sdk((SELECT max(n) FROM sdi WHERE n < sdi_tlo())) || g, 0
+	  FROM generate_series(1, 6) g;
+ <waiting ...>
+step s4_wake_split: 
+	SELECT injection_points_detach('bark-leave-leaf-split-incomplete');
+	SELECT injection_points_wakeup('bark-leave-leaf-split-incomplete');
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+injection_points_wakeup
+-----------------------
+                       
+(1 row)
+
+step s4_wake_found: 
+	SELECT injection_points_detach('bark-delete-subtree-found');
+	SELECT injection_points_wakeup('bark-delete-subtree-found');
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+injection_points_wakeup
+-----------------------
+                       
+(1 row)
+
+step s2_vacuum: <... completed>
+step s3_split_left: <... completed>
+step s2_moved: 
+	SELECT bark_prev <> p AS left_sibling_moved
+	  FROM sdi_saved, sdi_prev, bark_page_stats('sdi_idx', t);
+
+left_sibling_moved
+------------------
+t                 
+(1 row)
+
+step s3_state: SELECT sdi_state(), sdi_same();
+sdi_state            |sdi_same
+---------------------+--------
+T deleted, C1 deleted|t       
+(1 row)
+
+
+starting permutation: s2_attach_found s2_delete_t s2_vacuum s3_insert_t s4_wake_found s2_state
+?column?
+--------
+t       
+(1 row)
+
+injection_points_set_local
+--------------------------
+                          
+(1 row)
+
+injection_points_set_local
+--------------------------
+                          
+(1 row)
+
+step s2_attach_found: SELECT injection_points_attach('bark-delete-subtree-found', 'wait');
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+step s2_delete_t: DELETE FROM sdi USING sdi_saved WHERE n BETWEEN tlo AND thi;
+step s2_vacuum: VACUUM sdi; <waiting ...>
+step s3_insert_t: INSERT INTO sdi VALUES (sdk(sdi_tlo()) || 'z', 0);
+step s4_wake_found: 
+	SELECT injection_points_detach('bark-delete-subtree-found');
+	SELECT injection_points_wakeup('bark-delete-subtree-found');
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+injection_points_wakeup
+-----------------------
+                       
+(1 row)
+
+step s2_vacuum: <... completed>
+step s2_state: SELECT sdi_state(), sdi_same();
+sdi_state          |sdi_same
+-------------------+--------
+T leaf, C1 internal|t       
+(1 row)
+
+
+starting permutation: s2_delete_t s1_cursor s2_vacuum s1_back s2_state
+?column?
+--------
+t       
+(1 row)
+
+injection_points_set_local
+--------------------------
+                          
+(1 row)
+
+injection_points_set_local
+--------------------------
+                          
+(1 row)
+
+step s2_delete_t: DELETE FROM sdi USING sdi_saved WHERE n BETWEEN tlo AND thi;
+step s1_cursor: 
+	BEGIN;
+	DECLARE c SCROLL CURSOR FOR SELECT n FROM sdi ORDER BY k;
+	FETCH ABSOLUTE 90 FROM c;
+
+   n
+----
+1260
+(1 row)
+
+step s2_vacuum: VACUUM sdi;
+step s1_back: 
+	FETCH BACKWARD 3 FROM c;
+	FETCH RELATIVE -70 FROM c;
+	COMMIT;
+
+   n
+----
+1250
+1240
+1230
+(3 rows)
+
+  n
+---
+170
+(1 row)
+
+step s2_state: SELECT sdi_state(), sdi_same();
+sdi_state            |sdi_same
+---------------------+--------
+T deleted, C1 deleted|t       
+(1 row)
+
+
+starting permutation: s2_free s1_begin s1_warm s1_attach_l1 s1_find_new s1_detach_l1 s3_split_r s3_split_r2 s3_detach_split s2_delete_t s2_vacuum s2_xid s2_vacuum s2_free s2_refill s1_find_new s1_commit s2_state
+?column?
+--------
+t       
+(1 row)
+
+injection_points_set_local
+--------------------------
+                          
+(1 row)
+
+injection_points_set_local
+--------------------------
+                          
+(1 row)
+
+step s2_free: 
+	SELECT count(*) AS free_pages FROM pg_freespace('sdi_idx') WHERE avail > 0;
+
+free_pages
+----------
+         0
+(1 row)
+
+step s1_begin: BEGIN ISOLATION LEVEL READ COMMITTED;
+step s1_warm: SELECT sdi_warm();
+sdi_warm
+--------
+     170
+(1 row)
+
+step s1_attach_l1: SELECT injection_points_attach('bark-l1-start', 'notice');
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+s1: NOTICE:  notice triggered for injection point bark-l1-start
+step s1_find_new: SELECT sdi_probe('y') AS found;
+found
+-----
+    0
+(1 row)
+
+step s1_detach_l1: SELECT injection_points_detach('bark-l1-start');
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+step s3_split_r: 
+	SELECT injection_points_attach('bark-leave-leaf-split-incomplete', 'error');
+	INSERT INTO sdi VALUES (sdk(sdi_thi() + 10) || 'a', 0);
+
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+ERROR:  error triggered for injection point bark-leave-leaf-split-incomplete
+step s3_split_r2: INSERT INTO sdi VALUES (sdk(sdi_r2hi()) || 'a', 0);
+ERROR:  error triggered for injection point bark-leave-leaf-split-incomplete
+step s3_detach_split: SELECT injection_points_detach('bark-leave-leaf-split-incomplete');
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+step s2_delete_t: DELETE FROM sdi USING sdi_saved WHERE n BETWEEN tlo AND thi;
+step s2_vacuum: VACUUM sdi;
+step s2_xid: SELECT pg_current_xact_id() IS NOT NULL AS xid_assigned;
+xid_assigned
+------------
+t           
+(1 row)
+
+step s2_vacuum: VACUUM sdi;
+step s2_free: 
+	SELECT count(*) AS free_pages FROM pg_freespace('sdi_idx') WHERE avail > 0;
+
+free_pages
+----------
+         2
+(1 row)
+
+step s2_refill: 
+	INSERT INTO sdi VALUES (sdk(sdi_tlo()) || 'y', 0);
+	INSERT INTO sdi VALUES (sdk(sdi_r2hi()) || 'b', 0);
+	SELECT sdi_type(c1) AS c1_now, (SELECT bark_level FROM bark_page_stats('sdi_idx', c1)) AS c1_level
+	  FROM sdi_saved;
+
+c1_now  |c1_level
+--------+--------
+internal|       1
+(1 row)
+
+step s1_find_new: SELECT sdi_probe('y') AS found;
+found
+-----
+    1
+(1 row)
+
+step s1_commit: COMMIT;
+step s2_state: SELECT sdi_state(), sdi_same();
+sdi_state             |sdi_same
+----------------------+--------
+T deleted, C1 internal|t       
+(1 row)
+
+
+starting permutation: s2_delete_t s1_pin s1_warm_c1 s1_attach_both s1_insert_w s2_vacuum s4_wake_descend s1_unpin s1_state
+?column?
+--------
+t       
+(1 row)
+
+injection_points_set_local
+--------------------------
+                          
+(1 row)
+
+injection_points_set_local
+--------------------------
+                          
+(1 row)
+
+step s2_delete_t: DELETE FROM sdi USING sdi_saved WHERE n BETWEEN tlo AND thi;
+step s1_pin: 
+	BEGIN;
+	DECLARE pin CURSOR FOR SELECT k FROM sdi WHERE k = '';
+
+step s1_warm_c1: SELECT count(*) FROM sdi WHERE k = sdk(sdi_tlo());
+count
+-----
+    0
+(1 row)
+
+step s1_attach_both: 
+	SELECT injection_points_attach('bark-l1-start', 'notice');
+	SELECT injection_points_attach('bark-search-descend', 'wait');
+
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+s1: NOTICE:  notice triggered for injection point bark-l1-start
+step s1_insert_w: INSERT INTO sdi VALUES (sdk(sdi_tlo()) || 'w', 0); <waiting ...>
+step s2_vacuum: VACUUM sdi;
+step s4_wake_descend: 
+	SELECT injection_points_detach('bark-search-descend');
+	SELECT injection_points_wakeup('bark-search-descend');
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+injection_points_wakeup
+-----------------------
+                       
+(1 row)
+
+step s1_insert_w: <... completed>
+step s1_unpin: COMMIT;
+step s1_state: SELECT sdi_state(), sdi_same();
+sdi_state            |sdi_same
+---------------------+--------
+T deleted, C1 deleted|t       
+(1 row)
+
+
+starting permutation: s2_attach_found s2_delete_q3 s2_vacuum s3_split_q s4_wake_found s2_q3 s2_state
+?column?
+--------
+t       
+(1 row)
+
+injection_points_set_local
+--------------------------
+                          
+(1 row)
+
+injection_points_set_local
+--------------------------
+                          
+(1 row)
+
+step s2_attach_found: SELECT injection_points_attach('bark-delete-subtree-found', 'wait');
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+step s2_delete_q3: 
+	DELETE FROM sdi WHERE ctid IN
+		(SELECT i.htid FROM sdi_saved, bark_page_items('sdi_idx', q3) i WHERE i.htid IS NOT NULL);
+
+step s2_vacuum: VACUUM sdi; <waiting ...>
+step s3_split_q: INSERT INTO sdi SELECT sdk(q5hi) || 'a', 0 FROM sdi_saved;
+step s4_wake_found: 
+	SELECT injection_points_detach('bark-delete-subtree-found');
+	SELECT injection_points_wakeup('bark-delete-subtree-found');
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+injection_points_wakeup
+-----------------------
+                       
+(1 row)
+
+step s2_vacuum: <... completed>
+step s2_q3: SELECT sdi_type(q3) AS q3 FROM sdi_saved;
+q3  
+----
+leaf
+(1 row)
+
+step s2_state: SELECT sdi_state(), sdi_same();
+sdi_state          |sdi_same
+-------------------+--------
+T leaf, C1 internal|t       
+(1 row)
+
