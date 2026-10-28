@@ -21,6 +21,7 @@ tests += {
       'bark_l1_cache',
       'bark_btree_impl',
       'bark_lpdead',
+      'bark_scan_members',
     ],
     'regress_args': ['--temp-config', files('../injection_points/extra.conf')],
     # The injection points are run in the same backend, so disable
@@ -42,6 +43,7 @@ tests += {
       'bark_lpdead_snapshot',
       'bark_unique_rebuild',
       'bark_excl_hot',
+      'bark_sample_split',
     ],
     'regress_args': ['--temp-config', files('../injection_points/extra.conf')],
     # Injection points are cluster-wide.
