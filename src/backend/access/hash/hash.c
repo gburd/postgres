@@ -124,6 +124,7 @@ hashhandler(PG_FUNCTION_ARGS)
 		.amparallelrescan = NULL,
 		.amtranslatestrategy = hashtranslatestrategy,
 		.amtranslatecmptype = hashtranslatecmptype,
+		.amcomparedatums = NULL,
 	};
 
 	PG_RETURN_POINTER(&amroutine);

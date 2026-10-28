@@ -173,6 +173,7 @@ bthandler(PG_FUNCTION_ARGS)
 		.amparallelrescan = btparallelrescan,
 		.amtranslatestrategy = bttranslatestrategy,
 		.amtranslatecmptype = bttranslatecmptype,
+		.amcomparedatums = NULL,
 	};
 
 	PG_RETURN_POINTER(&amroutine);
