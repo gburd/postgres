@@ -546,7 +546,10 @@ test=# SELECT itemoffset, ctid, itemlen, nulls, vars, data, dead, htid, tids[0:2
       the root's level, whether all key columns are
       <quote>equalimage</quote> (which decides whether equal keys are
       coalesced into LIST and POSTING entries), its flags (bit 0, multikey:
-      the index has held a row with more than one entry), and the number of
+      the index has held a row with more than one entry; bit 1, built for
+      version tags; bit 2, version tags on a multikey column's keys; bits 3
+      and 4, a conversion begun and settled, see
+      <xref linkend="bark-version-tags"/>), and the number of
       (key, heap TID) members as of the last <command>CREATE INDEX</command>
       or <command>VACUUM</command>.  An index whose meta page predates the
       last two reads 0 in both.  For example:
