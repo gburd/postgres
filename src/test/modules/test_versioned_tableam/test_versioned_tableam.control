@@ -1,0 +1,4 @@
+comment = 'Test code for version-tag plumbing between table and index AMs'
+default_version = '1.0'
+module_pathname = '$libdir/test_versioned_tableam'
+relocatable = true
