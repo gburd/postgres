@@ -2533,6 +2533,9 @@ typedef struct BarkScanOpaqueData
 	 */
 	BarkKnnScanState *knn;
 
+	/* A bitmap scan's batch of TIDs for tbm_add_tuples (barkscan.c) */
+	struct BarkTbmBatch *tbmBatch;
+
 	/*
 	 * The scan keys the btree-style code reads are scan->keyData[0 ..
 	 * numberOfKeys - 1].  In an index with an extracted column, rescan moves

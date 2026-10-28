@@ -22,6 +22,17 @@ test_install_data += files(
   'bark_multikey--1.0.sql',
 )
 
+bark_multikey_specs = [
+  'bark_multikey_concurrent',
+  'bark_multikey_unique_concurrent',
+  'bark_multikey_hot_epq',
+  'bark_multikey_exclude_concurrent',
+]
+# This one stops a scan at an injection point.
+if get_option('injection_points')
+  bark_multikey_specs += 'bark_multikey_gin_concurrent'
+endif
+
 tests += {
   'name': 'bark_multikey',
   'sd': meson.current_source_dir(),
@@ -35,6 +46,7 @@ tests += {
       'bark_multikey_ginmerge',
       'bark_multikey_ginscan',
       'bark_multikey_ginco',
+      'bark_multikey_ginbound',
       'bark_multikey_sim',
       'bark_locator',
       'bark_wideblock',
@@ -44,12 +56,7 @@ tests += {
     'regress_args': ['--load-extension=amcheck'],
   },
   'isolation': {
-    'specs': [
-      'bark_multikey_concurrent',
-      'bark_multikey_unique_concurrent',
-      'bark_multikey_hot_epq',
-      'bark_multikey_exclude_concurrent',
-    ],
+    'specs': bark_multikey_specs,
   },
   'tap': {
     'env': {
