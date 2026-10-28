@@ -2,7 +2,7 @@
 # Copyright (c) 2026, PostgreSQL Global Development Group
 
 # Corrupt BARK index pages on disk with the server stopped, as
-# 007_verify_bark.pl does, for the corruptions 007 does not plant: the
+# 008_verify_bark.pl does, for the corruptions 008 does not plant: the
 # tree-walk checks only bark_index_parent_check makes (bark_check_levels),
 # the per-page entry limits, deleted-page and prefix-page layouts, posting
 # sets of one member, and the marker rules of a multikey operator class.
@@ -22,6 +22,13 @@ $node->init(no_data_checksums => 1);
 $node->append_conf('postgresql.conf', 'autovacuum=off');
 $node->start;
 my $blksz = int($node->safe_psql('postgres', 'SHOW block_size'));
+# Blocks per relation file (--with-segsize-blocks can make it small).
+my $segblks = int($node->safe_psql('postgres',
+	"SELECT setting FROM pg_settings WHERE name = 'segment_size'"));
+my $maxalign = int($node->safe_psql('postgres',
+	'SELECT max_data_alignment FROM pg_control_init()'));
+# The server runs on this machine, so its pages are in Perl's byte order.
+my $little_endian = pack('L', 1) eq pack('V', 1);
 
 $node->safe_psql(
 	'postgres', q(
@@ -35,6 +42,7 @@ $node->safe_psql(
 	CREATE TABLE t_mk (id int, a int4[]);
 	CREATE TABLE t_empty (a int);
 	CREATE TABLE t_deep (a int);
+	CREATE TABLE t_ovf (k text COLLATE "C");
 	INSERT INTO t_deep SELECT g FROM generate_series(1, 40000) g;
 	INSERT INTO t_pfx SELECT 'a shared prefix of the keys ' || g FROM generate_series(1, 50) g;
 ));
@@ -57,7 +65,10 @@ my %idx = (
 	i_mk_notnull => [ 't_mk', 'id, a bark_int4_array_marked_ops' ],
 	i_mk_nomark => [ 't_mk', 'a bark_int4_array_ops' ],
 	map({ $_ => [ 't_deep', 'a', 'fillfactor = 10' ] }
-		qw(i_deep_notpivot i_deep_hikey i_deep_hktid i_deep_lastempty)));
+		qw(i_deep_notpivot i_deep_hikey i_deep_hktid i_deep_lastempty)),
+	map({ $_ => [ 't_ovf', 'k' ] }
+		qw(i_ovf_long i_ovf_loop i_ovf_leaf i_ovf_past i_ovf_hkblk i_ovf_orphloop
+		  i_ovf_short)));
 for my $i (sort keys %idx)
 {
 	my ($t, $cols, $opt) = @{ $idx{$i} };
@@ -78,6 +89,9 @@ $node->safe_psql(
 	INSERT INTO t_post SELECT g / 1000 FROM generate_series(0, 4999) g;
 	INSERT INTO t_mk VALUES (1, '{1,2}'), (2, '{3}'), (3, '{4}');
 	INSERT INTO t_mk SELECT g, '{5}' FROM generate_series(10, 19) g;
+	INSERT INTO t_ovf SELECT (SELECT string_agg(md5(s::text || g::text), '')
+	                          FROM generate_series(1, 600) g)
+	  FROM generate_series(1, 200) s;
 ));
 
 for my $i (sort keys %idx)
@@ -118,6 +132,24 @@ for my $i (qw(i_mk_null i_mk_notnull))
   @{ items('i_mk_list', $info{i_mk_list}{root}, 'itemoffset', "WHERE shape = 'LIST'") };
 ($info{i_post1}{off_POSTING}) =
   @{ items('i_post1', $info{i_post1}{root}, 'itemoffset', "WHERE shape = 'POSTING'") };
+# t_ovf: 200 keys of 19 kB, over several leaves, so every entry and high
+# key is OVERSIZED, with a chain of three pages.  The leftmost leaf's first
+# data entry's chain.  The keys' first 32 bytes differ and the column is
+# "C", so the per-page checks order them by their inline prefixes.
+for my $i (qw(i_ovf_long i_ovf_loop i_ovf_leaf i_ovf_past i_ovf_hkblk i_ovf_orphloop
+	i_ovf_short))
+{
+	my $c = $info{$i};
+	my $leaf = $c->{kids}[0];
+	$c->{leaf} = $leaf;
+	my @chain = (
+		items($i, $leaf, 'overflow_blkno', "WHERE itemoffset = 2")->[0]);
+	push @chain, $node->safe_psql('postgres',
+		"SELECT bark_next FROM bark_page_stats('$i', $chain[-1])")
+	  for 1 .. 2;
+	$c->{chain} = \@chain;
+}
+
 # Level 1 of t_deep: the leftmost internal page, and its last child.
 for my $i (qw(i_deep_lastempty))
 {
@@ -126,6 +158,16 @@ for my $i (qw(i_deep_lastempty))
 }
 
 is($info{i_toobig}{level}, 0, 't_small is a single leaf');
+is(scalar @{ $info{i_ovf_long}{chain} }, 3, 't_ovf has chains of three pages');
+cmp_ok(scalar @{ $info{i_ovf_long}{kids} }, '>=', 2, 't_ovf has 2+ leaves');
+is( $node->safe_psql(
+		'postgres',
+		"SELECT shape FROM bark_page_items('i_ovf_hkblk', $info{i_ovf_hkblk}{leaf}) WHERE itemoffset = 1"),
+	'OVERSIZED', "t_ovf's leftmost leaf has an OVERSIZED high key");
+is( $node->safe_psql(
+		'postgres',
+		"SELECT bark_next FROM bark_page_stats('i_ovf_long', $info{i_ovf_long}{chain}[2])"),
+	'0', "the chain's third page is its last");
 cmp_ok(scalar @{ $info{i_tidhikey}{kids} }, '>=', 4, 't_multi has 4+ leaves');
 is($info{i_deep_hikey}{level}, 2, 't_deep has three levels');
 cmp_ok(scalar @{ $info{i_deep_hikey}{kids} }, '>=', 2, 't_deep has 2+ internal pages below its root');
@@ -142,12 +184,35 @@ ok(defined $info{i_mk_list}{off_LIST}, 'i_mk_list has a LIST entry');
 
 $node->stop;
 
+# The file of a relation's block, and the block's offset in it.
+sub seg
+{
+	my ($path, $blk) = @_;
+	my $segno = int($blk / $segblks);
+	return ($segno ? "$path.$segno" : $path, ($blk % $segblks) * $blksz);
+}
+
+# The relation's size in blocks, over all its files.
+sub nblocks
+{
+	my ($path) = @_;
+	my $n = 0;
+	for (my $segno = 0;; $segno++)
+	{
+		my $f = $segno ? "$path.$segno" : $path;
+		last unless -e $f;
+		$n += (-s $f) / $blksz;
+	}
+	return $n;
+}
+
 sub rd
 {
 	my ($path, $blk) = @_;
-	open(my $fh, '<:raw', $path) or die "open $path: $!";
-	seek($fh, $blk * $blksz, 0) or die "seek: $!";
-	read($fh, my $p, $blksz) == $blksz or die "short read of $path";
+	my ($file, $off) = seg($path, $blk);
+	open(my $fh, '<:raw', $file) or die "open $file: $!";
+	seek($fh, $off, 0) or die "seek: $!";
+	read($fh, my $p, $blksz) == $blksz or die "short read of $file";
 	close $fh;
 	return $p;
 }
@@ -155,21 +220,51 @@ sub rd
 sub patch
 {
 	my ($i, $blk, $f) = @_;
-	my $path = $info{$i}{path};
-	my $p = rd($path, $blk);
+	my $p = rd($info{$i}{path}, $blk);
 	$f->(\$p);
-	open(my $fh, '+<:raw', $path) or die "open $path: $!";
-	seek($fh, $blk * $blksz, 0) or die "seek: $!";
+	my ($file, $off) = seg($info{$i}{path}, $blk);
+	open(my $fh, '+<:raw', $file) or die "open $file: $!";
+	seek($fh, $off, 0) or die "seek: $!";
 	print $fh $p;
 	close $fh;
+}
+
+# Append pages to a relation, in whichever of its files they fall; returns
+# the first new block number.
+sub append_to
+{
+	my ($path, @pages) = @_;
+	my $n = nblocks($path);
+	for my $k (0 .. $#pages)
+	{
+		my ($file) = seg($path, $n + $k);
+		open(my $fh, '>>:raw', $file) or die "open $file: $!";
+		print $fh $pages[$k];
+		close $fh;
+	}
+	return $n;
 }
 sub g16 { unpack('S', substr(${ $_[0] }, $_[1], 2)) }
 sub s16 { substr(${ $_[0] }, $_[1], 2) = pack('S', $_[2]) }
 sub s32 { substr(${ $_[0] }, $_[1], 4) = pack('L', $_[2]) }
 sub gi32 { unpack('l', substr(${ $_[0] }, $_[1], 4)) }
 sub si32 { substr(${ $_[0] }, $_[1], 4) = pack('l', $_[2]) }
-# Byte offset of item $off (ItemIdData lp_off: low 15 bits).
-sub item { unpack('L', substr(${ $_[0] }, 24 + 4 * ($_[1] - 1), 4)) & 0x7fff }
+# Byte offset of item $off: ItemIdData's lp_off, its first 15 bits, which
+# are the word's low bits on a little-endian machine and its high bits on a
+# big-endian one.
+sub item
+{
+	my $w = unpack('L', substr(${ $_[0] }, 24 + 4 * ($_[1] - 1), 4));
+	return $little_endian ? $w & 0x7fff : $w >> 17;
+}
+# Set item $off's lp_len, ItemIdData's last 15 bits.
+sub set_lp_len
+{
+	my $o = 24 + 4 * ($_[1] - 1);
+	my $w = unpack('L', substr(${ $_[0] }, $o, 4));
+	$w = $little_endian ? ($w & 0x1ffff) | ($_[2] << 17) : ($w & ~0x7fff) | $_[2];
+	substr(${ $_[0] }, $o, 4) = pack('L', $w);
+}
 sub maxoff { (g16($_[0], 12) - 24) / 4 }
 # PageHeaderData: pd_lower 12, pd_upper 14, pd_special 16.
 sub set_lower { s16($_[0], 12, $_[1]) }
@@ -186,12 +281,16 @@ sub set_key { si32($_[0], $_[1] + 8, $_[2]) }
 
 my $sroot = $info{i_toobig}{root};
 my ($mroot, $L0, $L1) = ($info{i_tidhikey}{root}, @{ $info{i_tidhikey}{kids} });
-my $nkids = scalar @{ $info{i_tidhikey}{kids} };
 my ($droot, $I0, $I1) = ($info{i_deep_hikey}{root}, @{ $info{i_deep_hikey}{kids} });
 
-# BarkMaxItemSize, from the page's special space as bark.h computes it.
+# BarkMaxItemSize, from the page's special space: the first term of bark.h's
+# Min().  The other, the index tuple size field's limit, is smaller only with
+# 32 kB blocks, where this fixture's entries do not fit that field either.
+sub maxalign { ($_[0] + $maxalign - 1) & ~($maxalign - 1) }
 my $special = do { my $p = rd($info{i_toobig}{path}, $sroot); g16(\$p, 16) };
-my $maxitem = int(($blksz - 40 - ($blksz - $special)) / 3) & ~7;
+my $maxitem =
+  int(($blksz - maxalign(24 + 3 * 4) - ($blksz - $special)) / 3) &
+  ~($maxalign - 1);
 
 # Entry limits on a leaf.  An entry above the ceiling, and a SINGLE entry
 # too large to stay inline.
@@ -222,15 +321,17 @@ patch('i_pfx_info', $info{i_pfx_info}{root}, sub { set_size($_[0], item($_[0], 1
 patch('i_pfx_empty', $sroot, sub { set_lower($_[0], 24); flags_or($_[0], 0x400) });
 
 # A POSTING entry whose set is a valid sbm of one member: a uint16 length,
-# then the 16-byte wire header (magic "sm10", version 2, little-endian), and
-# a small-mode body of one word holding bit 0.
+# then the 16-byte wire header (magic "sm10", version 2, the byte-order
+# flag, which sbm_deserialize requires to match the machine's), and a
+# small-mode body of one word holding bit 0.
 patch('i_post1', $info{i_post1}{root},
 	sub {
 		my $it = item($_[0], $info{i_post1}{off_POSTING});
 		my $body = $it + tid_blk($_[0], $it);
 		substr(${ $_[0] }, $body, 34) =
 		  pack('S', 32)
-		  . pack('L C C C C', 0x30316d73, 2, 1, 1, 0) . ("\0" x 8)
+		  . pack('L C C C C', 0x30316d73, 2, $little_endian ? 1 : 0, 1, 0)
+		  . ("\0" x 8)
 		  . pack('Q', (1 << 63) | 1) . pack('Q', 1);
 	});
 
@@ -292,11 +393,7 @@ for my $i (qw(i_del_ok i_del_left))
 }
 # The root given a right sibling that is a new page, appended to the index.
 {
-	my $path = $info{i_rootnext}{path};
-	my $nblocks = (-s $path) / $blksz;
-	open(my $fh, '>>:raw', $path) or die "open: $!";
-	print $fh "\0" x $blksz;
-	close $fh;
+	my $nblocks = append_to($info{i_rootnext}{path}, "\0" x $blksz);
 	patch('i_rootnext', $info{i_rootnext}{root}, sub { s32($_[0], opq($_[0], 4), $nblocks) });
 }
 # An index with no root and no tree pages, the meta page naming none and
@@ -308,10 +405,7 @@ for my $i (qw(i_empty i_empty_u))
 }
 # A copy of the only leaf appended to the index: live, but in no tree.
 {
-	my $p = rd($info{i_orphan}{path}, $info{i_orphan}{root});
-	open(my $fh, '>>:raw', $info{i_orphan}{path}) or die "open: $!";
-	print $fh $p;
-	close $fh;
+	append_to($info{i_orphan}{path}, rd($info{i_orphan}{path}, $info{i_orphan}{root}));
 }
 
 # Three levels.  The root's second downlink made a SINGLE entry (alt-TID bit
@@ -329,6 +423,43 @@ patch('i_deep_hktid', $info{i_deep_hktid}{kids}[0],
 	sub { my $it = item($_[0], 1); s16($_[0], $it + 4, g16($_[0], $it + 4) | 0x4000) });
 # That page's last child emptied: it has no high key to match the page's.
 patch('i_deep_lastempty', $info{i_deep_lastempty}{lastkid}, sub { set_lower($_[0], 24) });
+
+# Overflow chains, as bark_index_parent_check follows them past their
+# entries' length (the per-page checks read a chain only that far): the
+# last page linked on to one more overflow page, to its own first page (a
+# loop), to a leaf, and past the end of the index; the leftmost leaf's high
+# key's first block out of range; and an orphaned chain made into a loop of
+# its own.
+sub append_pages
+{
+	my ($i, @pages) = @_;
+	return append_to($info{$i}{path}, @pages);
+}
+{
+	my %c = map { $_ => $info{$_} } qw(i_ovf_long i_ovf_loop i_ovf_leaf i_ovf_past i_ovf_hkblk i_ovf_orphloop);
+
+	# A copy of the chain's last page, appended: an overflow page, linked
+	# to nothing, that only the corrupt link reaches.
+	my $last = rd($c{i_ovf_long}{path}, $c{i_ovf_long}{chain}[2]);
+	my $extra = append_pages('i_ovf_long', $last);
+	patch('i_ovf_long', $c{i_ovf_long}{chain}[2], sub { s32($_[0], opq($_[0], 4), $extra) });
+	patch('i_ovf_loop', $c{i_ovf_loop}{chain}[2], sub { s32($_[0], opq($_[0], 4), $c{i_ovf_loop}{chain}[0]) });
+	patch('i_ovf_leaf', $c{i_ovf_leaf}{chain}[2], sub { s32($_[0], opq($_[0], 4), $c{i_ovf_leaf}{leaf}) });
+	patch('i_ovf_past', $c{i_ovf_past}{chain}[2], sub { s32($_[0], opq($_[0], 4), 999999) });
+	patch('i_ovf_hkblk', $c{i_ovf_hkblk}{leaf},
+		sub { s16($_[0], item($_[0], 1), 0x7fff); s16($_[0], item($_[0], 1) + 2, 0) });
+	# A line pointer that covers the entry's header but not its reference.
+	patch('i_ovf_short', $info{i_ovf_short}{leaf}, sub { set_lp_len($_[0], 2, 8) });
+
+	# Copies of a whole chain appended, linked n -> n + 1 -> n + 2 -> n:
+	# three orphaned pages, each linked to by another.
+	my $g = $c{i_ovf_orphloop};
+	my $n = nblocks($g->{path});
+	my @pages = map { rd($g->{path}, $_) } @{ $g->{chain} };
+	s32(\$pages[$_], opq(\$pages[$_], 4), $n + ($_ + 1) % 3) for 0 .. 2;
+	append_pages('i_ovf_orphloop', @pages);
+	$g->{orphan} = $n;
+}
 
 $node->start;
 
@@ -409,6 +540,30 @@ for my $i (qw(i_del_ok i_del_left))
 check($_, 'i_empty', undef, ', true') for qw(bark_index_check bark_index_parent_check);
 check('bark_index_check', 'i_empty_u', undef, ', true, true');
 parent_only('i_deep_lastempty', "has a high key on page $I0 that is not the high key of its last child");
+
+my %o = map { $_ => $info{$_} } qw(i_ovf_long i_ovf_loop i_ovf_leaf i_ovf_past i_ovf_hkblk i_ovf_orphloop);
+parent_only('i_ovf_long',
+	"has an overflow chain of 4 pages from block $o{i_ovf_long}{chain}[0], where its entry's length takes 3");
+parent_only('i_ovf_loop',
+	"has an overflow chain from block $o{i_ovf_loop}{chain}[0] that reaches block $o{i_ovf_loop}{chain}[0], which an overflow chain already reached");
+parent_only('i_ovf_leaf',
+	"has an overflow chain from block $o{i_ovf_leaf}{chain}[0] that reaches block $o{i_ovf_leaf}{leaf}, which is not an overflow page");
+parent_only('i_ovf_past',
+	"has an overflow chain from block $o{i_ovf_past}{chain}[0] that reaches block 999999, which is not an overflow page");
+# The parent check records the chains before it checks the page, so it
+# reports the block; bark_index_check, which reads the high key's chain
+# only to compare it, fails in the read.
+check('bark_index_parent_check', 'i_ovf_hkblk',
+	"oversized entry on page $o{i_ovf_hkblk}{leaf} at offset 1 points at out-of-range overflow block 2147418112");
+# Likewise an entry too short to hold the reference the parent check reads.
+check('bark_index_parent_check', 'i_ovf_short',
+	"has an oversized entry on page $info{i_ovf_short}{leaf} at offset 2 that is shorter than its overflow reference");
+{
+	my ($rc, $out, $err) = $node->psql('postgres', "SELECT bark_index_parent_check('i_ovf_orphloop')");
+	is($rc, 0, 'an orphaned loop is not corruption');
+	like($err, qr/orphaned overflow chain of 3 pages at block $o{i_ovf_orphloop}{orphan}/,
+		'the parent check reports an orphaned loop from its lowest block');
+}
 
 # No check crashed the server.
 is($node->safe_psql('postgres', 'SELECT 1'), '1', 'server is up');
