@@ -59,7 +59,8 @@
  * while VACUUM is scanning the index stamps both halves with that VACUUM's
  * cycle ID (zero when no VACUUM is running), so VACUUM can tell that entries
  * moved to a right sibling it may already have passed, and go back for them.
- * The values come from nbtree's cycle-ID registry (a BTCycleId).  nbtree keeps
+ * The values come from BARK's own cycle-ID registry (barkvacuum.c, a
+ * BarkCycleId, as nbtree's btvacinfo hands out BTCycleIds).  nbtree keeps
  * its cycle ID in the last two bytes of the special space; BARK keeps
  * BARK_PAGE_ID there, so the cycle ID takes half of the old 32-bit level
  * field instead.  A 16-bit level is ample (a tree of 65536 levels cannot be
@@ -67,6 +68,17 @@
  * BarkMaxItemSize do not change.
  * ----------------------------------------------------------------------------
  */
+/*
+ * A vacuum cycle ID (barkvacuum.c).  Zero means no VACUUM; IDs run from 1 to
+ * BARK_MAX_CYCLE_ID and wrap.  The bound is nbtree's MAX_BT_CYCLE_ID only
+ * because BARK_PAGE_ID's comment below relies on BARK pages never carrying
+ * a value above it in that field either; BARK keeps its ID elsewhere, so any
+ * 16-bit bound would do.
+ */
+typedef uint16 BarkCycleId;
+
+#define BARK_MAX_CYCLE_ID	0xFF7F
+
 typedef struct BarkPageOpaqueData
 {
 	BlockNumber bark_prev;		/* left sibling, or BARK_P_NONE if leftmost */
@@ -367,13 +379,18 @@ BarkPageGetItem(Page page, OffsetNumber off, BarkItemBuf *buf)
  * The largest item BARK will place on a page.  Like nbtree's BTMaxItemSize,
  * this bounds a single entry to roughly a third of the usable page so at
  * least three entries fit, keeping the tree from degenerating.  A LIST or
- * POSTING entry that would exceed this is split (A10) or, for POSTING,
- * compacted; see the LIST/POSTING growth paths in barkinsert.c.
+ * POSTING entry that would exceed this is divided, or a LIST becomes a
+ * POSTING entry; see bark_entry_add_tid and bark_entry_swap_tid.  An index
+ * tuple's size field holds at most INDEX_SIZE_MASK, which a third of a
+ * 32 kB page exceeds, so the bound is the smaller of the two (nbtree caps
+ * its posting lists the same way, and errors on a key it cannot store,
+ * where BARK moves the key to an overflow chain).
  */
 #define BarkMaxItemSize \
-	MAXALIGN_DOWN((BLCKSZ - \
-				   MAXALIGN(SizeOfPageHeaderData + 3 * sizeof(ItemIdData)) - \
-				   MAXALIGN(sizeof(BarkPageOpaqueData))) / 3)
+	Min(MAXALIGN_DOWN((BLCKSZ - \
+					   MAXALIGN(SizeOfPageHeaderData + 3 * sizeof(ItemIdData)) - \
+					   MAXALIGN(sizeof(BarkPageOpaqueData))) / 3), \
+		MAXALIGN_DOWN(INDEX_SIZE_MASK))
 
 /*
  * Fill factors, as in nbtree.  CREATE INDEX packs leaf pages to the index's
@@ -410,14 +427,12 @@ typedef struct BarkOptions
 } BarkOptions;
 
 #define BarkGetPrefixCompression(relation) \
-	(AssertMacro(relation->rd_rel->relkind == RELKIND_INDEX && \
-				 relation->rd_rel->relam == BARK_AM_OID), \
+	(AssertMacro(bark_relation_is_bark(relation)), \
 	 (relation)->rd_options ? \
 	 ((BarkOptions *) (relation)->rd_options)->prefix_compression : false)
 
 #define BarkGetFillFactor(relation) \
-	(AssertMacro(relation->rd_rel->relkind == RELKIND_INDEX && \
-				 relation->rd_rel->relam == BARK_AM_OID), \
+	(AssertMacro(bark_relation_is_bark(relation)), \
 	 (relation)->rd_options ? \
 	 ((BarkOptions *) (relation)->rd_options)->fillfactor : \
 	 BARK_DEFAULT_FILLFACTOR)
@@ -470,9 +485,13 @@ typedef struct BarkOptions
  * Procedures 1, 2, 4, 5 and 6 keep btree's meanings over the key type.
  * Procedures 7-9 are DocumentDB's pg_extended_btree interface (its 101-103),
  * 10-13 GIN's extractQuery, consistent, comparePartial and triConsistent
- * (its 3-6), and 14 GiST's fetch.  amsupport covers all fourteen, and
- * amstrategies is 0, so a BARK family's operators may carry any strategy
- * number; the number only reaches procedures 8 and 9.
+ * (its 3-6), 14 GiST's fetch, and 15 GiST's translate-cmptype (its 12),
+ * which names the class's overlap operator, the conflict operator of a
+ * unique index ("M4" in BARK-Design.mediawiki).  Procedure 15 is registered
+ * under ("any", "any"), as GiST's is, since it is looked up by operator
+ * family alone.  amsupport covers all fifteen, and amstrategies is 0, so a
+ * BARK family's operators may carry any strategy number; the number only
+ * reaches procedures 8 and 9, and through procedure 15 the executor.
  */
 #define BARK_EXTRACTVALUE_PROC			7
 #define BARK_EXTRACTQUERY_PROC			8
@@ -482,7 +501,8 @@ typedef struct BarkOptions
 #define BARK_GIN_COMPAREPARTIAL_PROC	12
 #define BARK_GIN_TRICONSISTENT_PROC		13
 #define BARK_FETCH_PROC					14
-#define BARK_MULTIKEY_NPROCS			14
+#define BARK_TRANSLATE_CMPTYPE_PROC		15
+#define BARK_MULTIKEY_NPROCS			15
 
 /*
  * The types procedures 8 and 9 exchange with BARK.  They are laid out as
@@ -513,12 +533,26 @@ typedef struct BarkBoundary
  * searchnulls asks the scan to read the NULL entries as well (a NULL value,
  * an empty value or a NULL element), where the column's NULLS option puts
  * them, and to return those rows with xs_recheck set, as GIN's
- * INCLUDE_EMPTY search mode does.  Fields are only ever appended.
+ * INCLUDE_EMPTY search mode does.  oneentry says that a row matches these
+ * boundaries through at most one of its entries, so the scan needs no seen
+ * set; BARK honors it for the first search key on the column when that key
+ * is not a ScalarArrayOp (whose elements' boundaries may each hold one entry
+ * of a row), and asks again at every rescan.  index is set by BARK, not by
+ * the procedure: the index being scanned, whose markers the procedure may
+ * read with bark_index_has_marker to decide oneentry; it is NULL when no
+ * scan is running.  orderrest, for an ordering key, says that its
+ * boundaries do not hold every row: after them the scan reads the rest of
+ * the column, every key and the NULL entries, and returns the rows it has
+ * not returned yet with a NULL ORDER BY value, last.  Fields are only ever
+ * appended.
  */
 typedef struct BarkQueryFlags
 {
 	bool		backward;
 	bool		searchnulls;
+	bool		oneentry;
+	Relation	index;
+	bool		orderrest;
 } BarkQueryFlags;
 
 /* Procedure 9's answer for one entry, as an int2. */
@@ -549,10 +583,25 @@ typedef struct BarkMetaPageData
 	BlockNumber bark_root;		/* current root block, or BARK_P_NONE */
 	uint32		bark_level;		/* tree level of the root page */
 	bool		bark_allequalimage; /* are all key columns "equalimage"? */
+	uint32		bark_flags;		/* BARK_META_* bits */
+	uint64		bark_nkeys;		/* (key, TID) members, markers not counted, as
+								 * of the last CREATE INDEX or VACUUM */
 } BarkMetaPageData;
 
 #define BarkPageGetMeta(page) \
 	((BarkMetaPageData *) PageGetContents(page))
+
+/*
+ * BARK_META_MULTIKEY: the index has held a row with more than one entry.  Set
+ * before the first entry of such a row is inserted, never cleared (only
+ * REINDEX builds an index without it).  bark_flags and bark_nkeys follow
+ * the fields every version 2 meta page has had, and a meta page written
+ * before them ends (pd_lower) where bark_allequalimage does; PageInit zeroed
+ * what lies past it, so such an index reads 0 in both, which is right for
+ * it.  A writer of either field moves pd_lower past them first, so the
+ * standard-layout page image it logs includes them (bark_meta_cover).
+ */
+#define BARK_META_MULTIKEY	(1 << 0)
 
 /* ----------------------------------------------------------------------------
  * Index-entry encoding (the C-KEYSHAPE contract)
@@ -596,9 +645,10 @@ typedef struct BarkMetaPageData
  *				  pivot may be truncated by suffix truncation).
  *
  * A leaf entry of any shape may additionally be delete-marked (the C-DELETE
- * contract): BARK_IS_DELETE_MARKED records that the entry is logically
- * deleted but retained for UNDO rollback, matching nbtree's
- * BT_IS_DELETE_MARKED.  It is a property of an entry, orthogonal to its shape,
+ * contract, BARK-Design.mediawiki): BARK_IS_DELETE_MARKED is reserved to
+ * record that the entry is logically deleted but retained for UNDO
+ * rollback.  Nothing sets it yet; it waits for an UNDO-backed table AM.  It
+ * is a property of an entry, orthogonal to its shape,
  * so it shares the status-bit region and must never be set on a PIVOT: on a
  * pivot the same bit is BARK_PIVOT_HEAP_TID, so the two meanings never meet.
  *
@@ -631,6 +681,16 @@ typedef struct BarkMetaPageData
 											 * BARK_IS_DELETE_MARKED, which is
 											 * never set on a pivot */
 #define BARK_IS_LIST				0x8000	/* leaf entry is a sorted list */
+
+/*
+ * A LIST entry whose body is delta+varbyte coded (barkutils.c) sets this bit
+ * alongside BARK_IS_LIST.  It is BARK_PIVOT_META, which marks a pivot and so
+ * is never set on a leaf entry; BARK_IS_LIST | BARK_PIVOT_META is thus a free
+ * code point in the status nibble, and BarkEntryGetShape still reads such an
+ * entry as a LIST.  A plain LIST leaves it clear and is byte-identical to
+ * before, so no REINDEX is needed to read indexes written without this code.
+ */
+#define BARK_LIST_CODED				BARK_PIVOT_META
 
 /*
  * An oversized entry (a key, or key + INCLUDE payload, too large to fit on a
@@ -823,11 +883,61 @@ BarkListGetTIDArray(IndexTupleData *itup)
 	return (ItemPointer) ((char *) itup + BarkEntryGetBodyOffset(itup));
 }
 
-/* The n'th locator (0-based) of a LIST entry. */
+/* The n'th locator (0-based) of a plain (uncoded) LIST entry. */
 static inline ItemPointer
 BarkListGetTID(IndexTupleData *itup, int n)
 {
 	return &BarkListGetTIDArray(itup)[n];
+}
+
+/*
+ * True when a LIST entry's body is delta+varbyte coded rather than a plain
+ * locator array.  Call only on a BARK_SHAPE_LIST entry.
+ */
+static inline bool
+BarkListIsCoded(const IndexTupleData *itup)
+{
+	return (ItemPointerGetOffsetNumberNoCheck(&itup->t_tid) &
+			BARK_LIST_CODED) != 0;
+}
+
+/*
+ * Header of a coded LIST body, at BarkEntryGetBodyOffset: the length in bytes
+ * of the varbyte delta stream that follows the first locator, and the last
+ * locator stored raw so BarkEntryGetBodyOffset gives the low end and this the
+ * high end of the TID range in O(1) (bark_entry_tid_range is on the insert
+ * descent's hot path).  The first locator is stored raw just after this
+ * header; the remaining locators follow as varbyte deltas of their 48-bit
+ * encodings (see bark_tid_to_vb in barkutils.c), ascending as the plain array
+ * is.  nbytes covers only the delta stream.
+ */
+typedef struct BarkCodedListHdr
+{
+	uint16		nbytes;			/* length of the varbyte delta stream */
+	ItemPointerData last;		/* highest locator, stored raw */
+}			BarkCodedListHdr;
+
+/* The coded LIST header at the body of a coded LIST entry. */
+static inline BarkCodedListHdr *
+BarkCodedListGetHdr(IndexTupleData *itup)
+{
+	return (BarkCodedListHdr *) ((char *) itup + BarkEntryGetBodyOffset(itup));
+}
+
+/* The first (lowest) locator of a coded LIST, stored raw after the header. */
+static inline ItemPointer
+BarkCodedListGetFirst(IndexTupleData *itup)
+{
+	return (ItemPointer) ((char *) BarkCodedListGetHdr(itup) +
+						  sizeof(BarkCodedListHdr));
+}
+
+/* The varbyte delta stream of a coded LIST, after the raw first locator. */
+static inline unsigned char *
+BarkCodedListGetDeltas(IndexTupleData *itup)
+{
+	return (unsigned char *) BarkCodedListGetFirst(itup) +
+		sizeof(ItemPointerData);
 }
 
 /* ----------------------------------------------------------------------------
@@ -1069,10 +1179,74 @@ typedef struct BarkKeyInfo
 
 extern BarkKeyInfo *bark_build_keyinfo(Relation index);
 extern bool bark_allequalimage(Relation index);
+extern bool bark_index_may_coalesce(Relation index);
 extern bool bark_column_is_extracted(Relation index, int attno);
 extern int	bark_index_extracted_column(Relation index);
+extern bool bark_index_gin_query(Relation index);
+extern bool bark_opfamily_is_own(Oid opfamily);
+extern bool bark_relation_is_bark(Relation rel);
 extern bool bark_opfamily_extracts(Oid opfamily, Oid opcintype);
+extern bool bark_property(Oid index_oid, int attno, IndexAMProperty prop,
+						  const char *propname, bool *res, bool *isnull);
 extern void bark_check_multikey_index(Relation index, IndexInfo *indexInfo);
+extern void bark_meta_cover(Page metapage);
+extern bool bark_index_is_multikey(Relation index);
+extern void bark_set_multikey(Relation index);
+extern void bark_set_nkeys(Relation index, uint64 nkeys);
+
+/*
+ * The entries one row has in an index with an extracted column: procedure
+ * 7's keys for the column's value, sorted in the column's index order (its
+ * comparator, ASC or DESC, and NULLS FIRST or LAST) and distinct, with at
+ * most one NULL key; and its marker keys, sorted and distinct.  A NULL
+ * value, a value with no keys and a key flagged NULL all give the NULL key,
+ * so nkeys is at least 1.  See "Insert and build" in BARK-Design.mediawiki.
+ */
+typedef struct BarkRowKeys
+{
+	int			nkeys;
+	Datum	   *keys;
+	bool	   *nulls;
+	int			nmarkers;
+	Datum	   *markers;
+} BarkRowKeys;
+
+/*
+ * A marker is a SINGLE entry with this heap TID, which names no row: no heap
+ * block has number InvalidBlockNumber (MaxBlockNumber is one less), and it
+ * sorts after every real TID of its key.  Its other key columns are NULL.
+ */
+#define BARK_MARKER_OFFSET	1
+
+static inline void
+BarkSetMarkerTid(ItemPointer tid)
+{
+	ItemPointerSet(tid, InvalidBlockNumber, BARK_MARKER_OFFSET);
+}
+
+static inline bool
+BarkTidIsMarker(const ItemPointerData *tid)
+{
+	return ItemPointerGetBlockNumberNoCheck(tid) == InvalidBlockNumber &&
+		ItemPointerGetOffsetNumberNoCheck(tid) == BARK_MARKER_OFFSET;
+}
+
+/* Is the leaf entry a marker?  Every reader of heap TIDs skips one. */
+static inline bool
+BarkEntryIsMarker(const IndexTupleData *itup)
+{
+	return BarkEntryGetShape(itup) == BARK_SHAPE_SINGLE &&
+		BarkTidIsMarker(&itup->t_tid);
+}
+
+extern void bark_extract_row_keys(Relation index, BarkKeyInfo *keyinfo,
+								  Datum value, bool isnull, BarkRowKeys *rk);
+extern IndexTuple bark_form_marker(Relation index, Datum key, Size *fulllen);
+extern bool bark_marker_cached(Relation index, BarkKeyInfo *keyinfo,
+							   Datum key);
+extern void bark_cache_marker(Relation index, BarkKeyInfo *keyinfo,
+							  Datum key);
+extern bool bark_index_has_marker(Relation index, Datum key);
 extern int	bark_compare_itups(BarkKeyInfo *keyinfo, Relation index,
 							   IndexTuple a, IndexTuple b);
 extern int	bark_compare_itups_tid(BarkKeyInfo *keyinfo, Relation index,
@@ -1111,6 +1285,29 @@ extern StrategyNumber bark_translate_cmptype(CompareType cmptype, Oid opfamily);
  */
 extern IndexTuple bark_form_list(TupleDesc tupdesc, IndexTuple key,
 								 ItemPointer tids, int ntids);
+
+/*
+ * Build the smaller of a plain and a delta+varbyte coded LIST entry for the
+ * key columns of `key` and the `ntids` ascending, distinct locators in `tids`
+ * (BARK_SHAPE_LIST either way; see BARK_LIST_CODED).  A coded LIST stores the
+ * locators as 48-bit deltas, about 1-3 bytes each for a clustered or
+ * duplicate-heavy index, where the plain 6-bytes-each array is larger; a very
+ * scattered set codes larger than plain, and then the plain LIST is returned.
+ * Returns a palloc'd entry; it is the shape decision for LISTs, so every
+ * LIST-forming path uses it rather than bark_form_list directly.
+ */
+extern IndexTuple bark_form_list_best(TupleDesc tupdesc, IndexTuple key,
+									  ItemPointer tids, int ntids);
+
+/*
+ * Re-form a LIST entry's surviving locators during VACUUM or bottom-up
+ * deletion.  When the old entry was coded (`wascoded`), the result is kept
+ * coded so it cannot exceed the old entry's size (a coded subset never grows
+ * past the coded whole; a plain subset can).  Otherwise it is the
+ * bark_form_list_best chooser.  Returns a palloc'd entry.
+ */
+extern IndexTuple bark_reform_list(TupleDesc tupdesc, IndexTuple key,
+								   ItemPointer tids, int ntids, bool wascoded);
 
 /*
  * Collect the heap locators of a leaf entry (SINGLE, LIST, or POSTING) into
@@ -1312,6 +1509,13 @@ typedef struct BarkStackData
 	BlockNumber bark_blkno;		/* internal page visited */
 	OffsetNumber bark_offset;	/* offset of the downlink followed */
 	struct BarkStackData *bark_parent;	/* next level up, or NULL at the root */
+
+	/*
+	 * The descent started at this page from the level-1 entry cache, not at
+	 * the root, so bark_parent is NULL although the page is not the root: its
+	 * parent is found when a split needs it (bark_insert_parent).
+	 */
+	bool		bark_cached;
 } BarkStackData;
 
 typedef BarkStackData *BarkStack;
@@ -1345,11 +1549,13 @@ extern Buffer bark_search(Relation index, BarkKeyInfo *keyinfo,
  * plus infinity when `upper` (so that every entry equal to it on the bounded
  * columns sorts before it).  `backward` says a backward scan descends to it,
  * which only changes how it compares with a truncated pivot
- * (bark_compare_bound).
+ * (bark_compare_bound).  A column whose procs[i] is NULL is a NULL value,
+ * which sorts where the column's NULLS option puts NULLs; only a multikey
+ * scan reading the NULL entries (BarkMkBoundary) builds one.
  */
 typedef struct BarkScanBound
 {
-	int			nkeys;
+	int			nkeys;			/* procs[i] NULL: column i's value is NULL */
 	bool		upper;
 	bool		backward;
 	Datum		args[INDEX_MAX_KEYS];
@@ -1363,6 +1569,8 @@ typedef struct BarkScanBound
  */
 extern OffsetNumber bark_binsrch_bound(Relation index, BarkKeyInfo *keyinfo,
 									   const BarkScanBound * bound, Page page);
+extern BarkStack bark_find_upper_path(Relation index, BarkKeyInfo *keyinfo,
+									  IndexTuple key, uint32 level);
 extern Buffer bark_search_bound(Relation index, BarkKeyInfo *keyinfo,
 								const BarkScanBound * bound, bool nextkey);
 extern int	bark_compare_bound(Relation index, BarkKeyInfo *keyinfo,
@@ -1380,15 +1588,56 @@ extern int	bark_compare_bound(Relation index, BarkKeyInfo *keyinfo,
  * extracted is the key column whose operator class extracts several keys
  * from a value (bark_index_extracted_column), 0 for none, or -1 until first
  * asked.  It comes from the catalog, which an index keeps for its life.
+ *
+ * multikey is true once this backend has seen the meta page's
+ * BARK_META_MULTIKEY set, or set it.  The flag is never cleared, so a true
+ * here is never stale; false only means "read the meta page".
+ *
+ * markerdata holds the nmarkers marker keys this backend has seen in the
+ * index, each MAXALIGNed: a pass-by-value key as a Datum, any other as its
+ * bytes.  Markers are never removed, so they are never stale either.  They
+ * live in this one chunk, which grows, because rd_amcache must be a single
+ * chunk (see rel.h).
+ *
+ * After the markers, at markerlen, comes the level-1 entry table: nl1
+ * slots (BarkL1Slot), sorted by low key, then l1keylen bytes of the low keys
+ * they point at (pivot tuples copied from the downlinks that named the
+ * pages).  A descent starts at the slot with the greatest low key it
+ * may start at, so that it never touches the root (see "Level-1 entry
+ * cache" in the README).  An internal page is never deleted and its low key
+ * never changes, so a slot is never wrong about which keys may start there;
+ * the page it names is still checked under its lock.
  */
+typedef struct BarkL1Slot
+{
+	BlockNumber blkno;			/* a level-1 page */
+	uint32		keyoff;			/* its low key, at l1keys() + keyoff */
+}			BarkL1Slot;
+
 typedef struct BarkAmCache
 {
 	BlockNumber root;
 	uint32		level;
 	int			extracted;
+	bool		multikey;		/* BARK_META_MULTIKEY seen set */
+	int			nmarkers;		/* markers seen present */
+	Size		markerlen;		/* bytes of markerdata in use */
+	int			nl1;			/* level-1 slots in use */
+	int			maxl1;			/* level-1 slots allocated */
+	Size		l1keylen;		/* bytes of level-1 low keys in use */
+	Size		maxl1keylen;	/* bytes of level-1 low keys allocated */
+	char		markerdata[FLEXIBLE_ARRAY_MEMBER];
 } BarkAmCache;
 
+/* barkvacuum.c (BarkShmemCallbacks is declared in storage/subsystems.h) */
+extern BarkCycleId bark_vacuum_cycleid(Relation rel);
+extern BarkCycleId bark_start_vacuum(Relation rel);
+extern void bark_end_vacuum(void);
+extern void bark_end_vacuum_callback(int code, Datum arg);
+
 extern BarkAmCache *bark_get_amcache(Relation index);
+extern void bark_l1_reset(BarkAmCache *cache);
+extern Size bark_l1_region_size(BarkAmCache *cache);
 extern BlockNumber bark_get_root(Relation index, uint32 *level_out);
 extern uint32 bark_get_root_level(Relation index);
 extern Buffer bark_get_root_buffer(Relation index, BufferLockMode access);
@@ -1398,6 +1647,11 @@ extern bool bark_insert(Relation index, Datum *values, bool *isnull,
 						ItemPointer ht_ctid, Relation heapRel,
 						IndexUniqueCheck checkUnique,
 						bool indexUnchanged, IndexInfo *indexInfo);
+extern void bark_insert_oversized_keys(Relation index, Datum *values,
+									   bool *isnull, ItemPointer ht_ctid,
+									   Relation heapRel,
+									   IndexUniqueCheck checkUnique,
+									   IndexInfo *indexInfo);
 
 /* Leaf high key for a split between lastleft and firstright (barkinsert.c). */
 extern IndexTuple bark_truncate_pivot(Relation index, BarkKeyInfo *keyinfo,
@@ -1464,6 +1718,7 @@ typedef struct BarkKnnItem
 	int			firstTid;		/* the entry's heap TIDs are tids[firstTid]... */
 	int			ntids;			/* ...and there are this many, ascending */
 	uint32		tupleOffset;	/* entry's key copy in tuples (IOS only) */
+	bool		recheck;		/* return its members with xs_recheck */
 } BarkKnnItem;
 
 typedef struct BarkKnnCursor
@@ -1502,7 +1757,7 @@ typedef struct BarkKnnScanState
 	FmgrInfo	distfn;			/* the ordering operator's distance function */
 	Oid			distcollation;	/* its input collation */
 	Datum		center;			/* the ORDER BY constant (sk_argument) */
-	bool		centernull;		/* the constant is NULL (no rows ordered) */
+	bool		centernull;		/* the constant is NULL (every distance NULL) */
 	AttrNumber	attno;			/* index column being ordered (1-based) */
 	BarkKnnCursor fwd;			/* forward (>= center) cursor */
 	BarkKnnCursor bwd;			/* backward (< center) cursor */
@@ -1515,6 +1770,17 @@ typedef struct BarkKnnScanState
 	 */
 	BarkKnnCursor *emitCur;
 	int			emitIdx;
+
+	/*
+	 * Ordering a column after the first (barkorderbyopcolumn): the scan runs
+	 * inside the run of entries equal to the values its scan keys fix on
+	 * every column before it.  bound holds those values and then the center
+	 * (bound.nkeys is the ordered column's number), and is where the scan
+	 * descends to.  emptyrun: a fixed value matches no entry (a NULL, or no
+	 * boundary), so the scan returns nothing.
+	 */
+	BarkScanBound bound;
+	bool		emptyrun;
 } BarkKnnScanState;
 
 /*
@@ -1556,6 +1822,13 @@ typedef struct BarkArrayKeyState
 	Datum	   *elems;			/* sorted, de-duplicated array elements */
 	int			nelems;			/* number of them (0: empty array, no matches) */
 	int			cur;			/* required key: element the scan is on */
+
+	/*
+	 * The extracted column's boundaries, when this required key is the last
+	 * one and walks them (see barkscan.c, "Multikey scans"); then elems is
+	 * NULL and nelems is the number of boundaries.
+	 */
+	struct BarkMkScanState *mk;
 } BarkArrayKeyState;
 
 /*
@@ -1584,6 +1857,7 @@ typedef struct BarkScanPosItem
 	ItemPointerData heapTid;	/* one member TID */
 	OffsetNumber indexOffset;	/* entry's offset on the page when read */
 	uint32		tupleOffset;	/* entry's copy in currTuples (IOS only) */
+	bool		recheck;		/* return it with xs_recheck (multikey) */
 } BarkScanPosItem;
 
 typedef struct BarkScanPosData
@@ -1647,6 +1921,7 @@ typedef struct BarkScanOpaqueData
 	bool		firstCall;		/* KNN: true until the scan has been
 								 * positioned */
 	MemoryContext scanCxt;		/* context the scan was begun in */
+	int			maxKeys;		/* keyData's slots, from beginscan's nkeys */
 
 	/*
 	 * Per scan key, the three-way ORDER proc that compares the indexed column
@@ -1727,6 +2002,21 @@ typedef struct BarkScanOpaqueData
 	 * scan with ORDER BY <~> keys; NULL for a plain scan.
 	 */
 	BarkKnnScanState *knn;
+
+	/*
+	 * The scan keys the btree-style code reads are scan->keyData[0 ..
+	 * numberOfKeys - 1].  In an index with an extracted column, rescan moves
+	 * the keys on that column after them, where only the multikey state reads
+	 * them; otherwise numberOfKeys is scan->numberOfKeys.
+	 */
+	int			numberOfKeys;
+
+	/*
+	 * Multikey scan state (barkscan.c, "Multikey scans"): the extracted
+	 * column's boundaries and the set of rows returned.  NULL for an index
+	 * without an extracted column.
+	 */
+	struct BarkMkScanState *mk;
 } BarkScanOpaqueData;
 
 typedef BarkScanOpaqueData *BarkScanOpaque;
@@ -1782,6 +2072,13 @@ extern uint32 bark_save_tuple(BarkScanOpaque so, char **tuples,
 							  IndexTuple entry, IndexTuple resolved);
 extern Buffer bark_lock_and_validate_left(Relation index, BlockNumber *blkno,
 										  BlockNumber lastcurrblkno);
+extern int	bark_mk_accept(IndexScanDesc scan, IndexTuple itup,
+						   ItemPointer tids, int ntids, bool *recheck);
+extern int	bark_mk_seen(IndexScanDesc scan, IndexTuple itup, ItemPointer tids,
+						 int ntids, bool newgroups);
+extern int	bark_mk_point(IndexScanDesc scan, AttrNumber attno, Datum *key,
+						  FmgrInfo **cmp, Oid *collation);
+extern HeapTuple bark_mk_form_hitup(IndexScanDesc scan, IndexTuple itup);
 
 /* KNN (ordered-operator) scan (barkknn.c). */
 extern void bark_knn_rescan(IndexScanDesc scan, ScanKey orderbys, int norderbys);
