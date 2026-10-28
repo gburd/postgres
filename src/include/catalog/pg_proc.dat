@@ -939,6 +939,20 @@
   proname => 'barkhandler', provolatile => 'v',
   prorettype => 'index_am_handler', proargtypes => 'internal',
   prosrc => 'barkhandler' },
+
+# BARK KNN distance functions: |a - b| as float8, backing the `<->` ordering
+# operators used for ORDER BY col <-> const (amcanorderbyop).  No descr: these
+# exist only to implement the `<->` operators, so initdb generates the
+# "implementation of <-> operator" comment for them.
+{ oid => '9470',
+  proname => 'bark_int2_distance', prorettype => 'float8',
+  proargtypes => 'int2 int2', prosrc => 'bark_int2_distance' },
+{ oid => '9471',
+  proname => 'bark_int4_distance', prorettype => 'float8',
+  proargtypes => 'int4 int4', prosrc => 'bark_int4_distance' },
+{ oid => '9472',
+  proname => 'bark_int8_distance', prorettype => 'float8',
+  proargtypes => 'int8 int8', prosrc => 'bark_int8_distance' },
 { oid => '3952', descr => 'brin: standalone scan new table pages',
   proname => 'brin_summarize_new_values', provolatile => 'v',
   proparallel => 'u', prorettype => 'int4', proargtypes => 'regclass',

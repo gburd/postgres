@@ -17,6 +17,7 @@
 
 #include <float.h>
 
+#include "access/bark.h"
 #include "access/gist_private.h"
 #include "access/hash.h"
 #include "access/heaptoast.h"
@@ -204,6 +205,16 @@ static relopt_int intRelOpts[] =
 										 * inserts */
 		},
 		BTREE_DEFAULT_FILLFACTOR, BTREE_MIN_FILLFACTOR, 100
+	},
+	{
+		{
+			"fillfactor",
+			"Packs bark index pages only to this percentage",
+			RELOPT_KIND_BARK,
+			ShareUpdateExclusiveLock	/* since it applies only to later
+										 * inserts */
+		},
+		BARK_DEFAULT_FILLFACTOR, BARK_MIN_FILLFACTOR, 100
 	},
 	{
 		{
