@@ -18,6 +18,7 @@ set client_min_messages TO 'warning';
 create extension if not exists pg_walinspect;
 create extension if not exists amcheck;
 create extension if not exists bark_multikey;
+create extension if not exists test_versioned_tableam;
 reset client_min_messages;
 -- Keep the WAL from the start of the workload until it has been read, even
 -- if a checkpoint happens in between.
@@ -134,6 +135,45 @@ SELECT 1 FROM txid_current();
 VACUUM wi_vac;
 INSERT INTO wi_vac SELECT 2000 + g % 10000, repeat('z', 100)
   FROM generate_series(1, 20000) g;
+-- A lowered lower bound (the second form of UNLINK_PAGE): a run of one
+-- row's tagged entries fills whole leaves, so a split inside it leaves the
+-- leftmost leaf a tagged high key.  VACUUM, told the run's entries on that
+-- leaf are dead (tags 2 up to its highest, 432 where MAXALIGN is 8) and the
+-- next leaf's first may be untagged, lowers the bound.  Another run, in the middle of the key space,
+-- has its first leaf deleted, and its right sibling keeps a flag for an
+-- untagged bound, which VACUUM clears alone.  The xmins must be above the
+-- runs' tags.
+DO $$ BEGIN FOR i IN 1..1300 LOOP PERFORM pg_current_xact_id(); COMMIT; END LOOP; END $$;
+CREATE TABLE wi_lower (id int, k int) USING heap_versioned;
+INSERT INTO wi_lower SELECT g, CASE WHEN g = 1 THEN 5 WHEN g = 150 THEN 1495 ELSE 10 * g END
+  FROM generate_series(1, 300) g;
+SET test_versioned_tableam.build_tag_percent = 100;
+CREATE INDEX wi_lower_k ON wi_lower USING bark (k);
+SET test_versioned_tableam.stale_tags = live;
+SELECT count(test_versioned_insert_entry('wi_lower_k', ctid, 2 * g))
+  FROM wi_lower, generate_series(1, 600) g WHERE id IN (1, 150);
+ count 
+-------
+  1200
+(1 row)
+
+CREATE EXTENSION IF NOT EXISTS pageinspect;
+SELECT max(i.tag) AS wi_last FROM bark_page_items('wi_lower_k', 1) i
+ WHERE i.shape = 'SINGLE' AND i.itemoffset > 1 AND i.tag < 1300 \gset
+SET test_versioned_tableam.stale_dead_min = 2;
+SET test_versioned_tableam.stale_dead_max = :wi_last;
+SELECT set_config('test_versioned_tableam.untag_tag', (:wi_last + 2)::text, false) IS NOT NULL AS set;
+ set 
+-----
+ t
+(1 row)
+
+VACUUM wi_lower;
+RESET test_versioned_tableam.stale_tags;
+RESET test_versioned_tableam.stale_dead_min;
+RESET test_versioned_tableam.stale_dead_max;
+RESET test_versioned_tableam.untag_tag;
+RESET test_versioned_tableam.build_tag_percent;
 -- A multikey index: each row's three keys are new to the index and adjacent,
 -- so they go on one leaf together (INSERT_MULTI), except where a leaf fills.
 CREATE TABLE wi_multi (id int, a int4[]) WITH (autovacuum_enabled = off);
@@ -143,7 +183,7 @@ INSERT INTO wi_multi SELECT g, ARRAY[3 * g, 3 * g + 1, 3 * g + 2]
 SELECT bark_index_check(i, true)
   FROM unnest(ARRAY['wi_split_idx', 'wi_prefix_idx', 'wi_dup_idx', 'wi_hkl_idx',
                     'wi_hkp_idx', 'wi_big_idx', 'wi_churn_k', 'wi_churn_v',
-                    'wi_churn_u', 'wi_vac_idx']::regclass[]) i;
+                    'wi_churn_u', 'wi_vac_idx', 'wi_lower_k']::regclass[]) i;
  bark_index_check 
 ------------------
  
@@ -156,7 +196,8 @@ SELECT bark_index_check(i, true)
  
  
  
-(10 rows)
+ 
+(11 rows)
 
 -- heapallindexed does not cover a multikey column.
 SELECT bark_index_check('wi_multi_idx', false);
@@ -174,10 +215,10 @@ CREATE TEMP TABLE wi_rec AS
 -- no table here has tags on its divided entries, so that form is checked by
 -- test_versioned_tableam's 006_bark_corrupt.
 WITH f(rtype, pat) AS (VALUES
-  ('VACUUM', '^ndeleted: \d+, nupdated: \d+(, deleted: \[[0-9, ]*\], updated: \[[0-9, ]*\])?$'),
+  ('VACUUM', '^ndeleted: \d+, nupdated: \d+, nuntagged: \d+(, deleted: \[[0-9, ]*\], updated: \[[0-9, ]*\])?$'),
   ('DELETE', '^snapshotConflictHorizon: \d+, ndeleted: \d+, nupdated: \d+, isCatalogRel: [TF](, deleted: \[[0-9, ]*\], updated: \[[0-9, ]*\])?$'),
   ('MERGE', '^ndeleted: \d+, nupdated: \d+(, deleted: \[[0-9, ]*\], updated: \[[0-9, ]*\])?$'),
-  ('UNLINK_PAGE', '^left: \d+, right: \d+, safexid: \d+:\d+, poffset: \d+$'),
+  ('UNLINK_PAGE', '^(left: \d+, right: \d+, safexid: \d+:\d+, poffset: \d+(, lower bound tagged)?|lower separator, left: \d+, right: \d+, (parent: \d+, poffset: \d+|flag only))$'),
   ('REUSE_PAGE', '^rel: \d+/\d+/\d+, blk: \d+, snapshotConflictHorizon: \d+:\d+, isCatalogRel: [TF]$'),
   ('MARK_DELETED', '^next: \d+, safexid: \d+:\d+$'),
   ('INSERT_LEAF', '^off: \d+$'),
@@ -185,7 +226,7 @@ WITH f(rtype, pat) AS (VALUES
   ('INSERT_MULTI', '^nentries: ([2-9]|\d\d+), offsets: \[\d+(, \d+)+\]$'),
   ('OVERWRITE', '^off: \d+$'),
   ('ADD_TID', '^off: \d+, tid: \(\d+,\d+\)$'),
-  ('SPLIT', '^level: \d+, leaf: [TF], left: \d+, right: \d+, cycleid: \d+, prefix: [L-][R-](, left logged whole|, firstrightoff: \d+(, newitemoff: \d+)?(, replaceoff: \d+)?)$'),
+  ('SPLIT', '^level: \d+, leaf: [TF], left: \d+, right: \d+, cycleid: \d+, prefix: [L-][R-](, lower bound tagged: L?R?)?(, left logged whole|, firstrightoff: \d+(, newitemoff: \d+)?(, replaceoff: \d+)?)$'),
   ('OVERFLOW', '^npages: [1-9]\d*$'),
   ('NEWROOT', '^root: \d+, level: [1-9]\d*$'),
   ('CREATE_ROOT', '^root: \d+$'),
@@ -228,6 +269,9 @@ SELECT
   bool_or(record_type = 'MERGE' AND description ~ 'deleted: \[\d') AS merge_offsets,
   bool_or(record_type = 'OVERFLOW' AND description ~ 'npages: ([2-9]|\d\d)') AS overflow_multi,
   bool_or(record_type = 'NEWROOT' AND description ~ 'level: 2$') AS newroot_level2,
+  bool_or(record_type = 'UNLINK_PAGE' AND description ~ '^left:') AS unlink_deletes,
+  bool_or(record_type = 'UNLINK_PAGE' AND description ~ '^lower separator, .*, parent:') AS unlink_lowers,
+  bool_or(record_type = 'UNLINK_PAGE' AND description ~ '^lower separator, .*, flag only$') AS unlink_lowers_flag,
   bool_and((description ~ 'level: 0,') = (description ~ 'leaf: T'))
     FILTER (WHERE record_type = 'SPLIT') AS split_leaf_is_level0,
   bool_or(record_type = 'SPLIT' AND description ~ 'leaf: F') AS split_internal,
@@ -251,6 +295,9 @@ delete_updated        | t
 merge_offsets         | t
 overflow_multi        | t
 newroot_level2        | t
+unlink_deletes        | t
+unlink_lowers         | t
+unlink_lowers_flag    | t
 split_leaf_is_level0  | t
 split_internal        | t
 split_noprefix        | t
@@ -270,4 +317,4 @@ SELECT pg_drop_replication_slot('bark_walinspect');
 (1 row)
 
 DROP TABLE wi_rec, wi_split, wi_prefix, wi_dup, wi_hkl, wi_hkp, wi_big,
-  wi_churn, wi_vac, wi_multi;
+  wi_churn, wi_vac, wi_multi, wi_lower;
