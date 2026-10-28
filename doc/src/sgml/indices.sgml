@@ -217,6 +217,36 @@ CREATE INDEX <replaceable>name</replaceable> ON <replaceable>table</replaceable>
   </para>
   </sect2>
 
+  <sect2 id="indexes-types-bark">
+   <title>BARK</title>
+
+   <indexterm>
+    <primary>index</primary>
+    <secondary>BARK</secondary>
+   </indexterm>
+   <indexterm>
+    <primary>BARK</primary>
+    <see>index</see>
+   </indexterm>
+
+  <para>
+   BARK indexes are B-trees that use the B-tree operator classes, so they
+   handle the same queries as B-tree indexes and can return data in sorted
+   order.  In addition, they can index values too large for a B-tree index
+   entry, store the rows of a repeated key compactly, can compress the
+   common prefixes of their keys, and support nearest-neighbor ordering on
+   integer columns:
+
+<synopsis>
+&lt;~&gt;
+</synopsis>
+
+   as in <literal>ORDER BY id &lt;~&gt; 5000 LIMIT 10</literal>.  BARK is a
+   new access method; see <xref linkend="bark"/> for what it supports and
+   what it does not yet.
+  </para>
+  </sect2>
+
   <sect2 id="indexes-types-hash">
    <title>Hash</title>
 
