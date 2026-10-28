@@ -1,0 +1,39 @@
+# src/test/modules/bark/Makefile
+
+EXTRA_INSTALL = src/test/modules/injection_points src/test/modules/bark_multikey \
+	src/test/modules/bark_wildcard \
+	src/test/modules/test_versioned_tableam \
+	contrib/amcheck contrib/pg_buffercache contrib/pageinspect \
+	contrib/pg_freespacemap contrib/pg_walinspect contrib/pgstattuple
+
+REGRESS = bark_incomplete_splits bark_split_moveright bark_walinspect \
+	bark_validate bark_bottomup bark_alias_am bark_knn_inttypes bark_codedlist \
+	bark_l1_cache bark_btree_impl bark_lpdead bark_scan_members
+ISOLATION = bark_concurrent_split bark_vacuum_split bark_deleted_page \
+	bark_nnd_upsert bark_recently_dead bark_broken_hot_chain \
+	bark_lock_right bark_root_split_race bark_walk_left bark_l1_concurrent \
+	bark_lpdead_snapshot bark_unique_rebuild bark_excl_hot bark_sample_split
+REGRESS_OPTS = --temp-config $(top_srcdir)/src/test/modules/injection_points/extra.conf
+ISOLATION_OPTS = --temp-config $(top_srcdir)/src/test/modules/injection_points/extra.conf
+TAP_TESTS = 1
+
+ifdef USE_PGXS
+PG_CONFIG = pg_config
+PGXS := $(shell $(PG_CONFIG) --pgxs)
+include $(PGXS)
+else
+subdir = src/test/modules/bark
+top_builddir = ../../../..
+include $(top_builddir)/src/Makefile.global
+
+# This test needs injection points, which the parent Makefile only descends
+# into when they are enabled.  Guard here too so the buildfarm misc-check step
+# (which ignores that condition) does not try to run it.
+ifeq ($(enable_injection_points),yes)
+include $(top_srcdir)/contrib/contrib-global.mk
+else
+check:
+	@echo "injection points are disabled in this build"
+endif
+
+endif

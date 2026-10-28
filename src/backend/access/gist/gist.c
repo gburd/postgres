@@ -64,6 +64,7 @@ gisthandler(PG_FUNCTION_ARGS)
 		.amsupport = GISTNProcs,
 		.amoptsprocnum = GIST_OPTIONS_PROC,
 		.amcanorder = false,
+		.ambtreeopfamilies = false,
 		.amcanorderbyop = true,
 		.amcanhash = false,
 		.amconsistentequality = false,
@@ -112,6 +113,7 @@ gisthandler(PG_FUNCTION_ARGS)
 		.amparallelrescan = NULL,
 		.amtranslatestrategy = NULL,
 		.amtranslatecmptype = gisttranslatecmptype,
+		.amcomparedatums = NULL,
 	};
 
 	PG_RETURN_POINTER(&amroutine);

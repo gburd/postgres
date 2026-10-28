@@ -70,7 +70,10 @@
     <listitem>
      <para>
       <function>bt_index_check</function> tests that its target, a
-      B-Tree index, respects a variety of invariants.  Example usage:
+      B-Tree index, respects a variety of invariants.  The index must be
+      implemented by B-Tree's own code; a B-Tree index implemented by another
+      access method (see <xref linkend="index-implementations"/>) is
+      refused.  Example usage:
 <screen>
 test=# SELECT bt_index_check(index =&gt; c.oid, heapallindexed =&gt; i.indisunique),
                c.relname,
@@ -204,6 +207,104 @@ ORDER BY c.relpages DESC LIMIT 10;
       require tuple adjustment) and page graph respects balanced-tree
       invariants (internal pages reference only leaf page or only internal
       pages).
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>
+     <function>bark_index_check(index regclass, heapallindexed boolean, checkunique boolean) returns void</function>
+     <indexterm>
+      <primary>bark_index_check</primary>
+     </indexterm>
+    </term>
+
+    <listitem>
+     <para>
+      <function>bark_index_check</function> tests that its target
+      <literal>bark</literal> index is structurally sound: that the meta
+      page's version is one the server reads, that the entries of each page
+      are in key order and within its high key, with equal keys in heap TID
+      order, that sibling links and downlinks agree with the pages they
+      point to, and that each LIST, POSTING and OVERSIZED entry is well
+      formed (an OVERSIZED entry's overflow chain is read in full).  A
+      unique index must have no LIST or POSTING entry: each of its entries
+      has one heap TID.  The meta page's flags must agree with each other
+      and with the index's definition: version tags on a multikey column's
+      keys only in an index built for version tags, and a conversion (see
+      <xref linkend="bark-version-tags"/>) only of such an index, settled
+      only once it has begun.  It
+      acquires an <literal>AccessShareLock</literal> on the index and its
+      table, as <function>bt_index_check</function> does.  The
+      one-argument form <function>bark_index_check(index
+      regclass)</function> is the same as passing
+      <literal>false</literal> for <literal>heapallindexed</literal>.
+     </para>
+     <para>
+      When <parameter>heapallindexed</parameter> is
+      <literal>true</literal>, the function also checks that every heap
+      tuple a new <command>CREATE INDEX</command> would index has an entry,
+      as <function>bt_index_check</function> does: it fingerprints each heap
+      TID of each leaf entry, with the entry's key, in a Bloom filter (each
+      member of a LIST or POSTING entry as the entry it would be on its
+      own), then scans the table and probes the filter for each tuple.
+      This is not supported for an index with a multikey column, whose
+      rows have several entries each.
+     </para>
+     <para>
+      When <parameter>checkunique</parameter> is <literal>true</literal>
+      and the index is unique, the function also checks that no two of its
+      entries with equal key columns point to rows that are both visible to
+      the check's snapshot, as <function>bt_index_check</function> does.
+      Runs of equal keys are followed across leaf pages.  For an index with
+      a multikey column the run is of the other key columns and one key, so
+      it checks the index's rule that no two rows share a key; a key with a
+      NULL column is not checked unless the index is <literal>NULLS NOT
+      DISTINCT</literal>.  The one- and two-argument forms do not check
+      uniqueness.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>
+     <function>bark_index_parent_check(index regclass, heapallindexed boolean, checkunique boolean) returns void</function>
+     <indexterm>
+      <primary>bark_index_parent_check</primary>
+     </indexterm>
+    </term>
+
+    <listitem>
+     <para>
+      <function>bark_index_parent_check</function> performs every check
+      <function>bark_index_check</function> does, then walks the tree level
+      by level from the root and checks each level against the one below:
+      the downlinks of each level must name, in order, every page of the
+      level below and no other, each downlink must equal the high key of
+      the page to its child's left, and each page's high key must equal its
+      last child's.  Every live page must be reachable from the root.  As
+      with <function>bt_index_parent_check</function>, it acquires a
+      <literal>ShareLock</literal> on the index and its table, which blocks
+      writes while it runs, and cannot be used in hot standby mode.  The
+      one- and two-argument forms are the same as passing
+      <literal>false</literal> for the parameters they omit.
+     </para>
+     <para>
+      It also follows the overflow chain of each <literal>OVERSIZED</literal>
+      entry, high key and downlink to its end, and reports as corruption a
+      chain that loops, crosses another chain, reaches a page that is not an
+      overflow page, or is longer than its entry needs.  An overflow page
+      that no chain reaches is reported with a <literal>WARNING</literal>,
+      which names the first page of the orphaned chain and its number of
+      pages, not as corruption: an oversized key's overflow chain is written
+      before the entry that references it, so a crash in between leaves the
+      chain's pages unreferenced; so does a crash while
+      <command>VACUUM</command> frees a chain, one page at a time, and an
+      error, such as running out of disk space, that ends an insert after
+      it wrote a chain and before it placed the entry.  No other path leaves
+      such pages, so in an index that has been through no crash and no such
+      error the warning means a bug.  Such pages are wasted space only.
+      Nothing reclaims them but <command>REINDEX</command>.
      </para>
     </listitem>
    </varlistentry>

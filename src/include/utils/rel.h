@@ -164,6 +164,12 @@ typedef struct RelationData
 	Bitmapset  *rd_idattr;		/* included in replica identity index */
 	Bitmapset  *rd_hotblockingattr; /* cols blocking HOT update */
 	Bitmapset  *rd_summarizedattr;	/* cols indexed by summarizing indexes */
+	Bitmapset  *rd_indexedattr; /* cols referenced by any index */
+	Bitmapset  *rd_exprattr;	/* cols non-summarizing indexes reference only
+								 * via expressions or as partial indexes */
+	Bitmapset  *rd_cmpattr;		/* cols indexed directly only by indexes with
+								 * amcomparedatums, less key and replica
+								 * identity cols */
 
 	PublicationDesc *rd_pubdesc;	/* publication descriptor, or NULL */
 
@@ -187,6 +193,12 @@ typedef struct RelationData
 	 * Table access method.
 	 */
 	const struct TableAmRoutine *rd_tableam;
+
+	/*
+	 * Locator descriptor from the table AM, or NULL if not yet looked up.
+	 * Filled by RelationGetLocatorDesc().
+	 */
+	const struct LocatorDesc *rd_locdesc;
 
 	/* These are non-NULL only for an index relation: */
 	Form_pg_index rd_index;		/* pg_index tuple describing this index */
@@ -216,6 +228,13 @@ typedef struct RelationData
 	uint16	   *rd_exclstrats;	/* exclusion ops' strategy numbers, if any */
 	Oid		   *rd_indcollation;	/* OIDs of index collations */
 	bytea	  **rd_opcoptions;	/* parsed opclass-specific options */
+
+	/*
+	 * Table attributes this index reads, offset by
+	 * FirstLowInvalidHeapAttributeNumber; see RelationGetIndexedAttrs().
+	 * Built on first use, in rd_indexcxt.
+	 */
+	Bitmapset  *rd_indattr;
 
 	/*
 	 * rd_amcache is available for index and table AMs to cache private data
@@ -562,6 +581,15 @@ typedef struct ViewOptions
  */
 #define IndexRelationGetNumberOfKeyAttributes(relation) \
 		((relation)->rd_index->indnkeyatts)
+
+/*
+ * IndexRelationGetImplAm
+ *		The OID of the index access method whose code implements the index:
+ *		pg_index.indimplam if set, else the index's own access method.
+ */
+#define IndexRelationGetImplAm(relation) \
+	(OidIsValid((relation)->rd_index->indimplam) ? \
+	 (relation)->rd_index->indimplam : (relation)->rd_rel->relam)
 
 /*
  * RelationGetDescr

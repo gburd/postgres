@@ -25,6 +25,7 @@
  */
 typedef struct PlannerInfo PlannerInfo;
 typedef struct IndexPath IndexPath;
+typedef struct IndexOptInfo IndexOptInfo;
 
 /* Likewise, this file shouldn't depend on execnodes.h. */
 typedef struct IndexInfo IndexInfo;
@@ -56,6 +57,8 @@ typedef enum IndexAMProperty
 	AMPROP_CAN_MULTI_COL,
 	AMPROP_CAN_EXCLUDE,
 	AMPROP_CAN_INCLUDE,
+	AMPROP_CAN_VAR_LOCATOR,
+	AMPROP_CAN_VERSION,
 } IndexAMProperty;
 
 /*
@@ -109,6 +112,19 @@ typedef CompareType (*amtranslate_strategy_function) (StrategyNumber strategy, O
 /* translate general operator types to AM-specific strategies */
 typedef StrategyNumber (*amtranslate_cmptype_function) (CompareType cmptype, Oid opfamily);
 
+/* can this index, of an AM with amcanversion, store version tags? */
+typedef bool (*amindexcanversion_function) (Relation indexRelation);
+
+/* may an update keep a row's locator, as far as this index is concerned? */
+typedef bool (*amindexmaykeeplocator_function) (Relation indexRelation);
+
+/* would two non-null values of an index column give the same entries? */
+typedef bool (*amcomparedatums_function) (Relation indexRelation,
+										  IndexInfo *indexInfo,
+										  int attnum, Oid typid,
+										  int16 typlen, bool typbyval,
+										  Datum oldValue, Datum newValue);
+
 /* build new index */
 typedef IndexBuildResult *(*ambuild_function) (Relation heapRelation,
 											   Relation indexRelation,
@@ -161,6 +177,13 @@ typedef void (*amcostestimate_function) (PlannerInfo *root,
  * API could be expanded to support passing more values if the need arises.
  */
 typedef int (*amgettreeheight_function) (Relation rel);
+
+/*
+ * which index column can an ordered index (amcanorder and amcanorderbyop)
+ * serve an ordering operator on, given an index path's clauses?
+ */
+typedef int (*amorderbyopcolumn_function) (IndexOptInfo *index,
+										   List *indexclauses);
 
 /* parse index reloptions */
 typedef bytea *(*amoptions_function) (Datum reloptions,
@@ -245,6 +268,17 @@ typedef struct IndexAmRoutine
 	uint16		amoptsprocnum;
 	/* does AM support ORDER BY indexed column's value? */
 	bool		amcanorder;
+
+	/*
+	 * Are this AM's operator families btree operator families?  True means
+	 * the AM's pg_opfamily rows use the btree strategy numbers and sort
+	 * semantics, so the planner may use the index's opfamily OIDs directly as
+	 * sort-ordering opfamily OIDs and may apply btree row-comparison /
+	 * equivalence-class clause matching to it, exactly as it does for the
+	 * btree AM itself.  Only an AM that shares btree's opfamily
+	 * infrastructure may set this.
+	 */
+	bool		ambtreeopfamilies;
 	/* does AM support ORDER BY result of an operator on indexed column? */
 	bool		amcanorderbyop;
 	/* does AM support hashing using API consistent with the hash AM? */
@@ -281,10 +315,48 @@ typedef struct IndexAmRoutine
 	bool		amusemaintenanceworkmem;
 	/* does AM store tuple information only at block granularity? */
 	bool		amsummarizing;
+
+	/*
+	 * Can this AM store a variable-width locator?  An AM that leaves this
+	 * false stores the table's locator in an ItemPointerData, so it can index
+	 * only a table whose locator is fixed-width and fits in one.
+	 */
+	bool		amcanvarlocator;
+
+	/*
+	 * Can this AM store a version tag with each entry?  An AM that sets this
+	 * stores, orders and returns the IndexVersionTag of each entry it is
+	 * given, but never interprets it; see "Versioned locators" in
+	 * amlocator.h.  It may do so for only some of its indexes; see
+	 * amindexcanversion.
+	 */
+	bool		amcanversion;
 	/* OR of parallel vacuum flags.  See vacuum.h for flags. */
 	uint8		amparallelvacuumoptions;
 	/* type of data stored in index, or InvalidOid if variable */
 	Oid			amkeytype;
+
+	/*
+	 * pg_am OID of a built-in index AM whose indexes this AM can implement,
+	 * or InvalidOid.  An index created with that AM can then be stored and
+	 * searched by this AM's code instead; see pg_index.indimplam.  The
+	 * implementation promises to accept the implemented AM's operator classes
+	 * (with the same support procedure and strategy numbering) and its
+	 * reloptions, and to set every capability flag the implemented AM's
+	 * routine sets (amcanunique, amcaninclude, amcanorder, amcanbackward,
+	 * ammarkpos/amrestrpos, and so on), with the same amkeytype.
+	 *
+	 * Its amsupport may exceed the implemented AM's: support procedures past
+	 * the implemented AM's are optional, and the implemented AM's operator
+	 * classes have none, so the implementation must treat a missing one as
+	 * absent (index_getprocid returns InvalidOid).  Its amstrategies is
+	 * either the implemented AM's or 0 (any numbering).
+	 *
+	 * shortcut: only built-in AMs, which have fixed OIDs, can be implemented,
+	 * and core lets only btree be; allow others once their relam ==
+	 * FOO_AM_OID tests are audited for "this is FOO's own code".
+	 */
+	Oid			amimplements;
 
 	/*
 	 * If you add new properties to either the above or the below lists, then
@@ -302,6 +374,7 @@ typedef struct IndexAmRoutine
 	amcanreturn_function amcanreturn;	/* can be NULL */
 	amcostestimate_function amcostestimate;
 	amgettreeheight_function amgettreeheight;	/* can be NULL */
+	amorderbyopcolumn_function amorderbyopcolumn;	/* can be NULL */
 	amoptions_function amoptions;
 	amproperty_function amproperty; /* can be NULL */
 	ambuildphasename_function ambuildphasename; /* can be NULL */
@@ -323,8 +396,31 @@ typedef struct IndexAmRoutine
 	/* interface functions to support planning */
 	amtranslate_strategy_function amtranslatestrategy;	/* can be NULL */
 	amtranslate_cmptype_function amtranslatecmptype;	/* can be NULL */
+
+	/* interface function to support HOT updates */
+	amcomparedatums_function amcomparedatums;	/* can be NULL */
+
+	/*
+	 * Does this index store version tags?  For an AM with amcanversion that
+	 * supports tags for only some of its indexes (by the format an index was
+	 * built in, or by the kind of its operator classes, say); NULL means
+	 * every index of the AM does.  Ask index_can_version().
+	 */
+	amindexcanversion_function amindexcanversion;	/* can be NULL */
+
+	/*
+	 * May an update that needs a new entry in this index keep the row's
+	 * locator?  An index that stores tags may refuse, for example after a
+	 * constraint is added that its checks cannot serve under a versioned
+	 * locator; its entries stay tagged and are judged as before.  NULL means
+	 * the answer of amindexcanversion.  Ask index_may_keep_locator().
+	 */
+	amindexmaykeeplocator_function amindexmaykeeplocator;	/* can be NULL */
 } IndexAmRoutine;
 
+
+/* GUC parameter */
+extern PGDLLIMPORT char *default_btree_implementation;
 
 /* Functions in access/index/amapi.c */
 extern const IndexAmRoutine *GetIndexAmRoutine(Oid amhandler);

@@ -47,6 +47,7 @@ AssertCouldGetRelation(void)
 #endif
 extern Relation RelationIdGetRelation(Oid relationId);
 extern void RelationClose(Relation relation);
+extern bool RelationIdUpdatesInPlace(Oid relationId);
 
 /*
  * Routines to compute/retrieve additional cached information
@@ -60,6 +61,7 @@ extern Oid	RelationGetToastChunkIdType(Relation relation);
 extern List *RelationGetIndexExpressions(Relation relation);
 extern List *RelationGetDummyIndexExpressions(Relation relation);
 extern List *RelationGetIndexPredicate(Relation relation);
+extern Bitmapset *RelationGetIndexedAttrs(Relation indexRel);
 extern bytea **RelationGetIndexAttOptions(Relation relation, bool copy);
 
 /*
@@ -72,6 +74,9 @@ typedef enum IndexAttrBitmapKind
 	INDEX_ATTR_BITMAP_IDENTITY_KEY,
 	INDEX_ATTR_BITMAP_HOT_BLOCKING,
 	INDEX_ATTR_BITMAP_SUMMARIZED,
+	INDEX_ATTR_BITMAP_INDEXED,
+	INDEX_ATTR_BITMAP_EXPRESSION,
+	INDEX_ATTR_BITMAP_COMPARABLE,
 } IndexAttrBitmapKind;
 
 extern Bitmapset *RelationGetIndexAttrBitmap(Relation relation,

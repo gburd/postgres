@@ -1,0 +1,844 @@
+/*-------------------------------------------------------------------------
+ *
+ * barkdelete.c
+ *	  Bottom-up deletion of BARK leaf entries, the re-forming of LIST and
+ *	  POSTING entries that it shares with VACUUM, and the merging of a
+ *	  leaf's equal-key entries before a split.
+ *
+ * Simple deletion is nbtree's (_bt_simpledel_pass, nbtinsert.c): an insert
+ * that would split a leaf first deletes the entries scans marked LP_DEAD,
+ * and any other entry of the same heap blocks the table AM finds dead.
+ * Bottom-up deletion is nbtree's (_bt_bottomupdel_pass, nbtdedup.c): when an
+ * UPDATE that did not change an index's key would split a leaf, ask the table
+ * AM which of the leaf's heap TIDs point to versions dead to every snapshot,
+ * and delete their entries, so that version churn does not grow the index.
+ * Both share one pass (bark_delete_pass), as nbtree's share
+ * _bt_delitems_delete_check.  See "Bottom-up deletion" and "Dead-entry hints
+ * and simple deletion" in src/backend/access/bark/README.  The merge is
+ * nbtree's deduplication pass (_bt_dedup_pass, nbtdedup.c); see "Merging a
+ * page's entries before a split" there.
+ *
+ * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1994, Regents of the University of California
+ *
+ * IDENTIFICATION
+ *	  src/backend/access/bark/barkdelete.c
+ *
+ *-------------------------------------------------------------------------
+ */
+#include "postgres.h"
+
+#include "access/bark.h"
+#include "access/barkxlog.h"
+#include "access/tableam.h"
+#include "access/xlog.h"
+#include "access/xloginsert.h"
+#include "common/int.h"
+#include "lib/qunique.h"
+#include "miscadmin.h"
+#include "storage/bufmgr.h"
+#include "utils/rel.h"
+
+/*
+ * Re-form the LIST or POSTING entry `itup` at `off` on the leaf `buf` (as
+ * read through BarkPageGetItem) with `tids`, the `nlive` heap TIDs of it that
+ * survive, ascending, 1 <= nlive < its member count.  The shape is chosen
+ * again: a POSTING if its sbm still wins, else a LIST, else a plain SINGLE
+ * when exactly one survives.  Returns the new entry coded for the page,
+ * palloc'd, for the caller to write with PageIndexTupleOverwrite.
+ *
+ * The new entry is never larger than the old one, so it always fits in the
+ * old one's place.  A POSTING entry is sized for the removal bound of its set
+ * (see bark_form_posting), which no subset exceeds; a LIST of fewer locators
+ * is shorter; a LIST is chosen over the POSTING only when it is the smaller;
+ * and a SINGLE is smaller than either.  A coded LIST re-forms to a coded LIST
+ * (bark_reform_list), whose survivors never code larger than the whole, so it
+ * fits where a plain or POSTING re-form of the same survivors might not.  On
+ * a BARK_PREFIX page the key codes as the old entry's did, so the coded entry
+ * shrinks with the plain one.  VACUUM and bottom-up deletion both rely on
+ * this; the check below turns a violation into an error before the caller
+ * enters its critical section.
+ */
+IndexTuple
+bark_reform_entry(Relation index, Buffer buf, OffsetNumber off,
+				  IndexTuple itup, ItemPointer tids, int nlive)
+{
+	Page		page = BufferGetPage(buf);
+	ItemId		iid = PageGetItemId(page, off);
+	bool		wascoded = (BarkEntryGetShape(itup) == BARK_SHAPE_LIST &&
+							BarkListIsCoded(itup));
+	IndexTuple	key = bark_single_from_list(index, itup, NULL);
+	uint16		stride = bark_index_tid_stride(index);
+	IndexTuple	newentry;
+	IndexTuple	posting;
+	IndexTuple	coded;
+
+	Assert(nlive > 0);
+
+	if (nlive == 1)
+	{
+		newentry = key;
+		newentry->t_tid = tids[0];
+	}
+	else if (wascoded)
+	{
+		/*
+		 * A coded LIST re-forms to a coded LIST of its survivors, which is no
+		 * larger than the old entry (bark_reform_list): trying a POSTING or a
+		 * plain LIST here could pick a form larger than the old coded slot.
+		 */
+		newentry = bark_reform_list(RelationGetDescr(index), key, tids, nlive,
+									true, stride);
+		pfree(key);
+	}
+	else if ((posting = bark_form_posting(RelationGetDescr(index),
+										  key, tids, nlive, stride)) != NULL)
+	{
+		newentry = posting;
+		pfree(key);
+	}
+	else
+	{
+		newentry = bark_form_list_best(RelationGetDescr(index), key, tids, nlive,
+									   stride);
+		pfree(key);
+	}
+
+	coded = bark_prefix_encode(page, newentry);
+	if (coded != newentry)
+		pfree(newentry);
+	if (MAXALIGN(IndexTupleSize(coded)) > MAXALIGN(ItemIdGetLength(iid)))
+		elog(ERROR, "failed to shrink BARK leaf entry: entry at offset %u of block %u grew from %u to %zu bytes",
+			 off, BufferGetBlockNumber(buf), ItemIdGetLength(iid),
+			 IndexTupleSize(coded));
+	return coded;
+}
+
+/*
+ * Delete the entries at deletable[] from the exclusive-locked leaf `buf`, and
+ * overwrite those at updatedoffsets[] with updated[] (coded for the page), as
+ * nbtree's _bt_delitems_delete: the changes and their WAL record are made in
+ * one critical section.  Unlike bark_delitems_vacuum, this leaves the page's
+ * vacuum cycle ID alone: only VACUUM manages it.
+ *
+ * For bottom-up deletion the entries are re-formed by bark_reform_entry and
+ * never grow, so they are rewritten first, while updatedoffsets[] still name
+ * them, and the record is an XLOG_BARK_DELETE with the conflict horizon.  For
+ * a merge (`merge`; bark_merge_page) each rewritten entry absorbs the ones
+ * deleted after it and grows, which on a full page fits only once their
+ * space is free; so the deletions come first, updatedoffsets[] are numbered
+ * as after them, and the record is an XLOG_BARK_MERGE.
+ */
+static void
+bark_delitems_delete(Relation index, Buffer buf, bool merge,
+					 TransactionId snapshotConflictHorizon, bool isCatalogRel,
+					 OffsetNumber *deletable, int ndeletable,
+					 OffsetNumber *updatedoffsets, IndexTuple *updated,
+					 int nupdated)
+{
+	Page		page = BufferGetPage(buf);
+	bool		needswal = RelationNeedsWAL(index);
+	char	   *updatedbuf = NULL;
+	Size		updatedbuflen = 0;
+	XLogRecPtr	recptr;
+
+	Assert(ndeletable > 0 || nupdated > 0);
+
+	/* The new entries, each padded to MAXALIGN, for the WAL record */
+	if (needswal && nupdated > 0)
+	{
+		for (int i = 0; i < nupdated; i++)
+			updatedbuflen += MAXALIGN(IndexTupleSize(updated[i]));
+		updatedbuf = palloc0(updatedbuflen);
+		updatedbuflen = 0;
+		for (int i = 0; i < nupdated; i++)
+		{
+			memcpy(updatedbuf + updatedbuflen, updated[i],
+				   IndexTupleSize(updated[i]));
+			updatedbuflen += MAXALIGN(IndexTupleSize(updated[i]));
+		}
+	}
+
+	/* No ereport(ERROR) until changes are logged */
+	START_CRIT_SECTION();
+
+	if (merge && ndeletable > 0)
+		PageIndexMultiDelete(page, deletable, ndeletable);
+	for (int i = 0; i < nupdated; i++)
+	{
+		if (!BarkPageOverwriteEntry(page, updatedoffsets[i], updated[i],
+									IndexTupleSize(updated[i])))
+			elog(PANIC, "failed to rewrite BARK leaf entry at offset %u of block %u of index \"%s\"",
+				 updatedoffsets[i], BufferGetBlockNumber(buf),
+				 RelationGetRelationName(index));
+	}
+	if (!merge && ndeletable > 0)
+		PageIndexMultiDelete(page, deletable, ndeletable);
+
+	/* A hint, as nbtree's BTP_HAS_GARBAGE; redo clears it too. */
+	BarkPageGetOpaque(page)->bark_flags &= ~BARK_HAS_GARBAGE;
+
+	MarkBufferDirty(buf);
+
+	if (needswal)
+	{
+		xl_bark_delete xlrec;
+		xl_bark_merge xlmerge;
+
+		XLogBeginInsert();
+		XLogRegisterBuffer(0, buf, REGBUF_STANDARD);
+		if (merge)
+		{
+			xlmerge.ndeleted = ndeletable;
+			xlmerge.nupdated = nupdated;
+			XLogRegisterData(&xlmerge, SizeOfBarkMerge);
+		}
+		else
+		{
+			xlrec.snapshotConflictHorizon = snapshotConflictHorizon;
+			xlrec.ndeleted = ndeletable;
+			xlrec.nupdated = nupdated;
+			xlrec.isCatalogRel = isCatalogRel;
+			XLogRegisterData(&xlrec, SizeOfBarkDelete);
+		}
+		if (ndeletable > 0)
+			XLogRegisterBufData(0, deletable,
+								ndeletable * sizeof(OffsetNumber));
+		if (nupdated > 0)
+		{
+			XLogRegisterBufData(0, updatedoffsets,
+								nupdated * sizeof(OffsetNumber));
+			XLogRegisterBufData(0, updatedbuf, updatedbuflen);
+		}
+
+		recptr = XLogInsert(RM_BARK_ID,
+							merge ? XLOG_BARK_MERGE : XLOG_BARK_DELETE);
+	}
+	else
+		recptr = XLogGetFakeLSN(index);
+
+	PageSetLSN(page, recptr);
+
+	END_CRIT_SECTION();
+
+	bark_verify_page_change(index, buf);
+
+	if (updatedbuf != NULL)
+		pfree(updatedbuf);
+}
+
+/*
+ * qsort_arg comparator: TM_IndexDelete by TID, then by the version tag of
+ * its status (in `arg`, the TM_IndexStatus array), then by id (stable
+ * order).
+ */
+static int
+bark_deltid_cmp(const void *a, const void *b, void *arg)
+{
+	const TM_IndexDelete *da = (const TM_IndexDelete *) a;
+	const TM_IndexDelete *db = (const TM_IndexDelete *) b;
+	const TM_IndexStatus *status = (const TM_IndexStatus *) arg;
+	int			c = ItemPointerCompare(&da->tid, &db->tid);
+
+	if (c != 0)
+		return c;
+	c = bark_compare_tag(status[da->id].tag, status[db->id].tag);
+	if (c != 0)
+		return c;
+	return (da->id > db->id) - (da->id < db->id);
+}
+
+/* qsort/bsearch comparator: BlockNumbers, ascending. */
+static int
+bark_blk_cmp(const void *a, const void *b)
+{
+	return pg_cmp_u32(*(const BlockNumber *) a, *(const BlockNumber *) b);
+}
+
+/*
+ * The deletion pass over the exclusive-locked leaf `buf` that simple and
+ * bottom-up deletion share, as nbtree's _bt_simpledel_pass and
+ * _bt_bottomupdel_pass share _bt_delitems_delete_check.  Heap TIDs of the
+ * page's entries are offered to table_index_delete_tuples, which reports
+ * those whose whole HOT chains are dead to every snapshot and their conflict
+ * horizon; their entries are deleted, or, for a LIST or POSTING that keeps
+ * some members, re-formed, in one XLOG_BARK_DELETE record.  Returns true if
+ * the page now has room for an entry of `newitemsz` bytes (its coded size)
+ * and its line pointer.
+ *
+ * Simple deletion (!bottomup) offers the TIDs of the entries scans marked
+ * LP_DEAD (bark_killitems), which the table AM is told are known deletable,
+ * and every other TID on the page that is in one of their heap blocks, or in
+ * newitem's: the table AM visits those blocks anyway, and the other dead
+ * versions in them are mostly about to be marked too.  It does nothing when
+ * no entry is marked.  Bottom-up deletion offers every TID; those of
+ * entries whose key equals newitem's, and every LIST and POSTING member, are
+ * marked promising.  Each TID's freespace, the room its deletion gives back,
+ * is a SINGLE entry's whole size, a LIST member's locator, or a POSTING
+ * member's share of the entry; the table AM uses it only to judge when it
+ * has found enough.
+ *
+ * With `taggedonly` (bark_tagged_delete) only the tagged SINGLEs are
+ * offered, each promising.  Every TID goes with its entry's version tag
+ * (TM_IndexStatus.tag, 0 for an untagged entry).
+ *
+ * OVERSIZED entries are not offered: deleting one must also free its overflow
+ * chain, which VACUUM does once the leaf no longer references it
+ * (bark_free_oversized), and this runs inside an insert that holds the leaf
+ * locked.  At most PG_INT16_MAX TIDs are offered (TM_IndexDelete.id is an
+ * int16; one POSTING entry can hold tens of thousands); entries past that
+ * are left for VACUUM.
+ *
+ * No cleanup lock is needed, as in nbtree's simple and bottom-up deletion:
+ * the heap tuples are dead to every snapshot, and their line pointers stay
+ * allocated until VACUUM, which takes a cleanup lock on every leaf before the
+ * heap may reuse them, so a scan that copied one of these TIDs before the
+ * deletion only finds a dead tuple at it.
+ */
+static bool
+bark_delete_pass(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
+				 Buffer buf, IndexTuple newitem, Size newitemsz, bool bottomup,
+				 bool taggedonly)
+{
+	Page		page = BufferGetPage(buf);
+	BarkPageOpaque opaque = BarkPageGetOpaque(page);
+	OffsetNumber minoff = BarkPageFirstDataKey(opaque);
+	OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
+	TM_IndexDeleteOp delstate;
+	ItemPointer tids;			/* every candidate TID, indexed by id */
+	int		   *dupof;			/* per id: the id offered for its TID, or -1 */
+	int			ntids = 0;
+	int			tidsalloc = MaxIndexTuplesPerPage;
+	int		   *firstid;		/* per offset: id of its first TID */
+	int		   *nids;			/* per offset: number of its TIDs offered */
+	bool	   *dead;			/* per id: reported deletable */
+	BlockNumber *deadblocks = NULL; /* simple: heap blocks to look in */
+	int			ndeadblocks = 0;
+	int			noffered;
+	TransactionId snapshotConflictHorizon;
+	bool		isCatalogRel;
+	OffsetNumber deletable[MaxIndexTuplesPerPage];
+	int			ndeletable = 0;
+	OffsetNumber updatedoffsets[MaxIndexTuplesPerPage];
+	IndexTuple	updated[MaxIndexTuplesPerPage];
+	int			nupdated = 0;
+
+	Assert(BarkPageIsLeaf(opaque));
+
+	/* Simple deletion needs a marked entry; look before reading any entry. */
+	if (!bottomup)
+	{
+		OffsetNumber off;
+
+		for (off = minoff; off <= maxoff; off = OffsetNumberNext(off))
+		{
+			if (ItemIdIsDead(PageGetItemId(page, off)))
+				break;
+		}
+		if (off > maxoff)
+			return false;
+	}
+
+	tids = palloc_array(ItemPointerData, tidsalloc);
+	firstid = palloc0_array(int, maxoff + 1);
+	nids = palloc0_array(int, maxoff + 1);
+
+	delstate.irel = index;
+	delstate.iblknum = BufferGetBlockNumber(buf);
+	delstate.bottomup = bottomup;
+	delstate.bottomupfreespace = bottomup ? Max(BLCKSZ / 16, newitemsz) : 0;
+
+	/* Collect the TIDs, entry by entry, and simple deletion's blocks */
+	for (OffsetNumber off = minoff; off <= maxoff; off = OffsetNumberNext(off))
+	{
+		BarkItemBuf ibuf;
+		IndexTuple	itup = BarkPageGetItem(page, off, &ibuf);
+		int			n;
+
+		/* A marker's TID names no row to offer the table AM. */
+		if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED ||
+			BarkEntryIsMarker(itup))
+			continue;
+		if (taggedonly && !BarkEntryHasTag(itup))
+			continue;
+		n = bark_entry_count_tids(itup);
+		if (ntids + n > PG_INT16_MAX)
+			continue;
+		while (ntids + n > tidsalloc)
+		{
+			tidsalloc *= 2;
+			tids = repalloc_array(tids, ItemPointerData, tidsalloc);
+		}
+		firstid[off] = ntids;
+		nids[off] = bark_entry_get_tids(itup, tids + ntids, n,
+										keyinfo->tidstride);
+		ntids += nids[off];
+		if (!bottomup && ItemIdIsDead(PageGetItemId(page, off)))
+		{
+			deadblocks = deadblocks == NULL ?
+				palloc_array(BlockNumber, ntids + 1) :
+				repalloc_array(deadblocks, BlockNumber, ndeadblocks + n + 1);
+			for (int i = firstid[off]; i < ntids; i++)
+				deadblocks[ndeadblocks++] = ItemPointerGetBlockNumber(&tids[i]);
+		}
+	}
+
+	/*
+	 * Simple deletion whose marked entries were all left out (OVERSIZED, or
+	 * past PG_INT16_MAX TIDs) does nothing: the table AM requires at least
+	 * one known-deletable TID of it.  Otherwise newitem's heap block joins
+	 * the marked entries' blocks: it is the likeliest to hold other recently
+	 * dead versions, and is almost surely in shared buffers, as nbtree's
+	 * _bt_deadblocks argues.
+	 */
+	if (!bottomup)
+	{
+		if (ndeadblocks == 0)
+		{
+			pfree(tids);
+			pfree(firstid);
+			pfree(nids);
+			return false;
+		}
+		deadblocks[ndeadblocks++] = ItemPointerGetBlockNumber(&newitem->t_tid);
+		qsort(deadblocks, ndeadblocks, sizeof(BlockNumber), bark_blk_cmp);
+		ndeadblocks = qunique(deadblocks, ndeadblocks, sizeof(BlockNumber),
+							  bark_blk_cmp);
+	}
+	else if (ntids == 0)
+	{
+		pfree(tids);
+		pfree(firstid);
+		pfree(nids);
+		return false;
+	}
+
+	delstate.deltids = palloc_array(TM_IndexDelete, ntids);
+	delstate.status = palloc_array(TM_IndexStatus, ntids);
+	noffered = 0;
+	for (OffsetNumber off = minoff; off <= maxoff; off = OffsetNumberNext(off))
+	{
+		BarkItemBuf ibuf;
+		IndexTuple	itup;
+		BarkEntryShape shape;
+		bool		known = ItemIdIsDead(PageGetItemId(page, off));
+		bool		promising = false;
+		int16		freespace = 0;
+
+		if (nids[off] == 0)
+			continue;
+		itup = BarkPageGetItem(page, off, &ibuf);
+		shape = BarkEntryGetShape(itup);
+		if (!bottomup)
+			;					/* the table AM reads neither field */
+		else if (shape == BARK_SHAPE_SINGLE)
+		{
+			promising = taggedonly ||
+				bark_compare_itups(keyinfo, index, newitem, itup) == 0;
+			freespace = MAXALIGN(ItemIdGetLength(PageGetItemId(page, off))) +
+				sizeof(ItemIdData);
+		}
+		else if (shape == BARK_SHAPE_LIST)
+		{
+			promising = true;
+			freespace = sizeof(ItemPointerData);
+		}
+		else
+		{
+			promising = true;
+			freespace = Max(1, ItemIdGetLength(PageGetItemId(page, off)) /
+							nids[off]);
+		}
+
+		for (int i = firstid[off]; i < firstid[off] + nids[off]; i++)
+		{
+			BlockNumber blk = ItemPointerGetBlockNumber(&tids[i]);
+
+			/* Simple deletion looks only in the blocks it must visit. */
+			if (!bottomup &&
+				bsearch(&blk, deadblocks, ndeadblocks, sizeof(BlockNumber),
+						bark_blk_cmp) == NULL)
+				continue;
+			delstate.deltids[noffered].tid = tids[i];
+			delstate.deltids[noffered].id = i;
+			delstate.status[i].idxoffnum = off;
+			delstate.status[i].knowndeletable = known && !bottomup;
+			delstate.status[i].promising = promising;
+			delstate.status[i].freespace = freespace;
+			delstate.status[i].tag = BarkEntryGetTag(itup);
+			noffered++;
+		}
+	}
+	delstate.ndeltids = noffered;
+	if (deadblocks != NULL)
+		pfree(deadblocks);
+
+	/*
+	 * The table AM requires each TID at most once (heapam's sort asserts that
+	 * no two are equal), but a row of an index with an extracted column has
+	 * an entry per key, and several of them may be on this leaf.  Offer each
+	 * TID once: sort by TID, keep the first of each run, and remember the
+	 * others in dupof[] so that the answer for the one offered applies to
+	 * all.  A TID offered more than once is promising if any of its entries
+	 * is, and frees the space of all of them; it is known deletable if any of
+	 * its entries is marked, since the mark says the TID's row is dead.  In
+	 * an index that stores version tags the table AM's verdict is per entry,
+	 * (TID, tag) (see TM_IndexStatus): a row's stale entries can be dead
+	 * while its current ones are live.  So only entries of one TID and one
+	 * tag share an answer; the TID goes to the table AM once per tag.
+	 */
+	dupof = palloc_array(int, ntids);
+	for (int i = 0; i < ntids; i++)
+		dupof[i] = -1;
+	if (bark_index_extracted_column(index) > 0 && delstate.ndeltids > 1)
+	{
+		int			nkept = 0;
+
+		qsort_arg(delstate.deltids, delstate.ndeltids, sizeof(TM_IndexDelete),
+				  bark_deltid_cmp, delstate.status);
+		for (int i = 0; i < delstate.ndeltids; i++)
+		{
+			TM_IndexDelete *d = &delstate.deltids[i];
+
+			if (nkept > 0 &&
+				ItemPointerEquals(&delstate.deltids[nkept - 1].tid, &d->tid) &&
+				delstate.status[delstate.deltids[nkept - 1].id].tag ==
+				delstate.status[d->id].tag)
+			{
+				TM_IndexStatus *keep = &delstate.status[delstate.deltids[nkept - 1].id];
+				TM_IndexStatus *dup = &delstate.status[d->id];
+
+				dupof[d->id] = delstate.deltids[nkept - 1].id;
+				keep->promising = keep->promising || dup->promising;
+				keep->knowndeletable = keep->knowndeletable ||
+					dup->knowndeletable;
+				keep->freespace = Min(PG_INT16_MAX,
+									  (int) keep->freespace + dup->freespace);
+				continue;
+			}
+			delstate.deltids[nkept++] = *d;
+		}
+		delstate.ndeltids = nkept;
+	}
+
+	/*
+	 * Ask the table AM.  It sorts and shrinks deltids, so read its answer
+	 * back through the ids, which are the indexes into tids[].
+	 */
+	snapshotConflictHorizon = table_index_delete_tuples(heapRel, &delstate);
+	isCatalogRel = RelationIsAccessibleInLogicalDecoding(heapRel);
+	if (!XLogStandbyInfoActive())
+		snapshotConflictHorizon = InvalidTransactionId;
+
+	dead = palloc0_array(bool, ntids);
+	for (int i = 0; i < delstate.ndeltids; i++)
+	{
+		if (delstate.status[delstate.deltids[i].id].knowndeletable)
+			dead[delstate.deltids[i].id] = true;
+	}
+	for (int i = 0; i < ntids; i++)
+	{
+		if (dupof[i] >= 0)
+			dead[i] = dead[dupof[i]];
+	}
+
+	/* Decide each entry's fate, then make the changes in one record */
+	for (OffsetNumber off = minoff; off <= maxoff; off = OffsetNumberNext(off))
+	{
+		int			nlive = 0;
+
+		for (int i = firstid[off]; i < firstid[off] + nids[off]; i++)
+		{
+			if (!dead[i])
+				tids[firstid[off] + nlive++] = tids[i];
+		}
+		if (nlive == nids[off])
+			continue;			/* nothing deletable (or not offered) */
+		if (nlive == 0)
+			deletable[ndeletable++] = off;
+		else
+		{
+			BarkItemBuf ibuf;
+			IndexTuple	itup = BarkPageGetItem(page, off, &ibuf);
+
+			updatedoffsets[nupdated] = off;
+			updated[nupdated++] = bark_reform_entry(index, buf, off, itup,
+													tids + firstid[off], nlive);
+		}
+	}
+
+	if (ndeletable > 0 || nupdated > 0)
+		bark_delitems_delete(index, buf, false, snapshotConflictHorizon,
+							 isCatalogRel, deletable, ndeletable,
+							 updatedoffsets, updated, nupdated);
+
+	for (int i = 0; i < nupdated; i++)
+		pfree(updated[i]);
+	pfree(dead);
+	pfree(dupof);
+	pfree(delstate.deltids);
+	pfree(delstate.status);
+	pfree(tids);
+	pfree(firstid);
+	pfree(nids);
+
+	return bark_leaf_free_space(keyinfo, page) >= newitemsz;
+}
+
+/*
+ * Simple deletion (nbtree's _bt_simpledel_pass) on the exclusive-locked leaf
+ * `buf`, which an insert of `newitem` (newitemsz bytes, coded) would split:
+ * delete the entries marked LP_DEAD, and in passing any entry of their heap
+ * blocks the table AM finds dead.  Returns true if that made room.  See
+ * bark_delete_pass.
+ */
+bool
+bark_simple_delete(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
+				   Buffer buf, IndexTuple newitem, Size newitemsz)
+{
+	return bark_delete_pass(index, heapRel, keyinfo, buf, newitem, newitemsz,
+							false, false);
+}
+
+/*
+ * Bottom-up deletion (nbtree's _bt_bottomupdel_pass) on the exclusive-locked
+ * leaf `buf`: bark_insert calls this when `newitem`, an entry the executor
+ * says is a new version of a row whose key in this index did not change
+ * (indexUnchanged), would split the leaf.  Returns true if that made room.
+ * See bark_delete_pass.
+ */
+bool
+bark_bottomup_delete(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
+					 Buffer buf, IndexTuple newitem, Size newitemsz)
+{
+	return bark_delete_pass(index, heapRel, keyinfo, buf, newitem, newitemsz,
+							true, false);
+}
+
+/*
+ * Pre-split cleanup of version tags (an idea from RethinkDB's B-tree) on the
+ * exclusive-locked leaf `buf` of an index that stores tags, which an insert
+ * of `newitem` would split after simple and bottom-up deletion: offer every
+ * tagged SINGLE on the page to the table AM, each with its tag
+ * (TM_IndexStatus.tag), as a bottom-up pass in which all of them are
+ * promising.  A stale entry of a live row, one valid for no version any
+ * snapshot can see, goes, which TID-keyed deletion cannot find: the TID's
+ * row is live.  Returns true if that made room.  See bark_delete_pass.
+ */
+bool
+bark_tagged_delete(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
+				   Buffer buf, IndexTuple newitem, Size newitemsz)
+{
+	Page		page = BufferGetPage(buf);
+	BarkPageOpaque opaque = BarkPageGetOpaque(page);
+	OffsetNumber off;
+
+	Assert(keyinfo->canversion);
+	for (off = BarkPageFirstDataKey(opaque);
+		 off <= PageGetMaxOffsetNumber(page); off = OffsetNumberNext(off))
+	{
+		BarkItemBuf ibuf;
+
+		if (BarkEntryHasTag(BarkPageGetItem(page, off, &ibuf)))
+			break;
+	}
+	if (off > PageGetMaxOffsetNumber(page))
+		return false;			/* no tagged entry to offer */
+	return bark_delete_pass(index, heapRel, keyinfo, buf, newitem, newitemsz,
+							true, true);
+}
+
+
+/*
+ * The entry of `key` holding the ascending heap TIDs tids[0..n), coded for
+ * `page`, or NULL when it would exceed the item ceiling (plain or coded).
+ */
+static IndexTuple
+bark_merge_form(Page page, IndexTuple key, ItemPointer tids, int n,
+				uint16 stride)
+{
+	IndexTuple	entry = bark_form_entry(key, tids, n, stride);
+	IndexTuple	coded;
+
+	if (entry == NULL)
+		return NULL;
+	coded = bark_prefix_encode(page, entry);
+	if (coded != entry)
+		pfree(entry);
+	if (MAXALIGN(IndexTupleSize(coded)) > BarkMaxItemSize)
+	{
+		pfree(coded);
+		return NULL;
+	}
+	return coded;
+}
+
+/*
+ * Merge runs of adjacent equal-key entries on the exclusive-locked leaf `buf`
+ * into fewer, larger LIST or POSTING entries, as nbtree's _bt_dedup_pass
+ * does in the same place: bark_insert calls this when the leaf would
+ * otherwise split, because a new entry of `newitemsz` bytes (its coded size)
+ * to go at offset `newitemoff` does not fit, or because a new heap TID falls
+ * inside an entry that cannot take it and dividing that entry needs
+ * `newitemsz` more bytes (`newitemoff` is then InvalidOffsetNumber: the TID
+ * goes into an existing entry, which may itself be merged).  Returns true if
+ * the page now has room for `newitemsz` bytes and a line pointer
+ * (bark_leaf_free_space).  Only for an index whose entries coalesce (see
+ * bark_index_may_coalesce).
+ *
+ * Entries are taken in page order.  A group starts at an entry and absorbs
+ * the next while that one has the same key and the merged entry, in the
+ * shape bark_form_entry chooses by size, stays within BarkMaxItemSize; the
+ * entry that does not fit starts the next group.  Equal-key entries are in
+ * heap TID order with disjoint ranges, so the members of a group, read in
+ * order, are already ascending.  SINGLE entries fold in like the rest;
+ * OVERSIZED ones, markers and tagged entries (which never coalesce) are left
+ * alone, and end a group.  The pass runs
+ * after simple deletion has deleted the entries marked LP_DEAD; one merged
+ * all the same (an insert with no heap relation, or an entry past
+ * PG_INT16_MAX TIDs) only loses its mark, since BarkPageOverwriteEntry
+ * writes the merged entry.  A group never spans newitemoff: the merged
+ * entry's TID range would then hold the new TID, and the new entry could not
+ * go next to it.  A group that would save nothing (a single entry, or
+ * alignment eating the gain) is left as it is.  The pass stops after the
+ * group that frees enough for the new entry, so a page is not rewritten
+ * further than the insert needs.
+ *
+ * The first entry of each group is overwritten with the merged entry and the
+ * rest are deleted, in one XLOG_BARK_MERGE record (bark_delitems_delete).  No
+ * heap TID leaves the page and no entry moves to another page, so nothing a
+ * scan or VACUUM relies on changes: a scan copies the items it returns while
+ * it holds the page's share lock (as nbtree's _bt_readpage does, which its
+ * deduplication pass relies on too), and positions itself afterwards by key
+ * and heap TID, never by offset; VACUUM's cycle IDs only track entries that
+ * move right.  So, as for nbtree, an exclusive lock suffices here and in
+ * redo, and there is no recovery conflict.
+ */
+bool
+bark_merge_page(Relation index, BarkKeyInfo *keyinfo, Buffer buf,
+				OffsetNumber newitemoff, Size newitemsz)
+{
+	Page		page = BufferGetPage(buf);
+	BarkPageOpaque opaque = BarkPageGetOpaque(page);
+	OffsetNumber minoff = BarkPageFirstDataKey(opaque);
+	OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
+	int			need;
+	int			saved = 0;
+	ItemPointer tids;
+	int			tidsalloc = MaxIndexTuplesPerPage;
+	OffsetNumber deletable[MaxIndexTuplesPerPage];
+	int			ndeletable = 0;
+	OffsetNumber updatedoffsets[MaxIndexTuplesPerPage];
+	IndexTuple	updated[MaxIndexTuplesPerPage];
+	int			nupdated = 0;
+	OffsetNumber off = minoff;
+
+	Assert(BarkPageIsLeaf(opaque));
+
+	/* The bytes bark_leaf_free_space must gain to hold the new entry */
+	need = (int) newitemsz + (int) BarkPivotSuffixReserve(keyinfo) -
+		(int) PageGetFreeSpace(page);
+	tids = palloc_array(ItemPointerData, tidsalloc);
+
+	while (off <= maxoff && saved < need)
+	{
+		BarkItemBuf ibuf;
+		BarkItemBuf nbuf;
+		IndexTuple	itup = BarkPageGetItem(page, off, &ibuf);
+		IndexTuple	next;
+		OffsetNumber first = off;
+		IndexTuple	key;
+		IndexTuple	merged = NULL;
+		int			ntids;
+		int			groupsz;
+
+		off = OffsetNumberNext(off);
+		if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED ||
+			BarkEntryIsMarker(itup) || BarkEntryHasTag(itup))
+			continue;
+
+		/*
+		 * Most entries start no group: test the next one before forming a key
+		 * and reading the members.
+		 */
+		if (off > maxoff || off == newitemoff)
+			continue;
+		next = BarkPageGetItem(page, off, &nbuf);
+		if (BarkEntryGetShape(next) == BARK_SHAPE_OVERSIZED ||
+			BarkEntryIsMarker(next) || BarkEntryHasTag(next) ||
+			bark_compare_itups(keyinfo, index, itup, next) != 0)
+			continue;
+
+		key = bark_single_from_list(index, itup, NULL);
+		ntids = bark_entry_count_tids(itup);
+		if (ntids > tidsalloc)
+		{
+			while (ntids > tidsalloc)
+				tidsalloc *= 2;
+			tids = repalloc_array(tids, ItemPointerData, tidsalloc);
+		}
+		ntids = bark_entry_get_tids(itup, tids, ntids, keyinfo->tidstride);
+		groupsz = MAXALIGN(ItemIdGetLength(PageGetItemId(page, first)));
+
+		/* Absorb the following entries of the key while the result fits */
+		for (; off <= maxoff && off != newitemoff; off = OffsetNumberNext(off))
+		{
+			IndexTuple	cur = BarkPageGetItem(page, off, &ibuf);
+			int			n;
+			IndexTuple	candidate;
+
+			if (BarkEntryGetShape(cur) == BARK_SHAPE_OVERSIZED ||
+				BarkEntryIsMarker(cur) || BarkEntryHasTag(cur) ||
+				bark_compare_itups(keyinfo, index, key, cur) != 0)
+				break;
+			n = bark_entry_count_tids(cur);
+			if (ntids + n > tidsalloc)
+			{
+				while (ntids + n > tidsalloc)
+					tidsalloc *= 2;
+				tids = repalloc_array(tids, ItemPointerData, tidsalloc);
+			}
+			n = bark_entry_get_tids(cur, tids + ntids, n, keyinfo->tidstride);
+			Assert(ItemPointerCompare(&tids[ntids - 1], &tids[ntids]) < 0);
+
+			candidate = bark_merge_form(page, key, tids, ntids + n,
+										keyinfo->tidstride);
+			if (candidate == NULL)
+				break;
+			if (merged != NULL)
+				pfree(merged);
+			merged = candidate;
+			ntids += n;
+			groupsz += MAXALIGN(ItemIdGetLength(PageGetItemId(page, off))) +
+				sizeof(ItemIdData);
+		}
+		pfree(key);
+
+		if (merged == NULL)
+			continue;
+		if (groupsz <= (int) MAXALIGN(IndexTupleSize(merged)))
+		{
+			pfree(merged);
+			continue;
+		}
+
+		/* first is renumbered by the deletions before it */
+		updatedoffsets[nupdated] = first - ndeletable;
+		updated[nupdated++] = merged;
+		for (OffsetNumber d = OffsetNumberNext(first); d < off;
+			 d = OffsetNumberNext(d))
+			deletable[ndeletable++] = d;
+		saved += groupsz - (int) MAXALIGN(IndexTupleSize(merged));
+	}
+
+	if (nupdated > 0)
+		bark_delitems_delete(index, buf, true, InvalidTransactionId, false,
+							 deletable, ndeletable, updatedoffsets, updated,
+							 nupdated);
+
+	for (int i = 0; i < nupdated; i++)
+		pfree(updated[i]);
+	pfree(tids);
+
+	return bark_leaf_free_space(keyinfo, page) >= newitemsz;
+}

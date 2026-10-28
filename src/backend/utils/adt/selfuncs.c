@@ -139,8 +139,6 @@
 #include "utils/timestamp.h"
 #include "utils/typcache.h"
 
-#define DEFAULT_PAGE_CPU_MULTIPLIER 50.0
-
 /*
  * In production builds, switch to hash-based MCV matching when the lists are
  * large enough to amortize hash setup cost.  (This threshold is compared to
@@ -247,8 +245,6 @@ static void examine_simple_variable(PlannerInfo *root, Var *var,
 									VariableStatData *vardata);
 static void adjust_statstuple_for_grouping(PlannerInfo *subroot, Var *var,
 										   VariableStatData *vardata);
-static void examine_indexcol_variable(PlannerInfo *root, IndexOptInfo *index,
-									  int indexcol, VariableStatData *vardata);
 static bool get_variable_range(PlannerInfo *root, VariableStatData *vardata,
 							   Oid sortop, Oid collation,
 							   Datum *min, Datum *max);
@@ -270,8 +266,6 @@ static bool get_actual_variable_endpoint(Relation heapRel,
 										 MemoryContext outercontext,
 										 Datum *endpointDatum);
 static RelOptInfo *find_join_input_rel(PlannerInfo *root, Relids relids);
-static double btcost_correlation(IndexOptInfo *index,
-								 VariableStatData *vardata);
 
 /* Define support routines for MCV hash tables */
 #define SH_PREFIX				MCVHashTable
@@ -6605,7 +6599,7 @@ all_rows_selectable(PlannerInfo *root, Index varno, Bitmapset *varattnos)
  *
  * Caller is responsible for doing ReleaseVariableStats() before exiting.
  */
-static void
+void
 examine_indexcol_variable(PlannerInfo *root, IndexOptInfo *index,
 						  int indexcol, VariableStatData *vardata)
 {
@@ -7703,7 +7697,8 @@ add_predicate_to_index_quals(IndexOptInfo *index, List *indexQuals)
 }
 
 /*
- * Estimate correlation of btree index's first column.
+ * Estimate correlation of btree index's first column.  Also used by other
+ * index AMs whose operator families are btree's (ambtreeopfamilies).
  *
  * If we can get an estimate of the first column's ordering correlation C
  * from pg_statistic, estimate the index correlation as C for a single-column
@@ -7713,7 +7708,7 @@ add_predicate_to_index_quals(IndexOptInfo *index, List *indexQuals)
  *
  * We already filled in the stats tuple for *vardata when called.
  */
-static double
+double
 btcost_correlation(IndexOptInfo *index, VariableStatData *vardata)
 {
 	Oid			sortop;

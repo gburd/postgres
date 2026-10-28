@@ -1,0 +1,1538 @@
+/*-------------------------------------------------------------------------
+ *
+ * verify_bark.c
+ *		Verify the structural integrity of a BARK index.
+ *
+ * bark_index_check(index regclass) walks every page of a BARK index and
+ * checks the invariants the access method relies on:
+ *
+ *	- the meta page's on-disk version is one this server reads;
+ *	- within each page, data entries are in non-decreasing key order, and on
+ *	  a leaf, entries of equal keys have disjoint, ascending heap TID ranges;
+ *	- every data key is less than or equal to the page's high key (the bound
+ *	  the page's parent downlink promises), and strictly less when suffix
+ *	  truncation dropped key attributes from the high key, which has between
+ *	  one and all of the key attributes; a leaf entry equal to the high key
+ *	  lies below the high key's heap TID;
+ *	- sibling links are consistent (the right sibling's left link points back,
+ *	  and levels match across a sibling link), and the right sibling's first
+ *	  key is not less than the page's high key, (key, heap TID) on a leaf;
+ *	  a leaf whose left sibling's high key has a version tag has
+ *	  BARK_LOWBOUND_TAGGED;
+ *	- every downlink points at a page one level down whose first key is not
+ *	  less than the downlink, (key, heap TID) for a leaf child;
+ *	- no page is still flagged with an unfinished split, which a clean index
+ *	  never leaves behind;
+ *	- no leaf entry is larger than BarkMaxItemSize, no SINGLE entry is large
+ *	  enough to belong on an overflow chain, and every POSTING entry
+ *	  reserves room for the largest encoding of any subset of its set;
+ *	- a unique index has no LIST or POSTING entry: its writers never
+ *	  coalesce (bark_index_coalesces), and its insert-time check refuses
+ *	  an entry of several heap TIDs;
+ *	- a page flagged BARK_PREFIX is a leaf with a well-formed PREFIX item of
+ *	  1..BARK_PREFIX_MAX bytes, and every entry on it decodes within its
+ *	  bounds, sharing no more of the prefix than there is (the key checks
+ *	  above then apply to the decoded entries).
+ *
+ * Further checks follow, as in bt_index_check and bt_index_parent_check
+ * (verify_nbtree.c):
+ *
+ *	- heapallindexed: every heap tuple that a fresh CREATE INDEX would index
+ *	  has an entry.  The entries' (key, heap TID) pairs are fingerprinted into
+ *	  a Bloom filter, each member of a LIST or POSTING entry as the SINGLE
+ *	  entry it would be on its own, and the heap is then scanned, probing the
+ *	  filter with each indexable tuple.  With an extracted column a row has
+ *	  one entry per key, so the scan runs procedure 7 on the row, as CREATE
+ *	  INDEX does (bark_extract_row_keys), and probes for each key; markers
+ *	  name no row and are not fingerprinted.  An index that coalesces keys
+ *	  of different images (a non-equalimage GIN-interface column) is
+ *	  refused, since a row's own key image may be in no entry;
+ *	- checkunique, for a unique index: no two entries of a run of equal key
+ *	  columns point to heap tuples visible to one MVCC snapshot.  For an
+ *	  extracted column a run is one (fixed columns, key);
+ *	- bark_index_parent_check: the tree is walked level by level from the
+ *	  root, under a ShareLock that keeps writers out, and each internal page's
+ *	  downlinks must name, in order, exactly the pages of the level below,
+ *	  each downlink equal to the high key of the child before it (the
+ *	  separator a split or CREATE INDEX copies from it), and the parent's
+ *	  high key equal to its last child's.  Every live page must be reached.
+ *	  Then each OVERSIZED entry's overflow chain, a leaf entry's or a
+ *	  pivot's, is followed to its end: no chain may loop, reach a page
+ *	  another chain reaches, or reach a page that is not an overflow page.
+ *	  An overflow page that no chain reaches is reported with a WARNING,
+ *	  not as corruption: a crash between writing a chain and inserting the
+ *	  entry that references it leaves such pages (bark_check_chains).
+ *
+ * bark_index_check holds only AccessShareLock, so the index can change
+ * underneath.  Each cross-page check holds share locks on both pages, taken
+ * in an order the write paths also use (left page before right sibling,
+ * child before parent), so it cannot deadlock with a split and sees the two
+ * pages consistently.
+ *
+ * Copyright (c) 2017-2026, PostgreSQL Global Development Group
+ *
+ * IDENTIFICATION
+ *	  contrib/amcheck/verify_bark.c
+ *
+ *-------------------------------------------------------------------------
+ */
+#include "postgres.h"
+
+#include "access/bark.h"
+#include "access/detoast.h"
+#include "access/genam.h"
+#include "access/htup_details.h"
+#include "access/tableam.h"
+#include "access/xact.h"
+#include "catalog/index.h"
+#include "catalog/pg_am_d.h"
+#include "common/pg_prng.h"
+#include "fmgr.h"
+#include "lib/bloomfilter.h"
+#include "miscadmin.h"
+#include "storage/bufmgr.h"
+#include "utils/injection_point.h"
+#include "utils/memutils.h"
+#include "utils/rel.h"
+#include "utils/snapmgr.h"
+#include "verify_common.h"
+
+PG_FUNCTION_INFO_V1(bark_index_check);
+PG_FUNCTION_INFO_V1(bark_index_parent_check);
+
+/* State of one verification, passed through amcheck_lock_relation_and_check. */
+typedef struct BarkCheckState
+{
+	bool		heapallindexed; /* check that every heap tuple is indexed */
+	bool		checkunique;	/* check a unique index's constraint */
+	Relation	heaprel;		/* the index's table */
+	Snapshot	snapshot;		/* heapallindexed's and checkunique's */
+
+	/* heapallindexed only: */
+	bloom_filter *filter;		/* fingerprints of the (key, TID) pairs */
+	BarkKeyInfo *keyinfo;		/* for procedure 7, with an extracted column */
+	int			extracted;		/* the extracted column's attno, or 0 */
+	int64		heaptuplespresent;	/* heap tuples found in the filter */
+	bool		readonly;		/* ShareLock held (bark_index_parent_check) */
+	bool		inrecovery;		/* the transaction started in recovery */
+	MemoryContext tmpcxt;		/* reset after every fingerprinted entry */
+}			BarkCheckState;
+
+/*
+ * The overflow chains, as bark_index_parent_check sees them, indexed by
+ * block: each overflow page's next link, the length in pages of the chain
+ * an OVERSIZED entry starts at the block, and BARK_CHAIN_* flags.
+ */
+typedef struct BarkChains
+{
+	BlockNumber npages;
+	bool		skippivots;		/* a test's broken mark pass */
+	BlockNumber *next;			/* an overflow page's bark_next, or
+								 * InvalidBlockNumber for any other page */
+	BlockNumber *nchunks;		/* 0 where no entry's chain starts */
+	uint8	   *flags;
+}			BarkChains;
+
+#define BARK_CHAIN_REACHED	0x01	/* an entry's chain reaches the page */
+#define BARK_CHAIN_LINKED	0x02	/* an orphaned page links to the page */
+#define BARK_CHAIN_COUNTED	0x04	/* counted in an orphaned chain */
+
+static void bark_check_common(FunctionCallInfo fcinfo, bool parentcheck);
+static void bark_check_structure(Relation rel, Relation heaprel,
+								 void *callback_state, bool readonly);
+static bool bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo,
+							BarkChains * chains);
+static void bark_check_levels(Relation rel, BarkKeyInfo *keyinfo,
+							  BlockNumber npages, int64 nlive);
+static void bark_check_chains(Relation rel, BarkChains * chains);
+static Buffer bark_check_leftmost_leaf(Relation rel);
+static void bark_fingerprint_leaves(Relation rel, BarkCheckState * state);
+static void bark_probe_entry(Relation index, BarkCheckState * state,
+							 Datum *values, bool *isnull, ItemPointer tid);
+static void bark_check_unique_runs(Relation rel, BarkKeyInfo *keyinfo,
+								   BarkCheckState * state);
+static void bark_check_heap(Relation rel, Relation heaprel,
+							BarkKeyInfo *keyinfo, BarkCheckState * state,
+							bool readonly);
+static void bark_check_downlinks(Relation rel, BlockNumber blkno,
+								 BarkKeyInfo *keyinfo);
+
+/*
+ * Compare the leaf entry `itup`, taken at its lowest heap TID (or its highest
+ * when `high`) and its version tag, with the pivot or leaf entry `other`, in
+ * the tree's order of (key, heap TID, tag): bark_compare_itups_tid.
+ */
+static int
+bark_check_compare_leaf(Relation rel, BarkKeyInfo *keyinfo, IndexTuple itup,
+						bool high, IndexTuple other)
+{
+	ItemPointerData lo;
+	ItemPointerData hi;
+
+	bark_entry_tid_range(itup, &lo, &hi, keyinfo->tidstride);
+	return bark_compare_itups_tid(keyinfo, rel, itup, high ? &hi : &lo,
+								  BarkEntryGetTag(itup), other);
+}
+
+/*
+ * bark_index_check(index regclass, heapallindexed boolean, checkunique boolean)
+ *
+ * Verify the structural integrity of a BARK index, with heapallindexed that
+ * every heap tuple has an entry, and with checkunique that a unique index
+ * holds no two visible rows of one key.  Takes AccessShareLock on the heap
+ * and index, as bt_index_check does.  The one- and two-argument forms of
+ * amcheck 1.6 and 1.7 reach this function too.
+ */
+Datum
+bark_index_check(PG_FUNCTION_ARGS)
+{
+	bark_check_common(fcinfo, false);
+	PG_RETURN_VOID();
+}
+
+/*
+ * bark_index_parent_check(index regclass, heapallindexed boolean,
+ *						   checkunique boolean)
+ *
+ * As bark_index_check, plus the checks of each level against the level
+ * above.  Takes ShareLock on the heap and index, as bt_index_parent_check
+ * does, so no page changes while it runs.
+ */
+Datum
+bark_index_parent_check(PG_FUNCTION_ARGS)
+{
+	bark_check_common(fcinfo, true);
+	PG_RETURN_VOID();
+}
+
+static void
+bark_check_common(FunctionCallInfo fcinfo, bool parentcheck)
+{
+	Oid			indrelid = PG_GETARG_OID(0);
+	BarkCheckState state = {0};
+
+	if (PG_NARGS() >= 2)
+		state.heapallindexed = PG_GETARG_BOOL(1);
+	if (PG_NARGS() >= 3)
+		state.checkunique = PG_GETARG_BOOL(2);
+
+	amcheck_lock_relation_and_check(indrelid,
+									BARK_AM_OID,
+									bark_check_structure,
+									parentcheck ? ShareLock : AccessShareLock,
+									&state);
+}
+
+/*
+ * Main entry: check every page's own invariants, then, with the stronger
+ * lock, each level against its parent, then, if asked, the heap against the
+ * index.  readonly is true under ShareLock (bark_index_parent_check).
+ */
+static void
+bark_check_structure(Relation rel, Relation heaprel, void *callback_state,
+					 bool readonly)
+{
+	BarkCheckState *state = (BarkCheckState *) callback_state;
+	BarkKeyInfo *keyinfo = bark_build_keyinfo(rel);
+	BlockNumber npages = RelationGetNumberOfBlocks(rel);
+	Buffer		metabuf = ReadBuffer(rel, BARK_METAPAGE);
+	uint32		version;
+	int64		nlive = 0;
+	BarkChains	chains = {0};
+
+	state->heaprel = heaprel;
+	LockBuffer(metabuf, BUFFER_LOCK_SHARE);
+	version = BarkPageGetMeta(BufferGetPage(metabuf))->bark_version;
+	if (version < BARK_MIN_VERSION)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("index \"%s\" was built by an older BARK version",
+						RelationGetRelationName(rel)),
+				 errhint("REINDEX the index.")));
+	/* the meta page's flags against the index's definition */
+	bark_verify_meta(rel, NULL, BufferGetPage(metabuf), BARK_METAPAGE, ERROR);
+	UnlockReleaseBuffer(metabuf);
+
+	/*
+	 * The heap scan must see only tuples whose entries the index walk will
+	 * find, so take its snapshot before the walk starts, as verify_nbtree.c
+	 * does.  See bt_check_every_level for why an old transaction snapshot may
+	 * not be usable.
+	 */
+	if (state->heapallindexed)
+	{
+		/*
+		 * The heap scan forms each row's entries as CREATE INDEX does and
+		 * probes for their bytes.  An extracted column answered through GIN's
+		 * interface whose class is not equalimage breaks that: equal keys of
+		 * different images share the entry of the first one
+		 * (bark_index_may_coalesce), so a row's own image may be in no entry.
+		 * Only that case is refused.
+		 */
+		int			extracted = bark_index_extracted_column(rel);
+
+		if (extracted != 0 && !bark_allequalimage(rel) &&
+			bark_index_may_coalesce(rel))
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("heapallindexed is not supported for index \"%s\"",
+							RelationGetRelationName(rel)),
+					 errdetail("Its multikey column stores one image for keys that compare equal.")));
+
+		state->snapshot = RegisterSnapshot(GetTransactionSnapshot());
+		if (IsolationUsesXactSnapshot() && rel->rd_index->indcheckxmin &&
+			!TransactionIdPrecedes(HeapTupleHeaderGetXmin(rel->rd_indextuple->t_data),
+								   state->snapshot->xmin))
+			ereport(ERROR,
+					(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+					 errmsg("index \"%s\" cannot be verified using transaction snapshot",
+							RelationGetRelationName(rel))));
+	}
+
+	/*
+	 * checkunique needs an MVCC snapshot to tell which entries' rows are
+	 * visible, and shares heapallindexed's.  A non-unique index has nothing
+	 * to check, as in bt_index_check.
+	 */
+	state->checkunique = state->checkunique && rel->rd_index->indisunique;
+	if (state->checkunique && state->snapshot == NULL)
+		state->snapshot = RegisterSnapshot(GetTransactionSnapshot());
+
+	/*
+	 * Under ShareLock no chain is being written or freed, so the per-page
+	 * pass also records the chains for bark_check_chains.
+	 */
+	if (readonly)
+	{
+		chains.npages = npages;
+		chains.next = palloc_extended(npages * sizeof(BlockNumber),
+									  MCXT_ALLOC_HUGE);
+		memset(chains.next, 0xFF, npages * sizeof(BlockNumber));
+		chains.nchunks = palloc_extended(npages * sizeof(BlockNumber),
+										 MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
+		chains.flags = palloc_extended(npages, MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
+		/* Tests skip the pivots' chains, to show the check finds them. */
+		chains.skippivots =
+			IS_INJECTION_POINT_ATTACHED("bark-check-chains-skip-pivots");
+	}
+
+	for (BlockNumber blkno = BARK_METAPAGE + 1; blkno < npages; blkno++)
+	{
+		CHECK_FOR_INTERRUPTS();
+		if (bark_check_page(rel, blkno, keyinfo, readonly ? &chains : NULL))
+			nlive++;
+		bark_check_downlinks(rel, blkno, keyinfo);
+	}
+
+	if (readonly)
+	{
+		bark_check_levels(rel, keyinfo, npages, nlive);
+		bark_check_chains(rel, &chains);
+		pfree(chains.next);
+		pfree(chains.nchunks);
+		pfree(chains.flags);
+	}
+
+	if (state->checkunique)
+		bark_check_unique_runs(rel, keyinfo, state);
+
+	if (state->heapallindexed)
+		bark_check_heap(rel, heaprel, keyinfo, state, readonly);
+
+	if (state->snapshot != NULL)
+		UnregisterSnapshot(state->snapshot);
+
+	pfree(keyinfo);
+}
+
+/*
+ * Check one page's invariants, plus the consistency of its right-sibling link.
+ * Returns whether the page is part of the tree: an initialized page that is
+ * not an overflow, deleted or half-dead page.  With `chains`, also record an
+ * overflow page's next link, or the first block of the chain of each
+ * OVERSIZED entry, high key and downlink on the page.
+ */
+static bool
+bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo,
+				BarkChains * chains)
+{
+	Buffer		buf = ReadBuffer(rel, blkno);
+	Page		page;
+	BarkPageOpaque opaque;
+	IndexTuple	hikey = NULL;
+	bool		live;
+
+	LockBuffer(buf, BUFFER_LOCK_SHARE);
+	page = BufferGetPage(buf);
+
+	if (PageIsNew(page))
+	{
+		UnlockReleaseBuffer(buf);
+		return false;
+	}
+
+	opaque = BarkPageGetOpaque(page);
+
+	/* Overflow pages hold raw out-of-line bytes, not tree items; skip them. */
+	if (BarkPageIsOverflow(opaque))
+	{
+		if (chains != NULL)
+			chains->next[blkno] = opaque->bark_next;
+		UnlockReleaseBuffer(buf);
+		return false;
+	}
+
+	/*
+	 * Prefix coding stores an OVERSIZED entry as it is, so the stored items,
+	 * the high key too, give the chains.  Recorded before the page's own
+	 * checks, which read the chains, so that a first block past the end of
+	 * the index is reported as such and not by the read.  A deleted page has
+	 * no items.  An item that does not lie within the page is left to
+	 * bark_page_verify, but an OVERSIZED entry's reference is read here, so
+	 * one whose line pointer does not cover it is reported now.
+	 */
+	for (OffsetNumber off = FirstOffsetNumber;
+		 chains != NULL && off <= PageGetMaxOffsetNumber(page);
+		 off = OffsetNumberNext(off))
+	{
+		ItemId		iid = PageGetItemId(page, off);
+		IndexTuple	itup;
+		BlockNumber first;
+
+		if (!ItemIdHasStorage(iid) ||
+			ItemIdGetOffset(iid) < SizeOfPageHeaderData ||
+			ItemIdGetOffset(iid) + Max(ItemIdGetLength(iid), sizeof(IndexTupleData)) >
+			((PageHeader) page)->pd_special)
+			continue;
+		itup = (IndexTuple) PageGetItem(page, iid);
+		if (BarkEntryGetShape(itup) != BARK_SHAPE_OVERSIZED)
+			continue;
+		if (ItemIdGetLength(iid) <
+			MAXALIGN(IndexInfoFindDataOffset(itup->t_info)) +
+			sizeof(BarkOverflowRef))
+			ereport(ERROR,
+					(errcode(ERRCODE_INDEX_CORRUPTED),
+					 errmsg("BARK index \"%s\" has an oversized entry on page %u at offset %u that is shorter than its overflow reference",
+							RelationGetRelationName(rel), blkno, off)));
+		if (chains->skippivots && !BarkOverflowIsLeaf(itup))
+			continue;
+		first = BarkOverflowGetFirstBlock(itup);
+		if (first == BARK_METAPAGE || first >= chains->npages)
+			ereport(ERROR,
+					(errcode(ERRCODE_INDEX_CORRUPTED),
+					 errmsg("BARK index \"%s\" oversized entry on page %u at offset %u points at out-of-range overflow block %u",
+							RelationGetRelationName(rel), blkno, off, first)));
+		chains->nchunks[first] =
+			Max(chains->nchunks[first],
+				bark_overflow_nchunks(BarkOverflowGetRef(itup)->fulllen));
+	}
+
+	/*
+	 * The page by itself (barkverify.c): its layout, its entries' shapes and
+	 * sizes, LIST and POSTING members, OVERSIZED chains, markers, key order
+	 * and the high-key bound, and no unfinished split.  A deleted page gets
+	 * the layout check only, and the link checks below do not apply to it.
+	 */
+	bark_page_verify(rel, keyinfo, NULL, page, blkno,
+					 BARK_VERIFY_SHAPES | BARK_VERIFY_ORDER |
+					 BARK_VERIFY_CONTENTS | BARK_VERIFY_COMPLETE, ERROR);
+	if (BarkPageIsDeleted(opaque))
+	{
+		UnlockReleaseBuffer(buf);
+		return false;
+	}
+
+	if (!BarkPageRightmost(opaque) &&
+		PageGetMaxOffsetNumber(page) >= BARK_P_HIKEY)
+		hikey = (IndexTuple) PageGetItem(page, PageGetItemId(page, BARK_P_HIKEY));
+
+	/*
+	 * Cross-check the right-sibling link: the sibling's left link must point
+	 * back here, the two pages must be at the same level, and the sibling's
+	 * first key must not be less than this page's high key.  The sibling is
+	 * locked while this page still is, so neither can split in between.
+	 */
+	if (!BarkPageRightmost(opaque))
+	{
+		BlockNumber rightblk = opaque->bark_next;
+		Buffer		rbuf = ReadBuffer(rel, rightblk);
+		Page		rpage;
+		BarkPageOpaque ropaque;
+
+		LockBuffer(rbuf, BUFFER_LOCK_SHARE);
+		rpage = BufferGetPage(rbuf);
+		if (!PageIsNew(rpage))
+		{
+			ropaque = BarkPageGetOpaque(rpage);
+			if (ropaque->bark_prev != blkno)
+				ereport(ERROR,
+						(errcode(ERRCODE_INDEX_CORRUPTED),
+						 errmsg("BARK index \"%s\" has a broken sibling link: page %u's right sibling %u does not link back",
+								RelationGetRelationName(rel), blkno, rightblk)));
+			if (ropaque->bark_level != opaque->bark_level)
+				ereport(ERROR,
+						(errcode(ERRCODE_INDEX_CORRUPTED),
+						 errmsg("BARK index \"%s\" has a level mismatch across the sibling link from page %u to %u",
+								RelationGetRelationName(rel), blkno, rightblk)));
+			if (hikey != NULL &&
+				(ropaque->bark_flags & (BARK_DELETED | BARK_HALF_DEAD)) == 0 &&
+				PageGetMaxOffsetNumber(rpage) >= BarkPageFirstDataKey(ropaque))
+			{
+				BarkItemBuf ritem;
+				IndexTuple	rfirst = BarkPageGetItem(rpage,
+													 BarkPageFirstDataKey(ropaque),
+													 &ritem);
+
+				if (BarkPageIsLeaf(ropaque) ?
+					bark_check_compare_leaf(rel, keyinfo, rfirst, false,
+											hikey) < 0 :
+					bark_compare_itups(keyinfo, rel, rfirst, hikey) < 0)
+					ereport(ERROR,
+							(errcode(ERRCODE_INDEX_CORRUPTED),
+							 errmsg("BARK index \"%s\" has a first key on page %u that is less than the high key of its left sibling %u",
+									RelationGetRelationName(rel), rightblk, blkno)));
+			}
+
+			/*
+			 * A leaf whose lower bound, the left sibling's high key, has a
+			 * version tag must say so: VACUUM untags in place on a leaf
+			 * without BARK_LOWBOUND_TAGGED.
+			 */
+			if (hikey != NULL && BarkPageIsLeaf(ropaque) &&
+				(ropaque->bark_flags & (BARK_DELETED | BARK_HALF_DEAD)) == 0 &&
+				bark_pivot_tag(hikey) != InvalidIndexVersionTag &&
+				(ropaque->bark_flags & BARK_LOWBOUND_TAGGED) == 0)
+				ereport(ERROR,
+						(errcode(ERRCODE_INDEX_CORRUPTED),
+						 errmsg("BARK index \"%s\" has a leaf %u whose lower bound, the high key of %u, has a version tag, but the leaf is not marked as having a tagged lower bound",
+								RelationGetRelationName(rel), rightblk, blkno)));
+		}
+		UnlockReleaseBuffer(rbuf);
+	}
+
+	live = (opaque->bark_flags & BARK_HALF_DEAD) == 0;
+	UnlockReleaseBuffer(buf);
+	return live;
+}
+
+/*
+ * Check every downlink on internal page `blkno`: it must point at a page one
+ * level down whose first key is not less than the downlink, since the child
+ * holds the keys from its downlink up to its high key.
+ *
+ * The parent is read once for its list of children.  Each child is then
+ * locked before the parent is locked again, the order a split takes them in
+ * (the reverse could deadlock with a split waiting for the parent while
+ * holding the child), and the downlink is looked up again under both locks.
+ * A downlink a concurrent split has moved to the parent's right sibling is
+ * not found and goes unchecked here; it is checked when that page is.
+ */
+static void
+bark_check_downlinks(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo)
+{
+	BlockNumber npages = RelationGetNumberOfBlocks(rel);
+	Buffer		pbuf = ReadBuffer(rel, blkno);
+	Page		ppage;
+	BarkPageOpaque popaque;
+	uint32		level;
+	BlockNumber *children;
+	int			nchildren = 0;
+
+	LockBuffer(pbuf, BUFFER_LOCK_SHARE);
+	ppage = BufferGetPage(pbuf);
+	if (PageIsNew(ppage))
+	{
+		UnlockReleaseBuffer(pbuf);
+		return;
+	}
+	popaque = BarkPageGetOpaque(ppage);
+	if (BarkPageIsOverflow(popaque) || BarkPageIsDeleted(popaque) ||
+		BarkPageIsLeaf(popaque) || BarkPageIsMeta(popaque))
+	{
+		UnlockReleaseBuffer(pbuf);
+		return;
+	}
+	level = popaque->bark_level;
+	children = palloc(MaxIndexTuplesPerPage * sizeof(BlockNumber));
+	for (OffsetNumber off = BarkPageFirstDataKey(popaque);
+		 off <= PageGetMaxOffsetNumber(ppage); off = OffsetNumberNext(off))
+	{
+		BarkItemBuf ibuf;
+
+		children[nchildren++] =
+			BarkEntryGetDownLink(BarkPageGetItem(ppage, off, &ibuf));
+	}
+	LockBuffer(pbuf, BUFFER_LOCK_UNLOCK);
+
+	for (int i = 0; i < nchildren; i++)
+	{
+		BlockNumber child = children[i];
+		Buffer		cbuf;
+		Page		cpage;
+		BarkPageOpaque copaque;
+		IndexTuple	downlink = NULL;
+
+		CHECK_FOR_INTERRUPTS();
+
+		if (child == BARK_METAPAGE || child >= npages)
+			ereport(ERROR,
+					(errcode(ERRCODE_INDEX_CORRUPTED),
+					 errmsg("BARK index \"%s\" has a downlink on page %u to invalid block %u",
+							RelationGetRelationName(rel), blkno, child)));
+
+		cbuf = ReadBuffer(rel, child);
+		LockBuffer(cbuf, BUFFER_LOCK_SHARE);
+		LockBuffer(pbuf, BUFFER_LOCK_SHARE);
+
+		/*
+		 * While unlocked the parent may have been deleted and its block
+		 * reused; look for the downlink only on a live internal page.
+		 */
+		for (OffsetNumber off = BarkPageFirstDataKey(popaque);
+			 (popaque->bark_flags & (BARK_LEAF | BARK_DELETED | BARK_OVERFLOW)) == 0 &&
+			 popaque->bark_level == level &&
+			 off <= PageGetMaxOffsetNumber(ppage); off = OffsetNumberNext(off))
+		{
+			BarkItemBuf ibuf;
+			IndexTuple	itup = BarkPageGetItem(ppage, off, &ibuf);
+
+			if (BarkEntryGetDownLink(itup) == child)
+			{
+				downlink = itup;
+				break;
+			}
+		}
+
+		cpage = BufferGetPage(cbuf);
+		copaque = PageIsNew(cpage) ? NULL : BarkPageGetOpaque(cpage);
+		if (downlink != NULL && copaque != NULL &&
+			(copaque->bark_flags & (BARK_DELETED | BARK_HALF_DEAD)) == 0)
+		{
+			if (BarkPageIsOverflow(copaque) || copaque->bark_level + 1 != level)
+				ereport(ERROR,
+						(errcode(ERRCODE_INDEX_CORRUPTED),
+						 errmsg("BARK index \"%s\" has a downlink on page %u at level %u to page %u, which is not at level %u",
+								RelationGetRelationName(rel), blkno, level,
+								child, level - 1)));
+			if (PageGetMaxOffsetNumber(cpage) >= BarkPageFirstDataKey(copaque))
+			{
+				BarkItemBuf fbuf;
+				IndexTuple	first = BarkPageGetItem(cpage,
+													BarkPageFirstDataKey(copaque),
+													&fbuf);
+
+				if (BarkPageIsLeaf(copaque) ?
+					bark_check_compare_leaf(rel, keyinfo, first, false,
+											downlink) < 0 :
+					bark_compare_itups(keyinfo, rel, first, downlink) < 0)
+					ereport(ERROR,
+							(errcode(ERRCODE_INDEX_CORRUPTED),
+							 errmsg("BARK index \"%s\" has a first key on page %u that is less than its downlink on page %u",
+									RelationGetRelationName(rel), child, blkno)));
+			}
+		}
+
+		LockBuffer(pbuf, BUFFER_LOCK_UNLOCK);
+		UnlockReleaseBuffer(cbuf);
+	}
+
+	pfree(children);
+	ReleaseBuffer(pbuf);
+}
+
+/*
+ * Are two pivots the same separator: equal on the key attributes, with the
+ * same number of them and the same heap TID (or none) and version tag (or
+ * none)?  A downlink is a copy
+ * of the high key of the child to its left, made by the split that created
+ * the child or by CREATE INDEX, so the two never differ.
+ */
+static bool
+bark_check_same_pivot(Relation rel, BarkKeyInfo *keyinfo, IndexTuple a,
+					  IndexTuple b)
+{
+	ItemPointer atid = bark_pivot_heap_tid(a);
+	ItemPointer btid = bark_pivot_heap_tid(b);
+
+	if (BarkEntryGetPivotNAtts(a) != BarkEntryGetPivotNAtts(b))
+		return false;
+	if ((atid == NULL) != (btid == NULL) ||
+		(atid != NULL && !ItemPointerEquals(atid, btid)))
+		return false;
+	if (bark_pivot_tag(a) != bark_pivot_tag(b))
+		return false;
+	return bark_compare_itups(keyinfo, rel, a, b) == 0;
+}
+
+/*
+ * The parent check, under ShareLock: walk the tree level by level from the
+ * root, as bt_check_every_level does, and check each level of internal pages
+ * against the level below it.
+ *
+ * Read left to right, a level's downlinks must name the pages of the level
+ * below in their sibling-chain order, starting at that level's leftmost page
+ * and ending at its rightmost; the first downlink of the leftmost page has no
+ * key attributes (minus infinity), and every other downlink is the high key
+ * of the child to its left.  The last child of a page that has a right
+ * sibling has that page's high key.  So the keys of each child lie between
+ * its downlink and the next one, which the per-page checks (keys between a
+ * page's first entry and its high key) extend to every entry.
+ *
+ * bark_check_page has already checked each page by itself and its sibling
+ * links, and counted the pages of the tree in nlive; the walk must reach
+ * each of them once, or some page is not in the tree.  A deleted or
+ * half-dead page is not, and BARK never leaves one in a sibling chain
+ * during a split, so none should be met here.
+ */
+static void
+bark_check_levels(Relation rel, BarkKeyInfo *keyinfo, BlockNumber npages,
+				  int64 nlive)
+{
+	Buffer		metabuf = ReadBuffer(rel, BARK_METAPAGE);
+	BarkMetaPageData *meta;
+	BlockNumber root;
+	uint32		rootlevel;
+	BlockNumber leftmost;
+	int64		nreached = 0;
+	MemoryContext tmpcxt;
+	MemoryContext oldcxt;
+
+	LockBuffer(metabuf, BUFFER_LOCK_SHARE);
+	meta = BarkPageGetMeta(BufferGetPage(metabuf));
+	root = meta->bark_root;
+	rootlevel = meta->bark_level;
+	UnlockReleaseBuffer(metabuf);
+
+	if (root == BARK_P_NONE)
+	{
+		if (nlive != 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_INDEX_CORRUPTED),
+					 errmsg("BARK index \"%s\" has no root but has %" PRId64 " tree pages",
+							RelationGetRelationName(rel), nlive)));
+		return;
+	}
+	if (root == BARK_METAPAGE || root >= npages)
+		ereport(ERROR,
+				(errcode(ERRCODE_INDEX_CORRUPTED),
+				 errmsg("BARK index \"%s\" has a meta page naming invalid root block %u",
+						RelationGetRelationName(rel), root)));
+
+	tmpcxt = AllocSetContextCreate(CurrentMemoryContext,
+								   "bark_check_levels",
+								   ALLOCSET_DEFAULT_SIZES);
+	oldcxt = MemoryContextSwitchTo(tmpcxt);
+
+	/*
+	 * Walk each level from its leftmost page.  The root is the leftmost page
+	 * of the top level; each level's first downlink names the leftmost page
+	 * of the level below.
+	 */
+	leftmost = root;
+	for (int64 level = rootlevel; level >= 0; level--)
+	{
+		BlockNumber blkno = leftmost;
+		BlockNumber expect = InvalidBlockNumber;	/* next child, in chain
+													 * order */
+		IndexTuple	prevhikey = NULL;	/* high key of the last child */
+		bool		first = true;
+
+		leftmost = InvalidBlockNumber;
+		while (blkno != BARK_P_NONE)
+		{
+			Buffer		buf;
+			Page		page;
+			BarkPageOpaque opaque;
+			IndexTuple	hikey = NULL;
+			OffsetNumber maxoff;
+
+			CHECK_FOR_INTERRUPTS();
+
+			if (blkno == BARK_METAPAGE || blkno >= npages)
+				ereport(ERROR,
+						(errcode(ERRCODE_INDEX_CORRUPTED),
+						 errmsg("BARK index \"%s\" has a link at level %" PRId64 " to invalid block %u",
+								RelationGetRelationName(rel), level, blkno)));
+			buf = ReadBuffer(rel, blkno);
+			LockBuffer(buf, BUFFER_LOCK_SHARE);
+			page = BufferGetPage(buf);
+			opaque = PageIsNew(page) ? NULL : BarkPageGetOpaque(page);
+
+			if (opaque == NULL ||
+				(opaque->bark_flags & (BARK_DELETED | BARK_HALF_DEAD |
+									   BARK_OVERFLOW | BARK_META)) != 0 ||
+				opaque->bark_level != level ||
+				BarkPageIsLeaf(opaque) != (level == 0))
+				ereport(ERROR,
+						(errcode(ERRCODE_INDEX_CORRUPTED),
+						 errmsg("BARK index \"%s\" has a page %u at level %" PRId64 " of the tree that is not a live page of that level",
+								RelationGetRelationName(rel), blkno, level)));
+			if (BarkPageIsRoot(opaque) != (level == rootlevel) ||
+				(level == rootlevel &&
+				 (!BarkPageLeftmost(opaque) || !BarkPageRightmost(opaque))))
+				ereport(ERROR,
+						(errcode(ERRCODE_INDEX_CORRUPTED),
+						 errmsg("BARK index \"%s\" has page %u flagged as root inconsistently with the meta page's root %u at level %u",
+								RelationGetRelationName(rel), blkno, root,
+								rootlevel)));
+			if (first != BarkPageLeftmost(opaque))
+				ereport(ERROR,
+						(errcode(ERRCODE_INDEX_CORRUPTED),
+						 errmsg("BARK index \"%s\" has page %u at level %" PRId64 " whose left link does not match its place in the level",
+								RelationGetRelationName(rel), blkno, level)));
+			nreached++;
+			if (nreached > nlive)
+				ereport(ERROR,
+						(errcode(ERRCODE_INDEX_CORRUPTED),
+						 errmsg("BARK index \"%s\" has a cycle in its sibling links at level %" PRId64,
+								RelationGetRelationName(rel), level)));
+
+			maxoff = PageGetMaxOffsetNumber(page);
+			if (!BarkPageRightmost(opaque) && maxoff >= BARK_P_HIKEY)
+				hikey = CopyIndexTuple((IndexTuple)
+									   PageGetItem(page, PageGetItemId(page, BARK_P_HIKEY)));
+
+			/* Check this internal page's downlinks against the level below. */
+			for (OffsetNumber off = BarkPageFirstDataKey(opaque);
+				 level > 0 && off <= maxoff; off = OffsetNumberNext(off))
+			{
+				IndexTuple	downlink = (IndexTuple)
+					PageGetItem(page, PageGetItemId(page, off));
+				BlockNumber child = BarkEntryGetDownLink(downlink);
+				Buffer		cbuf;
+				Page		cpage;
+				BarkPageOpaque copaque;
+
+				if (BarkEntryGetShape(downlink) != BARK_SHAPE_PIVOT &&
+					(BarkEntryGetShape(downlink) != BARK_SHAPE_OVERSIZED ||
+					 BarkOverflowIsLeaf(downlink)))
+					ereport(ERROR,
+							(errcode(ERRCODE_INDEX_CORRUPTED),
+							 errmsg("BARK index \"%s\" has an item on internal page %u at offset %u that is not a pivot",
+									RelationGetRelationName(rel), blkno, off)));
+				if (leftmost == InvalidBlockNumber)
+				{
+					/* The level's first downlink: minus infinity. */
+					if (BarkEntryGetPivotNAtts(downlink) != 0)
+						ereport(ERROR,
+								(errcode(ERRCODE_INDEX_CORRUPTED),
+								 errmsg("BARK index \"%s\" has a first downlink at level %" PRId64 " on page %u that is not minus infinity",
+										RelationGetRelationName(rel), level, blkno)));
+					leftmost = child;
+				}
+				else if (child != expect)
+					ereport(ERROR,
+							(errcode(ERRCODE_INDEX_CORRUPTED),
+							 errmsg("BARK index \"%s\" has a downlink on page %u at offset %u to page %u, where the level below continues at page %u",
+									RelationGetRelationName(rel), blkno, off,
+									child, expect)));
+				else if (prevhikey == NULL ||
+						 !bark_check_same_pivot(rel, keyinfo, downlink, prevhikey))
+					ereport(ERROR,
+							(errcode(ERRCODE_INDEX_CORRUPTED),
+							 errmsg("BARK index \"%s\" has a downlink on page %u at offset %u that is not the high key of the page to its child's left",
+									RelationGetRelationName(rel), blkno, off)));
+
+				/*
+				 * Under ShareLock the child cannot change, so reading it
+				 * while the parent is still locked cannot deadlock.
+				 */
+				if (child == BARK_METAPAGE || child >= npages)
+					ereport(ERROR,
+							(errcode(ERRCODE_INDEX_CORRUPTED),
+							 errmsg("BARK index \"%s\" has a downlink on page %u to invalid block %u",
+									RelationGetRelationName(rel), blkno, child)));
+				cbuf = ReadBuffer(rel, child);
+				LockBuffer(cbuf, BUFFER_LOCK_SHARE);
+				cpage = BufferGetPage(cbuf);
+				copaque = PageIsNew(cpage) ? NULL : BarkPageGetOpaque(cpage);
+				if (copaque == NULL ||
+					(copaque->bark_flags & (BARK_DELETED | BARK_HALF_DEAD |
+											BARK_OVERFLOW | BARK_META)) != 0)
+					ereport(ERROR,
+							(errcode(ERRCODE_INDEX_CORRUPTED),
+							 errmsg("BARK index \"%s\" has a downlink on page %u to page %u, which is not a live page",
+									RelationGetRelationName(rel), blkno, child)));
+				if (prevhikey)
+					pfree(prevhikey);
+				prevhikey = NULL;
+				if (!BarkPageRightmost(copaque) &&
+					PageGetMaxOffsetNumber(cpage) >= BARK_P_HIKEY)
+					prevhikey = CopyIndexTuple((IndexTuple)
+											   PageGetItem(cpage, PageGetItemId(cpage, BARK_P_HIKEY)));
+				expect = copaque->bark_next;
+				UnlockReleaseBuffer(cbuf);
+			}
+
+			/*
+			 * The last child of a page with a right sibling bounds its keys
+			 * by the same separator as the page does.
+			 */
+			if (level > 0 && hikey != NULL &&
+				(prevhikey == NULL ||
+				 !bark_check_same_pivot(rel, keyinfo, hikey, prevhikey)))
+				ereport(ERROR,
+						(errcode(ERRCODE_INDEX_CORRUPTED),
+						 errmsg("BARK index \"%s\" has a high key on page %u that is not the high key of its last child",
+								RelationGetRelationName(rel), blkno)));
+			if (level > 0 && hikey == NULL && !BarkPageRightmost(opaque))
+				ereport(ERROR,
+						(errcode(ERRCODE_INDEX_CORRUPTED),
+						 errmsg("BARK index \"%s\" has a non-rightmost page %u with no high key",
+								RelationGetRelationName(rel), blkno)));
+
+			first = false;
+			blkno = opaque->bark_next;
+			UnlockReleaseBuffer(buf);
+		}
+
+		/* Every page of the level below was named, and it ends here. */
+		if (level > 0 &&
+			(leftmost == InvalidBlockNumber || expect != BARK_P_NONE))
+			ereport(ERROR,
+					(errcode(ERRCODE_INDEX_CORRUPTED),
+					 errmsg("BARK index \"%s\" has pages at level %" PRId64 " that no downlink at level %" PRId64 " names",
+							RelationGetRelationName(rel), level - 1, level)));
+
+		MemoryContextReset(tmpcxt);
+	}
+
+	MemoryContextSwitchTo(oldcxt);
+	MemoryContextDelete(tmpcxt);
+
+	if (nreached != nlive)
+		ereport(ERROR,
+				(errcode(ERRCODE_INDEX_CORRUPTED),
+				 errmsg("BARK index \"%s\" has %" PRId64 " live pages, but only %" PRId64 " are reachable from its root",
+						RelationGetRelationName(rel), nlive, nreached)));
+}
+
+/* An overflow page that no entry's chain reaches. */
+static inline bool
+bark_chain_orphan(BarkChains * chains, BlockNumber blkno)
+{
+	return chains->next[blkno] != InvalidBlockNumber &&
+		(chains->flags[blkno] & BARK_CHAIN_REACHED) == 0;
+}
+
+/*
+ * The chain check, under ShareLock, after bark_check_page has recorded every
+ * overflow page's next link and the first block of every OVERSIZED entry's
+ * chain, leaf entries' and pivots'.
+ *
+ * Each chain is followed to its end (BARK_P_NONE), once: a high key and the
+ * downlinks copied from it share one chain (README), so a first block is
+ * followed however many entries name it.  bark_check_page has read each
+ * chain as far as its entry's length; following the links to the end also
+ * checks what VACUUM's bark_free_oversized follows.  A chain that reaches a
+ * page that is not an overflow page, or a page a chain has already reached
+ * (it loops, or two chains cross), or that is longer than its entry's
+ * length, is corrupt.
+ *
+ * An overflow page no chain reaches is not corruption.  A chain is written
+ * before the entry that references it, and freed after the entry is gone,
+ * each page under its own WAL record, so a crash between the two leaves the
+ * chain's pages, or the rest of them, referenced by no entry; so does an
+ * ERROR in between.  Such pages are reported with a WARNING, one per
+ * orphaned chain, by its first page (one no other orphaned page links to)
+ * and its number of pages; orphaned pages that only link to each other in a
+ * loop are reported last, from the lowest block.  A deleted overflow page,
+ * which VACUUM freed and which awaits recycling, is not an overflow page any
+ * more, so it is neither reached nor reported.  Nothing reclaims orphaned
+ * pages but REINDEX.
+ */
+static void
+bark_check_chains(Relation rel, BarkChains * chains)
+{
+	BlockNumber npages = chains->npages;
+
+	for (BlockNumber first = BARK_METAPAGE + 1; first < npages; first++)
+	{
+		BlockNumber n = 0;
+
+		if (chains->nchunks[first] == 0)
+			continue;
+		for (BlockNumber blkno = first; blkno != BARK_P_NONE;
+			 blkno = chains->next[blkno])
+		{
+			if (blkno >= npages || chains->next[blkno] == InvalidBlockNumber)
+				ereport(ERROR,
+						(errcode(ERRCODE_INDEX_CORRUPTED),
+						 errmsg("BARK index \"%s\" has an overflow chain from block %u that reaches block %u, which is not an overflow page",
+								RelationGetRelationName(rel), first, blkno)));
+			if (chains->flags[blkno] & BARK_CHAIN_REACHED)
+				ereport(ERROR,
+						(errcode(ERRCODE_INDEX_CORRUPTED),
+						 errmsg("BARK index \"%s\" has an overflow chain from block %u that reaches block %u, which an overflow chain already reached",
+								RelationGetRelationName(rel), first, blkno)));
+			chains->flags[blkno] |= BARK_CHAIN_REACHED;
+			n++;
+		}
+		if (n != chains->nchunks[first])
+			ereport(ERROR,
+					(errcode(ERRCODE_INDEX_CORRUPTED),
+					 errmsg("BARK index \"%s\" has an overflow chain of %u pages from block %u, where its entry's length takes %u",
+							RelationGetRelationName(rel), n, first,
+							chains->nchunks[first])));
+	}
+
+	/* An orphaned page another one links to does not start a chain. */
+	for (BlockNumber blkno = BARK_METAPAGE + 1; blkno < npages; blkno++)
+	{
+		BlockNumber next = chains->next[blkno];
+
+		if (bark_chain_orphan(chains, blkno) && next != BARK_P_NONE &&
+			next < npages && bark_chain_orphan(chains, next))
+			chains->flags[next] |= BARK_CHAIN_LINKED;
+	}
+
+	for (int pass = 0; pass < 2; pass++)
+	{
+		for (BlockNumber first = BARK_METAPAGE + 1; first < npages; first++)
+		{
+			BlockNumber n = 0;
+
+			if (!bark_chain_orphan(chains, first) ||
+				(chains->flags[first] & BARK_CHAIN_COUNTED) != 0 ||
+				(pass == 0 && (chains->flags[first] & BARK_CHAIN_LINKED) != 0))
+				continue;
+			for (BlockNumber blkno = first;
+				 blkno != BARK_P_NONE && blkno < npages &&
+				 bark_chain_orphan(chains, blkno) &&
+				 (chains->flags[blkno] & BARK_CHAIN_COUNTED) == 0;
+				 blkno = chains->next[blkno])
+			{
+				chains->flags[blkno] |= BARK_CHAIN_COUNTED;
+				n++;
+			}
+			ereport(WARNING,
+					(errmsg_plural("BARK index \"%s\" has an orphaned overflow chain of %u page at block %u",
+								   "BARK index \"%s\" has an orphaned overflow chain of %u pages at block %u",
+								   n, RelationGetRelationName(rel), n, first),
+					 errdetail("No entry references these pages.  A crash or error between writing an oversized entry's overflow chain and inserting the entry, or a crash while VACUUM frees a chain, leaves such pages."),
+					 errhint("REINDEX reclaims them.")));
+		}
+	}
+}
+
+/*
+ * The fingerprint of the row (values, isnull) at heap TID `tid`: the row's
+ * index tuple as a SINGLE entry would hold it, in a form that does not depend
+ * on how the datums reached it.
+ *
+ * As verify_nbtree.c's bt_normalize_tuple explains, the heap may hold a
+ * datum compressed where the index tuple holds it plain, or with a 4-byte
+ * header where the index tuple has a 1-byte one, so the same row can come
+ * from the heap and from the index with different bytes.  Every varlena is
+ * therefore detoasted and packed, and the tuple formed with
+ * bark_form_full_tuple, which compresses exactly as the index does and has
+ * no size limit (an OVERSIZED entry's full tuple can exceed
+ * index_form_tuple's).  Hashing the tuple with its heap TID makes it a
+ * (key, TID) fingerprint.  The result is palloc'd in the current context;
+ * its length is in *len.
+ */
+static IndexTuple
+bark_check_normalize(Relation rel, Datum *values, bool *isnull,
+					 ItemPointer tid, Size *len)
+{
+	TupleDesc	tupdesc = RelationGetDescr(rel);
+	Datum		normalized[INDEX_MAX_KEYS];
+	IndexTuple	itup;
+
+	for (int i = 0; i < tupdesc->natts; i++)
+	{
+		normalized[i] = values[i];
+		if (!isnull[i] && TupleDescAttr(tupdesc, i)->attlen == -1)
+			normalized[i] = PointerGetDatum(PG_DETOAST_DATUM_PACKED(values[i]));
+	}
+	itup = bark_form_full_tuple(tupdesc, normalized, isnull, len);
+	itup->t_tid = *tid;
+	return itup;
+}
+
+/*
+ * Fingerprint one leaf entry: each of its heap TIDs with the entry's key, so
+ * a LIST or POSTING entry adds one fingerprint per member, each the one its
+ * row has on its own.
+ */
+static void
+bark_fingerprint_entry(Relation rel, BarkCheckState * state, IndexTuple itup)
+{
+	TupleDesc	tupdesc = RelationGetDescr(rel);
+	Datum		values[INDEX_MAX_KEYS];
+	bool		isnull[INDEX_MAX_KEYS];
+	IndexTuple	keytup = itup;
+	ItemPointer tids;
+	int			ntids;
+
+	/* A marker is a fact about the index, not a row: no row probes for it. */
+	if (BarkEntryIsMarker(itup))
+		return;
+
+	if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED)
+		keytup = bark_fetch_oversized(rel, itup);
+	index_deform_tuple(keytup, tupdesc, values, isnull);
+
+	ntids = bark_entry_count_tids(itup);
+	tids = palloc_array(ItemPointerData, ntids);
+	ntids = bark_entry_get_tids(itup, tids, ntids, bark_index_tid_stride(rel));
+	for (int i = 0; i < ntids; i++)
+	{
+		Size		len;
+		IndexTuple	norm = bark_check_normalize(rel, values, isnull, &tids[i],
+												&len);
+
+		bloom_add_element(state->filter, (unsigned char *) norm, len);
+		pfree(norm);
+	}
+}
+
+/*
+ * Return the leftmost leaf, share-locked, or InvalidBuffer for an empty
+ * index.
+ */
+static Buffer
+bark_check_leftmost_leaf(Relation rel)
+{
+	Buffer		buf = bark_get_root_buffer(rel, BUFFER_LOCK_SHARE);
+
+	if (!BufferIsValid(buf))
+		return buf;
+
+	/* Descend by first downlinks to the leftmost leaf. */
+	for (;;)
+	{
+		Page		page = BufferGetPage(buf);
+		BarkPageOpaque opaque = BarkPageGetOpaque(page);
+		BlockNumber child;
+
+		/*
+		 * A page deleted since its parent's downlink was read cannot be on
+		 * the leftmost edge (VACUUM deletes only interior leaves), but move
+		 * right through one as every descent does.
+		 */
+		if (BarkPageIgnore(opaque) && !BarkPageRightmost(opaque))
+		{
+			BlockNumber next = opaque->bark_next;
+
+			UnlockReleaseBuffer(buf);
+			buf = ReadBuffer(rel, next);
+			LockBuffer(buf, BUFFER_LOCK_SHARE);
+			continue;
+		}
+		if (BarkPageIsLeaf(opaque))
+			break;
+		if (PageGetMaxOffsetNumber(page) < BarkPageFirstDataKey(opaque))
+			ereport(ERROR,
+					(errcode(ERRCODE_INDEX_CORRUPTED),
+					 errmsg("BARK index \"%s\" has an internal page %u with no downlinks",
+							RelationGetRelationName(rel),
+							BufferGetBlockNumber(buf))));
+		child = BarkEntryGetDownLink((IndexTuple)
+									 PageGetItem(page,
+												 PageGetItemId(page,
+															   BarkPageFirstDataKey(opaque))));
+		UnlockReleaseBuffer(buf);
+		buf = ReadBuffer(rel, child);
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+	}
+	return buf;
+}
+
+/*
+ * Fingerprint every leaf entry, reading the leaves left to right through
+ * their sibling links from the leftmost leaf.
+ *
+ * Reading the leaves in key order rather than block order is what lets an
+ * entry moved by a concurrent split still be found: a split moves entries
+ * only to a new right sibling, which this walk reaches after the page it
+ * came from.  Every entry the heap scan's snapshot needs was in the index
+ * when the snapshot was taken, before this walk started, so it is either on
+ * a leaf the walk has yet to reach or on a page split off one.  Under
+ * ShareLock nothing moves at all.
+ */
+static void
+bark_fingerprint_leaves(Relation rel, BarkCheckState * state)
+{
+	Buffer		buf = bark_check_leftmost_leaf(rel);
+	MemoryContext oldcxt;
+
+	if (!BufferIsValid(buf))
+		return;					/* an empty index has no entries */
+
+	oldcxt = MemoryContextSwitchTo(state->tmpcxt);
+	for (;;)
+	{
+		Page		page = BufferGetPage(buf);
+		BarkPageOpaque opaque = BarkPageGetOpaque(page);
+		BlockNumber next = opaque->bark_next;
+
+		CHECK_FOR_INTERRUPTS();
+
+		if (BarkPageIsLeaf(opaque) && !BarkPageIgnore(opaque))
+		{
+			OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
+
+			for (OffsetNumber off = BarkPageFirstDataKey(opaque);
+				 off <= maxoff; off = OffsetNumberNext(off))
+			{
+				BarkItemBuf ibuf;
+
+				/*
+				 * An entry marked LP_DEAD is not fingerprinted, as in
+				 * verify_nbtree.c: its rows are dead to every snapshot, so
+				 * the heap scan's snapshot sees none of them, and a row it
+				 * does see whose only entry is marked was marked wrongly.
+				 *
+				 * In a transaction that started in recovery the marks count
+				 * for nothing, as for a scan's ignore_killed_tuples: a
+				 * standby gets them in page images, set by the primary's
+				 * horizon, which its own snapshots are not part of.
+				 */
+				if (!state->inrecovery &&
+					ItemIdIsDead(PageGetItemId(page, off)))
+					continue;
+				bark_fingerprint_entry(rel, state,
+									   BarkPageGetItem(page, off, &ibuf));
+				MemoryContextReset(state->tmpcxt);
+			}
+		}
+		UnlockReleaseBuffer(buf);
+		if (next == BARK_P_NONE)
+			break;
+		buf = ReadBuffer(rel, next);
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+	}
+	MemoryContextSwitchTo(oldcxt);
+}
+
+/*
+ * checkunique: the run of equal key columns being walked.  Its first entry's
+ * heap TID is fetched only once a second entry joins the run, as
+ * bt_entry_unique_check postpones a key's first appearance, so a key with a
+ * single entry costs no heap access.
+ */
+typedef struct BarkUniqueRun
+{
+	IndexTuple	key;			/* the run's key tuple; NULL: no run */
+	bool		pending;		/* the first entry is still unchecked */
+	BlockNumber blkno;			/* the first entry, while pending */
+	OffsetNumber off;
+	ItemPointerData tid;
+	BlockNumber visblkno;		/* the entry with the run's visible row */
+	OffsetNumber visoff;
+	ItemPointerData vistid;		/* invalid until a visible row is found */
+}			BarkUniqueRun;
+
+/*
+ * checkunique: fetch the rows that one entry's heap TIDs point to with the
+ * check's MVCC snapshot, and report a second visible row in the run.  The
+ * fetch follows a HOT chain from its root, as the insert path's unique check
+ * does, so a row updated in place is found at its visible version.
+ */
+static void
+bark_check_unique_tids(Relation rel, BarkCheckState * state,
+					   BarkUniqueRun * run, BlockNumber blkno,
+					   OffsetNumber off, ItemPointer tids, int ntids)
+{
+	for (int i = 0; i < ntids; i++)
+	{
+		ItemPointerData tid = tids[i];	/* table_fetch_tid may move it */
+		bool		all_dead;
+
+		if (!table_fetch_tid(state->heaprel, &tid, state->snapshot, &all_dead))
+			continue;
+		if (ItemPointerIsValid(&run->vistid))
+			ereport(ERROR,
+					(errcode(ERRCODE_INDEX_CORRUPTED),
+					 errmsg("index uniqueness is violated for index \"%s\"",
+							RelationGetRelationName(rel)),
+					 errdetail("Index tid=(%u,%u) and tid=(%u,%u) have equal keys and point to visible heap tid=(%u,%u) and tid=(%u,%u).",
+							   run->visblkno, run->visoff, blkno, off,
+							   ItemPointerGetBlockNumber(&run->vistid),
+							   ItemPointerGetOffsetNumber(&run->vistid),
+							   ItemPointerGetBlockNumber(&tids[i]),
+							   ItemPointerGetOffsetNumber(&tids[i]))));
+		run->visblkno = blkno;
+		run->visoff = off;
+		run->vistid = tids[i];
+	}
+}
+
+/*
+ * checkunique: walk the leaves left to right, as bark_fingerprint_leaves
+ * does, through each run of entries with equal key columns, which may cross
+ * leaves, and report two entries of a run whose rows are both visible to the
+ * check's snapshot, as bt_index_check's checkunique does.  Entries compare on
+ * their key columns only (bark_compare_itups), so for an extracted column a
+ * run is one (fixed columns, key); one row's keys are distinct, so its
+ * entries are never in one run and need no exception.  A key with a
+ * NULL column, in an index whose NULLs are distinct, never conflicts and
+ * ends the run, as nbtree treats a key with anynullkeys.  Markers name no
+ * row and are skipped.
+ *
+ * Under AccessShareLock rows may come and go meanwhile, but no row visible
+ * to the snapshot can be removed (the snapshot holds VACUUM back), and a
+ * concurrent split moves entries only to the right, where the walk still
+ * finds them, so the entries of two visible rows of one key are always met
+ * in one run.
+ */
+static void
+bark_check_unique_runs(Relation rel, BarkKeyInfo *keyinfo,
+					   BarkCheckState * state)
+{
+	TupleDesc	tupdesc = RelationGetDescr(rel);
+	bool		nullsdistinct = !rel->rd_index->indnullsnotdistinct;
+	Buffer		buf = bark_check_leftmost_leaf(rel);
+	BarkUniqueRun run = {0};
+	MemoryContext runcxt;
+	MemoryContext tmpcxt;
+	MemoryContext oldcxt;
+
+	if (!BufferIsValid(buf))
+		return;					/* an empty index has no entries */
+
+	runcxt = AllocSetContextCreate(CurrentMemoryContext,
+								   "bark_check_unique_runs run",
+								   ALLOCSET_SMALL_SIZES);
+	tmpcxt = AllocSetContextCreate(CurrentMemoryContext,
+								   "bark_check_unique_runs",
+								   ALLOCSET_DEFAULT_SIZES);
+	oldcxt = MemoryContextSwitchTo(tmpcxt);
+	for (;;)
+	{
+		Page		page = BufferGetPage(buf);
+		BarkPageOpaque opaque = BarkPageGetOpaque(page);
+		BlockNumber blkno = BufferGetBlockNumber(buf);
+		BlockNumber next = opaque->bark_next;
+
+		CHECK_FOR_INTERRUPTS();
+
+		if (BarkPageIsLeaf(opaque) && !BarkPageIgnore(opaque))
+		{
+			OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
+
+			for (OffsetNumber off = BarkPageFirstDataKey(opaque);
+				 off <= maxoff; off = OffsetNumberNext(off))
+			{
+				BarkItemBuf ibuf;
+				IndexTuple	itup = BarkPageGetItem(page, off, &ibuf);
+				IndexTuple	keytup = itup;
+				Size		keylen = IndexTupleSize(itup);
+				bool		anynull = false;
+				ItemPointer tids;
+				int			ntids;
+
+				if (BarkEntryIsMarker(itup))
+					continue;
+
+				/* Compare the full key, which the walk keeps past the lock. */
+				if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED)
+				{
+					keylen = BarkOverflowGetRef(itup)->fulllen;
+					keytup = bark_fetch_oversized(rel, itup);
+				}
+				for (int i = 0; nullsdistinct && i < keyinfo->nkeys; i++)
+				{
+					bool		isnull;
+
+					(void) index_getattr(keytup, i + 1, tupdesc, &isnull);
+					anynull |= isnull;
+				}
+				if (anynull)
+				{
+					run.key = NULL;
+					run.pending = false;
+					MemoryContextReset(tmpcxt);
+					continue;
+				}
+
+				ntids = bark_entry_count_tids(itup);
+				tids = palloc_array(ItemPointerData, ntids);
+				ntids = bark_entry_get_tids(itup, tids, ntids,
+											keyinfo->tidstride);
+
+				if (run.key != NULL &&
+					bark_compare_itups(keyinfo, rel, run.key, keytup) == 0)
+				{
+					if (run.pending)
+						bark_check_unique_tids(rel, state, &run, run.blkno,
+											   run.off, &run.tid, 1);
+					run.pending = false;
+					bark_check_unique_tids(rel, state, &run, blkno, off,
+										   tids, ntids);
+				}
+				else
+				{
+					MemoryContextReset(runcxt);
+					run.key = MemoryContextAlloc(runcxt, keylen);
+					memcpy(run.key, keytup, keylen);
+					ItemPointerSetInvalid(&run.vistid);
+
+					/* An entry with several rows is checked at once. */
+					run.pending = (ntids == 1);
+					if (run.pending)
+					{
+						run.blkno = blkno;
+						run.off = off;
+						run.tid = tids[0];
+					}
+					else
+						bark_check_unique_tids(rel, state, &run, blkno, off,
+											   tids, ntids);
+				}
+				MemoryContextReset(tmpcxt);
+			}
+		}
+		UnlockReleaseBuffer(buf);
+		if (next == BARK_P_NONE)
+			break;
+		buf = ReadBuffer(rel, next);
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+	}
+	MemoryContextSwitchTo(oldcxt);
+	MemoryContextDelete(tmpcxt);
+	MemoryContextDelete(runcxt);
+}
+
+/*
+ * Per-tuple callback of the heap scan: the tuple's fingerprint must be in
+ * the filter.  See bt_tuple_present_callback in verify_nbtree.c for what a
+ * failure here can mean.
+ */
+static void
+bark_tuple_present_callback(Relation index, ItemPointer tid, Datum *values,
+							bool *isnull, bool tupleIsAlive, void *checkstate)
+{
+	BarkCheckState *state = (BarkCheckState *) checkstate;
+	MemoryContext oldcxt = MemoryContextSwitchTo(state->tmpcxt);
+	int			attno = state->extracted;
+	BarkRowKeys rk;
+	Datum		kvalues[INDEX_MAX_KEYS];
+	bool		knulls[INDEX_MAX_KEYS];
+
+	/*
+	 * Without an extracted column the row is one entry; with one, it is one
+	 * entry per key procedure 7 gives the row (bark_build_row_keys).
+	 */
+	if (attno == 0)
+		bark_probe_entry(index, state, values, isnull, tid);
+	else
+	{
+		int			natts = RelationGetDescr(index)->natts;
+
+		bark_extract_row_keys(index, state->keyinfo, values[attno - 1],
+							  isnull[attno - 1], &rk);
+		memcpy(kvalues, values, natts * sizeof(Datum));
+		memcpy(knulls, isnull, natts * sizeof(bool));
+		for (int i = 0; i < rk.nkeys; i++)
+		{
+			kvalues[attno - 1] = rk.keys[i];
+			knulls[attno - 1] = rk.nulls[i];
+			bark_probe_entry(index, state, kvalues, knulls, tid);
+		}
+	}
+	state->heaptuplespresent++;
+	MemoryContextSwitchTo(oldcxt);
+	MemoryContextReset(state->tmpcxt);
+}
+
+/* The entry the row has for these key values must be in the filter. */
+static void
+bark_probe_entry(Relation index, BarkCheckState * state, Datum *values,
+				 bool *isnull, ItemPointer tid)
+{
+	Size		len;
+	IndexTuple	norm = bark_check_normalize(index, values, isnull, tid, &len);
+
+	if (bloom_lacks_element(state->filter, (unsigned char *) norm, len))
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("heap tuple (%u,%u) from table \"%s\" lacks matching index tuple within index \"%s\"",
+						ItemPointerGetBlockNumber(tid),
+						ItemPointerGetOffsetNumber(tid),
+						RelationGetRelationName(state->heaprel),
+						RelationGetRelationName(index)),
+				 !state->readonly
+				 ? errhint("Retrying verification using the function bark_index_parent_check() might provide a more specific error.")
+				 : 0));
+	pfree(norm);
+}
+
+/*
+ * heapallindexed: fingerprint the index, then scan the heap as CREATE INDEX
+ * CONCURRENTLY's first scan does, with the snapshot taken before the index
+ * walk, and probe for every tuple it would index.
+ */
+static void
+bark_check_heap(Relation rel, Relation heaprel, BarkKeyInfo *keyinfo,
+				BarkCheckState * state, bool readonly)
+{
+	IndexInfo  *indexinfo;
+	TableScanDesc scan;
+	int64		total_elems;
+	int64		nmembers;
+
+	/*
+	 * Size the filter for the larger of the index's (key, TID) member count
+	 * as of its last build or VACUUM and a full leaf's worth of SINGLE
+	 * entries on every page, as verify_nbtree.c sizes its own.  A POSTING
+	 * entry can hold more members than that, which the count covers.  The
+	 * count is the row count, reltuples, but for an extracted column, whose
+	 * rows each have as many members as keys: the meta page's bark_nkeys. An
+	 * undersized filter only makes a missing entry likelier to go unnoticed.
+	 */
+	state->keyinfo = keyinfo;
+	state->extracted = bark_index_extracted_column(rel);
+	nmembers = (int64) rel->rd_rel->reltuples;
+	if (state->extracted != 0)
+	{
+		Buffer		metabuf = ReadBuffer(rel, BARK_METAPAGE);
+
+		LockBuffer(metabuf, BUFFER_LOCK_SHARE);
+		nmembers = Max(nmembers, (int64)
+					   BarkPageGetMeta(BufferGetPage(metabuf))->bark_nkeys);
+		UnlockReleaseBuffer(metabuf);
+	}
+	total_elems = Max((int64) RelationGetNumberOfBlocks(rel) *
+					  (MaxIndexTuplesPerPage / 3), nmembers);
+	state->filter = bloom_create(total_elems, maintenance_work_mem,
+								 pg_prng_uint64(&pg_global_prng_state));
+	state->heaprel = heaprel;
+	state->readonly = readonly;
+	state->inrecovery = TransactionStartedDuringRecovery();
+	state->tmpcxt = AllocSetContextCreate(CurrentMemoryContext,
+										  "bark_check_heap",
+										  ALLOCSET_DEFAULT_SIZES);
+
+	bark_fingerprint_leaves(rel, state);
+
+	/*
+	 * As in verify_nbtree.c: our own scan, so that it uses our snapshot; the
+	 * scan of a concurrent build; and no waits on uncommitted tuples of a
+	 * unique or exclusion index.
+	 */
+	indexinfo = BuildIndexInfo(rel);
+	scan = table_beginscan_strat(heaprel, state->snapshot, 0, NULL,
+								 true, true);
+	indexinfo->ii_Concurrent = true;
+	indexinfo->ii_Unique = false;
+	indexinfo->ii_ExclusionOps = NULL;
+	indexinfo->ii_ExclusionProcs = NULL;
+	indexinfo->ii_ExclusionStrats = NULL;
+
+	elog(DEBUG1, "verifying that tuples from index \"%s\" are present in \"%s\"",
+		 RelationGetRelationName(rel), RelationGetRelationName(heaprel));
+
+	table_index_build_scan(heaprel, rel, indexinfo, true, false,
+						   bark_tuple_present_callback, state, scan);
+
+	ereport(DEBUG1,
+			(errmsg_internal("finished verifying presence of %" PRId64 " tuples from table \"%s\" with bitset %.2f%% set",
+							 state->heaptuplespresent,
+							 RelationGetRelationName(heaprel),
+							 100.0 * bloom_prop_bits_set(state->filter))));
+
+	bloom_free(state->filter);
+	MemoryContextDelete(state->tmpcxt);
+}

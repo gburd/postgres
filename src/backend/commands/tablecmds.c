@@ -677,6 +677,7 @@ static void RebuildConstraintComment(AlteredTableInfo *tab, AlterTablePass pass,
 									 Oid objid, Relation rel, List *domname,
 									 const char *conname);
 static void TryReuseIndex(Oid oldId, IndexStmt *stmt);
+static void RememberIndexImplementations(Oid oldId, IndexStmt *stmt);
 static void TryReuseForeignKey(Oid oldId, Constraint *con);
 static ObjectAddress ATExecAlterColumnGenericOptions(Relation rel, const char *colName,
 													 List *options, LOCKMODE lockmode);
@@ -14074,6 +14075,23 @@ transformFkeyCheckAttrs(Relation pkrel,
 			}
 
 			/*
+			 * A unique index need not be unique under equality: one whose
+			 * column holds several keys per row (an operator class that
+			 * indexes an array's elements, say) is unique over the keys, and
+			 * its operator family has no equality.  The foreign key needs one
+			 * on every column but the PERIOD part, so pass such an index by;
+			 * a btree index on the same columns may follow.
+			 */
+			for (i = 0; found && i < numattrs - (with_period ? 1 : 0); i++)
+			{
+				if (IndexAmTranslateCompareType(COMPARE_EQ,
+												get_opclass_method(opclasses[i]),
+												get_opclass_family(opclasses[i]),
+												true) == InvalidStrategy)
+					found = false;
+			}
+
+			/*
 			 * Refuse to use a deferrable unique/primary key.  This is per SQL
 			 * spec, and there would be a lot of interesting semantic problems
 			 * if we tried to allow it.
@@ -16378,6 +16396,7 @@ ATPostAlterTypeParse(Oid oldId, Oid oldRelId, Oid refRelId, Oid ownerId,
 
 			if (!rewrite)
 				TryReuseIndex(oldId, stmt);
+			RememberIndexImplementations(oldId, stmt);
 			stmt->reset_default_tblspc = true;
 			/* keep the index's comment */
 			stmt->idxcomment = GetComment(oldId, RelationRelationId, 0);
@@ -16407,6 +16426,7 @@ ATPostAlterTypeParse(Oid oldId, Oid oldRelId, Oid refRelId, Oid ownerId,
 
 					if (!rewrite)
 						TryReuseIndex(indoid, indstmt);
+					RememberIndexImplementations(indoid, indstmt);
 					/* keep any comment on the index */
 					indstmt->idxcomment = GetComment(indoid,
 													 RelationRelationId, 0);
@@ -16580,6 +16600,28 @@ TryReuseIndex(Oid oldId, IndexStmt *stmt)
 			stmt->oldFirstRelfilelocatorSubid = irel->rd_firstRelfilelocatorSubid;
 		}
 		index_close(irel, NoLock);
+	}
+}
+
+/*
+ * Subroutine for ATPostAlterTypeParse().  Record the implementation of the
+ * index being re-created and, if it is partitioned, of its partitions'
+ * indexes, so that the new indexes keep them rather than choosing afresh.
+ * That matters most when TryReuseIndex() has handed the new index the old
+ * one's storage, which only the old implementation can read.
+ */
+static void
+RememberIndexImplementations(Oid oldId, IndexStmt *stmt)
+{
+	/* the tables are locked already; their indexes go with them */
+	foreach_oid(indoid, find_all_inheritors(oldId, NoLock, NULL))
+	{
+		if (get_rel_relkind(indoid) != RELKIND_INDEX)
+			continue;
+		stmt->oldImplRels = lappend_oid(stmt->oldImplRels,
+										IndexGetRelation(indoid, false));
+		stmt->oldImplAms = lappend_oid(stmt->oldImplAms,
+									   get_index_implam(indoid));
 	}
 }
 
@@ -19245,6 +19287,26 @@ ATExecReplicaIdentity(Relation rel, ReplicaIdentityStmt *stmt, LOCKMODE lockmode
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("cannot use partial index \"%s\" as replica identity",
 						RelationGetRelationName(indexRel))));
+
+	/*
+	 * Replication finds a row by its identity with an equality scan on every
+	 * key column (build_replindex_scan_key).  A unique index whose column
+	 * holds several keys per row (an operator class that indexes an array's
+	 * elements, say) is unique over the keys and has no equality.
+	 */
+	for (key = 0; key < IndexRelationGetNumberOfKeyAttributes(indexRel); key++)
+	{
+		if (IndexAmTranslateCompareType(COMPARE_EQ, indexRel->rd_rel->relam,
+										indexRel->rd_opfamily[key],
+										true) == InvalidStrategy)
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("cannot use index \"%s\" as replica identity",
+							RelationGetRelationName(indexRel)),
+					 errdetail("Operator family \"%s\" of key column %d has no equality operator.",
+							   get_opfamily_name(indexRel->rd_opfamily[key], false),
+							   key + 1)));
+	}
 
 	/* Check index for nullable columns. */
 	for (key = 0; key < IndexRelationGetNumberOfKeyAttributes(indexRel); key++)

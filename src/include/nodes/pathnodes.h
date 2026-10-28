@@ -1434,6 +1434,8 @@ typedef struct IndexOptInfo
 	 * (IndexAmRoutine).  These fields are not set for partitioned indexes.
 	 */
 	bool		amcanorderbyop;
+	/* are the AM's operator families btree operator families? */
+	bool		ambtreeopfamilies;
 	bool		amoptionalkey;
 	bool		amsearcharray;
 	bool		amsearchnulls;
@@ -1447,6 +1449,8 @@ typedef struct IndexOptInfo
 	/* AM's cost estimator */
 	/* Rather than include amapi.h here, we declare amcostestimate like this */
 	void		(*amcostestimate) (struct PlannerInfo *, struct IndexPath *, double, Cost *, Cost *, Selectivity *, double *, double *) pg_node_attr(read_write_ignore);
+	/* AM's amorderbyopcolumn, or NULL */
+	int			(*amorderbyopcolumn) (struct IndexOptInfo *, List *) pg_node_attr(read_write_ignore);
 } IndexOptInfo;
 
 /*

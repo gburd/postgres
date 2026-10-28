@@ -1,0 +1,3475 @@
+/*-------------------------------------------------------------------------
+ *
+ * bark.c
+ *	  Implementation of the BARK index access method.
+ *
+ * The access method's handler (barkhandler), which declares BARK's
+ * capabilities and entry points, and the entry points that are not in a
+ * file of their own: barkbuild and barkbuildempty, VACUUM (barkbulkdelete,
+ * barkvacuumcleanup and the leaf page pass), the reloptions, the tree
+ * height, and the cost estimate.  The README in this directory maps the
+ * other files.
+ *
+ * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1994, Regents of the University of California
+ *
+ * IDENTIFICATION
+ *	  src/backend/access/bark/bark.c
+ *
+ *-------------------------------------------------------------------------
+ */
+#include "postgres.h"
+
+#include <math.h>
+
+#include "access/amapi.h"
+#include "access/bark.h"
+#include "access/gin.h"
+#include "access/barkxlog.h"
+#include "access/genam.h"
+#include "access/parallel.h"
+#include "access/reloptions.h"
+#include "access/xloginsert.h"
+#include "catalog/pg_am_d.h"
+#include "commands/vacuum.h"
+#include "common/int.h"
+#include "miscadmin.h"
+#include "optimizer/optimizer.h"
+#include "storage/bufmgr.h"
+#include "storage/indexfsm.h"
+#include "storage/ipc.h"
+#include "storage/lmgr.h"
+#include "storage/predicate.h"
+#include "storage/proc.h"
+#include "storage/procarray.h"
+#include "storage/read_stream.h"
+#include "utils/fmgrprotos.h"
+#include "utils/injection_point.h"
+#include "utils/inval.h"
+#include "utils/lsyscache.h"
+#include "utils/memutils.h"
+#include "utils/selfuncs.h"
+#include "utils/spccache.h"
+
+/*
+ * Find the parent page that holds the downlink to `childblk` and the offset of
+ * that downlink.  Descends from the root toward the child's key range (using
+ * the child's high key, which an interior page always carries) and then scans
+ * the resulting parent -- continuing into right siblings if a concurrent split
+ * moved the downlink -- for the entry whose downlink block equals `childblk`.
+ *
+ * Returns the parent buffer write-locked with *downoff set, or InvalidBuffer
+ * when the downlink cannot be found (the caller then declines to delete the
+ * child, leaving it linked -- correct, just not reclaimed).  Modeled on
+ * nbtree's _bt_getstackbuf downlink search.
+ */
+static Buffer
+bark_find_parent_downlink(Relation index, BarkKeyInfo *keyinfo,
+						  IndexTuple childhikey, BlockNumber childblk,
+						  OffsetNumber *downoff)
+{
+	BarkStack	stack;
+	Buffer		pbuf;
+	BlockNumber pblk;
+
+	/*
+	 * Descend to the leaf for the child's high key, recording the parent
+	 * path. nextkey=false lands us at or left of the child so the parent we
+	 * want is on the recorded stack (or just right of it).
+	 */
+	{
+		Buffer		lbuf = bark_search(index, keyinfo, childhikey, NULL,
+									   InvalidIndexVersionTag, false, false,
+									   &stack);
+
+		if (lbuf != InvalidBuffer)
+			UnlockReleaseBuffer(lbuf);
+	}
+	if (stack == NULL)
+		return InvalidBuffer;	/* one-level tree: child is the root, no
+								 * parent */
+
+	pblk = stack->bark_blkno;
+	bark_freestack(stack);
+
+	/* Scan the parent (and right siblings) for the downlink to childblk. */
+	pbuf = ReadBuffer(index, pblk);
+	LockBuffer(pbuf, BUFFER_LOCK_EXCLUSIVE);
+	for (;;)
+	{
+		Page		ppage = BufferGetPage(pbuf);
+		BarkPageOpaque popaque = BarkPageGetOpaque(ppage);
+		OffsetNumber maxoff = PageGetMaxOffsetNumber(ppage);
+		OffsetNumber firstdata = BarkPageFirstDataKey(popaque);
+
+		for (OffsetNumber off = firstdata; off <= maxoff;
+			 off = OffsetNumberNext(off))
+		{
+			BarkItemBuf ibuf;
+			IndexTuple	itup = BarkPageGetItem(ppage, off, &ibuf);
+
+			if (BarkEntryGetDownLink(itup) == childblk)
+			{
+				*downoff = off;
+				return pbuf;
+			}
+		}
+
+		/* Not on this page; follow the right link if the parent split. */
+		if (BarkPageRightmost(popaque))
+			break;
+		{
+			BlockNumber right = popaque->bark_next;
+
+			UnlockReleaseBuffer(pbuf);
+			pbuf = ReadBuffer(index, right);
+			LockBuffer(pbuf, BUFFER_LOCK_EXCLUSIVE);
+		}
+	}
+
+	UnlockReleaseBuffer(pbuf);
+	return InvalidBuffer;
+}
+
+/*
+ * Delete an empty leaf page from the tree.
+ *
+ * Reclaims the common case a delete-heavy workload produces: an interior leaf
+ * (one with both a left and a right sibling) whose every entry VACUUM removed.
+ * The page is unlinked from the leaf chain (its left sibling's right link and
+ * its right sibling's left link are spliced across it), its key space passes
+ * to its right sibling in the parent, and the page becomes a deleted page
+ * (BarkPageSetDeleted).  All four touched pages (left sibling, target, right
+ * sibling, parent) are updated under one XLOG_BARK_UNLINK_PAGE record so the
+ * unlink is crash-atomic.
+ *
+ * The deleted page keeps its sibling links, as in nbtree, so a scan or
+ * descent that read a link to it before the deletion moves right through it.
+ * It is not handed to the FSM here: *safexid is set to the transaction ID it
+ * must age past before reuse, and the caller records the page in the FSM once
+ * that is safe (see bark_vacuum_scan).
+ *
+ * Returns true when the leaf was deleted.  Declines (returns false, leaving the
+ * leaf linked and correct) when the page is not an eligible interior empty
+ * leaf, or when it is its parent's last child, so that its right sibling's
+ * downlink is not on the same parent page.
+ *
+ * This reclaims interior empty leaves only.  A leftmost or rightmost empty
+ * leaf, an empty leaf that is its parent's last child, and an emptied
+ * internal page are all left linked in place -- correct, and still reusable
+ * once their siblings are rewritten, just not directly unlinked here.
+ *
+ * When the right sibling's downlink, which the deletion removes, is an
+ * OVERSIZED pivot, its overflow chain is freed too, once every lock is
+ * released (bark_free_oversized), and *nfreed counts its pages; otherwise
+ * *nfreed is 0.  See the comment at the deletion for why no other entry
+ * references that chain.
+ *
+ * It locks the parent first and then the left sibling, target and right
+ * sibling, which is the reverse of the insert path's order (an inserter that
+ * splits a leaf keeps the leaf locked until it has locked the parent).  To
+ * avoid a deadlock between the two, the three leaf locks are only tried
+ * conditionally while the parent is held, and the leaf is skipped if any of
+ * them is busy; a later VACUUM retries it.  nbtree avoids the inversion by
+ * locking the leaf level before the parent (_bt_mark_page_halfdead).
+ */
+static bool
+bark_delete_empty_leaf(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno,
+					   FullTransactionId *safexid, BlockNumber *nfreed)
+{
+	Buffer		buf;
+	Buffer		lbuf;
+	Buffer		rbuf;
+	Buffer		pbuf;
+	Page		page;
+	BarkPageOpaque opaque;
+	BlockNumber leftblk;
+	BlockNumber rightblk;
+	IndexTuple	hikey;
+	OffsetNumber downoff;
+	uint16		lowtag;
+	Page		lpage;
+	Page		rpage;
+	Page		ppage;
+	IndexTuple	downlink;
+	IndexTuple	removed = NULL;
+	BarkItemBuf ibuf;
+	XLogRecPtr	recptr;
+	bool		lockedl;
+	bool		lockedt;
+
+	*nfreed = 0;
+	buf = ReadBuffer(index, blkno);
+	LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+	page = BufferGetPage(buf);
+
+	/* Re-check under the lock: must be an interior, empty, live leaf. */
+	if (PageIsNew(page))
+	{
+		UnlockReleaseBuffer(buf);
+		return false;
+	}
+	opaque = BarkPageGetOpaque(page);
+	if (!BarkPageIsLeaf(opaque) || BarkPageIsDeleted(opaque) ||
+		(opaque->bark_flags & BARK_INCOMPLETE_SPLIT) != 0 ||
+		BarkPageIsRoot(opaque) ||
+		BarkPageLeftmost(opaque) || BarkPageRightmost(opaque) ||
+		PageGetMaxOffsetNumber(page) >= BarkPageFirstDataKey(opaque))
+	{
+		UnlockReleaseBuffer(buf);
+		return false;			/* not an eligible interior empty leaf */
+	}
+
+	leftblk = opaque->bark_prev;
+	rightblk = opaque->bark_next;
+
+	/*
+	 * The high key (first item on this non-rightmost page) names the key
+	 * range boundary; use it to locate the parent downlink.  Copy it before
+	 * dropping the lock, since finding the parent re-descends the tree.
+	 */
+	hikey = CopyIndexTuple((IndexTuple)
+						   PageGetItem(page, PageGetItemId(page, BARK_P_HIKEY)));
+	UnlockReleaseBuffer(buf);
+
+	pbuf = bark_find_parent_downlink(index, keyinfo, hikey, blkno, &downoff);
+	pfree(hikey);
+	if (pbuf == InvalidBuffer)
+		return false;			/* parent downlink not found: leave it linked */
+
+	/*
+	 * The right sibling must be the target's next child in the same parent:
+	 * its downlink is the one this deletion removes (see below).  Decline
+	 * when the target is the parent's last child, as nbtree does for the
+	 * rightmost child of a parent.
+	 */
+	if (downoff >= PageGetMaxOffsetNumber(BufferGetPage(pbuf)))
+	{
+		UnlockReleaseBuffer(pbuf);
+		return false;
+	}
+
+	/*
+	 * Lock the siblings and re-acquire the target, then re-validate.  These
+	 * are tried without waiting, since we already hold the parent (see
+	 * above); if any is busy, give up on this leaf.
+	 */
+	lbuf = ReadBuffer(index, leftblk);
+	buf = ReadBuffer(index, blkno);
+	rbuf = ReadBuffer(index, rightblk);
+	lockedl = ConditionalLockBuffer(lbuf);
+	lockedt = lockedl && ConditionalLockBuffer(buf);
+	if (!lockedt || !ConditionalLockBuffer(rbuf))
+	{
+		if (lockedt)
+			LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+		if (lockedl)
+			LockBuffer(lbuf, BUFFER_LOCK_UNLOCK);
+		ReleaseBuffer(rbuf);
+		ReleaseBuffer(buf);
+		ReleaseBuffer(lbuf);
+		UnlockReleaseBuffer(pbuf);
+		return false;
+	}
+
+	page = BufferGetPage(buf);
+
+	/*
+	 * Re-check the target is still the empty interior leaf we expect.  A new
+	 * page has no special space, so test for one before reading the flags.
+	 */
+	if (PageIsNew(page) ||
+		!BarkPageIsLeaf((opaque = BarkPageGetOpaque(page))) ||
+		BarkPageIsDeleted(opaque) ||
+		(opaque->bark_flags & BARK_INCOMPLETE_SPLIT) != 0 ||
+		opaque->bark_prev != leftblk || opaque->bark_next != rightblk ||
+		PageGetMaxOffsetNumber(page) >= BarkPageFirstDataKey(opaque) ||
+		BarkEntryGetDownLink(BarkPageGetItem(BufferGetPage(pbuf), downoff,
+											 &ibuf)) != blkno ||
+		BarkEntryGetDownLink(BarkPageGetItem(BufferGetPage(pbuf),
+											 OffsetNumberNext(downoff),
+											 &ibuf)) != rightblk ||
+		(BarkPageGetOpaque(BufferGetPage(rbuf))->bark_flags &
+		 (BARK_DELETED | BARK_HALF_DEAD)) != 0)
+	{
+		UnlockReleaseBuffer(rbuf);
+		UnlockReleaseBuffer(buf);
+		UnlockReleaseBuffer(lbuf);
+		UnlockReleaseBuffer(pbuf);
+		return false;
+	}
+
+	/*
+	 * The target's key space moves right, to its right sibling, as in
+	 * nbtree's _bt_mark_page_halfdead: point the target's downlink at the
+	 * right sibling and delete the right sibling's own downlink, the next
+	 * item.  The parent then routes the target's whole range to the right
+	 * sibling, whose keys all sort at or above that range.  Dropping the
+	 * target's downlink instead would route the range to the left sibling,
+	 * whose high key does not cover it, and an insert there would move right
+	 * onto the right sibling below that page's downlink.
+	 */
+	PredicateLockPageCombine(index, blkno, rightblk);
+
+	/*
+	 * Splice the target out of the chain, move its key space, and mark it
+	 * deleted.  safexid is read while all four pages are locked, as nbtree's
+	 * _bt_unlink_halfdead_page does: a backend that read a link to the target
+	 * before we locked these pages took its snapshot before now, so its xmin
+	 * is no later than safexid, and a backend that reads a link after we
+	 * unlock finds the new links.  Once no snapshot as old as safexid exists,
+	 * nobody can hold a link to the page.
+	 */
+	*safexid = ReadNextFullTransactionId();
+	lpage = BufferGetPage(lbuf);
+	rpage = BufferGetPage(rbuf);
+	ppage = BufferGetPage(pbuf);
+
+	/*
+	 * The right sibling's lower bound becomes the target's, so it takes the
+	 * target's BARK_LOWBOUND_TAGGED with it.
+	 */
+	lowtag = opaque->bark_flags & BARK_LOWBOUND_TAGGED;
+
+	/*
+	 * The removed downlink's overflow chain, if it is OVERSIZED, is freed
+	 * below, after the deletion is logged: no entry references the chain once
+	 * the downlink and the target's high key are gone.  A split puts one
+	 * chain in a leaf's high key and in the downlink copied from it, and in
+	 * nothing else, and an internal page's high key, copied from its right
+	 * sibling's first data item, shares that item's chain.  The removed
+	 * downlink is at downoff + 1, after the target's downlink, so it is never
+	 * its page's first data item, and it never was one: inserts into an
+	 * internal page go after the downlink to the left half of a split, and
+	 * nothing but this deletion, at downoff + 1, removes an item from one.
+	 * So no internal page's high key holds a copy of it.  The level-1 entry
+	 * cache (barksearch.c) copies only level-2 downlinks, so it holds no
+	 * leaf's downlink.  BARK deletes only leaves and overflow pages
+	 * (BarkPageSetDeleted), never internal pages, so no item moves between
+	 * internal pages but by a split, which copies the chain only as above.  A
+	 * descent or scan that read the downlink before now may still read the
+	 * chain: the freed pages keep their links and stay deleted until no
+	 * snapshot as old as their safexid remains (BarkPageIsRecyclable). Each
+	 * page is freed under its own record, so a crash before the last one
+	 * leaves the rest of the chain unreferenced, as a crash while VACUUM
+	 * frees a leaf entry's chain does.
+	 */
+	downlink = (IndexTuple) PageGetItem(ppage,
+										PageGetItemId(ppage, OffsetNumberNext(downoff)));
+	if (BarkEntryGetShape(downlink) == BARK_SHAPE_OVERSIZED)
+		removed = CopyIndexTuple(downlink);
+
+	/* No ereport(ERROR) until changes are logged */
+	START_CRIT_SECTION();
+
+	BarkPageGetOpaque(lpage)->bark_next = rightblk;
+	BarkPageGetOpaque(rpage)->bark_prev = leftblk;
+	BarkPageGetOpaque(rpage)->bark_flags |= lowtag;
+	/* Changed in place: internal items are always stored as they are read. */
+	downlink = (IndexTuple) PageGetItem(ppage, PageGetItemId(ppage, downoff));
+	BarkEntrySetDownLink(downlink, rightblk);
+	PageIndexTupleDelete(ppage, OffsetNumberNext(downoff));
+	BarkPageSetDeleted(page, leftblk, rightblk, *safexid);
+
+	MarkBufferDirty(lbuf);
+	MarkBufferDirty(buf);
+	MarkBufferDirty(rbuf);
+	MarkBufferDirty(pbuf);
+
+	if (RelationNeedsWAL(index))
+	{
+		xl_bark_unlink_page xlrec;
+
+		xlrec.leftsib = leftblk;
+		xlrec.rightsib = rightblk;
+		xlrec.safexid = *safexid;
+		xlrec.poffset = downoff;
+		xlrec.flags = lowtag ? XLH_BARK_UNLINK_LOWTAG : 0;
+
+		/*
+		 * The target is rebuilt from the record in redo, so it needs no
+		 * image, as in _bt_unlink_halfdead_page.
+		 */
+		XLogBeginInsert();
+		XLogRegisterBuffer(0, buf, REGBUF_WILL_INIT);
+		XLogRegisterBuffer(1, lbuf, REGBUF_STANDARD);
+		XLogRegisterBuffer(2, rbuf, REGBUF_STANDARD);
+		XLogRegisterBuffer(3, pbuf, REGBUF_STANDARD);
+		XLogRegisterData(&xlrec, SizeOfBarkUnlinkPage);
+
+		recptr = XLogInsert(RM_BARK_ID, XLOG_BARK_UNLINK_PAGE);
+	}
+	else
+		recptr = XLogGetFakeLSN(index);
+
+	PageSetLSN(lpage, recptr);
+	PageSetLSN(page, recptr);
+	PageSetLSN(rpage, recptr);
+	PageSetLSN(ppage, recptr);
+
+	END_CRIT_SECTION();
+
+	bark_verify_page_change(index, lbuf);
+	bark_verify_page_change(index, buf);
+	bark_verify_page_change(index, rbuf);
+	bark_verify_page_change(index, pbuf);
+
+	UnlockReleaseBuffer(rbuf);
+	UnlockReleaseBuffer(buf);
+	UnlockReleaseBuffer(lbuf);
+	UnlockReleaseBuffer(pbuf);
+
+	if (removed != NULL)
+	{
+		*nfreed = bark_free_oversized(index, removed);
+		pfree(removed);
+	}
+	return true;
+}
+
+/*
+ * Is the plain PIVOT `a` the same as `b`, byte for byte, but for the
+ * downlink block in t_tid?  Every downlink is a copy of the high key of the
+ * child to its left with the child's block set (bark_split,
+ * bark_finish_split, and CREATE INDEX's bark_flush_page), and page deletion
+ * only re-points one, so a downlink and that high key match exactly.
+ */
+static bool
+bark_same_pivot(IndexTuple a, IndexTuple b)
+{
+	Size		off = offsetof(IndexTupleData, t_tid.ip_posid);
+
+	return IndexTupleSize(a) == IndexTupleSize(b) &&
+		memcmp((char *) a + off, (char *) b + off,
+			   IndexTupleSize(a) - off) == 0;
+}
+
+/*
+ * The plain pivot `pivot` (a heap TID and a tag) without its tag, palloc'd:
+ * the same key and heap TID in the 8-byte suffix a pivot without a tag has
+ * (bark_make_pivot), minus infinity on the tag.
+ */
+static IndexTuple
+bark_pivot_drop_tag(IndexTuple pivot)
+{
+	Size		size = IndexTupleSize(pivot) -
+		(BarkPivotSuffixReserveFor(true) - BarkPivotSuffixReserveFor(false));
+	IndexTuple	plain = (IndexTuple) palloc0(size);
+
+	memcpy(plain, pivot, size - sizeof(ItemPointerData));
+	plain->t_info = (plain->t_info & ~INDEX_SIZE_MASK) | (uint16) size;
+	ItemPointerSetOffsetNumber(&plain->t_tid,
+							   ItemPointerGetOffsetNumberNoCheck(&plain->t_tid) &
+							   ~BARK_PIVOT_TAG);
+	*BarkPivotGetHeapTID(plain) = *BarkPivotGetHeapTID(pivot);
+	return plain;
+}
+
+/*
+ * Lower the lower bound of leaf `blkno` (P2) so that VACUUM can untag its
+ * first entry in place, and clear its BARK_LOWBOUND_TAGGED (see "Lowering a
+ * lower bound" in the README).  The bound is the high key of the left
+ * sibling P1, (K, L, t0) with a tag, and the parent's downlink to P2 is a
+ * copy of it.  Once P1 holds no entry at or above (K, L) with no tag, both
+ * become (K, L) with no tag.  That moves no entry: a reader that read the
+ * old bound and reaches P1 for a key in [(K, L), (K, L, t0)) finds P1's new
+ * high key and moves right to P2, and one that reads the new downlink goes
+ * to P2 directly.  When P1's high key has no tag already (P2 kept the flag
+ * through a page deletion that gave it P1 as its left sibling), only the
+ * flag is cleared, and the parent is not needed.
+ *
+ * The locks are bark_delete_empty_leaf's: the parent first, then P1 and P2,
+ * tried without waiting while the parent is held; when one is busy, give up
+ * and let a later VACUUM retry.  A flag-only clear locks P1 and P2 left to
+ * right, as a split does, holding no parent.
+ *
+ * What was read before the locks is checked again under them only where it
+ * can have changed.  Only one VACUUM runs on an index at a time and this is
+ * it, so no leaf is deleted or half-dead meanwhile, and a leaf's left link
+ * changes only when its left sibling splits or is deleted.  A split of P1
+ * changes P1's right link, and a split of P2 neither P2's left link nor
+ * P1's high key.  Nothing else rewrites a leaf's high key: a split replaces
+ * the page's own, page deletion none (it rewrites the deleted page whole
+ * and moves only downlinks).  So P1's right link still being P2 means P1's
+ * high key and P2's left link are as read, and P2's flag is still set (only
+ * this function clears it); these are asserted.  P1's
+ * BARK_INCOMPLETE_SPLIT and the parent's downlinks are checked: P1 can be
+ * the left half of a split whose right half, P2, has no downlink yet, and
+ * the parent's page may have split since the descent.
+ *
+ * Returns true when it cleared P2's flag.  Declines (false) when P1 is not
+ * P2's left sibling or is mid-split, P1 holds an entry at or above (K, L)
+ * or has a lower bound that is not below it, the bound is an OVERSIZED
+ * pivot, the parent's downlinks are not P1's then P2's with P2's a copy of
+ * P1's high key, a lock is busy, or P2 is its parent's first child.
+ *
+ * shortcut: when P2 is its parent's first child, the bound is also the
+ * parent's lower bound (the high key of the parent's left sibling, and a
+ * downlink a level up), which would have to be lowered at every level up to
+ * the first where it is not at a page's edge; this declines, and P2's first
+ * entry stays tagged.  A tagged bound is left only by a leaf that was all one
+ * run, and it is at a parent's edge about once in a parent's fan-out of such
+ * bounds; lower it at the upper levels too if a table AM needs every tag
+ * cleared there.
+ */
+static bool
+bark_lower_bound(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno)
+{
+	Buffer		buf;
+	Buffer		lbuf;
+	Buffer		pbuf = InvalidBuffer;
+	Page		page;
+	Page		lpage;
+	BarkPageOpaque opaque;
+	BarkPageOpaque lopaque;
+	BlockNumber leftblk;
+	IndexTuple	hikey;
+	IndexTuple	newhikey = NULL;
+	IndexTuple	newdownlink = NULL;
+	OffsetNumber downoff = InvalidOffsetNumber;
+	bool		flagonly;
+	bool		ok = false;
+	bool		skiphikey = false;
+	const char *why;			/* why a lowering was declined, for tests */
+	XLogRecPtr	recptr;
+
+	/*
+	 * P2 and P1 as they are now.  bark_vacuum_untag saw P2 as a live leaf
+	 * with the flag and a left sibling, during this VACUUM.
+	 */
+	buf = ReadBuffer(index, blkno);
+	LockBuffer(buf, BUFFER_LOCK_SHARE);
+	page = BufferGetPage(buf);
+	opaque = BarkPageGetOpaque(page);
+	Assert((opaque->bark_flags & (BARK_LEAF | BARK_DELETED | BARK_HALF_DEAD |
+								  BARK_LOWBOUND_TAGGED)) ==
+		   (BARK_LEAF | BARK_LOWBOUND_TAGGED));
+	Assert(!BarkPageLeftmost(opaque));
+	leftblk = opaque->bark_prev;
+	UnlockReleaseBuffer(buf);
+
+	lbuf = ReadBuffer(index, leftblk);
+	LockBuffer(lbuf, BUFFER_LOCK_SHARE);
+	lpage = BufferGetPage(lbuf);
+	lopaque = BarkPageGetOpaque(lpage);
+	Assert((lopaque->bark_flags & (BARK_LEAF | BARK_DELETED | BARK_HALF_DEAD)) ==
+		   BARK_LEAF);
+	hikey = CopyIndexTuple((IndexTuple)
+						   PageGetItem(lpage, PageGetItemId(lpage, BARK_P_HIKEY)));
+	UnlockReleaseBuffer(lbuf);
+	flagonly = bark_pivot_tag(hikey) == InvalidIndexVersionTag;
+	why = "its lower bound is OVERSIZED";
+	if (!flagonly && BarkEntryGetShape(hikey) != BARK_SHAPE_PIVOT)
+		goto done;
+
+	if (!flagonly)
+	{
+		Page		ppage;
+		BarkItemBuf ibuf;
+
+		/*
+		 * Tests stop here, holding no lock, so that another backend can lock
+		 * or split P1 or P2 before this one holds the parent.
+		 */
+		INJECTION_POINT("bark-lower-bound-start", NULL);
+
+		newhikey = bark_pivot_drop_tag(hikey);
+		pbuf = bark_find_parent_downlink(index, keyinfo, hikey, blkno,
+										 &downoff);
+		why = "its parent's downlink was not found";
+		if (pbuf == InvalidBuffer)
+			goto done;
+		ppage = BufferGetPage(pbuf);
+		why = "it is its parent's first child";
+		if (downoff <= BarkPageFirstDataKey(BarkPageGetOpaque(ppage)))
+			goto done;
+
+		/*
+		 * P1's downlink must be just before P2's, and P2's a copy of P1's
+		 * high key.  The parent stays locked from here on.
+		 */
+		why = "its parent's downlinks do not match its left sibling";
+		if (BarkEntryGetDownLink(BarkPageGetItem(ppage,
+												 OffsetNumberPrev(downoff),
+												 &ibuf)) != leftblk ||
+			!bark_same_pivot((IndexTuple) PageGetItem(ppage,
+													  PageGetItemId(ppage, downoff)),
+							 hikey))
+			goto done;
+
+		/*
+		 * P1's downlink, its lower bound, must sort below the new bound, or
+		 * the parent's downlinks would be out of order.  A P1 that keeps an
+		 * entry has a lower bound at or below it, which the check below puts
+		 * below (K, L); but an empty P1 whose deletion was declined may have
+		 * a lower bound in the run, (K, L, t) itself.  Compared as a descent
+		 * compares a key with a downlink (bark_binsrch).
+		 */
+		why = "its left sibling's own lower bound is not below the new bound";
+		if (bark_compare_itups_tid(keyinfo, index, newhikey,
+								   BarkPivotGetHeapTID(newhikey),
+								   InvalidIndexVersionTag,
+								   BarkPageGetItem(ppage,
+												   OffsetNumberPrev(downoff),
+												   &ibuf)) <= 0)
+			goto done;
+	}
+
+	/*
+	 * Lock P1 and P2, without waiting while the parent is held, then look
+	 * again at what can have changed.
+	 */
+	lbuf = ReadBuffer(index, leftblk);
+	buf = ReadBuffer(index, blkno);
+	why = "a lock was busy";
+	if (flagonly)
+	{
+		LockBuffer(lbuf, BUFFER_LOCK_SHARE);
+		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+	}
+	else if (!ConditionalLockBuffer(lbuf))
+	{
+		ReleaseBuffer(buf);
+		ReleaseBuffer(lbuf);
+		goto done;
+	}
+	else if (!ConditionalLockBuffer(buf))
+	{
+		ReleaseBuffer(buf);
+		UnlockReleaseBuffer(lbuf);
+		goto done;
+	}
+	page = BufferGetPage(buf);
+	lpage = BufferGetPage(lbuf);
+	opaque = BarkPageGetOpaque(page);
+	lopaque = BarkPageGetOpaque(lpage);
+	why = "its left sibling split";
+	if (lopaque->bark_next != blkno ||
+		(lopaque->bark_flags & BARK_INCOMPLETE_SPLIT) != 0)
+		goto unlock;
+	/* Implied by P1's right link, given the argument above. */
+	Assert(opaque->bark_prev == leftblk);
+	Assert(opaque->bark_flags & BARK_LOWBOUND_TAGGED);
+	Assert(bark_same_pivot((IndexTuple) PageGetItem(lpage,
+													PageGetItemId(lpage, BARK_P_HIKEY)),
+						   hikey));
+
+	/* P1 must hold nothing at or above the new bound. */
+	why = "its left sibling holds an entry at or above the new bound";
+	if (!flagonly &&
+		PageGetMaxOffsetNumber(lpage) >= BarkPageFirstDataKey(lopaque))
+	{
+		BarkItemBuf ibuf;
+		IndexTuple	last = BarkPageGetItem(lpage, PageGetMaxOffsetNumber(lpage),
+										   &ibuf);
+		ItemPointerData lo;
+		ItemPointerData hi;
+
+		bark_entry_tid_range(last, &lo, &hi, keyinfo->tidstride);
+		if (bark_compare_itups_tid(keyinfo, index, last, &hi,
+								   BarkEntryGetTag(last), newhikey) >= 0)
+			goto unlock;
+	}
+
+	/*
+	 * Tests stop here, holding every lock the change needs, to run scans and
+	 * inserts against it; and lower the parent's downlink alone, leaving P1
+	 * and P2 as they were, to show that amcheck catches the mismatch.
+	 */
+	INJECTION_POINT("bark-lower-bound-locked", NULL);
+	if (!flagonly && IS_INJECTION_POINT_ATTACHED("bark-lower-bound-skip-hikey"))
+		skiphikey = true;
+
+	if (!flagonly)
+	{
+		newdownlink = CopyIndexTuple(newhikey);
+		BarkEntrySetDownLink(newdownlink, blkno);
+
+		/*
+		 * [(K, L), (K, L, t0)) moves from P1's range to P2's: a serializable
+		 * reader that read P1 for it must conflict with an insert on P2.
+		 */
+		PredicateLockPageSplit(index, leftblk, blkno);
+	}
+
+	/*
+	 * No ereport(ERROR) until changes are logged.  Each new pivot is smaller
+	 * than the one it replaces, so the overwrites cannot fail.
+	 */
+	START_CRIT_SECTION();
+
+	if (!flagonly && !skiphikey)
+	{
+		bool		fits PG_USED_FOR_ASSERTS_ONLY;
+
+		fits = PageIndexTupleOverwrite(lpage, BARK_P_HIKEY, newhikey,
+									   IndexTupleSize(newhikey));
+		Assert(fits);
+		MarkBufferDirty(lbuf);
+	}
+	if (!flagonly)
+	{
+		bool		fits PG_USED_FOR_ASSERTS_ONLY;
+
+		fits = PageIndexTupleOverwrite(BufferGetPage(pbuf), downoff,
+									   newdownlink,
+									   IndexTupleSize(newdownlink));
+		Assert(fits);
+		MarkBufferDirty(pbuf);
+	}
+	if (!skiphikey)
+	{
+		opaque->bark_flags &= ~BARK_LOWBOUND_TAGGED;
+		MarkBufferDirty(buf);
+	}
+
+	if (RelationNeedsWAL(index))
+	{
+		xl_bark_unlink_page xlrec;
+
+		xlrec.leftsib = leftblk;
+		xlrec.rightsib = blkno;
+		xlrec.safexid = InvalidFullTransactionId;
+		xlrec.poffset = downoff;
+		xlrec.flags = XLH_BARK_UNLINK_LOWER_SEP;
+
+		/* The second form of UNLINK_PAGE: no block 0 (barkxlog.h). */
+		XLogBeginInsert();
+		XLogRegisterData(&xlrec, SizeOfBarkUnlinkPage);
+		if (!flagonly && !skiphikey)
+		{
+			XLogRegisterBuffer(1, lbuf, REGBUF_STANDARD);
+			XLogRegisterBufData(1, newhikey, IndexTupleSize(newhikey));
+		}
+		if (!skiphikey)
+			XLogRegisterBuffer(2, buf, REGBUF_STANDARD);
+		if (!flagonly)
+		{
+			XLogRegisterBuffer(3, pbuf, REGBUF_STANDARD);
+			XLogRegisterBufData(3, newdownlink, IndexTupleSize(newdownlink));
+		}
+
+		recptr = XLogInsert(RM_BARK_ID, XLOG_BARK_UNLINK_PAGE);
+	}
+	else
+		recptr = XLogGetFakeLSN(index);
+
+	if (!flagonly && !skiphikey)
+		PageSetLSN(lpage, recptr);
+	if (!skiphikey)
+		PageSetLSN(page, recptr);
+	if (!flagonly)
+		PageSetLSN(BufferGetPage(pbuf), recptr);
+
+	END_CRIT_SECTION();
+
+	if (!flagonly && !skiphikey)
+		bark_verify_page_change(index, lbuf);
+	if (!skiphikey)
+		bark_verify_page_change(index, buf);
+	if (!flagonly)
+		bark_verify_page_change(index, pbuf);
+	ok = !skiphikey;
+	why = "a test lowered its parent's downlink alone";
+
+unlock:
+	UnlockReleaseBuffer(buf);
+	UnlockReleaseBuffer(lbuf);
+done:
+	if (BufferIsValid(pbuf))
+		UnlockReleaseBuffer(pbuf);
+	if (!ok)
+		elog(DEBUG2, "index \"%s\": kept the tagged lower bound of block %u: %s",
+			 RelationGetRelationName(index), blkno, why);
+	pfree(hikey);
+	if (newhikey != NULL)
+		pfree(newhikey);
+	if (newdownlink != NULL)
+		pfree(newdownlink);
+	return ok;
+}
+
+/*
+ * Every build of an index (CREATE INDEX, REINDEX, CONCURRENTLY, and before
+ * ambuildempty for an unlogged one) comes through here, so this is where an
+ * index BARK cannot hold is refused.
+ */
+static IndexBuildResult *
+barkbuild(Relation heap, Relation index, IndexInfo *indexInfo)
+{
+	bark_check_multikey_index(index, indexInfo);
+	return bark_build(heap, index, indexInfo);
+}
+
+static void
+barkbuildempty(Relation index)
+{
+	bark_buildempty(index);
+}
+
+static bool
+barkinsert(Relation index, Datum *values, bool *isnull,
+		   ItemPointer ht_ctid, Relation heapRel,
+		   IndexUniqueCheck checkUnique, bool indexUnchanged,
+		   IndexInfo *indexInfo)
+{
+	return bark_insert(index, values, isnull, ht_ctid, heapRel,
+					   checkUnique, indexUnchanged, indexInfo);
+}
+
+/*
+ * Apply VACUUM's changes to leaf `buf` and WAL-log them as XLOG_BARK_VACUUM:
+ * rewrite the entries at updatedoffsets with `updated` (each no larger than
+ * the entry it replaces, and already coded for the page), delete the entries at `deletable`, and clear the
+ * vacuum cycle ID.  As nbtree's _bt_delitems_vacuum, the rewrites come first,
+ * since PageIndexTupleOverwrite keeps offsets stable and the deletion
+ * renumbers them.  Then the entries at untagfrom[] are untagged in place:
+ * each is replaced by untagged[i] at untagto[i], one at a time, with
+ * offsets as of that step (bark_vacuum_untag).  `buf` is cleanup-locked.
+ * Redo (bark_xlog_vacuum) makes the same changes in the same order.
+ */
+static void
+bark_delitems_vacuum(Relation index, Buffer buf,
+					 OffsetNumber *deletable, int ndeletable,
+					 OffsetNumber *updatedoffsets, IndexTuple *updated,
+					 int nupdated, OffsetNumber *untagfrom,
+					 OffsetNumber *untagto, IndexTuple *untagged,
+					 int nuntagged)
+{
+	Page		page = BufferGetPage(buf);
+	bool		needswal = RelationNeedsWAL(index);
+	char	   *updatedbuf = NULL;
+	Size		updatedbuflen = 0;
+	char	   *untaggedbuf = NULL;
+	Size		untaggedbuflen = 0;
+	XLogRecPtr	recptr;
+
+	/*
+	 * Gather the new entries into one buffer for the WAL record, as
+	 * _bt_delitems_update does, each padded to MAXALIGN so that redo can step
+	 * from one to the next.
+	 */
+	if (needswal && nupdated > 0)
+	{
+		for (int i = 0; i < nupdated; i++)
+			updatedbuflen += MAXALIGN(IndexTupleSize(updated[i]));
+		updatedbuf = palloc0(updatedbuflen);
+		updatedbuflen = 0;
+		for (int i = 0; i < nupdated; i++)
+		{
+			memcpy(updatedbuf + updatedbuflen, updated[i],
+				   IndexTupleSize(updated[i]));
+			updatedbuflen += MAXALIGN(IndexTupleSize(updated[i]));
+		}
+	}
+	if (needswal && nuntagged > 0)
+	{
+		for (int i = 0; i < nuntagged; i++)
+			untaggedbuflen += MAXALIGN(IndexTupleSize(untagged[i]));
+		untaggedbuf = palloc0(untaggedbuflen);
+		untaggedbuflen = 0;
+		for (int i = 0; i < nuntagged; i++)
+		{
+			memcpy(untaggedbuf + untaggedbuflen, untagged[i],
+				   IndexTupleSize(untagged[i]));
+			untaggedbuflen += MAXALIGN(IndexTupleSize(untagged[i]));
+		}
+	}
+
+	/* No ereport(ERROR) until changes are logged */
+	START_CRIT_SECTION();
+
+	for (int i = 0; i < nupdated; i++)
+	{
+		if (!BarkPageOverwriteEntry(page, updatedoffsets[i], updated[i],
+									IndexTupleSize(updated[i])))
+			elog(PANIC, "failed to rewrite BARK leaf entry at offset %u of block %u of index \"%s\"",
+				 updatedoffsets[i], BufferGetBlockNumber(buf),
+				 RelationGetRelationName(index));
+	}
+	if (ndeletable > 0)
+		PageIndexMultiDelete(page, deletable, ndeletable);
+	for (int i = 0; i < nuntagged; i++)
+	{
+		if (!BarkPageMoveEntry(page, untagfrom[i], untagto[i], untagged[i],
+							   IndexTupleSize(untagged[i])))
+			elog(PANIC, "failed to untag BARK leaf entry at offset %u of block %u of index \"%s\"",
+				 untagfrom[i], BufferGetBlockNumber(buf),
+				 RelationGetRelationName(index));
+	}
+	BarkPageGetOpaque(page)->bark_cycleid = 0;
+	BarkPageGetOpaque(page)->bark_flags &= ~BARK_HAS_GARBAGE;	/* a hint */
+
+	MarkBufferDirty(buf);
+
+	if (needswal)
+	{
+		xl_bark_vacuum xlrec;
+
+		xlrec.ndeleted = ndeletable;
+		xlrec.nupdated = nupdated;
+		xlrec.nuntagged = nuntagged;
+
+		XLogBeginInsert();
+		XLogRegisterBuffer(0, buf, REGBUF_STANDARD);
+		XLogRegisterData(&xlrec, SizeOfBarkVacuum);
+		if (ndeletable > 0)
+			XLogRegisterBufData(0, deletable,
+								ndeletable * sizeof(OffsetNumber));
+		if (nupdated > 0)
+		{
+			XLogRegisterBufData(0, updatedoffsets,
+								nupdated * sizeof(OffsetNumber));
+			XLogRegisterBufData(0, updatedbuf, updatedbuflen);
+		}
+		if (nuntagged > 0)
+		{
+			XLogRegisterBufData(0, untagfrom,
+								nuntagged * sizeof(OffsetNumber));
+			XLogRegisterBufData(0, untagto,
+								nuntagged * sizeof(OffsetNumber));
+			XLogRegisterBufData(0, untaggedbuf, untaggedbuflen);
+		}
+
+		recptr = XLogInsert(RM_BARK_ID, XLOG_BARK_VACUUM);
+	}
+	else
+		recptr = XLogGetFakeLSN(index);
+
+	PageSetLSN(page, recptr);
+
+	END_CRIT_SECTION();
+
+	bark_verify_page_change(index, buf);
+
+	if (updatedbuf != NULL)
+		pfree(updatedbuf);
+	if (untaggedbuf != NULL)
+		pfree(untaggedbuf);
+}
+
+/*
+ * Should bark_vacuum_page clean this page?  Only live leaf pages hold heap
+ * TIDs: the meta page, internal pages, overflow pages and pages deleted from
+ * the tree are skipped (bark_vacuum_page counts deleted pages and returns
+ * them to the FSM before asking).  A page reached by
+ * backtracking is cleaned only if it was split during this VACUUM (it carries
+ * our cycle ID); otherwise it was processed already, in its turn in the scan.
+ */
+static bool
+bark_vacuum_target(Page page, bool backtracking, BarkCycleId cycleid)
+{
+	BarkPageOpaque opaque;
+
+	if (PageIsNew(page))
+		return false;
+	opaque = BarkPageGetOpaque(page);
+	if (!BarkPageIsLeaf(opaque) || BarkPageIsDeleted(opaque))
+		return false;
+	return !backtracking || opaque->bark_cycleid == cycleid;
+}
+
+/*
+ * A LIVE_UNTAG entry that bark_vacuum_untag kept tagged because its page's
+ * lower bound may carry a tag: its leaf, and a copy of the entry (decoded),
+ * to untag once bark_lower_bound has lowered the bound.  In
+ * BarkVacState.kept.
+ */
+typedef struct BarkKeptBound
+{
+	BlockNumber blkno;
+	IndexTuple	entry;
+}			BarkKeptBound;
+
+/*
+ * State of one VACUUM scan of a BARK index (bark_vacuum_scan), as nbtree's
+ * BTVacState.  callback is NULL for a scan that only counts entries, deletes
+ * empty leaves and recycles deleted pages (barkvacuumcleanup when no bulk
+ * delete ran).
+ */
+typedef struct BarkVacState
+{
+	IndexVacuumInfo *info;
+	IndexBulkDeleteResult *stats;
+	IndexBulkDeleteCallback callback;
+	void	   *callback_state;
+	IndexBulkDeleteVersionCallback version_callback;	/* info's, or NULL */
+	BarkKeyInfo *keyinfo;		/* for untagging; NULL without
+								 * version_callback */
+	int64		nuntagged;		/* entries untagged in place */
+	int64		nkeptbound;		/* LIVE_UNTAG, kept: lower bound may be tagged */
+	int64		nkeptdup;		/* LIVE_UNTAG, kept: (K, L, 0) is its twin's */
+	int64		nlowered;		/* lower bounds lowered (bark_lower_bound) */
+	List	   *kept;			/* BarkKeptBound of entries in nkeptbound */
+	BarkCycleId cycleid;
+	BlockNumber *emptyleaves;	/* empty interior leaves to delete */
+	int			nempty;
+	int			emptyalloc;
+	int64		ntagged;		/* tagged leaf entries left, for completion */
+} BarkVacState;
+
+/*
+ * The verdict on the leaf entry (tid, tag): the table AM's version callback
+ * when it gave one (IndexVacuumInfo.version_callback), asked about every
+ * entry, untagged ones with tag 0; else the plain callback, by TID, which is
+ * right for a tagged entry too: a dead TID means every version at that
+ * locator is dead.
+ */
+static IndexEntryVerdict
+bark_vacuum_verdict(BarkVacState *vstate, ItemPointer tid, IndexVersionTag tag)
+{
+	if (vstate->version_callback != NULL)
+		return vstate->version_callback(tid, tag,
+										vstate->info->version_state);
+	return vstate->callback(tid, vstate->callback_state) ?
+		INDEX_ENTRY_DEAD : INDEX_ENTRY_LIVE;
+}
+
+/*
+ * Plan the untagging of the tagged entries at untag[0..nuntag) (ascending
+ * offsets of `page` as it is after VACUUM's deletions and rewrites, which
+ * `page`, a scratch copy, already has), each answered LIVE_UNTAG.  Untagging
+ * moves an entry from (K, L, t) to (K, L, 0), which sorts before every entry
+ * of (K, L) with a tag, so it moves left, to its sorted slot on the page.
+ * It is done in place only when nothing below that slot can be greater than
+ * (K, L, 0) on another page: when the slot has an entry before it on the
+ * page (which sorts below (K, L, 0)), or the page is leftmost, or its lower
+ * bound has no tag (BARK_LOWBOUND_TAGGED unset), since an untagged lower
+ * bound <= (K, L, t) is <= (K, L, 0).  Moving an entry to another page is
+ * never done: a scan reading the two pages one at a time could miss the
+ * row or return it twice.  An entry that cannot move stays tagged.  The
+ * table AM's LIVE_UNTAG allows untagging, it does not require it
+ * (IndexEntryVerdict).
+ *
+ * So does one whose (K, L, 0) is already on the page, in its twin: the
+ * row's untagged entry, a SINGLE or the last member of the LIST or POSTING
+ * just before it (a tagged insert divides an entry whose range holds L, so
+ * no entry holds L strictly inside).  A correct table AM never gets here:
+ * (K, L, t) exists because t's update changed the index's attributes, so
+ * the twin is invalid for every version from t on, and since LIVE_UNTAG
+ * says t is no newer than the new base, the twin was DEAD in this pass and
+ * is gone.  One of the two verdicts is wrong, then.  If the twin's LIVE is,
+ * the tagged entry is the row's only valid one, and deleting it as
+ * redundant would lose the row; if the LIVE_UNTAG is, keeping the entry
+ * costs nothing.  Keeping is right either way, and nkeptdup counts it.
+ *
+ * An entry kept for its page's lower bound is recorded in vstate->kept with
+ * the page's block `blkno`, and once the scan is over
+ * bark_vacuum_lower_bounds lowers the bound and untags it then.
+ *
+ * Each planned move is applied to `page` before the next is planned, and
+ * recorded as from[i], to[i] and the untagged entry, coded for the page, in
+ * newitems[i], for bark_delitems_vacuum to repeat on the real page.  Returns
+ * the number of moves; the rest are counted in vstate->nkeptbound and
+ * nkeptdup.
+ */
+static int
+bark_vacuum_untag(BarkVacState *vstate, Page page, BlockNumber blkno,
+				  OffsetNumber *untag, int nuntag, OffsetNumber *from,
+				  OffsetNumber *to, IndexTuple *newitems)
+{
+	Relation	index = vstate->info->index;
+	BarkKeyInfo *keyinfo = vstate->keyinfo;
+	BarkPageOpaque opaque = BarkPageGetOpaque(page);
+	OffsetNumber firstdata = BarkPageFirstDataKey(opaque);
+	bool		boundok = BarkPageLeftmost(opaque) ||
+		(opaque->bark_flags & BARK_LOWBOUND_TAGGED) == 0;
+	int			nmoved = 0;
+
+	/* Tests break the rule, to show what it keeps (t/004_bark_vacuum.pl). */
+	if (IS_INJECTION_POINT_ATTACHED("bark-untag-ignore-bound"))
+		boundok = true;
+
+	for (int i = 0; i < nuntag; i++)
+	{
+		OffsetNumber off = untag[i];
+		BarkItemBuf ibuf;
+		IndexTuple	itup = BarkPageGetItem(page, off, &ibuf);
+		IndexTuple	plain = bark_entry_untag(itup);
+		ItemPointerData tid = *BarkEntryGetHeapTid(plain);
+		OffsetNumber lo = firstdata;
+		OffsetNumber hi = off;
+		bool		dup = false;
+		IndexTuple	coded;
+
+		Assert(BarkEntryHasTag(itup));
+
+		/* The first entry above (K, L, 0); every one from off on is. */
+		while (lo < hi)
+		{
+			OffsetNumber mid = lo + (hi - lo) / 2;
+			BarkItemBuf mbuf;
+			IndexTuple	mitup = BarkPageGetItem(page, mid, &mbuf);
+
+			if (bark_compare_itups_tid(keyinfo, index, plain, &tid,
+									   InvalidIndexVersionTag, mitup) >= 0)
+				lo = OffsetNumberNext(mid);
+			else
+				hi = mid;
+		}
+
+		/* Does the entry before the slot, the twin, hold (K, L, 0)? */
+		if (lo > firstdata)
+		{
+			BarkItemBuf pbuf;
+			IndexTuple	prev = BarkPageGetItem(page, OffsetNumberPrev(lo),
+											   &pbuf);
+
+			dup = bark_compare_itups_tid(keyinfo, index, plain, &tid,
+										 InvalidIndexVersionTag, prev) == 0;
+		}
+
+		if (dup || (lo == firstdata && !boundok))
+		{
+			if (dup)
+				vstate->nkeptdup++;
+			else
+			{
+				BarkKeptBound *kb = palloc_object(BarkKeptBound);
+
+				vstate->nkeptbound++;
+				kb->blkno = blkno;
+				kb->entry = CopyIndexTuple(itup);
+				vstate->kept = lappend(vstate->kept, kb);
+			}
+			pfree(plain);
+			continue;
+		}
+
+		coded = bark_prefix_encode(page, plain);
+		if (coded != plain)
+			pfree(plain);
+		if (!BarkPageMoveEntry(page, off, lo, coded, IndexTupleSize(coded)))
+			elog(ERROR, "failed to untag BARK leaf entry at offset %u of index \"%s\"",
+				 off, RelationGetRelationName(index));
+		from[nmoved] = off;
+		to[nmoved] = lo;
+		newitems[nmoved++] = coded;
+	}
+	vstate->nuntagged += nmoved;
+	return nmoved;
+}
+
+/*
+ * Process one block of bark_vacuum_scan's physical-order scan.  On a live
+ * leaf, delete the entries whose heap TIDs the callback reports dead (when
+ * there is a callback), count the heap TIDs left, and remember the leaf if it
+ * is now an empty interior leaf, for bark_vacuum_scan to delete.  On a deleted
+ * page, count it, and record it in the FSM if it is safe to reuse, as
+ * btvacuumpage does.
+ *
+ * As in nbtree's btvacuumpage, a leaf split that happened after this VACUUM
+ * started may have moved entries from a page the scan has not reached yet to
+ * a right sibling at a block number the scan has already passed (the right
+ * page of a split can be any block the free space map hands out).  Both halves
+ * of such a split carry our cycle ID, so after cleaning a page with our cycle
+ * ID whose right sibling lies below scanblkno, we follow the right link and
+ * clean that page too, and keep going right while the pages we reach carry our
+ * cycle ID and lie below scanblkno.  Each cleaned page has its cycle ID
+ * cleared, so a later backtrack stops there rather than cleaning it again.
+ *
+ * A leaf is cleaned under a cleanup lock (an exclusive lock taken when no
+ * other backend holds a pin), on every leaf whether or not it has dead
+ * entries, as nbtree does.  A scan keeps its pin on the leaf it is returning
+ * entries from, so VACUUM cannot remove a TID that a scan has read from the
+ * page but not yet returned, and the heap cannot reuse that TID's line pointer
+ * under the scan.  The page is first examined under a share lock, since
+ * pages that are not live leaves need no cleanup lock.
+ *
+ * `buf` is block scanblkno, pinned by bark_vacuum_scan's read stream, as
+ * btvacuumpage gets its buffer since nbtree's c5c239e26e3; the pages a
+ * backtrack reaches are off the stream's order and are read here.
+ */
+static void
+bark_vacuum_page(BarkVacState *vstate, Buffer buf)
+{
+	IndexVacuumInfo *info = vstate->info;
+	IndexBulkDeleteResult *stats = vstate->stats;
+	bool		deleting = vstate->callback != NULL ||
+		vstate->version_callback != NULL;
+	BarkCycleId cycleid = vstate->cycleid;
+	Relation	index = info->index;
+	BlockNumber scanblkno = BufferGetBlockNumber(buf);
+	BlockNumber blkno = scanblkno;
+
+	for (;;)
+	{
+		Page		page;
+		BarkPageOpaque opaque;
+		OffsetNumber maxoff;
+		OffsetNumber todelete[MaxOffsetNumber];
+		int			ndelete = 0;
+		int			ndelete_single = 0;
+		int			nlivetids = 0;
+		OffsetNumber updatedoffsets[MaxOffsetNumber];
+		IndexTuple	updated[MaxOffsetNumber];
+		int			nupdated = 0;
+		BlockNumber oversized_free[MaxOffsetNumber];
+		int			noversized_free = 0;
+		OffsetNumber untag[MaxOffsetNumber];
+		int			nuntag = 0;
+		OffsetNumber untagfrom[MaxOffsetNumber];
+		OffsetNumber untagto[MaxOffsetNumber];
+		IndexTuple	untagged[MaxOffsetNumber];
+		int			nuntagged = 0;
+		bool		clearcycleid;
+		BlockNumber backtrack_to = BARK_P_NONE;
+
+		if (blkno != scanblkno)
+			buf = ReadBufferExtended(index, MAIN_FORKNUM, blkno, RBM_NORMAL,
+									 info->strategy);
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buf);
+
+		/* A page deleted from the tree: count it, and recycle it if safe. */
+		if (blkno == scanblkno && !PageIsNew(page) &&
+			BarkPageIsDeleted(BarkPageGetOpaque(page)))
+		{
+			stats->pages_deleted++;
+			if (BarkPageIsRecyclable(page, info->heaprel))
+			{
+				RecordFreeIndexPage(index, blkno);
+				stats->pages_free++;
+			}
+			UnlockReleaseBuffer(buf);
+			break;
+		}
+
+		if (!bark_vacuum_target(page, blkno != scanblkno, cycleid))
+		{
+			UnlockReleaseBuffer(buf);
+			break;
+		}
+
+		/*
+		 * With entries to delete, trade the share lock for a cleanup lock, as
+		 * nbtree's _bt_upgradelockbufcleanup does, and look at the page
+		 * again: it was unlocked in between.  A scan that only counts keeps
+		 * the share lock.
+		 */
+		if (deleting)
+		{
+			LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+			LockBufferForCleanup(buf);
+			page = BufferGetPage(buf);
+			if (!bark_vacuum_target(page, blkno != scanblkno, cycleid))
+			{
+				UnlockReleaseBuffer(buf);
+				break;
+			}
+		}
+		opaque = BarkPageGetOpaque(page);
+
+		/*
+		 * Decide whether to backtrack before clearing the cycle ID below.  A
+		 * right sibling at or above scanblkno needs nothing from us: the scan
+		 * will reach it (or is processing it now).
+		 */
+		if (cycleid != 0 && opaque->bark_cycleid == cycleid &&
+			!BarkPageRightmost(opaque) && opaque->bark_next < scanblkno)
+			backtrack_to = opaque->bark_next;
+
+		maxoff = PageGetMaxOffsetNumber(page);
+
+		/*
+		 * Decide what to do to the page before changing it, so that the
+		 * changes and their WAL record can be made in one critical section,
+		 * as _bt_delitems_vacuum does.  Fully-dead entries (SINGLE or
+		 * OVERSIZED whose TID is dead, LIST or POSTING whose every member is
+		 * dead) are collected for deletion; LIST and POSTING entries that
+		 * lost some members are re-formed with the survivors and collected as
+		 * updates.  A tagged SINGLE or OVERSIZED entry the version callback
+		 * answers LIVE_UNTAG is collected for untagging (bark_vacuum_untag);
+		 * LIST and POSTING members are untagged already.
+		 */
+		for (OffsetNumber off = BarkPageFirstDataKey(opaque);
+			 deleting && off <= maxoff; off = OffsetNumberNext(off))
+		{
+			BarkItemBuf ibuf;
+			IndexTuple	itup = BarkPageGetItem(page, off, &ibuf);
+			IndexEntryVerdict verdict;
+
+			/* A marker names no row; it is never removed. */
+			if (BarkEntryIsMarker(itup))
+				continue;
+			if (BarkEntryGetShape(itup) == BARK_SHAPE_SINGLE)
+			{
+				verdict = bark_vacuum_verdict(vstate, BarkEntryGetHeapTid(itup),
+											  BarkEntryGetTag(itup));
+				if (verdict == INDEX_ENTRY_DEAD ||
+					(verdict == INDEX_ENTRY_LIVE_UNTAG &&
+					 BarkEntryHasTag(itup) &&
+					 IS_INJECTION_POINT_ATTACHED("bark-untag-delete")))
+				{
+					/*
+					 * The second case is a test's: it deletes the entry
+					 * instead, to show what keeping one bark_vacuum_untag
+					 * keeps protects (t/004_bark_vacuum.pl).
+					 */
+					todelete[ndelete++] = off;
+					ndelete_single++;
+				}
+				else
+				{
+					nlivetids++;
+					if (verdict == INDEX_ENTRY_LIVE_UNTAG &&
+						BarkEntryHasTag(itup))
+						untag[nuntag++] = off;
+				}
+			}
+			else if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED)
+			{
+				/*
+				 * An OVERSIZED entry holds exactly one heap locator (inline
+				 * in its ref).  If it is dead, delete the leaf entry and
+				 * remember its overflow chain, to free once the leaf no
+				 * longer references it (bark_free_oversized locks and logs
+				 * each chain page in turn, so it does not run under the
+				 * leaf's lock).
+				 */
+				ItemPointerData loc = BarkOverflowGetRef(itup)->locator;
+
+				verdict = bark_vacuum_verdict(vstate, &loc,
+											  BarkEntryGetTag(itup));
+				if (verdict == INDEX_ENTRY_DEAD)
+				{
+					oversized_free[noversized_free++] =
+						BarkOverflowGetFirstBlock(itup);
+					todelete[ndelete++] = off;
+					ndelete_single++;
+				}
+				else
+				{
+					nlivetids++;
+					if (verdict == INDEX_ENTRY_LIVE_UNTAG &&
+						BarkEntryHasTag(itup))
+						untag[nuntag++] = off;
+				}
+			}
+			else
+			{
+				int			ntids = bark_entry_count_tids(itup);
+				ItemPointer tids = (ItemPointer)
+					palloc(ntids * sizeof(ItemPointerData));
+				int			nlive = 0;
+
+				ntids = bark_entry_get_tids(itup, tids, ntids,
+											bark_index_tid_stride(index));
+				for (int i = 0; i < ntids; i++)
+				{
+					if (bark_vacuum_verdict(vstate, &tids[i],
+											InvalidIndexVersionTag) !=
+						INDEX_ENTRY_DEAD)
+						tids[nlive++] = tids[i];
+				}
+				nlivetids += nlive;
+
+				if (nlive == ntids)
+				{
+					pfree(tids);
+					continue;	/* nothing dead in this entry */
+				}
+
+				stats->tuples_removed += ntids - nlive;
+
+				if (nlive == 0)
+				{
+					todelete[ndelete++] = off;	/* whole entry dies */
+					pfree(tids);
+					continue;
+				}
+
+				/* Rebuild with the surviving members (bark_reform_entry). */
+				updatedoffsets[nupdated] = off;
+				updated[nupdated++] = bark_reform_entry(index, buf, off, itup,
+														tids, nlive);
+				pfree(tids);
+			}
+		}
+
+		/*
+		 * Clear our cycle ID from a page split during this VACUUM, so that a
+		 * later backtrack stops here instead of cleaning the page again.
+		 * nbtree does this as an unlogged hint.  BARK logs it, in the page's
+		 * XLOG_BARK_VACUUM record, and bark_mask does not mask the field, so
+		 * every BARK page stays byte-identical between primary and standby
+		 * (see "WAL" in the README).  A page that has nothing to delete gets
+		 * a record only when it has a cycle ID to clear, so a VACUUM that
+		 * finds nothing to do logs nothing.
+		 */
+		clearcycleid = (cycleid != 0 && opaque->bark_cycleid == cycleid);
+
+		/*
+		 * Plan the untagging on a copy of the page as the deletions and
+		 * rewrites leave it, with the offsets of the entries to untag
+		 * renumbered as after the deletions (todelete[] ascends).
+		 */
+		if (nuntag > 0)
+		{
+			Page		scratch = PageGetTempPageCopy(page);
+			int			d = 0;
+
+			for (int i = 0; i < nupdated; i++)
+				if (!BarkPageOverwriteEntry(scratch, updatedoffsets[i],
+											updated[i],
+											IndexTupleSize(updated[i])))
+					elog(ERROR, "failed to rewrite BARK leaf entry at offset %u of block %u",
+						 updatedoffsets[i], blkno);
+			if (ndelete > 0)
+				PageIndexMultiDelete(scratch, todelete, ndelete);
+			for (int i = 0; i < nuntag; i++)
+			{
+				while (d < ndelete && todelete[d] < untag[i])
+					d++;
+				untag[i] -= d;
+			}
+			nuntagged = bark_vacuum_untag(vstate, scratch, blkno, untag,
+										  nuntag, untagfrom, untagto,
+										  untagged);
+			pfree(scratch);
+		}
+
+		if (ndelete > 0 || nupdated > 0 || nuntagged > 0 || clearcycleid)
+			bark_delitems_vacuum(index, buf, todelete, ndelete,
+								 updatedoffsets, updated, nupdated,
+								 untagfrom, untagto, untagged, nuntagged);
+		stats->tuples_removed += ndelete_single;
+		for (int i = 0; i < nupdated; i++)
+			pfree(updated[i]);
+		for (int i = 0; i < nuntagged; i++)
+			pfree(untagged[i]);
+
+		/*
+		 * Count the heap TIDs that remain, as btvacuumpage does: the planner
+		 * reads the count as the index's rows, in the same unit as the
+		 * heap's, and barkvacuumcleanup stores it as bark_nkeys.  Markers are
+		 * not counted.  A scan that only counts reads each entry's count of
+		 * TIDs for itself.
+		 */
+		if (deleting)
+		{
+			stats->num_index_tuples += nlivetids;
+
+			/* What a conversion's completion must find zero of. */
+			for (OffsetNumber off = BarkPageFirstDataKey(opaque);
+				 off <= PageGetMaxOffsetNumber(page); off = OffsetNumberNext(off))
+			{
+				BarkItemBuf ibuf;
+
+				if (BarkEntryHasTag(BarkPageGetItem(page, off, &ibuf)))
+					vstate->ntagged++;
+			}
+		}
+		else
+		{
+			for (OffsetNumber off = BarkPageFirstDataKey(opaque);
+				 off <= maxoff; off = OffsetNumberNext(off))
+			{
+				BarkItemBuf ibuf;
+				IndexTuple	itup = BarkPageGetItem(page, off, &ibuf);
+
+				if (!BarkEntryIsMarker(itup))
+					stats->num_index_tuples += bark_entry_count_tids(itup);
+			}
+		}
+
+		/*
+		 * An empty interior leaf (no data entries, both siblings, not
+		 * half-dead or mid-split) is a candidate for deletion, which
+		 * bark_vacuum_scan does once the scan is over: it needs the parent
+		 * and both siblings locked, so not under this page's lock.
+		 */
+		if ((opaque->bark_flags & (BARK_INCOMPLETE_SPLIT | BARK_HALF_DEAD)) == 0 &&
+			!BarkPageIsRoot(opaque) &&
+			!BarkPageLeftmost(opaque) && !BarkPageRightmost(opaque) &&
+			PageGetMaxOffsetNumber(page) < BarkPageFirstDataKey(opaque))
+		{
+			if (vstate->nempty >= vstate->emptyalloc)
+			{
+				vstate->emptyalloc *= 2;
+				vstate->emptyleaves = (BlockNumber *)
+					repalloc(vstate->emptyleaves,
+							 vstate->emptyalloc * sizeof(BlockNumber));
+			}
+			vstate->emptyleaves[vstate->nempty++] = blkno;
+		}
+
+		UnlockReleaseBuffer(buf);
+
+		/*
+		 * Reclaim the overflow chains of the OVERSIZED entries just deleted,
+		 * now that the leaf no longer references them and its WAL record is
+		 * logged.  Each chain page is freed under its own WAL record.
+		 */
+		for (int i = 0; i < noversized_free; i++)
+		{
+			ItemPointerData dummy;
+			IndexTuple	stub;
+
+			/*
+			 * bark_free_oversized reads only the first-block field of the
+			 * entry's t_tid, so a tiny stub carrying that block is enough.
+			 */
+			ItemPointerSetBlockNumber(&dummy, oversized_free[i]);
+			ItemPointerSetOffsetNumber(&dummy, (OffsetNumber) BARK_IS_OVERFLOW);
+			stub = (IndexTuple) palloc0(sizeof(IndexTupleData));
+			stub->t_info = INDEX_AM_RESERVED_BIT | sizeof(IndexTupleData);
+			stub->t_tid = dummy;
+			stats->pages_newly_deleted += bark_free_oversized(index, stub);
+			pfree(stub);
+		}
+
+		if (backtrack_to == BARK_P_NONE)
+			break;
+		blkno = backtrack_to;
+		vacuum_delay_point(false);
+	}
+
+	/*
+	 * Tests stop VACUUM here, between two blocks of its scan, to split a page
+	 * it has not reached yet.  The argument is scanblkno in decimal, so a
+	 * test can wait for one block.
+	 */
+#ifdef USE_INJECTION_POINTS
+	{
+		char		blkstr[12];
+
+		snprintf(blkstr, sizeof(blkstr), "%u", scanblkno);
+		INJECTION_POINT("bark-bulkdelete-after-page", blkstr);
+	}
+#endif
+}
+
+static int
+bark_kept_cmp(const ListCell *a, const ListCell *b)
+{
+	return pg_cmp_u32(((const BarkKeptBound *) lfirst(a))->blkno,
+					  ((const BarkKeptBound *) lfirst(b))->blkno);
+}
+
+/*
+ * Untag the entries bark_vacuum_untag kept tagged for their page's lower
+ * bound, once the scan is over and every page has lost its dead entries:
+ * for each such page, lower its bound (bark_lower_bound), and if that
+ * succeeds, untag the entries in place, as the scan would have, under the
+ * page's cleanup lock and in an XLOG_BARK_VACUUM record of their own.  An
+ * entry no longer on its page (a split moved it, or simple deletion removed
+ * it) is left alone; it stays counted as kept.
+ */
+static void
+bark_vacuum_lower_bounds(BarkVacState *vstate)
+{
+	Relation	index = vstate->info->index;
+	List	   *kept = vstate->kept;
+	int			nkept = list_length(kept);
+
+	/* Untagging a page whose flag is clear keeps nothing for its bound. */
+	vstate->kept = NIL;
+	list_sort(kept, bark_kept_cmp);
+	for (int i = 0, next; i < nkept; i = next)
+	{
+		BlockNumber blkno = ((BarkKeptBound *) list_nth(kept, i))->blkno;
+		Buffer		buf;
+		Page		page;
+		BarkPageOpaque opaque;
+		OffsetNumber untag[MaxOffsetNumber];
+		int			nuntag = 0;
+		OffsetNumber from[MaxOffsetNumber];
+		OffsetNumber to[MaxOffsetNumber];
+		IndexTuple	items[MaxOffsetNumber];
+		int			nmoved;
+		Page		scratch;
+
+		for (next = i; next < nkept &&
+			 ((BarkKeptBound *) list_nth(kept, next))->blkno == blkno; next++)
+			;
+
+		vacuum_delay_point(false);
+		if (!bark_lower_bound(index, vstate->keyinfo, blkno))
+			continue;
+		vstate->nlowered++;
+
+		/*
+		 * Still a live leaf without the flag: only this VACUUM deletes a
+		 * leaf, and only a page deletion sets the flag on a leaf that exists.
+		 */
+		buf = ReadBufferExtended(index, MAIN_FORKNUM, blkno, RBM_NORMAL,
+								 vstate->info->strategy);
+		LockBufferForCleanup(buf);
+		page = BufferGetPage(buf);
+		opaque = BarkPageGetOpaque(page);
+		Assert((opaque->bark_flags & (BARK_LEAF | BARK_DELETED | BARK_HALF_DEAD |
+									  BARK_LOWBOUND_TAGGED)) == BARK_LEAF);
+
+		/* Find each entry again, by (key, TID, tag). */
+		for (OffsetNumber off = BarkPageFirstDataKey(opaque);
+			 off <= PageGetMaxOffsetNumber(page); off = OffsetNumberNext(off))
+		{
+			BarkItemBuf ibuf;
+			IndexTuple	itup = BarkPageGetItem(page, off, &ibuf);
+
+			for (int j = i; j < next; j++)
+			{
+				IndexTuple	entry = ((BarkKeptBound *) list_nth(kept, j))->entry;
+
+				if (BarkEntryGetTag(entry) == BarkEntryGetTag(itup) &&
+					bark_compare_itups_tid(vstate->keyinfo, index, entry,
+										   BarkEntryGetHeapTid(entry),
+										   BarkEntryGetTag(entry), itup) == 0)
+				{
+					untag[nuntag++] = off;
+					break;
+				}
+			}
+		}
+
+		/* Planned again, so counted again (bark_vacuum_untag). */
+		vstate->nkeptbound -= nuntag;
+		scratch = PageGetTempPageCopy(page);
+		nmoved = bark_vacuum_untag(vstate, scratch, blkno, untag, nuntag,
+								   from, to, items);
+		pfree(scratch);
+		if (nmoved > 0)
+			bark_delitems_vacuum(index, buf, NULL, 0, NULL, NULL, 0,
+								 from, to, items, nmoved);
+		vstate->ntagged -= nmoved;
+		for (int j = 0; j < nmoved; j++)
+			pfree(items[j]);
+		UnlockReleaseBuffer(buf);
+	}
+	/* bark_vacuum_untag keeps nothing for a page without the flag */
+	Assert(vstate->kept == NIL);
+	foreach_ptr(BarkKeptBound, kb, kept)
+		pfree(kb->entry);
+	list_free_deep(kept);
+}
+
+/*
+ * A leaf page deleted by this VACUUM and its safexid, kept so that the pages
+ * can be put in the FSM at the end of the VACUUM, once nothing can still
+ * hold a link to them.  As nbtree's BTPendingFSM.
+ */
+typedef struct BarkPendingFSM
+{
+	BlockNumber target;			/* page deleted by this VACUUM */
+	FullTransactionId safexid;	/* its BarkDeletedPageData.safexid */
+} BarkPendingFSM;
+
+/*
+ * Record in the FSM the pages this VACUUM deleted that are already safe to
+ * reuse, as nbtree's _bt_pendingfsm_finalize does.  The rest stay deleted
+ * and unrecorded; a later VACUUM finds them in its page walk and records
+ * them once BarkPageIsRecyclable says so.
+ */
+static void
+bark_pendingfsm_finalize(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
+						 BarkPendingFSM *pending, int npending)
+{
+	if (npending == 0)
+		return;
+
+	/*
+	 * Recompute this backend's view of the XID horizon.  We do not need the
+	 * result; computing it updates the state GlobalVisCheckRemovableFullXid
+	 * consults, which otherwise would not recognize that pages deleted after
+	 * this VACUUM took its snapshot may be safe to reuse already.
+	 */
+	GetOldestNonRemovableTransactionId(info->heaprel);
+
+	for (int i = 0; i < npending; i++)
+	{
+		/*
+		 * The pages were deleted in this order, so their safexids do not
+		 * decrease: once one page is not yet recyclable, neither is any later
+		 * one.
+		 */
+		Assert(i == 0 ||
+			   FullTransactionIdFollowsOrEquals(pending[i].safexid,
+												pending[i - 1].safexid));
+		if (!GlobalVisCheckRemovableFullXid(info->heaprel, pending[i].safexid))
+			break;
+
+		RecordFreeIndexPage(info->index, pending[i].target);
+		stats->pages_free++;
+	}
+}
+
+/*
+ * Scan the whole index once, in physical order, as nbtree's btvacuumscan does:
+ * clean every live leaf (bark_vacuum_page), count the leaf entries and the
+ * deleted pages, return safe deleted pages to the FSM, and then delete the
+ * empty interior leaves the scan left behind.
+ *
+ * With a callback (barkbulkdelete) this is the whole of the VACUUM's work on
+ * the index, and barkvacuumcleanup has nothing left to do; without one
+ * (barkvacuumcleanup when no bulk delete ran this cycle) it only counts,
+ * deletes and recycles.
+ *
+ * Leaf splits during the scan are detected with a vacuum cycle ID, as in
+ * btbulkdelete.  The cycle IDs come from BARK's own registry (barkvacuum.c,
+ * bark_start_vacuum and friends), which maps an index's LockRelId to the
+ * cycle ID of the VACUUM now scanning it, as nbtree's btvacinfo does for
+ * nbtree indexes.  The ENSURE block clears this backend's registry slot if
+ * the scan fails.  A scan without a callback deletes no entries, so it needs no cycle ID, as
+ * btvacuumscan's cleanup-only scan does not.
+ *
+ * Parallel VACUUM may run this in a worker; each index is still processed by
+ * one backend at a time, so nothing here is shared with another backend
+ * beyond what serial VACUUM already shares (the cycle-ID registry, buffer
+ * locks, WAL and the FSM).
+ *
+ * Returns the number of tagged leaf entries the scan left, exact when it
+ * deleted (cleanup locks, and splits followed by cycle ID), which a
+ * conversion's completion reads (bark_convert_complete).
+ */
+static int64
+bark_vacuum_scan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
+				 IndexBulkDeleteCallback callback, void *callback_state,
+				 IndexBulkDeleteVersionCallback version_callback)
+{
+	Relation	index = info->index;
+	BarkVacState vstate;
+	bool		needLock = !RELATION_IS_LOCAL(index);
+	BlockNumber npages;
+	BlockRangeReadStreamPrivate p;
+	ReadStream *stream;
+	BarkKeyInfo *keyinfo;
+	BarkPendingFSM *pending;
+	int			npending = 0;
+
+	vstate.info = info;
+	vstate.stats = stats;
+	vstate.callback = callback;
+	vstate.callback_state = callback_state;
+	vstate.version_callback = version_callback;
+	vstate.keyinfo = NULL;
+	vstate.nuntagged = 0;
+	vstate.nkeptbound = 0;
+	vstate.nkeptdup = 0;
+	vstate.nlowered = 0;
+	vstate.kept = NIL;
+	vstate.cycleid = 0;
+	vstate.emptyalloc = 64;
+	vstate.nempty = 0;
+	vstate.emptyleaves = palloc_array(BlockNumber, vstate.emptyalloc);
+	vstate.ntagged = 0;
+
+	/*
+	 * The counts are recomputed by every scan; tuples_removed and
+	 * pages_newly_deleted accumulate across the bulk deletes of one VACUUM.
+	 */
+	stats->num_index_tuples = 0;
+	stats->pages_deleted = 0;
+	stats->pages_free = 0;
+
+	/*
+	 * Recompute this backend's view of the XID horizon, so that pages deleted
+	 * after the VACUUM took its snapshot can be recognized as safe to reuse
+	 * (see bark_pendingfsm_finalize).
+	 */
+	GetOldestNonRemovableTransactionId(info->heaprel);
+
+	if (version_callback != NULL)
+	{
+		vstate.keyinfo = bark_build_keyinfo(index);
+		vstate.keyinfo->heaprel = info->heaprel;
+	}
+
+	PG_ENSURE_ERROR_CLEANUP(bark_end_vacuum_callback, (Datum) 0);
+	{
+		if (callback != NULL || version_callback != NULL)
+			vstate.cycleid = bark_start_vacuum(index);
+
+		/*
+		 * Pages added after the scan starts must be visited too, so recheck
+		 * the relation length until a pass finds no new pages.  Reading the
+		 * length under the extension lock means a page being added is either
+		 * not counted yet or already locked by the backend adding it (which
+		 * extends with EB_LOCK_FIRST), so we never see it uninitialized and
+		 * unlocked.  This is btvacuumscan's loop.
+		 *
+		 * The blocks come from a read stream over [first data block, npages),
+		 * re-armed for the blocks added since each pass, as btvacuumscan does
+		 * since nbtree's c5c239e26e3 (RethinkDB's parallel traversal also
+		 * prefetches each level). block_range_read_stream_cb takes no locks,
+		 * so batch mode is safe.
+		 */
+		p.current_blocknum = BARK_METAPAGE + 1;
+		stream = read_stream_begin_relation(READ_STREAM_MAINTENANCE |
+											READ_STREAM_FULL |
+											READ_STREAM_USE_BATCHING,
+											info->strategy,
+											index,
+											MAIN_FORKNUM,
+											block_range_read_stream_cb,
+											&p,
+											0);
+		for (;;)
+		{
+			if (needLock)
+				LockRelationForExtension(index, ExclusiveLock);
+			npages = RelationGetNumberOfBlocks(index);
+			if (needLock)
+				UnlockRelationForExtension(index, ExclusiveLock);
+
+			if (p.current_blocknum >= npages)
+				break;
+			p.last_exclusive = npages;
+
+			for (;;)
+			{
+				Buffer		buf;
+
+				/* Not while holding a buffer lock */
+				vacuum_delay_point(false);
+
+				buf = read_stream_next_buffer(stream, NULL);
+				if (!BufferIsValid(buf))
+					break;
+				bark_vacuum_page(&vstate, buf);
+			}
+
+			/*
+			 * After returning InvalidBuffer the stream calls the callback
+			 * again only once it is reset.
+			 */
+			read_stream_reset(stream);
+		}
+		read_stream_end(stream);
+	}
+	PG_END_ENSURE_ERROR_CLEANUP(bark_end_vacuum_callback, (Datum) 0);
+	if (callback != NULL || version_callback != NULL)
+		bark_end_vacuum();
+
+	stats->num_pages = npages;
+
+	/*
+	 * Delete the empty interior leaves the scan found.  Each deletion
+	 * re-validates the page under exclusive locks, so a leaf that was
+	 * concurrently refilled or already reclaimed is simply skipped.  The
+	 * deleted pages are kept in `pending`, in deletion order, for the FSM.
+	 */
+	keyinfo = bark_build_keyinfo(index);
+	keyinfo->heaprel = info->heaprel;
+	pending = palloc_array(BarkPendingFSM, Max(vstate.nempty, 1));
+	for (int i = 0; i < vstate.nempty; i++)
+	{
+		FullTransactionId safexid;
+		BlockNumber nfreed;
+
+		if (bark_delete_empty_leaf(index, keyinfo, vstate.emptyleaves[i],
+								   &safexid, &nfreed))
+		{
+			pending[npending].target = vstate.emptyleaves[i];
+			pending[npending].safexid = safexid;
+			npending++;
+			/* as the chains the scan frees, in pages_newly_deleted only */
+			stats->pages_newly_deleted += 1 + nfreed;
+			stats->pages_deleted++;
+		}
+	}
+	pfree(keyinfo);
+	pfree(vstate.emptyleaves);
+
+	/*
+	 * Then lower the bounds that kept entries tagged: the scan has removed
+	 * the dead entries the lowering needs gone, and page deletion may have
+	 * given a page a new lower bound, whose flag alone may need clearing.
+	 */
+	bark_vacuum_lower_bounds(&vstate);
+	if (vstate.nuntagged > 0 || vstate.nkeptbound > 0 || vstate.nkeptdup > 0)
+		ereport(info->message_level,
+				(errmsg("index \"%s\": %lld entries untagged in place, %lld kept tagged for their page's lower bound, %lld kept tagged beside their untagged twin, %lld lower bounds lowered",
+						RelationGetRelationName(index),
+						(long long) vstate.nuntagged,
+						(long long) vstate.nkeptbound,
+						(long long) vstate.nkeptdup,
+						(long long) vstate.nlowered)));
+	if (vstate.keyinfo != NULL)
+		pfree(vstate.keyinfo);
+
+	bark_pendingfsm_finalize(info, stats, pending, npending);
+	pfree(pending);
+
+	/* Make the FSM entries recorded this cycle durable and searchable. */
+	if (stats->pages_free > 0)
+		IndexFreeSpaceMapVacuum(index);
+
+	return vstate.ntagged;
+}
+
+/*
+ * The conversion barrier ("Conversion" in the README): wait out every
+ * transaction that may still be running an update that began before the
+ * index started converting, and so may still keep a row's locator and add
+ * tagged entries.  Such an update holds RowExclusiveLock on the table until
+ * its transaction ends, so the wait is WaitForLockers on the table with
+ * ShareLock, as CREATE INDEX CONCURRENTLY waits out writers; VACUUM's own
+ * ShareUpdateExclusiveLock does not conflict with them, and GetLockConflicts
+ * skips this backend's own locks.  A writer whose statement opened the index
+ * after the conversion began cannot keep a locator in it (it sees
+ * BARK_META_CONVERTING, or a catalog that refuses), so the wait ends.
+ *
+ * Under autovacuum the barrier does not block, since an idle-in-transaction
+ * writer could hold the worker indefinitely: it passes only when
+ * GetLockConflicts finds no such transaction, and otherwise the next VACUUM
+ * tries again.  Returns whether it passed.
+ */
+static bool
+bark_convert_wait(Relation heap)
+{
+	LOCKTAG		heaplocktag;
+
+	SET_LOCKTAG_RELATION(heaplocktag, MyDatabaseId, RelationGetRelid(heap));
+	if (AmAutoVacuumWorkerProcess())
+	{
+		VirtualTransactionId *vxids = GetLockConflicts(&heaplocktag, ShareLock,
+													   NULL);
+		bool		busy = VirtualTransactionIdIsValid(vxids[0]);
+
+		if (busy)
+			INJECTION_POINT("bark-convert-autovac-busy", NULL);
+		return !busy;
+	}
+	INJECTION_POINT("bark-convert-barrier-wait", NULL);
+	WaitForLockers(heaplocktag, ShareLock, false);
+	return true;
+}
+
+/*
+ * The indexes whose conversion barrier this backend's transaction has tried
+ * (barktried) and passed (barkpassed), in TopTransactionContext: VACUUM of a
+ * table is one transaction, which may call bulkdelete several times.
+ */
+static LocalTransactionId barkconv_lxid = InvalidLocalTransactionId;
+static List *barkconv_tried = NIL;
+static List *barkconv_passed = NIL;
+
+/* Forget the lists of an earlier transaction, whose memory is gone. */
+static void
+bark_convert_memo_reset(void)
+{
+	if (barkconv_lxid != MyProc->vxid.lxid)
+	{
+		barkconv_lxid = MyProc->vxid.lxid;
+		barkconv_tried = NIL;
+		barkconv_passed = NIL;
+	}
+}
+
+/*
+ * Run the conversion barrier for VACUUM's pass over the index, if the index
+ * is converting; return whether the pass may complete the conversion.  The
+ * first barrier that passes sets BARK_META_SETTLED.  A writer that read the
+ * meta page before that may still store a tagged entry (inserts store
+ * entries untagged only once they see SETTLED), so the barrier waits once
+ * more after setting it, and every later VACUUM waits again: only a wait
+ * that began after SETTLED was set lets a count of zero tagged entries be
+ * final.  It runs once per index and transaction, and not in a parallel
+ * worker, which would wait for the leader's own lock on the table: after a
+ * bulkdelete in a worker the leader runs the cleanup, which makes the pass
+ * (barkvacuumcleanup); a cleanup-only pass in a worker leaves the barrier to
+ * the next VACUUM.
+ */
+static bool
+bark_convert_barrier(IndexVacuumInfo *info)
+{
+	Relation	index = info->index;
+	Oid			indexoid = RelationGetRelid(index);
+	uint32		flags;
+	MemoryContext oldcxt;
+	bool		passed;
+
+	if (IsParallelWorker())
+		return false;
+	bark_convert_memo_reset();
+	if (list_member_oid(barkconv_tried, indexoid))
+		return list_member_oid(barkconv_passed, indexoid);
+
+	flags = bark_note_conversion(index);
+	passed = (flags & BARK_META_CONVERTING) != 0 &&
+		bark_convert_wait(info->heaprel);
+	if (passed && (flags & BARK_META_SETTLED) == 0)
+	{
+		(void) bark_change_conversion_flags(index, BARK_META_CONVERTING,
+											BARK_META_SETTLED, 0);
+		passed = bark_convert_wait(info->heaprel);
+	}
+
+	oldcxt = MemoryContextSwitchTo(TopTransactionContext);
+	barkconv_tried = lappend_oid(barkconv_tried, indexoid);
+	if (passed)
+		barkconv_passed = lappend_oid(barkconv_passed, indexoid);
+	MemoryContextSwitchTo(oldcxt);
+	return passed;
+}
+
+/* Has this backend's transaction tried the index's barrier yet? */
+static bool
+bark_convert_tried(Relation index)
+{
+	bark_convert_memo_reset();
+	return list_member_oid(barkconv_tried, RelationGetRelid(index));
+}
+
+/*
+ * Complete a conversion whose barrier this VACUUM passed, after a pass that
+ * left `ntagged` tagged leaf entries: with none left, the index is what a
+ * REINDEX would build (no tagged entry, no MKTAGS), so clear
+ * BARK_META_MKTAGS, BARK_META_CONVERTING and BARK_META_SETTLED in one meta
+ * page write.  Tagged pivots may remain where VACUUM could not lower a
+ * bound; they still separate entries correctly, and the index keeps its
+ * 16-byte pivot reserve (BARK_META_VERSIONED).  The relcache entry is
+ * invalidated, since every backend caches MKTAGS.
+ */
+static void
+bark_convert_complete(Relation index, int64 ntagged)
+{
+	if ((bark_index_conversion_flags(index) & BARK_META_CONVERTING) == 0)
+		return;					/* an earlier pass of this VACUUM did */
+	if (ntagged > 0)
+	{
+		ereport(DEBUG2,
+				(errmsg("index \"%s\": conversion kept open by %lld tagged entries",
+						RelationGetRelationName(index), (long long) ntagged)));
+		return;
+	}
+	(void) bark_change_conversion_flags(index,
+										BARK_META_MKTAGS | BARK_META_CONVERTING |
+										BARK_META_SETTLED, 0,
+										BARK_META_MKTAGS | BARK_META_CONVERTING |
+										BARK_META_SETTLED);
+	CacheInvalidateRelcache(index);
+	ereport(DEBUG1,
+			(errmsg("index \"%s\": conversion complete",
+					RelationGetRelationName(index))));
+}
+
+/*
+ * The callback of a conversion's pass over an index when VACUUM has no
+ * heap TID to delete: keep every entry.  Only a table AM's version callback
+ * deletes or untags tagged entries.
+ */
+static bool
+bark_keep_all(ItemPointer itemptr, void *state)
+{
+	return false;
+}
+
+static IndexBulkDeleteResult *
+barkbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
+			   IndexBulkDeleteCallback callback, void *callback_state)
+{
+	bool		converting;
+	int64		ntagged;
+
+	if (stats == NULL)
+		stats = palloc0_object(IndexBulkDeleteResult);
+
+	converting = bark_convert_barrier(info);
+	ntagged = bark_vacuum_scan(info, stats, callback, callback_state,
+							   info->version_callback);
+	if (converting)
+		bark_convert_complete(info->index, ntagged);
+	return stats;
+}
+
+/*
+ * After a bulk delete there is little left to do: bark_vacuum_scan already
+ * counted the live heap TIDs, deleted the empty leaves and recycled the
+ * deleted pages.  Without one (no dead tuples this cycle), scan the index to
+ * do those things, so that pages deleted by an earlier VACUUM reach the FSM
+ * once they are safe.  That scan takes no cleanup locks, so concurrent
+ * splits can make it count an entry twice, and its count is only an
+ * estimate: VACUUM keeps the index's reltuples, as with btvacuumcleanup.
+ * Either way the count is stored as the meta page's bark_nkeys.  Returning valid stats also lets VACUUM set the heap
+ * visibility map, which is what makes index-only scans worthwhile.  This is
+ * btvacuumcleanup without its skip-the-scan heuristic.
+ */
+static IndexBulkDeleteResult *
+barkvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
+{
+	/* ANALYZE has nothing to clean up. */
+	if (info->analyze_only)
+		return stats;
+
+	Assert(info->heaprel != NULL);
+
+	/*
+	 * A converting index whose barrier this transaction has not tried (no
+	 * bulkdelete ran, or a parallel worker ran it) gets a deleting pass even
+	 * with nothing to delete, so that it counts its tagged entries exactly,
+	 * and the table AM's version callback, if it gave one, removes the stale
+	 * ones.  Its counts replace bulkdelete's.
+	 */
+	if (!IsParallelWorker() && !bark_convert_tried(info->index) &&
+		bark_convert_barrier(info))
+	{
+		if (stats == NULL)
+			stats = palloc0_object(IndexBulkDeleteResult);
+		bark_convert_complete(info->index,
+							  bark_vacuum_scan(info, stats, bark_keep_all,
+											   NULL, info->version_callback));
+	}
+	else if (stats == NULL)
+	{
+		stats = palloc0_object(IndexBulkDeleteResult);
+		(void) bark_vacuum_scan(info, stats, NULL, NULL, NULL);
+		stats->estimated_count = true;
+	}
+
+	/*
+	 * Concurrent splits can make the scan count some entries twice, so
+	 * disbelieve a total above the heap's, when that one is exact, as
+	 * btvacuumcleanup does.  An index with an extracted column has a member
+	 * per key of a row, so its total is not bounded by the heap's.
+	 */
+	if (!info->estimated_count &&
+		bark_index_extracted_column(info->index) == 0 &&
+		stats->num_index_tuples > info->num_heap_tuples)
+		stats->num_index_tuples = info->num_heap_tuples;
+
+	/*
+	 * The members left are the K of the cost estimate of an index with an
+	 * extracted column ("Statistics" in BARK-Design.mediawiki), stored once
+	 * per VACUUM.
+	 */
+	bark_set_nkeys(info->index, (uint64) stats->num_index_tuples);
+
+	return stats;
+}
+
+/*
+ * Would a scan with these quals skip over column 1 (bark_skip_eligible)?
+ * That needs a forward scan, no qual on column 1 (the clauses are in column
+ * order) and a qual on column 2 that bounds it: a plain operator, or an
+ * inequality ScalarArrayOp, which rescan reduces to one.
+ */
+static bool
+bark_cost_skips(IndexPath *path)
+{
+	IndexOptInfo *index = path->indexinfo;
+	ListCell   *lc;
+
+	if (index->nkeycolumns < 2 || path->indexclauses == NIL ||
+		ScanDirectionIsBackward(path->indexscandir) ||
+		linitial_node(IndexClause, path->indexclauses)->indexcol != 1)
+		return false;
+
+	foreach(lc, path->indexclauses)
+	{
+		IndexClause *iclause = lfirst_node(IndexClause, lc);
+
+		if (iclause->indexcol != 1)
+			break;
+		foreach_node(RestrictInfo, rinfo, iclause->indexquals)
+		{
+			Expr	   *clause = rinfo->clause;
+
+			if (IsA(clause, OpExpr))
+				return true;
+			if (IsA(clause, ScalarArrayOpExpr) &&
+				get_op_opfamily_strategy(((ScalarArrayOpExpr *) clause)->opno,
+										 index->opfamily[1]) != BTEqualStrategyNumber)
+				return true;
+		}
+	}
+	return false;
+}
+
+/*
+ * K, the entries per row of an index with an extracted column: the meta
+ * page's count of (key, TID) members over the heap's rows, as of the last
+ * CREATE INDEX or VACUUM, and 1 while the multikey flag is clear.  *multikey
+ * returns the flag, which decides whether a scan needs the seen set.  The
+ * meta page is read as gincostestimate reads GIN's; a hypothetical index has
+ * none and is taken to need the set.
+ */
+static double
+bark_cost_keys_per_row(IndexOptInfo *index, bool *multikey)
+{
+	Relation	indexRel;
+	Buffer		metabuf;
+	BarkMetaPageData *meta;
+	uint32		flags;
+	uint64		nkeys;
+
+	*multikey = true;
+	if (index->hypothetical)
+		return 1.0;
+
+	/* plancat.c has locked the index. */
+	indexRel = index_open(index->indexoid, NoLock);
+	metabuf = ReadBuffer(indexRel, BARK_METAPAGE);
+	LockBuffer(metabuf, BUFFER_LOCK_SHARE);
+	meta = BarkPageGetMeta(BufferGetPage(metabuf));
+	flags = meta->bark_flags;
+	nkeys = meta->bark_nkeys;
+	UnlockReleaseBuffer(metabuf);
+	index_close(indexRel, NoLock);
+
+	*multikey = (flags & BARK_META_MULTIKEY) != 0;
+	if (!*multikey || nkeys == 0 || index->rel->tuples <= 0)
+		return 1.0;
+	return Max((double) nkeys / index->rel->tuples, 1.0);
+}
+
+/*
+ * Run procedure procoid, indexcol's procedure 8, on value, the constant of
+ * op, a qual on the extracted column indexcol, as the scan does at rescan:
+ * its boundaries in *result (*nresult of them), its recheck answer and the
+ * BarkQueryFlags it set.  indexRel, the open index or NULL for a
+ * hypothetical one, is handed to procedure 8 in the flags.
+ */
+static void
+bark_cost_extract(IndexOptInfo *index, int indexcol, Oid procoid, OpExpr *op,
+				  Datum value, Relation indexRel, BarkBoundary **result,
+				  int32 *nresult, bool *recheck, BarkQueryFlags *flags)
+{
+	FmgrInfo	flinfo;
+	Pointer		extra = NULL;
+	Datum		strategy;
+
+	strategy = Int16GetDatum(get_op_opfamily_strategy(op->opno,
+													  index->opfamily[indexcol]));
+	fmgr_info(procoid, &flinfo);
+	set_fn_opclass_options(&flinfo, index->opclassoptions[indexcol]);
+	memset(flags, 0, sizeof(*flags));
+	flags->index = indexRel;
+	if (get_func_nargs(procoid) >= 7)
+		FunctionCall7Coll(&flinfo, index->indexcollations[indexcol],
+						  value, strategy,
+						  PointerGetDatum(result), PointerGetDatum(nresult),
+						  PointerGetDatum(&extra), PointerGetDatum(recheck),
+						  PointerGetDatum(flags));
+	else
+		FunctionCall6Coll(&flinfo, index->indexcollations[indexcol],
+						  value, strategy,
+						  PointerGetDatum(result), PointerGetDatum(nresult),
+						  PointerGetDatum(&extra), PointerGetDatum(recheck));
+}
+
+/*
+ * The number of boundaries procedure 8 makes of clause, a qual on the
+ * extracted column indexcol, run on its constant as gincost_pattern runs
+ * GIN's extractQuery: the scan descends once per boundary.  *noseen says
+ * whether the scan needs no seen set (its only boundary is a single key, or
+ * procedure 8 set BarkQueryFlags.oneentry, which the scan asks again at
+ * rescan), *recheck whether procedure 9 runs on every entry.  A qual whose
+ * argument is not a constant counts as one boundary.
+ */
+static double
+bark_cost_boundaries(IndexOptInfo *index, int indexcol, Expr *clause,
+					 bool *noseen, bool *recheck, bool *point)
+{
+	OpExpr	   *op = (OpExpr *) clause;
+	Node	   *arg;
+	Oid			procoid;
+	FmgrInfo	flinfo;
+	BarkBoundary *result = NULL;
+	int32		nresult = 0;
+	BarkQueryFlags flags;
+	Relation	indexRel = NULL;
+
+	*noseen = false;
+	*recheck = false;
+	*point = false;
+	if (!IsA(clause, OpExpr) || list_length(op->args) != 2)
+		return 1;
+	arg = (Node *) lsecond(op->args);
+	if (IsA(arg, RelabelType))
+		arg = (Node *) ((RelabelType *) arg)->arg;
+	if (!IsA(arg, Const) || ((Const *) arg)->constisnull)
+		return 1;
+	procoid = get_opfamily_proc(index->opfamily[indexcol],
+								index->opcintype[indexcol],
+								index->opcintype[indexcol],
+								BARK_EXTRACTQUERY_PROC);
+	if (!OidIsValid(procoid))
+	{
+		/*
+		 * GIN's interface: a bitmap scan, which needs no seen set, reading
+		 * each entry of extractQuery, plus the NULL entries for a search mode
+		 * that wants them and every key for ALL, as gincost_pattern counts.
+		 */
+		int32		nentries = 0;
+		bool	   *pmatch = NULL;
+		Pointer    *ginextra = NULL;
+		bool	   *nullFlags = NULL;
+		int32		searchMode = GIN_SEARCH_MODE_DEFAULT;
+
+		procoid = get_opfamily_proc(index->opfamily[indexcol],
+									index->opcintype[indexcol],
+									index->opcintype[indexcol],
+									BARK_GIN_EXTRACTQUERY_PROC);
+		if (!OidIsValid(procoid))
+			return 1;
+		*noseen = true;
+		fmgr_info(procoid, &flinfo);
+		set_fn_opclass_options(&flinfo, index->opclassoptions[indexcol]);
+		(void) FunctionCall7Coll(&flinfo, index->indexcollations[indexcol],
+								 ((Const *) arg)->constvalue,
+								 PointerGetDatum(&nentries),
+								 UInt16GetDatum(get_op_opfamily_strategy(op->opno,
+																		 index->opfamily[indexcol])),
+								 PointerGetDatum(&pmatch),
+								 PointerGetDatum(&ginextra),
+								 PointerGetDatum(&nullFlags),
+								 PointerGetDatum(&searchMode));
+		return Max(Max(nentries, 0) +
+				   (searchMode == GIN_SEARCH_MODE_DEFAULT ? 0 :
+					searchMode == GIN_SEARCH_MODE_INCLUDE_EMPTY ? 1 : 2), 1);
+	}
+
+	if (!index->hypothetical)
+	{
+		/* plancat.c has locked the index. */
+		indexRel = index_open(index->indexoid, NoLock);
+	}
+	bark_cost_extract(index, indexcol, procoid, op, ((Const *) arg)->constvalue,
+					  indexRel, &result, &nresult, recheck, &flags);
+	if (indexRel != NULL)
+		index_close(indexRel, NoLock);
+
+	if (flags.oneentry ||
+		(nresult == 1 && !flags.searchnulls &&
+		 result[0].lower != NULL && result[0].upper != NULL &&
+		 result[0].lower->strategy == BTEqualStrategyNumber &&
+		 result[0].upper->strategy == BTEqualStrategyNumber))
+		*noseen = true;
+
+	/*
+	 * One point, with both sides the same element or argument: a different
+	 * argument that compares equal is taken for a range, which only costs the
+	 * plan barkorderbyopcolumn would allow.
+	 */
+	*point = nresult == 1 && !flags.searchnulls &&
+		result[0].lower != NULL && result[0].upper != NULL &&
+		result[0].lower->strategy == BTEqualStrategyNumber &&
+		result[0].upper->strategy == BTEqualStrategyNumber &&
+		(result[0].lower == result[0].upper ||
+		 result[0].lower->argument == result[0].upper->argument);
+	return Max(nresult + (flags.searchnulls ? 1 : 0), 1);
+}
+
+/*
+ * The planner's sample of an index's separator keys, for
+ * bark_estimate_qual_selectivity: up to BARK_SAMPLE_KEYS pivots in key
+ * order, copied from one level of the tree, and the root it was read
+ * under.  It hangs off BarkAmCache.sample but lives in a context of its
+ * own, a child of rd_indexcxt named BARK_SAMPLE_CXT, because a relcache
+ * reload of an index (RelationReloadIndexInfo) frees rd_amcache and keeps
+ * rd_indexcxt: a sample allocated in rd_indexcxt itself would leak on every
+ * invalidation.  bark_sample_get deletes the old context, orphaned or not,
+ * before it builds a new one, so a backend keeps at most one per index.
+ */
+typedef struct BarkKeySample
+{
+	BlockNumber root;			/* the root the sample was read under */
+	int			nkeys;
+	double	   *density;		/* per key, its leaf's TIDs, -1 unread */
+	IndexTuple	keys[FLEXIBLE_ARRAY_MEMBER];
+}			BarkKeySample;
+
+#define BARK_SAMPLE_KEYS	1024	/* separator keys kept */
+#define BARK_SAMPLE_PAGES	64	/* pages read per level */
+#define BARK_SAMPLE_LEAVES	4	/* leaves an exact count reads */
+#define BARK_SAMPLE_PROBES	3	/* leaves a wide range's density reads */
+#define BARK_SAMPLE_CXT		"BARK key sample"
+
+/*
+ * Read up to BARK_SAMPLE_PAGES internal pages of one level, left to right
+ * from blkno, share-locking one at a time, and append to *keys (*nkeys of
+ * *maxkeys used, in CurrentMemoryContext) a copy of every downlink's key.
+ * The minus-infinity downlink has none, and an oversized one is left out:
+ * its key is on an overflow chain, which the sample could outlive.  Returns
+ * the downlinks read; *complete says the walk reached the level's right end,
+ * and *child is the first downlink, the leftmost page of the level below.
+ */
+static int
+bark_sample_level(Relation index, BlockNumber blkno, IndexTuple **keys,
+				  int *nkeys, int *maxkeys, bool *complete,
+				  BlockNumber *child)
+{
+	int			ndown = 0;
+
+	*complete = false;
+	*child = BARK_P_NONE;
+	for (int npages = 0; npages < BARK_SAMPLE_PAGES; npages++)
+	{
+		Buffer		buf = ReadBuffer(index, blkno);
+		Page		page;
+		BarkPageOpaque opaque;
+
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buf);
+		opaque = BarkPageGetOpaque(page);
+		/* Internal pages are never deleted, so every page here is live. */
+		Assert(!BarkPageIgnore(opaque) && !BarkPageIsLeaf(opaque));
+		{
+			OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
+
+			for (OffsetNumber off = BarkPageFirstDataKey(opaque); off <= maxoff;
+				 off = OffsetNumberNext(off))
+			{
+				IndexTuple	itup = (IndexTuple) PageGetItem(page,
+															PageGetItemId(page, off));
+
+				if (*child == BARK_P_NONE)
+					*child = BarkEntryGetDownLink(itup);
+				ndown++;
+				if (BarkEntryGetShape(itup) != BARK_SHAPE_PIVOT ||
+					BarkPivotGetNAtts(itup) == 0)
+					continue;
+				if (*nkeys >= *maxkeys)
+				{
+					*maxkeys *= 2;
+					*keys = repalloc_array(*keys, IndexTuple, *maxkeys);
+				}
+				(*keys)[(*nkeys)++] = CopyIndexTuple(itup);
+			}
+		}
+		blkno = opaque->bark_next;
+		UnlockReleaseBuffer(buf);
+		if (blkno == BARK_P_NONE)
+		{
+			*complete = true;
+			break;
+		}
+	}
+	return ndown;
+}
+
+/*
+ * The index's separator sample, built on first use and again whenever the
+ * root has moved since (bark_get_root refreshes cache->root); NULL when the
+ * root is a leaf or the index is empty.  It has no keys when every
+ * separator of the level read is OVERSIZED (bark_sample_level skips them),
+ * and is cached so all the same, so that it is not read again every plan.
+ *
+ * The sample is one level's downlink keys: level 1's, one per leaf, when
+ * that level has at most BARK_SAMPLE_PAGES pages.  It is found top down:
+ * from the root, a level is read whole and the walk moves down while the
+ * level below has at most BARK_SAMPLE_PAGES pages (the downlinks just read);
+ * otherwise it keeps this level's keys, one per subtree, which cover the
+ * whole key range at a coarser grain.  Reading level 1 from its left end
+ * until the budget ran out would sample only the left end of a big index.
+ * The keys are then thinned evenly to BARK_SAMPLE_KEYS.  A level that
+ * splits during the walk can take it past the budget, which then leaves a
+ * few pages at the right end out; the sample is an estimate's input, and
+ * the next root split rebuilds it.
+ */
+static BarkKeySample *
+bark_sample_get(Relation index)
+{
+	BarkAmCache *cache;
+	BlockNumber root;
+	uint32		level;
+	BlockNumber blkno;
+	IndexTuple *keys;
+	int			nkeys = 0;
+	int			maxkeys = 256;
+	int			nsample;
+	MemoryContext cxt;
+	MemoryContext child;
+	BarkKeySample *sample;
+
+	root = bark_get_root(index, &level);
+	cache = bark_get_amcache(index);
+	if (root == BARK_P_NONE || level == 0)
+		return NULL;
+	if (cache->sample != NULL && cache->sample->root == root)
+		return cache->sample;
+
+	INJECTION_POINT("bark-sample-build", NULL);
+
+	keys = palloc_array(IndexTuple, maxkeys);
+	blkno = root;
+	for (;;)
+	{
+		bool		complete;
+		BlockNumber down;
+		int			ndown;
+
+		ndown = bark_sample_level(index, blkno, &keys, &nkeys, &maxkeys,
+								  &complete, &down);
+		Assert(down != BARK_P_NONE);
+		if (level <= 1 || !complete || ndown > BARK_SAMPLE_PAGES)
+			break;
+		for (int i = 0; i < nkeys; i++)
+			pfree(keys[i]);
+		nkeys = 0;
+		blkno = down;
+		level--;
+	}
+
+	/* Drop the sample built before, whether cache->sample still names it. */
+	child = index->rd_indexcxt->firstchild;
+	while (child != NULL)
+	{
+		MemoryContext next = child->nextchild;
+
+		if (strcmp(child->name, BARK_SAMPLE_CXT) == 0)
+			MemoryContextDelete(child);
+		child = next;
+	}
+	cache = bark_get_amcache(index);
+	cache->sample = NULL;
+
+	cxt = AllocSetContextCreate(index->rd_indexcxt, BARK_SAMPLE_CXT,
+								ALLOCSET_SMALL_SIZES);
+	nsample = Min(nkeys, BARK_SAMPLE_KEYS);
+	sample = MemoryContextAlloc(cxt, offsetof(BarkKeySample, keys) +
+								nsample * sizeof(IndexTuple));
+	sample->root = root;
+	sample->nkeys = nsample;
+	sample->density = MemoryContextAlloc(cxt, nsample * sizeof(double));
+	for (int i = 0; i < nsample; i++)
+	{
+		/* The middle key of each of nsample equal runs of the keys read. */
+		IndexTuple	key = keys[(int) (((int64) 2 * i + 1) * nkeys / (2 * nsample))];
+
+		sample->density[i] = -1;
+
+		sample->keys[i] = MemoryContextAlloc(cxt, IndexTupleSize(key));
+		memcpy(sample->keys[i], key, IndexTupleSize(key));
+	}
+	for (int i = 0; i < nkeys; i++)
+		pfree(keys[i]);
+	pfree(keys);
+	cache->sample = sample;
+	return sample;
+}
+
+/*
+ * Set the end of start/end that procedure 8's search element e gives, the
+ * lower one in value order when lower, as bark_mk_set_side and bark_mk_bound
+ * place it: a bound on column 1 that sorts before the entries equal to it
+ * when it is the start and not strict, or the end and strict, and after
+ * them otherwise.  An entry is then inside the boundary when
+ * bark_compare_bound puts the start before it and the end after it.
+ */
+static void
+bark_sample_side(BarkKeyInfo *keyinfo, const BarkSearchElement *e, bool lower,
+				 BarkScanBound * start, BarkScanBound * end, bool *hasstart,
+				 bool *hasend)
+{
+	BarkKeyColumn *col = &keyinfo->cols[0];
+
+	/* The scan refuses any other strategy (bark_mk_set_side). */
+	bool		strict = e->strategy == BTGreaterStrategyNumber ||
+		e->strategy == BTLessStrategyNumber;
+	bool		isstart;
+	BarkScanBound *bound;
+
+	/* In index order a DESC column's upper element comes first. */
+	isstart = lower != col->reverse;
+	bound = isstart ? start : end;
+	*(isstart ? hasstart : hasend) = true;
+	bound->nkeys = 1;
+	bound->upper = isstart ? strict : !strict;
+	bound->backward = false;
+	bound->args[0] = e->argument;
+	bound->procs[0] = &col->cmp;
+	bound->collations[0] = col->collation;
+}
+
+/* The number of sample keys bound sorts after (bark_compare_bound). */
+static int
+bark_sample_find(Relation index, BarkKeyInfo *keyinfo, BarkKeySample * sample,
+				 const BarkScanBound * bound)
+{
+	int			low = 0;
+	int			high = sample->nkeys;
+
+	while (low < high)
+	{
+		int			mid = low + (high - low) / 2;
+
+		if (bark_compare_bound(index, keyinfo, bound, sample->keys[mid]) > 0)
+			low = mid + 1;
+		else
+			high = mid;
+	}
+	return low;
+}
+
+/*
+ * Count the heap TIDs of the live entries between start and end, reading
+ * the leaves from the one a scan for start begins at, share-locked one at a
+ * time, at most BARK_SAMPLE_LEAVES of them.  Returns true when the count is
+ * complete (an entry past end, or the last leaf, was reached), false when
+ * the leaf limit, or a right link to a page that is no longer a leaf,
+ * stopped it; *ntids is the count so far, *nleaves the leaves read (one at
+ * least).  There is no snapshot: an entry not yet marked dead counts,
+ * though its row may be.
+ */
+static bool
+bark_sample_count(Relation index, BarkKeyInfo *keyinfo,
+				  const BarkScanBound * start, const BarkScanBound * end,
+				  double *ntids, int *nleaves)
+{
+	/* There is a sample, so the root is not a leaf and the index not empty. */
+	Buffer		buf = bark_search_bound(index, keyinfo, start, start->upper);
+	OffsetNumber off = bark_binsrch_bound(index, keyinfo, start,
+										  BufferGetPage(buf));
+	BarkItemBuf ibuf;
+
+	*ntids = 0;
+	*nleaves = 0;
+	for (;;)
+	{
+		Page		page = BufferGetPage(buf);
+		BarkPageOpaque opaque = BarkPageGetOpaque(page);
+
+		/* The first entry past end, found by binary search, as a scan's. */
+		OffsetNumber endoff = bark_binsrch_bound(index, keyinfo, end, page);
+		BlockNumber next;
+
+		/* A half-dead or deleted leaf has no entries, so counts nothing. */
+		(*nleaves)++;
+		for (; off < endoff; off = OffsetNumberNext(off))
+		{
+			if (!ItemIdIsDead(PageGetItemId(page, off)))
+				*ntids += bark_entry_count_tids(BarkPageGetItem(page, off,
+																&ibuf));
+		}
+		if (endoff <= PageGetMaxOffsetNumber(page))
+		{
+			UnlockReleaseBuffer(buf);
+			return true;
+		}
+		next = opaque->bark_next;
+		UnlockReleaseBuffer(buf);
+		if (next == BARK_P_NONE)
+			return true;
+		if (*nleaves >= BARK_SAMPLE_LEAVES)
+			return false;
+		buf = ReadBuffer(index, next);
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buf);
+
+		/*
+		 * No snapshot holds a deleted leaf back from reuse, so the right link
+		 * may lead to a page recycled as something else: stop there.
+		 */
+		if (PageIsNew(page) || !BarkPageIsLeaf(BarkPageGetOpaque(page)))
+		{
+			UnlockReleaseBuffer(buf);
+			return false;
+		}
+		off = BarkPageFirstDataKey(BarkPageGetOpaque(page));
+	}
+}
+
+/*
+ * The heap TIDs of the live entries on the leaf that begins at sample key
+ * k (its low key, when the sample is level 1's), read once per sample: a
+ * descent for an upper bound at the key's first column lands right of the
+ * separator, share-locked.  The answer is kept in sample->density, so it is
+ * as of the probe, as the keys are as of the build.
+ */
+static double
+bark_sample_probe(Relation index, BarkKeyInfo *keyinfo, BarkKeySample * sample,
+				  int k)
+{
+	BarkScanBound at;
+	bool		isnull;
+	Buffer		buf;
+	Page		page;
+	BarkPageOpaque opaque;
+	OffsetNumber maxoff;
+	BarkItemBuf ibuf;
+	double		ntids = 0;
+
+	if (sample->density[k] >= 0)
+		return sample->density[k];
+	at.args[0] = index_getattr(sample->keys[k], 1, RelationGetDescr(index),
+							   &isnull);
+	Assert(!isnull);			/* a sample key has its first column */
+	at.nkeys = 1;
+	at.upper = true;
+	at.backward = false;
+	at.procs[0] = &keyinfo->cols[0].cmp;
+	at.collations[0] = keyinfo->cols[0].collation;
+	buf = bark_search_bound(index, keyinfo, &at, true);
+	page = BufferGetPage(buf);
+	opaque = BarkPageGetOpaque(page);
+	maxoff = PageGetMaxOffsetNumber(page);
+	for (OffsetNumber off = BarkPageFirstDataKey(opaque); off <= maxoff;
+		 off = OffsetNumberNext(off))
+	{
+		if (!ItemIdIsDead(PageGetItemId(page, off)))
+			ntids += bark_entry_count_tids(BarkPageGetItem(page, off, &ibuf));
+	}
+	UnlockReleaseBuffer(buf);
+	sample->density[k] = ntids;
+	return ntids;
+}
+
+/*
+ * bark_estimate_qual_selectivity -- the fraction of the heap's rows that
+ * clause, an operator with a constant on extracted column indexcol of
+ * index, matches, read from the index; -1 when the index cannot say.
+ *
+ * Procedure 8 makes the constant into boundaries, as the scan does.  Each
+ * boundary is located among the separator sample (bark_sample_get): with m
+ * sample keys inside, it covers m - 1 of the sample's nkeys + 1 intervals
+ * whole and two in part, each counted half, so m intervals (half of one
+ * when m is 0).  If members were spread evenly over the leaves, that
+ * fraction of the key space would hold that fraction of the index's
+ * members, fraction * K * rows of them, where K is the members per row
+ * (bark_cost_keys_per_row); a qual on one path matches a row through about
+ * one member, so the selectivity would be fraction * K.  (The RethinkDB
+ * review's sketch divided by K; that counts members per row the wrong way
+ * round.)
+ *
+ * They are not spread evenly: a separator is a leaf, and a value whose rows
+ * coalesce into LIST and POSTING entries packs ten times the members of a
+ * leaf of distinct keys, or more.  So the leaves are read instead, which
+ * is get_actual_variable_range's reading of the index at plan time.  A row
+ * has one member per key, so the TIDs read are rows.  A boundary that
+ * covers at most two intervals, or is a point, is counted exactly
+ * (bark_sample_count); one that runs past the leaf limit is estimated from
+ * the TIDs per leaf read, over the leaves its intervals cover, or from the
+ * fraction when that is higher.  Any other boundary with a sample key
+ * inside, open at one end or not, reads the leaves at up to three of them
+ * (bark_sample_probe, once per key for the sample's life) and takes their
+ * TIDs per leaf over the leaves it covers.  The fraction alone is left for
+ * a boundary open at one end with no sample key inside.  A sample with no
+ * keys (every separator OVERSIZED) says nothing of the distribution, so
+ * then only an exact count is an answer.
+ *
+ * -1 for a hypothetical index, an empty one or one whose root is a leaf,
+ * an extracted column that is not the first key column, a non-Const or
+ * NULL argument, a procedure 8 that asks for a recheck or the NULL entries
+ * (its boundaries then hold more than the matches), an empty heap, and a
+ * sample with no keys unless every boundary is counted exactly.
+ */
+double
+bark_estimate_qual_selectivity(IndexOptInfo *index, int indexcol, Expr *clause)
+{
+	OpExpr	   *op = (OpExpr *) clause;
+	Node	   *arg;
+	Oid			procoid;
+	Relation	indexRel;
+	BarkKeySample *sample;
+	BarkKeyInfo *keyinfo;
+	BarkBoundary *result = NULL;
+	int32		nresult = 0;
+	bool		recheck = false;
+	BarkQueryFlags flags;
+	double		reltuples = index->rel->tuples;
+	double		keysperrow;
+	double		leavesper;
+	double		selec = 0.0;
+	bool		multikey;
+
+	if (index->hypothetical || indexcol != 0 || reltuples <= 0 ||
+		!IsA(clause, OpExpr) || list_length(op->args) != 2)
+		return -1;
+	/* A planner clause has a RelabelType of a Const folded into the Const. */
+	arg = (Node *) lsecond(op->args);
+	if (!IsA(arg, Const) || ((Const *) arg)->constisnull)
+		return -1;
+	procoid = get_opfamily_proc(index->opfamily[indexcol],
+								index->opcintype[indexcol],
+								index->opcintype[indexcol],
+								BARK_EXTRACTQUERY_PROC);
+	if (!OidIsValid(procoid))
+		return -1;
+
+	/* plancat.c has locked the index. */
+	indexRel = index_open(index->indexoid, NoLock);
+	if (bark_index_extracted_column(indexRel) != indexcol + 1 ||
+		(sample = bark_sample_get(indexRel)) == NULL)
+	{
+		index_close(indexRel, NoLock);
+		return -1;
+	}
+	bark_cost_extract(index, indexcol, procoid, op, ((Const *) arg)->constvalue,
+					  indexRel, &result, &nresult, &recheck, &flags);
+	if (recheck || flags.searchnulls)
+	{
+		index_close(indexRel, NoLock);
+		return -1;
+	}
+
+	keysperrow = bark_cost_keys_per_row(index, &multikey);
+	keyinfo = bark_build_keyinfo(indexRel);
+	leavesper = Max((double) index->pages / (sample->nkeys + 1), 1.0);
+	for (int i = 0; i < nresult; i++)
+	{
+		BarkScanBound start;
+		BarkScanBound end;
+		bool		hasstart = false;
+		bool		hasend = false;
+		bool		point;
+		bool		exact = false;
+		int			lo;
+		int			hi;
+		int			inside;
+		double		bsel;
+
+		if (result[i].lower != NULL)
+			bark_sample_side(keyinfo, result[i].lower, true, &start, &end,
+							 &hasstart, &hasend);
+		if (result[i].upper != NULL)
+			bark_sample_side(keyinfo, result[i].upper, false, &start, &end,
+							 &hasstart, &hasend);
+		point = result[i].lower != NULL && result[i].upper != NULL &&
+			result[i].lower->strategy == BTEqualStrategyNumber &&
+			result[i].upper->strategy == BTEqualStrategyNumber;
+
+		lo = hasstart ? bark_sample_find(indexRel, keyinfo, sample, &start) : 0;
+		hi = hasend ? bark_sample_find(indexRel, keyinfo, sample, &end) :
+			sample->nkeys;
+		inside = Max(hi - lo, 0);
+		bsel = (inside > 0 ? inside : 0.5) / (sample->nkeys + 1) * keysperrow;
+
+		if (hasstart && hasend && (inside <= 2 || point))
+		{
+			double		ntids;
+			int			nleaves;
+
+			if ((exact = bark_sample_count(indexRel, keyinfo, &start, &end,
+										   &ntids, &nleaves)))
+				bsel = ntids / reltuples;
+			else
+				bsel = Max(bsel, Max(ntids, ntids / nleaves * (inside + 1) *
+									 leavesper) / reltuples);
+		}
+		else if (inside > 0)
+		{
+			double		ntids = 0;
+			int			nprobes = 0;
+
+			/* The leaves at up to three sample keys spread across the range. */
+			for (int j = 0; j < Min(inside, BARK_SAMPLE_PROBES); j++)
+			{
+				int			k = lo + (int) (((int64) 2 * j + 1) * inside /
+											(2 * Min(inside, BARK_SAMPLE_PROBES)));
+
+				ntids += bark_sample_probe(indexRel, keyinfo, sample, k);
+				nprobes++;
+			}
+			bsel = ntids / nprobes * inside * leavesper / reltuples;
+		}
+		/* With no sample keys, there are no intervals to estimate over. */
+		if (sample->nkeys == 0 && !exact)
+		{
+			pfree(keyinfo);
+			index_close(indexRel, NoLock);
+			return -1;
+		}
+		selec += Min(bsel, 1.0);
+	}
+	pfree(keyinfo);
+	index_close(indexRel, NoLock);
+
+	/* A sum of fractions, so never negative, but over 1 for overlaps. */
+	return Min(selec, 1.0);
+}
+
+/*
+ * barkorderbyopcolumn -- the column an ordering operator can be served on.
+ *
+ * The KNN scan walks outward from its constant in index order, so it orders
+ * a column only inside a run of entries equal on every column before it:
+ * the leading column, or the column after a prefix that the path's clauses
+ * fix to one value.  A btree column is fixed by an equality.  The extracted
+ * column is fixed by a single clause, with a constant, whose procedure 8
+ * boundaries are one point: a row's keys are distinct, so a row has at most
+ * one entry in the run and needs no seen set.  This is RUM's ORDER BY ts <=>
+ * x after a term qual.  An array, a range, several boundaries or a Param fix
+ * nothing.  The extracted column's own ordering (bark_mk_order_setup) walks
+ * its boundaries, not a run, so it is offered only when the column leads.
+ * The scan checks the prefix again (bark_knn_prefix) and refuses a scan
+ * whose keys do not fix it, rather than return rows out of order.
+ */
+static int
+barkorderbyopcolumn(IndexOptInfo *index, List *indexclauses)
+{
+	int			ncol = 0;
+
+	for (int col = 0; col < index->nkeycolumns - 1; col++)
+	{
+		bool		extracts = bark_opfamily_extracts(index->opfamily[col],
+													  index->opcintype[col]);
+		int			nclauses = 0;
+		bool		fixed = false;
+
+		foreach_node(IndexClause, iclause, indexclauses)
+		{
+			if (iclause->indexcol != col)
+				continue;
+			foreach_node(RestrictInfo, rinfo, iclause->indexquals)
+			{
+				Expr	   *clause = rinfo->clause;
+
+				nclauses++;
+				if (!IsA(clause, OpExpr))
+					continue;
+				if (extracts)
+				{
+					bool		noseen;
+					bool		recheck;
+					bool		point;
+
+					(void) bark_cost_boundaries(index, col, clause, &noseen,
+												&recheck, &point);
+					fixed = point;
+				}
+				else if (get_op_opfamily_strategy(((OpExpr *) clause)->opno,
+												  index->opfamily[col]) ==
+						 BTEqualStrategyNumber)
+					fixed = true;
+			}
+		}
+		if (!fixed || (extracts && nclauses > 1))
+			break;
+		ncol = col + 1;
+	}
+	if (ncol > 0 && bark_opfamily_extracts(index->opfamily[ncol],
+										   index->opcintype[ncol]))
+		return 0;
+	return ncol;
+}
+
+/*
+ * barkcostestimate -- estimate the cost of a BARK index scan.
+ *
+ * This is btcostestimate, applied to the quals as a BARK scan uses them.
+ * Only the quals that position and stop the scan (the boundary quals)
+ * decide how many entries it reads; the rest only filter.  As in nbtree, a
+ * column's quals bound the scan only when every earlier column has an
+ * equality.  BARK uses fewer quals than nbtree does (bark_make_bound and
+ * bark_past_bound):
+ *
+ *  - IS NULL and IS NOT NULL never bound the scan.
+ *  - An equality ScalarArrayOp bounds it like any equality, in either
+ *    direction, and the scan descends once per combination of the arrays'
+ *    elements, as nbtree's does.  When a column has several equalities, the
+ *    scan walks the one with the fewest elements (a plain equality has one),
+ *    so that is the column's factor in the number of descents.  An
+ *    inequality ScalarArrayOp is reduced to a plain key at rescan.
+ *  - A row comparison ends the bound.  Past column 1 it bounds only where
+ *    the scan starts, not where it stops, and not a skip scan's groups.
+ *  - A skip scan descends once per column-1 value, and only column 2's
+ *    plain quals bound it (bark_cost_skips).
+ *  - An ordered-operator (KNN) scan walks outward from its constant and
+ *    tests every qual as a filter, except that the quals on the columns
+ *    before the ordered one, which fix them (barkorderbyopcolumn), bound it
+ *    as an equality prefix does.
+ *
+ * The number of entries read is counted in heap rows, as nbtree counts index
+ * tuples after deduplication: LIST and POSTING entries make the index
+ * smaller, and genericcostestimate prorates the scan's pages over the
+ * index's pages, so the smaller index costs fewer page reads.  The descent
+ * charge, the primitive-scan clamp and the correlation (from the leading
+ * column's statistics, or the expression index's own) are btcostestimate's.
+ *
+ * An oversized entry's full value lives on an overflow chain that the scan
+ * reads in addition to the leaf page.  The chain length is estimated from
+ * the index's average bytes per row beyond what a leaf slot holds, and each
+ * entry read is charged a random page read per chain page.  That is the
+ * expected charge for an index whose entries are uniformly large and zero
+ * for one with none; a mixed index is charged the average, since the index
+ * keeps no count of its oversized entries.
+ *
+ * An index with an extracted column has K entries per row
+ * (bark_cost_keys_per_row).  The column's first qual positions the scan at
+ * procedure 8's boundaries, one descent each, and ends the walk of the
+ * quals; its other quals filter.  The entries read are the rows times K,
+ * capped at the index's entries, each charged cpu_index_tuple_cost, plus
+ * cpu_operator_cost for the seen set when the scan needs it and again for
+ * procedure 9 when the boundaries ask for it.  A scan that needs the set and
+ * whose rows per group of the fixed columns, at about 16 bytes each, exceed
+ * get_hash_memory_limit() is marked disabled (disabled_nodes, which the
+ * bitmap path built from the same IndexPath does not inherit, where
+ * disable_cost in indexTotalCost would reach it through
+ * cost_bitmap_tree_node), so the planner takes a bitmap scan.  The rows
+ * per group are the scan's rows unless every fixed column has an equality,
+ * which overstates them for a scan across many groups.  The rows returned
+ * stay the qual's selectivity times reltuples, and the correlation is 0
+ * when the extracted column is first.  An ordered scan on the extracted
+ * column reads every entry, and fetches from the heap every row the other
+ * columns' quals pass, since the column's own quals are only rechecked.
+ */
+static void
+barkcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
+				 Cost *indexStartupCost, Cost *indexTotalCost,
+				 Selectivity *indexSelectivity, double *indexCorrelation,
+				 double *indexPages)
+{
+	IndexOptInfo *index = path->indexinfo;
+	GenericCosts costs = {0};
+	VariableStatData vardata = {0};
+	List	   *indexBoundQuals = NIL;
+	bool		forward = !ScanDirectionIsBackward(path->indexscandir);
+	int			indexcol = 0;
+	bool		eqQualHere = false;
+	bool		lastcol = false;
+	bool		found_array = false;
+	bool		skipping = false;
+	double		colelems = 1;	/* fewest elements of an equality on indexcol */
+	double		num_sa_scans = 1;
+	double		numIndexTuples;
+	double		correlation = 0.0;
+	Cost		descentCost;
+	ListCell   *lc;
+	int			mkcol = -1;		/* extracted column, 0-based, or -1 */
+	bool		mkcounted = false;
+	bool		mknoseen = false;
+	bool		mkrecheck = false;
+	bool		multikey = false;
+	bool		mkgin = false;
+	double		mkdescents = 1;
+	double		keysperrow = 1.0;
+
+	examine_indexcol_variable(root, index, 0, &vardata);
+	if (HeapTupleIsValid(vardata.statsTuple))
+		correlation = btcost_correlation(index, &vardata);
+
+	/*
+	 * A skip scan reads column 1's groups one primitive scan at a time.  As
+	 * in btcostestimate, count one per distinct column-1 value plus one to
+	 * find the first, and assume skipping does not pay when that is more than
+	 * the index has pages or the number of values is only a guess.
+	 */
+	if (path->indexorderbys == NIL && bark_cost_skips(path))
+	{
+		bool		isdefault;
+		double		ndistinct;
+
+		ndistinct = get_variable_numdistinct(&vardata, &isdefault) + 1;
+		if (!isdefault && ndistinct <= index->pages)
+		{
+			num_sa_scans = ndistinct;
+			indexcol = 1;
+			lastcol = true;
+			found_array = true;
+			skipping = true;
+		}
+	}
+	ReleaseVariableStats(vardata);
+
+	for (int i = 0; i < index->nkeycolumns; i++)
+	{
+		if (bark_opfamily_extracts(index->opfamily[i], index->opcintype[i]))
+		{
+			mkcol = i;
+			break;
+		}
+	}
+	if (mkcol >= 0)
+		keysperrow = bark_cost_keys_per_row(index, &multikey);
+
+	/* A leading extracted column's statistics are of values, not keys. */
+	if (mkcol == 0)
+		correlation = 0.0;
+
+	foreach(lc, path->indexclauses)
+	{
+		IndexClause *iclause = lfirst_node(IndexClause, lc);
+
+		if (path->indexorderbys != NIL &&
+			iclause->indexcol >= linitial_int(path->indexorderbycols))
+			break;
+		if (iclause->indexcol != indexcol)
+		{
+			if (lastcol || !eqQualHere || iclause->indexcol != indexcol + 1)
+				break;
+			indexcol++;
+			eqQualHere = false;
+			num_sa_scans *= colelems;
+			colelems = 1;
+		}
+
+		foreach_node(RestrictInfo, rinfo, iclause->indexquals)
+		{
+			Expr	   *clause = rinfo->clause;
+			Oid			clause_op;
+			int			strategy;
+
+			if (IsA(clause, OpExpr))
+				clause_op = ((OpExpr *) clause)->opno;
+			else if (IsA(clause, ScalarArrayOpExpr))
+				clause_op = ((ScalarArrayOpExpr *) clause)->opno;
+			else if (IsA(clause, RowCompareExpr))
+			{
+				RowCompareExpr *rc = (RowCompareExpr *) clause;
+				bool		lower = (rc->cmptype == COMPARE_GT ||
+									 rc->cmptype == COMPARE_GE) !=
+					index->reverse_sort[indexcol];
+
+				/*
+				 * Past column 1, it only says where the scan starts, and a
+				 * skip scan does not use it.
+				 */
+				if (indexcol > 0 && (lower != forward || skipping))
+					continue;
+				clause_op = linitial_oid(rc->opnos);
+				lastcol = true;
+			}
+			else if (IsA(clause, NullTest))
+				continue;
+			else
+				elog(ERROR, "unsupported indexqual type: %d",
+					 (int) nodeTag(clause));
+
+			/*
+			 * The extracted column's first qual positions the scan at its
+			 * boundaries, the last ones the scan uses; the others filter.
+			 */
+			if (indexcol == mkcol)
+			{
+				if (!mkcounted)
+				{
+					if (IsA(clause, ScalarArrayOpExpr))
+						mkdescents = Max(estimate_array_length(root,
+															   lsecond(((ScalarArrayOpExpr *) clause)->args)),
+										 1);
+					else
+					{
+						bool		point;
+
+						mkdescents = bark_cost_boundaries(index, mkcol, clause,
+														  &mknoseen, &mkrecheck,
+														  &point);
+					}
+					colelems = mkdescents;
+					mkcounted = true;
+					indexBoundQuals = lappend(indexBoundQuals, rinfo);
+				}
+				lastcol = true;
+				continue;
+			}
+
+			strategy = get_op_opfamily_strategy(clause_op,
+												index->opfamily[indexcol]);
+			Assert(strategy != 0);
+			if (IsA(clause, ScalarArrayOpExpr) &&
+				strategy == BTEqualStrategyNumber)
+			{
+				ScalarArrayOpExpr *saop = (ScalarArrayOpExpr *) clause;
+				double		alength;
+
+				/* A skip scan's column-2 arrays only filter. */
+				if (skipping)
+					continue;
+				alength = Max(estimate_array_length(root, lsecond(saop->args)),
+							  1);
+				colelems = eqQualHere ? Min(colelems, alength) : alength;
+				found_array = true;
+			}
+			else if (strategy == BTEqualStrategyNumber)
+				colelems = 1;
+			if (strategy == BTEqualStrategyNumber)
+				eqQualHere = true;
+			indexBoundQuals = lappend(indexBoundQuals, rinfo);
+		}
+	}
+	num_sa_scans *= colelems;
+
+	/*
+	 * A unique index with an equality on every column returns at most one
+	 * row, as in btcostestimate.
+	 */
+	if (index->unique && indexcol == index->nkeycolumns - 1 && eqQualHere &&
+		!found_array)
+		numIndexTuples = 1.0;
+	else
+	{
+		List	   *selectivityQuals;
+
+		selectivityQuals = add_predicate_to_index_quals(index, indexBoundQuals);
+		numIndexTuples = clauselist_selectivity(root, selectivityQuals,
+												index->rel->relid,
+												JOIN_INNER, NULL) *
+			index->rel->tuples;
+
+		/*
+		 * An array scan reads on along the leaf level when the next
+		 * combination starts on the page it is reading, so it cannot descend
+		 * more than once per page: clamp as btcostestimate does.
+		 */
+		num_sa_scans = Min(num_sa_scans, ceil(index->pages * 0.3333333));
+		num_sa_scans = Max(num_sa_scans, 1);
+		numIndexTuples = rint(numIndexTuples / num_sa_scans);
+	}
+
+	/* Count only the meta page as non-leaf, as btcostestimate does. */
+	costs.numIndexTuples = numIndexTuples;
+	costs.num_sa_scans = num_sa_scans;
+	costs.numNonLeafPages = 1;
+	genericcostestimate(root, path, loop_count, &costs);
+
+	/*
+	 * Charge each descent about log2(N) comparisons and 50 operator costs per
+	 * level, the leaf included, as btcostestimate does.  Descents after the
+	 * first are not startup cost.
+	 */
+	if (index->tuples > 1)
+	{
+		descentCost = ceil(log(index->tuples) / log(2.0)) * cpu_operator_cost;
+		costs.indexStartupCost += descentCost;
+		costs.indexTotalCost += costs.num_sa_scans * descentCost;
+	}
+	descentCost = (index->tree_height + 1) * DEFAULT_PAGE_CPU_MULTIPLIER *
+		cpu_operator_cost;
+	costs.indexStartupCost += descentCost;
+	costs.indexTotalCost += costs.num_sa_scans * descentCost;
+
+	/* The overflow-chain surcharge. */
+	if (index->tuples > 0 && index->pages > 0)
+	{
+		double		avg_entry_bytes = (double) index->pages * BLCKSZ / index->tuples;
+
+		if (avg_entry_bytes > BarkMaxItemSize)
+		{
+			double		chain_pages = ceil((avg_entry_bytes - BarkMaxItemSize) /
+										   BarkOverflowChunkSize);
+			double		spc_random_page_cost;
+
+			get_tablespace_page_costs(index->reltablespace,
+									  &spc_random_page_cost, NULL);
+			costs.indexTotalCost += costs.numIndexTuples * costs.num_sa_scans *
+				chain_pages * spc_random_page_cost;
+			/* The first entry's chain is read before its first row returns. */
+			costs.indexStartupCost += chain_pages * spc_random_page_cost;
+		}
+	}
+
+	/*
+	 * An index scan through GIN's interface computes its whole result before
+	 * its first row (bark_mk_gin_gettuple), so all of the index cost is
+	 * startup cost, and a LIMIT does not stop it early.
+	 */
+	if (mkcol >= 0 && mkcounted &&
+		!OidIsValid(get_opfamily_proc(index->opfamily[mkcol],
+									  index->opcintype[mkcol],
+									  index->opcintype[mkcol],
+									  BARK_EXTRACTQUERY_PROC)) &&
+		OidIsValid(get_opfamily_proc(index->opfamily[mkcol],
+									 index->opcintype[mkcol],
+									 index->opcintype[mkcol],
+									 BARK_GIN_EXTRACTQUERY_PROC)))
+		mkgin = true;
+
+	/* An extracted column: K entries per row, the seen set, procedure 9. */
+	if (mkcol >= 0)
+	{
+		double		rows = costs.numIndexTuples * costs.num_sa_scans;
+		double		entries = Min(rows * keysperrow, index->tuples * keysperrow);
+		double		grouprows = rows;
+		bool		useseen = multikey && !(mkcounted && mknoseen);
+
+		costs.indexTotalCost += Max(entries - rows, 0) * cpu_index_tuple_cost;
+		if (useseen)
+			costs.indexTotalCost += entries * cpu_operator_cost;
+		if (mkrecheck)
+			costs.indexTotalCost += entries * cpu_operator_cost;
+
+		if (mkcol > 0 && mkcounted)
+			grouprows = Min(rows, rows * mkdescents / costs.num_sa_scans);
+		if (useseen && grouprows * 16.0 > (double) get_hash_memory_limit())
+			path->path.disabled_nodes++;
+
+		/*
+		 * An ordered scan on the extracted column walks the whole ordering
+		 * range (rows above is every row), and the column's quals neither
+		 * position nor filter it: each row comes back for the executor's
+		 * recheck.  So the heap fetches, which cost_index takes from the
+		 * selectivity, are the rows the other columns' quals let through.
+		 */
+		if (list_member_int(path->indexorderbycols, mkcol))
+		{
+			List	   *otherquals = NIL;
+
+			foreach(lc, path->indexclauses)
+			{
+				IndexClause *iclause = lfirst_node(IndexClause, lc);
+
+				if (iclause->indexcol != mkcol)
+					otherquals = list_concat(otherquals, iclause->indexquals);
+			}
+			costs.indexSelectivity =
+				clauselist_selectivity(root,
+									   add_predicate_to_index_quals(index,
+																	otherquals),
+									   index->rel->relid, JOIN_INNER, NULL);
+		}
+	}
+
+	if (mkgin)
+		costs.indexStartupCost = costs.indexTotalCost;
+
+	*indexStartupCost = costs.indexStartupCost;
+	*indexTotalCost = costs.indexTotalCost;
+	*indexSelectivity = costs.indexSelectivity;
+	*indexCorrelation = correlation;
+	*indexPages = costs.numIndexPages;
+}
+
+/*
+ * Parse and validate the index's reloptions into a BarkOptions.
+ *
+ * deduplicate_items and vacuum_cleanup_index_scale_factor are btree's, so
+ * that a btree index BARK implements (pg_index.indimplam) takes every
+ * option a btree index takes.  deduplicate_items = off stops equal keys from
+ * sharing entries (bark_index_coalesces); vacuum_cleanup_index_scale_factor
+ * is accepted and ignored, as nbtree has ignored it since PostgreSQL 14.
+ */
+static bytea *
+barkoptions(Datum reloptions, bool validate)
+{
+	static const relopt_parse_elt tab[] = {
+		{"fillfactor", RELOPT_TYPE_INT, offsetof(BarkOptions, fillfactor)},
+		{"prefix_compression", RELOPT_TYPE_BOOL,
+		offsetof(BarkOptions, prefix_compression)},
+		{"deduplicate_items", RELOPT_TYPE_BOOL,
+		offsetof(BarkOptions, deduplicate_items)},
+		{"vacuum_cleanup_index_scale_factor", RELOPT_TYPE_REAL,
+		offsetof(BarkOptions, vacuum_cleanup_index_scale_factor)},
+	};
+
+	return (bytea *) build_reloptions(reloptions, validate,
+									  RELOPT_KIND_BARK,
+									  sizeof(BarkOptions),
+									  tab, lengthof(tab));
+}
+
+/*
+ * Tree height for the planner's descent-cost charge: the level of the root,
+ * zero for a single-page or empty index.  Taken from the root cache, as
+ * nbtree's _bt_getrootheight takes it from its meta page cache.
+ */
+static int
+barkgettreeheight(Relation rel)
+{
+	return (int) bark_get_root_level(rel);
+}
+
+/*
+ * Opclass validation lives in barkvalidate.c.
+ */
+
+static IndexScanDesc
+barkbeginscan(Relation r, int nkeys, int norderbys)
+{
+	return bark_beginscan(r, nkeys, norderbys);
+}
+
+static void
+barkrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
+		   ScanKey orderbys, int norderbys)
+{
+	bark_rescan(scan, scankey, nscankeys, orderbys, norderbys);
+}
+
+static bool
+barkgettuple(IndexScanDesc scan, ScanDirection dir)
+{
+	return bark_gettuple(scan, dir);
+}
+
+static int64
+barkgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
+{
+	return bark_getbitmap(scan, tbm);
+}
+
+static void
+barkendscan(IndexScanDesc scan)
+{
+	bark_endscan(scan);
+}
+
+/*
+ * BARK index access method handler.
+ *
+ * Returns an IndexAmRoutine that declares BARK's capabilities.  BARK is an
+ * ordered index whose operator families are btree operator families (like
+ * the btree AM's), it stores the heap-TID locator, and it answers ordered-
+ * operator (KNN) scans -- ORDER BY col <~> const -- over its scalar key
+ * (amcanorderbyop; see barkknn.c).
+ *
+ * It can also implement btree indexes (amimplements): with
+ * default_btree_implementation = bark, or a table AM that asks for it, an
+ * index created USING btree is stored and searched by this code
+ * (pg_index.indimplam).  Such an index has btree's operator classes, whose
+ * families are btree's, so every column takes BARK's scalar path: no
+ * procedure past 6, no extracted column (bark_opfamily_is_own is false).
+ * amsupport 15 and amstrategies 0 are what BARK's own families need; core
+ * accepts both for an implementation ("Implementing btree" in the README).
+ */
+Datum
+barkhandler(PG_FUNCTION_ARGS)
+{
+	static const IndexAmRoutine amroutine = {
+		.type = T_IndexAmRoutine,
+		.amstrategies = 0,		/* any int2: a multikey family numbers its own */
+		.amsupport = BARK_MULTIKEY_NPROCS,
+		.amoptsprocnum = BARK_OPTIONS_PROC,
+		.amcanorder = true,
+		.ambtreeopfamilies = true,
+		.amcanorderbyop = true, /* KNN: ORDER BY col <~> const (see barkknn.c) */
+		.amcanhash = false,
+		.amconsistentequality = true,
+		.amconsistentordering = true,
+		.amcanbackward = true,
+		.amcanunique = true,
+		.amcanmulticol = true,
+		.amoptionalkey = true,
+		.amsearcharray = true,	/* ScalarArrayOp (SAOP): col = ANY(array), see
+								 * barkscan.c */
+		.amsearchnulls = true,
+		.amstorage = true,		/* a multikey class stores its keys' type */
+		.amclusterable = true,
+		.ampredlocks = true,
+		.amcanparallel = true,
+		.amcanbuildparallel = true,
+		.amcaninclude = true,
+		.amusemaintenanceworkmem = false,
+		.amsummarizing = false,
+		.amparallelvacuumoptions =
+		VACUUM_OPTION_PARALLEL_BULKDEL | VACUUM_OPTION_PARALLEL_COND_CLEANUP,
+		.amkeytype = InvalidOid,
+		.amimplements = BTREE_AM_OID,
+		.amcanversion = true,
+		.amindexcanversion = bark_indexcanversion,
+		.amindexmaykeeplocator = bark_indexmaykeeplocator,
+
+		.ambuild = barkbuild,
+		.ambuildempty = barkbuildempty,
+		.aminsert = barkinsert,
+		.aminsertcleanup = NULL,
+		.ambulkdelete = barkbulkdelete,
+		.amvacuumcleanup = barkvacuumcleanup,
+		.amcanreturn = bark_canreturn,
+		.amcostestimate = barkcostestimate,
+		.amgettreeheight = barkgettreeheight,
+		.amorderbyopcolumn = barkorderbyopcolumn,
+		.amoptions = barkoptions,
+		.amproperty = bark_property,
+		.ambuildphasename = NULL,
+		.amvalidate = barkvalidate,
+		.amadjustmembers = barkadjustmembers,
+		.ambeginscan = barkbeginscan,
+		.amrescan = barkrescan,
+		.amgettuple = barkgettuple,
+		.amgetbitmap = barkgetbitmap,
+		.amendscan = barkendscan,
+		.ammarkpos = bark_markpos,
+		.amrestrpos = bark_restrpos,
+		.amestimateparallelscan = bark_estimateparallelscan,
+		.aminitparallelscan = bark_initparallelscan,
+		.amparallelrescan = bark_parallelrescan,
+		.amtranslatestrategy = bark_translate_strategy,
+		.amtranslatecmptype = bark_translate_cmptype,
+		.amcomparedatums = barkcomparedatums,
+	};
+
+	PG_RETURN_POINTER(&amroutine);
+}

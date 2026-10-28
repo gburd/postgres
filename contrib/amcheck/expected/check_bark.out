@@ -1,0 +1,466 @@
+-- bark_index_check() verifies the structure of a BARK index.
+-- (The amcheck extension is created by the earlier "check" test.)
+-- Rejects a non-BARK index.
+CREATE TABLE bark_check_tab (a int, b int);
+INSERT INTO bark_check_tab SELECT g, g % 100 FROM generate_series(1, 20000) g;
+CREATE INDEX bark_check_btree ON bark_check_tab USING btree (a);
+SELECT bark_index_check('bark_check_btree');  -- errors: not a BARK index
+ERROR:  expected "bark" index as targets for verification
+DETAIL:  Relation "bark_check_btree" is a btree index.
+-- A freshly built multi-level BARK index passes.
+CREATE INDEX bark_check_idx ON bark_check_tab USING bark (a);
+SELECT bark_index_check('bark_check_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+-- Still passes after inserts (page splits), deletes, and a vacuum.
+INSERT INTO bark_check_tab SELECT g, g % 100 FROM generate_series(20001, 40000) g;
+SELECT bark_index_check('bark_check_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+DELETE FROM bark_check_tab WHERE a <= 10000;
+VACUUM bark_check_tab;
+SELECT bark_index_check('bark_check_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+-- A multi-column index with INCLUDE columns passes (pivots are truncated).
+CREATE INDEX bark_check_multi
+  ON bark_check_tab USING bark (b, a) INCLUDE (a);
+SELECT bark_index_check('bark_check_multi');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+-- heapallindexed and the parent check pass on both, after the splits,
+-- deletes and page deletions above.  The two-argument form and the
+-- one-argument form name the same check.
+SELECT bark_index_check('bark_check_idx', true);
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+SELECT bark_index_check('bark_check_multi', heapallindexed => true);
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+SELECT bark_index_parent_check('bark_check_idx');
+ bark_index_parent_check 
+-------------------------
+ 
+(1 row)
+
+SELECT bark_index_parent_check('bark_check_idx', true);
+ bark_index_parent_check 
+-------------------------
+ 
+(1 row)
+
+SELECT bark_index_parent_check('bark_check_multi', heapallindexed => true);
+ bark_index_parent_check 
+-------------------------
+ 
+(1 row)
+
+SELECT bark_index_parent_check('bark_check_btree');  -- errors: not a BARK index
+ERROR:  expected "bark" index as targets for verification
+DETAIL:  Relation "bark_check_btree" is a btree index.
+-- Duplicate keys form LIST entries (sorted locator lists); the verifier checks
+-- that each list has >= 2 members stored strictly ascending.  Insert the
+-- duplicates (the insert path coalesces equal keys into LISTs) and verify, then
+-- shrink some lists by vacuuming away part of a key's rows and verify again.
+CREATE TABLE bark_check_list (a int, b int);
+CREATE INDEX bark_check_list_idx ON bark_check_list USING bark (a);
+INSERT INTO bark_check_list SELECT g % 50, g FROM generate_series(1, 10000) g;
+SELECT bark_index_check('bark_check_list_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+DELETE FROM bark_check_list WHERE a = 10 AND b < 5000;
+VACUUM bark_check_list;
+SELECT bark_index_check('bark_check_list_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+-- heapallindexed fingerprints each LIST member as the SINGLE entry its row
+-- would have; with a heap TID for every member, a list of 200 rows passes.
+SELECT bark_index_check('bark_check_list_idx', true);
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+SELECT bark_index_parent_check('bark_check_list_idx', true);
+ bark_index_parent_check 
+-------------------------
+ 
+(1 row)
+
+DROP TABLE bark_check_list;
+-- Enough clustered duplicates of one key promote its entry from LIST to
+-- POSTING (an sbm serialization); the verifier checks the sbm deserializes,
+-- self-validates, and holds >= 2 members.  Verify after the promotion and
+-- again after a partial-set vacuum.
+CREATE TABLE bark_check_post (a int, b int);
+CREATE INDEX bark_check_post_idx ON bark_check_post USING bark (a);
+INSERT INTO bark_check_post SELECT k, g
+  FROM generate_series(0, 4) k, generate_series(1, 400) g;
+SELECT bark_index_check('bark_check_post_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+DELETE FROM bark_check_post WHERE a = 2 AND b <= 300;
+VACUUM bark_check_post;
+SELECT bark_index_check('bark_check_post_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+SELECT bark_index_check('bark_check_post_idx', true);
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+SELECT bark_index_parent_check('bark_check_post_idx', true);
+ bark_index_parent_check 
+-------------------------
+ 
+(1 row)
+
+DROP TABLE bark_check_post;
+DROP TABLE bark_check_tab;
+-- Oversized keys (P04): a key larger than BarkMaxItemSize lives on an overflow
+-- page chain, referenced by a small OVERSIZED entry.  The verifier walks each
+-- chain (every page a BARK_OVERFLOW page, reachable to the recorded length) and
+-- reconstructs the full key to confirm it deforms.  Build with a mix of small
+-- and oversized keys, split by inserting more, delete + vacuum (freeing the
+-- chains), and verify at each step.  Keys are an incompressible md5 chain so
+-- they truly exceed the item ceiling.
+CREATE FUNCTION bark_chk_bigstr(s int, n int) RETURNS text
+  LANGUAGE sql IMMUTABLE AS
+$$ SELECT substr(string_agg(md5(s::text || g::text), '' ORDER BY g), 1, n)
+   FROM generate_series(1, (n + 31) / 32) g $$;
+CREATE TABLE bark_check_big (id int, k text);
+INSERT INTO bark_check_big SELECT g, 'small-' || lpad(g::text, 6, '0')
+  FROM generate_series(1, 40) g;
+INSERT INTO bark_check_big SELECT 100 + g,
+  'K' || lpad(g::text, 6, '0') || bark_chk_bigstr(g, 5000)
+  FROM generate_series(1, 40) g;
+CREATE INDEX bark_check_big_idx ON bark_check_big USING bark (k);
+SELECT bark_index_check('bark_check_big_idx');  -- oversized chains validated
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+-- Insert more oversized keys (leaf splits of oversized-holding pages, and
+-- oversized pivots on internal pages); multi-page chains too (64KB key).
+INSERT INTO bark_check_big SELECT 200 + g,
+  'M' || lpad(g::text, 6, '0') || bark_chk_bigstr(1000 + g, 6000)
+  FROM generate_series(1, 40) g;
+INSERT INTO bark_check_big VALUES (999, bark_chk_bigstr(999, 65000));
+SELECT bark_index_check('bark_check_big_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+-- An OVERSIZED entry's fingerprint is its full tuple's, read from the chain.
+SELECT bark_index_check('bark_check_big_idx', true);
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+SELECT bark_index_parent_check('bark_check_big_idx', true);
+ bark_index_parent_check 
+-------------------------
+ 
+(1 row)
+
+-- Delete the oversized rows and vacuum: the overflow chains are freed and the
+-- index stays structurally valid.
+DELETE FROM bark_check_big WHERE id >= 100;
+VACUUM bark_check_big;
+SELECT bark_index_check('bark_check_big_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+DROP TABLE bark_check_big;
+-- Oversized INCLUDE payload (P05): a small key with a non-key INCLUDE column
+-- too large for the leaf is stored on the overflow chain with the key.  The
+-- verifier validates the chain the same way as for an oversized key; pivots are
+-- truncated to the key, so the INCLUDE column never reaches an internal page.
+CREATE TABLE bark_check_inc (k int, payload text);
+INSERT INTO bark_check_inc SELECT g, bark_chk_bigstr(g, 32000)
+  FROM generate_series(1, 20) g;
+CREATE INDEX bark_check_inc_idx
+  ON bark_check_inc USING bark (k) INCLUDE (payload);
+SELECT bark_index_check('bark_check_inc_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+DELETE FROM bark_check_inc WHERE k <= 10;
+VACUUM bark_check_inc;
+SELECT bark_index_check('bark_check_inc_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+-- The payloads are compressed in the index and the heap alike; the
+-- fingerprints are formed from the uncompressed values either way.
+SELECT bark_index_check('bark_check_inc_idx', true);
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+SELECT bark_index_parent_check('bark_check_inc_idx', true);
+ bark_index_parent_check 
+-------------------------
+ 
+(1 row)
+
+DROP TABLE bark_check_inc;
+DROP FUNCTION bark_chk_bigstr(int, int);
+-- A parallel build produces a structurally valid index that is identical in
+-- content to a serially built one.  Force parallel workers on for the first
+-- build, off for the second, over the same 200k-row table.
+CREATE TABLE bark_par_tab (a int, b int);
+INSERT INTO bark_par_tab
+  SELECT (g * 7919) % 200000, g % 100 FROM generate_series(1, 200000) g;
+SET max_parallel_maintenance_workers = 4;
+SET maintenance_work_mem = '4MB';
+CREATE INDEX bark_par_idx ON bark_par_tab USING bark (a);  -- parallel build
+SELECT bark_index_check('bark_par_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+SET max_parallel_maintenance_workers = 0;
+CREATE INDEX bark_ser_idx ON bark_par_tab USING bark (a);  -- serial build
+SELECT bark_index_check('bark_ser_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+-- Both are three levels deep; check each level against its parent, and the
+-- heap against both.
+SELECT bark_index_parent_check('bark_par_idx', true);
+ bark_index_parent_check 
+-------------------------
+ 
+(1 row)
+
+SELECT bark_index_parent_check('bark_ser_idx', true);
+ bark_index_parent_check 
+-------------------------
+ 
+(1 row)
+
+-- Both indexes return the same rows for the same scans.
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*) AS n FROM bark_par_tab WHERE a BETWEEN 1000 AND 50000;
+   n   
+-------
+ 49001
+(1 row)
+
+SELECT (SELECT count(*) FROM bark_par_tab WHERE a = 7919) AS par_eq;
+ par_eq 
+--------
+      1
+(1 row)
+
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+RESET max_parallel_maintenance_workers;
+RESET maintenance_work_mem;
+DROP TABLE bark_par_tab;
+-- Run a check, and show its error with the TID of the row it names replaced
+-- by the row's name: where a row lands in the heap depends on the platform's
+-- alignment and the block size.
+CREATE FUNCTION bark_check_err(call text, tid tid, name text) RETURNS text
+LANGUAGE plpgsql AS $$
+BEGIN
+  EXECUTE 'SELECT ' || call;
+  RETURN 'no error';
+EXCEPTION WHEN OTHERS THEN
+  RETURN replace(SQLERRM, tid::text, '(' || name || ')');
+END $$;
+-- heapallindexed finds a heap tuple with no entry.  With indisready off,
+-- inserts skip the index, as they do for an index that CREATE INDEX
+-- CONCURRENTLY has not yet made ready; turning it back on leaves the index
+-- without entries for those rows.  The structure is still sound, so only
+-- heapallindexed notices.  The same is done to a btree index for
+-- comparison.  The error names the heap tuple without an entry, the row
+-- inserted last.
+CREATE TABLE bark_check_missing (a int, b text);
+INSERT INTO bark_check_missing SELECT g, 'row ' || g FROM generate_series(1, 5000) g;
+CREATE INDEX bark_check_missing_idx ON bark_check_missing USING bark (a);
+CREATE INDEX bark_check_missing_inc ON bark_check_missing USING bark (b) INCLUDE (a);
+CREATE INDEX bark_check_missing_bt ON bark_check_missing USING btree (a);
+SELECT bark_index_check('bark_check_missing_idx', true);
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+UPDATE pg_index SET indisready = false
+  WHERE indexrelid IN ('bark_check_missing_idx'::regclass,
+                       'bark_check_missing_inc'::regclass,
+                       'bark_check_missing_bt'::regclass);
+INSERT INTO bark_check_missing VALUES (5001, 'row 5001') RETURNING ctid AS missing \gset
+UPDATE pg_index SET indisready = true
+  WHERE indexrelid IN ('bark_check_missing_idx'::regclass,
+                       'bark_check_missing_inc'::regclass,
+                       'bark_check_missing_bt'::regclass);
+SELECT bark_index_check('bark_check_missing_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+SELECT bark_index_parent_check('bark_check_missing_idx');
+ bark_index_parent_check 
+-------------------------
+ 
+(1 row)
+
+SELECT bark_check_err('bark_index_check(''bark_check_missing_idx'', true)', :'missing', 'row 5001');
+                                                     bark_check_err                                                     
+------------------------------------------------------------------------------------------------------------------------
+ heap tuple (row 5001) from table "bark_check_missing" lacks matching index tuple within index "bark_check_missing_idx"
+(1 row)
+
+SELECT bark_check_err('bark_index_parent_check(''bark_check_missing_idx'', true)', :'missing', 'row 5001');
+                                                     bark_check_err                                                     
+------------------------------------------------------------------------------------------------------------------------
+ heap tuple (row 5001) from table "bark_check_missing" lacks matching index tuple within index "bark_check_missing_idx"
+(1 row)
+
+SELECT bark_check_err('bark_index_check(''bark_check_missing_inc'', true)', :'missing', 'row 5001');
+                                                     bark_check_err                                                     
+------------------------------------------------------------------------------------------------------------------------
+ heap tuple (row 5001) from table "bark_check_missing" lacks matching index tuple within index "bark_check_missing_inc"
+(1 row)
+
+SELECT bark_check_err('bt_index_check(''bark_check_missing_bt'', true)', :'missing', 'row 5001');
+                                                    bark_check_err                                                     
+-----------------------------------------------------------------------------------------------------------------------
+ heap tuple (row 5001) from table "bark_check_missing" lacks matching index tuple within index "bark_check_missing_bt"
+(1 row)
+
+-- REINDEX repairs it.
+REINDEX INDEX bark_check_missing_idx;
+SELECT bark_index_check('bark_check_missing_idx', true);
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+SELECT bark_index_parent_check('bark_check_missing_idx', true);
+ bark_index_parent_check 
+-------------------------
+ 
+(1 row)
+
+DROP TABLE bark_check_missing;
+-- An index with a key that coalesces into a POSTING entry, missing one
+-- member: the row's fingerprint is that of the SINGLE it would be, and the
+-- entry's members are fingerprinted the same way.
+CREATE TABLE bark_check_missing2 (k int);
+INSERT INTO bark_check_missing2 SELECT 1 FROM generate_series(1, 3000);
+CREATE INDEX bark_check_missing2_idx ON bark_check_missing2 USING bark (k);
+SELECT bark_index_check('bark_check_missing2_idx', true);
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+UPDATE pg_index SET indisready = false
+  WHERE indexrelid = 'bark_check_missing2_idx'::regclass;
+INSERT INTO bark_check_missing2 VALUES (1) RETURNING ctid AS missing \gset
+UPDATE pg_index SET indisready = true
+  WHERE indexrelid = 'bark_check_missing2_idx'::regclass;
+SELECT bark_check_err('bark_index_check(''bark_check_missing2_idx'', true)', :'missing', 'the last row');
+                                                        bark_check_err                                                        
+------------------------------------------------------------------------------------------------------------------------------
+ heap tuple (the last row) from table "bark_check_missing2" lacks matching index tuple within index "bark_check_missing2_idx"
+(1 row)
+
+DROP TABLE bark_check_missing2;
+DROP FUNCTION bark_check_err(text, tid, text);
+-- An empty index passes every check, and the 1.6 one-argument form still
+-- works after an update from 1.6.
+CREATE TABLE bark_check_empty (a int);
+CREATE INDEX bark_check_empty_idx ON bark_check_empty USING bark (a);
+SELECT bark_index_check('bark_check_empty_idx', true);
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+SELECT bark_index_parent_check('bark_check_empty_idx', true);
+ bark_index_parent_check 
+-------------------------
+ 
+(1 row)
+
+DROP EXTENSION amcheck;
+CREATE EXTENSION amcheck VERSION '1.6';
+SELECT bark_index_check('bark_check_empty_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+ALTER EXTENSION amcheck UPDATE TO '1.7';
+SELECT bark_index_check('bark_check_empty_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+SELECT bark_index_parent_check('bark_check_empty_idx');
+ bark_index_parent_check 
+-------------------------
+ 
+(1 row)
+
+SELECT bark_index_check('bark_check_empty_idx', false);
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+DROP TABLE bark_check_empty;
+-- Leave the extension at the current version for the tests after this one.
+ALTER EXTENSION amcheck UPDATE TO '1.8';

@@ -1,0 +1,347 @@
+--
+-- Version-tag plumbing between a table AM whose locator is versioned
+-- (heap_versioned) and an index AM that stores tags (test_versioned_btree).
+-- heap_versioned's tag for a row version is its xmin, and it raises an
+-- error wherever it is handed a (TID, tag) whose tag is neither 0 nor the
+-- xmin of the tuple at that TID; test_versioned_seen shows which checks
+-- saw tags.
+--
+CREATE EXTENSION test_versioned_tableam;
+SELECT amname, pg_indexam_has_property(oid, 'can_version')
+  FROM pg_am WHERE amname IN ('btree', 'test_versioned_btree') ORDER BY 1;
+
+-- btree indexes on heap_versioned are implemented by test_versioned_btree
+CREATE TABLE tv (id int PRIMARY KEY, a int, b int, c text) USING heap_versioned;
+CREATE INDEX tv_a ON tv (a);
+CREATE INDEX tv_b ON tv USING hash (b);
+SELECT c.relname, am.amname AS logical, i.amname AS impl
+  FROM pg_index x JOIN pg_class c ON c.oid = x.indexrelid
+  JOIN pg_am am ON am.oid = c.relam LEFT JOIN pg_am i ON i.oid = x.indimplam
+ WHERE x.indrelid = 'tv'::regclass ORDER BY 1;
+
+-- INSERT: new rows are untagged
+SELECT test_versioned_reset();
+INSERT INTO tv SELECT g, g, g, 'x' || g FROM generate_series(1, 20) g;
+SELECT * FROM test_versioned_seen;
+SELECT count(*) AS untagged FROM tv WHERE test_versioned_tag('tv_a', ctid) = 0;
+
+-- UPDATE of an indexed column: the row moves, and the moved version's
+-- entries carry its tag, its xmin
+SELECT test_versioned_reset();
+UPDATE tv SET a = a + 100 WHERE id <= 5;
+SELECT counter, n FROM test_versioned_seen WHERE counter = 'insert_tagged';
+SELECT count(*) AS tagged_with_xmin FROM tv
+ WHERE id <= 5 AND test_versioned_tag('tv_a', ctid) = xmin::text::bigint
+   AND test_versioned_tag('tv_pkey', ctid) = xmin::text::bigint;
+-- hash stores no tags, so nothing is recorded for it
+SELECT count(test_versioned_tag('tv_b', ctid)) FROM tv;
+
+-- plain index scan, index-only scan, bitmap scan: tags reach the table AM
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT test_versioned_reset();
+SET enable_indexonlyscan = off;
+EXPLAIN (COSTS OFF) SELECT id, a FROM tv WHERE a > 100;
+SELECT id, a FROM tv WHERE a > 100 ORDER BY a;
+SELECT * FROM test_versioned_seen;
+SELECT test_versioned_reset();
+SET enable_indexonlyscan = on;
+EXPLAIN (COSTS OFF) SELECT a FROM tv WHERE a > 100;
+SELECT a FROM tv WHERE a > 100 ORDER BY a;
+SELECT * FROM test_versioned_seen;
+SELECT test_versioned_reset();
+SET enable_indexscan = off;
+SET enable_indexonlyscan = off;
+SET enable_bitmapscan = on;
+EXPLAIN (COSTS OFF) SELECT id FROM tv WHERE a > 100;
+SELECT id FROM tv WHERE a > 100 ORDER BY id;
+SELECT * FROM test_versioned_seen;
+RESET enable_seqscan;
+RESET enable_indexscan;
+RESET enable_indexonlyscan;
+RESET enable_bitmapscan;
+
+-- fetch_tid_version gets an entry's tag and index, as from an index AM's
+-- unique check
+SELECT test_versioned_reset();
+SELECT bool_and(test_versioned_fetch('tv_a', ctid)) FROM tv;
+SELECT * FROM test_versioned_seen;
+
+-- unique violations
+INSERT INTO tv VALUES (1, 0, 0, 'dup');
+UPDATE tv SET id = 2 WHERE id = 1;
+
+-- ON CONFLICT: the arbiter probe is an index scan; id 3's entry is tagged
+SELECT test_versioned_reset();
+INSERT INTO tv VALUES (3, 0, 0, 'conflict') ON CONFLICT (id) DO UPDATE SET c = 'upd';
+INSERT INTO tv VALUES (6, 0, 0, 'conflict') ON CONFLICT DO NOTHING;
+SELECT id, c FROM tv WHERE id IN (3, 6) ORDER BY id;
+SELECT * FROM test_versioned_seen;
+
+-- DELETE, then VACUUM: heap's own index pass removes the deleted row's
+-- entries; the version callback then untags the live tagged ones.  id 3's
+-- HOT update (above) leaves a redirect at its root, which is live.
+SELECT test_versioned_reset();
+DELETE FROM tv WHERE id = 20;
+VACUUM tv;
+SELECT * FROM test_versioned_seen;
+SELECT count(*) AS still_tagged FROM tv WHERE test_versioned_tag('tv_a', ctid) <> 0;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*) AS found_by_index FROM tv WHERE a > 0;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+
+-- bottom-up index deletion reaches index_delete_tuples, whose
+-- TM_IndexStatus carries each entry's tag (0 from nbtree).  Every update
+-- changes b, so it is not HOT, and gives tbu_a an unchanged duplicate.
+SELECT test_versioned_reset();
+CREATE TABLE tbu (a int, b int) USING heap_versioned;
+CREATE INDEX tbu_a ON tbu (a);
+CREATE INDEX tbu_b ON tbu USING hash (b);
+INSERT INTO tbu SELECT g, 0 FROM generate_series(1, 400) g;
+DO $$
+BEGIN
+  FOR i IN 1..10 LOOP
+    UPDATE tbu SET b = b + 1;
+  END LOOP;
+END $$;
+SELECT n > 0 AS deletion_saw_entries FROM test_versioned_counts()
+ WHERE counter = 'delete_status';
+DROP TABLE tbu;
+
+-- CREATE INDEX: the build tags each row it hands over with the xmin of
+-- the tuple at the entry's TID.  A HOT-updated row's entry is at its
+-- chain's root, not at its ctid, so looking it up by ctid finds nothing.
+SELECT test_versioned_reset();
+UPDATE tv SET c = c || '!' WHERE id <= 3;  -- HOT
+CREATE INDEX tv_c ON tv (c);
+SELECT * FROM test_versioned_seen;
+SELECT id <= 3 AS hot, test_versioned_tag('tv_c', ctid) = xmin::text::bigint AS tag_is_xmin,
+       count(*)
+  FROM tv GROUP BY 1, 2 ORDER BY 1, 2;
+
+-- CREATE INDEX CONCURRENTLY: validation gets (TID, tag) pairs
+SELECT test_versioned_reset();
+CREATE INDEX CONCURRENTLY tv_ab ON tv (a, b);
+SELECT counter FROM test_versioned_seen WHERE counter LIKE 'validate%' OR counter = 'build_tagged';
+
+-- REINDEX, REPACK and VACUUM FULL rebuild with tags
+SELECT test_versioned_reset();
+REINDEX TABLE tv;
+SELECT counter FROM test_versioned_seen;
+REPACK tv;
+VACUUM FULL tv;
+-- REPACK (CONCURRENTLY) accepts only heap's own routine, since it cannot
+-- tell whether another AM's changes are decoded
+REPACK (CONCURRENTLY) tv;
+SET enable_seqscan = off;
+SELECT count(*) FROM tv WHERE a > 0;
+RESET enable_seqscan;
+
+DROP TABLE tv;
+
+-- TU_Affected.  With keep_locator = pretend, heap_versioned reports that it
+-- kept the row's locator whenever the executor let it (see the module's
+-- header: the table is left without entries for the moved rows in the
+-- unaffected indexes, so use a scratch table).  The executor then gives
+-- tagged entries only to the indexes the update affected and to summarizing
+-- ones.
+CREATE TABLE tk (id int, a int, b int) USING heap_versioned;
+CREATE INDEX tk_a ON tk (a);
+CREATE INDEX tk_b ON tk (b);
+CREATE INDEX tk_brin ON tk USING brin (id);
+INSERT INTO tk VALUES (1, 1, 1);
+SELECT test_versioned_reset();
+SET test_versioned_tableam.keep_locator = pretend;
+UPDATE tk SET a = 2;
+SELECT test_versioned_tag('tk_a', ctid) = xmin::text::bigint AS a_tagged,
+       test_versioned_tag('tk_b', ctid) AS b_tag
+  FROM tk;
+SELECT * FROM test_versioned_seen;
+-- a hash index on b stores no tags, so an update of b must move the row
+CREATE INDEX tk_bh ON tk USING hash (b);
+SELECT test_versioned_reset();
+UPDATE tk SET b = 2;
+SELECT * FROM test_versioned_seen;
+-- TU_Affected with tag 0 is refused
+SET test_versioned_tableam.keep_locator = untagged;
+UPDATE tk SET a = 3;
+RESET test_versioned_tableam.keep_locator;
+DROP TABLE tk;
+
+-- An index of an AM with amcanversion for which amindexcanversion says no
+-- (test_versioned_btree: a name ending in _notag) is treated as an index
+-- that stores no tags: an update affecting it moves the row (TU_All), its
+-- entries are untagged, and one not affecting it keeps the locator.
+CREATE TABLE tn (id int, a int, b int) USING heap_versioned;
+CREATE INDEX tn_a ON tn (a);
+CREATE INDEX tn_b_notag ON tn (b);
+INSERT INTO tn VALUES (1, 1, 1);
+SET test_versioned_tableam.keep_locator = pretend;
+SELECT test_versioned_reset();
+UPDATE tn SET b = 2;
+SELECT * FROM test_versioned_seen;
+SELECT test_versioned_tag('tn_a', ctid) = xmin::text::bigint AS a_tagged,
+       test_versioned_tag('tn_b_notag', ctid) AS b_tag
+  FROM tn;
+SELECT test_versioned_reset();
+UPDATE tn SET a = 2;
+SELECT * FROM test_versioned_seen;
+SELECT test_versioned_tag('tn_a', ctid) = xmin::text::bigint AS a_tagged
+  FROM tn;
+RESET test_versioned_tableam.keep_locator;
+DROP TABLE tn;
+
+-- An index that stores tags but refuses to keep a locator
+-- (amindexmaykeeplocator; test_versioned_btree: a name ending in _nokeep):
+-- an update affecting it moves the row (TU_All), and its new entry is still
+-- tagged, since the index stores tags; one not affecting it keeps the
+-- locator.
+CREATE TABLE tq (id int, a int, b int) USING heap_versioned;
+CREATE INDEX tq_a ON tq (a);
+CREATE INDEX tq_b_nokeep ON tq (b);
+INSERT INTO tq VALUES (1, 1, 1);
+SET test_versioned_tableam.keep_locator = pretend;
+SELECT test_versioned_reset();
+UPDATE tq SET b = 2;
+SELECT * FROM test_versioned_seen;
+SELECT test_versioned_tag('tq_a', ctid) = xmin::text::bigint AS a_tagged,
+       test_versioned_tag('tq_b_nokeep', ctid) = xmin::text::bigint AS b_tagged
+  FROM tq;
+SELECT test_versioned_reset();
+UPDATE tq SET a = 2;
+SELECT * FROM test_versioned_seen;
+RESET test_versioned_tableam.keep_locator;
+DROP TABLE tq;
+
+-- An exclusion constraint's index that keeps its entries under TU_Affected
+-- gets no new entry, so its constraint is checked after the update
+-- (ExecCheckHotExclusion), as after a HOT update.  An interval hashes as
+-- hashint8() of its span in microseconds, and spans of 1 and 2^32
+-- microseconds collide, so changing k from one to the other gives the hash
+-- index the same entry (int8 itself would not do: its equality implies image
+-- equality, so the index is not asked about two different int8 values); the
+-- change to a needs an entry in tx_a, so the update is not HOT,
+-- and with keep_locator = pretend the row keeps its locator.  A conflict
+-- with another row is found by that check alone.  tx_a is partial, so the
+-- executor evaluates it: a plain btree index, whose access method cannot
+-- compare entries, would leave k modified too, and the hash index, which
+-- stores no tags, would then make the row move.
+CREATE TABLE tx (id int, k interval, a int, EXCLUDE USING hash (k WITH =))
+  USING heap_versioned;
+CREATE INDEX tx_a ON tx (a) WHERE a > 0;
+INSERT INTO tx VALUES (1, '00:00:00.000001', 1), (2, '01:11:34.967296', 2);
+SET test_versioned_tableam.keep_locator = pretend;
+UPDATE tx SET k = '01:11:34.967296', a = 10 WHERE id = 1;
+DELETE FROM tx WHERE id = 2;
+SELECT test_versioned_reset();
+UPDATE tx SET k = '01:11:34.967296', a = 10 WHERE id = 1;
+SELECT * FROM test_versioned_seen;
+-- Writing a compressed t back plain writes the same value, which changes
+-- no index's entries, so tz's exclusion index keeps its entry and its
+-- constraint needs no check.  The row enters tz_p's predicate, so only tz_p
+-- gets a (tagged) entry, and the row keeps its locator.
+CREATE TABLE tz (id int, t text, a int, EXCLUDE USING btree (t WITH =))
+  USING heap_versioned;
+CREATE INDEX tz_p ON tz (t) WHERE a > 1;
+INSERT INTO tz VALUES (1, repeat('z', 3000), 1);
+SELECT pg_column_compression(t) IS NOT NULL AS compressed FROM tz;
+SELECT test_versioned_reset();
+UPDATE tz SET t = t || '', a = 2;
+SELECT * FROM test_versioned_seen;
+RESET test_versioned_tableam.keep_locator;
+DROP TABLE tx, tz;
+
+-- A row with history in k stands for a row updated in place: its entries in
+-- an index on k are judged by the validity rule, valid only if tagged with
+-- the visible version's xmin.  Row 1 gets a stale entry for its old value
+-- 10, which the index scan, the index-only scan and fetch_tid_version all
+-- judge invalid, and which VACUUM removes; its current entry stays valid.
+CREATE TABLE th (id int, k int) USING heap_versioned;
+CREATE INDEX th_k ON th USING bark (k);
+INSERT INTO th VALUES (1, 10), (2, 20);
+UPDATE th SET k = k + 1;
+SELECT test_versioned_mark_history('th', ctid, 'k') FROM th WHERE id = 1;
+SELECT test_versioned_insert_entry('th_k', ctid, -1, '10') FROM th WHERE id = 1;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT test_versioned_reset();
+SELECT id FROM th WHERE k = 10;
+SELECT id FROM th WHERE k = 11;
+SELECT * FROM test_versioned_seen;
+SELECT test_versioned_reset();
+EXPLAIN (COSTS OFF) SELECT k FROM th WHERE k IN (10, 11);
+SELECT k FROM th WHERE k IN (10, 11);
+SELECT counter, n FROM test_versioned_seen WHERE counter LIKE 'judge%';
+SELECT test_versioned_fetch('th_k', ctid, xmin::text::int8) AS current,
+       test_versioned_fetch('th_k', ctid, 0) AS untagged,
+       test_versioned_fetch('th_k', ctid, xmin::text::int8 - 1) AS stale
+  FROM th WHERE id = 1;
+SELECT test_versioned_reset();
+VACUUM th;
+SELECT counter, n FROM test_versioned_seen WHERE counter LIKE 'vacuum%';
+SELECT id FROM th WHERE k = 10;
+SELECT id FROM th WHERE k = 11;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SELECT test_versioned_mark_history('th', ctid, NULL) FROM th WHERE id = 1;
+DROP TABLE th;
+
+-- The table AM's verdict on each entry an index scan returned
+-- (xs_entry_verdict), as test_versioned_btree reads it at its next
+-- amgettuple call: valid when a row was returned through the entry,
+-- invalid when it reached no visible version, or (for a row with history)
+-- when the entry is valid for no version; never unknown.
+CREATE VIEW tv_verdicts AS
+  SELECT counter, n FROM test_versioned_counts()
+   WHERE counter LIKE 'verdict%' ORDER BY counter;
+CREATE TABLE tj (id int, k int) USING heap_versioned;
+CREATE INDEX tj_k ON tj (k);
+INSERT INTO tj SELECT g, g FROM generate_series(1, 10) g;
+VACUUM tj;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+-- index scan: 3 rows returned through 3 entries
+SELECT test_versioned_reset();
+SELECT id FROM tj WHERE k <= 3;
+SELECT * FROM tv_verdicts;
+-- index-only scan on all-visible pages
+SELECT test_versioned_reset();
+EXPLAIN (COSTS OFF) SELECT k FROM tj WHERE k <= 3;
+SELECT k FROM tj WHERE k <= 3;
+SELECT * FROM tv_verdicts;
+-- a row deleted by our own open transaction: its entry reaches no visible
+-- version, in either scan (and is not killed, so both meet it)
+BEGIN;
+DELETE FROM tj WHERE id = 2;
+SELECT test_versioned_reset();
+SELECT k FROM tj WHERE k <= 3;
+SELECT * FROM tv_verdicts;
+SET LOCAL enable_indexonlyscan = off;
+SELECT test_versioned_reset();
+SELECT id FROM tj WHERE k <= 3;
+SELECT * FROM tv_verdicts;
+ROLLBACK;
+SET enable_indexonlyscan = off;
+-- an untagged entry of a row with history in k is valid for no version
+SELECT test_versioned_mark_history('tj', ctid, 'k') FROM tj WHERE id = 3;
+SELECT test_versioned_reset();
+SELECT id FROM tj WHERE k <= 3;
+SELECT * FROM tv_verdicts;
+SELECT test_versioned_mark_history('tj', ctid, NULL) FROM tj WHERE id = 3;
+RESET enable_indexonlyscan;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+-- The exclusion check's dirty-snapshot scan returns the new row itself and
+-- then walks on along its HOT chain (xs_heap_continue), which ends with
+-- nothing more: the entry stays valid.
+CREATE TABLE tk (id int, k int, EXCLUDE USING btree (k WITH =))
+  USING heap_versioned;
+SELECT test_versioned_reset();
+INSERT INTO tk VALUES (1, 1);
+SELECT * FROM tv_verdicts;
+DROP TABLE tj, tk;
+DROP VIEW tv_verdicts;
+
+DROP EXTENSION test_versioned_tableam;

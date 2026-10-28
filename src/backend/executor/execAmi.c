@@ -62,6 +62,7 @@
 #include "executor/nodeWorktablescan.h"
 #include "nodes/extensible.h"
 #include "nodes/pathnodes.h"
+#include "utils/lsyscache.h"
 #include "utils/syscache.h"
 
 static bool IndexSupportsBackwardScan(Oid indexid);
@@ -429,9 +430,12 @@ ExecSupportsMarkRestore(Path *pathnode)
 		case T_IndexOnlyScan:
 
 			/*
-			 * Not all index types support mark/restore.
+			 * Not all index types support mark/restore.  Nor does a scan with
+			 * ORDER BY operators: its node reorders tuples in a queue that
+			 * restoring the index position would not rewind.
 			 */
-			return castNode(IndexPath, pathnode)->indexinfo->amcanmarkpos;
+			return castNode(IndexPath, pathnode)->indexinfo->amcanmarkpos &&
+				castNode(IndexPath, pathnode)->indexorderbys == NIL;
 
 		case T_Material:
 		case T_Sort:
@@ -554,11 +558,19 @@ ExecSupportsBackwardScan(Plan *node)
 		case T_Gather:
 			return false;
 
+			/*
+			 * An index scan with ORDER BY operators returns tuples in
+			 * distance order, possibly through a reorder queue, and cannot
+			 * run that order backward, whatever the AM's amcanbackward says
+			 * about scans in key order.
+			 */
 		case T_IndexScan:
-			return IndexSupportsBackwardScan(((IndexScan *) node)->indexid);
+			return ((IndexScan *) node)->indexorderby == NIL &&
+				IndexSupportsBackwardScan(((IndexScan *) node)->indexid);
 
 		case T_IndexOnlyScan:
-			return IndexSupportsBackwardScan(((IndexOnlyScan *) node)->indexid);
+			return ((IndexOnlyScan *) node)->indexorderby == NIL &&
+				IndexSupportsBackwardScan(((IndexOnlyScan *) node)->indexid);
 
 		case T_SubqueryScan:
 			return ExecSupportsBackwardScan(((SubqueryScan *) node)->subplan);
@@ -598,12 +610,16 @@ ExecSupportsBackwardScan(Plan *node)
 
 /*
  * An IndexScan or IndexOnlyScan node supports backward scan only if the
- * index's AM does.
+ * code implementing the index does.  An AM whose indexes differ in that (by
+ * operator class, say) answers per index through amproperty; otherwise
+ * amcanbackward is the answer for every index of the AM.
  */
 static bool
 IndexSupportsBackwardScan(Oid indexid)
 {
 	bool		result;
+	bool		isnull = false;
+	Oid			implam;
 	HeapTuple	ht_idxrel;
 	Form_pg_class idxrelrec;
 	const IndexAmRoutine *amroutine;
@@ -614,10 +630,17 @@ IndexSupportsBackwardScan(Oid indexid)
 		elog(ERROR, "cache lookup failed for relation %u", indexid);
 	idxrelrec = (Form_pg_class) GETSTRUCT(ht_idxrel);
 
-	/* Fetch the index AM's API struct */
-	amroutine = GetIndexAmRoutineByAmId(idxrelrec->relam, false);
+	/* Fetch the API struct of the AM implementing the index */
+	implam = get_index_implam(indexid);
+	amroutine = GetIndexAmRoutineByAmId(OidIsValid(implam) ? implam :
+										idxrelrec->relam, false);
 
-	result = amroutine->amcanbackward;
+	result = false;
+	if (amroutine->amproperty == NULL ||
+		!amroutine->amproperty(indexid, 0, AMPROP_BACKWARD_SCAN,
+							   "backward_scan", &result, &isnull) ||
+		isnull)
+		result = amroutine->amcanbackward;
 
 	ReleaseSysCache(ht_idxrel);
 

@@ -41,6 +41,9 @@
    block number and an item number within that block (see <xref
    linkend="storage-page-layout"/>).  This is sufficient
    information to fetch a particular row version from the table.
+   What a TID identifies is up to the table's access method (see <xref
+   linkend="tableam-locator"/>); an index can be built only on a table whose
+   row locator fits in one.
    Indexes are not directly aware that under MVCC, there might be multiple
    extant versions of the same logical row; to an index, each tuple is
    an independent object that needs its own index entry.  Thus, an
@@ -144,10 +147,16 @@ typedef struct IndexAmRoutine
     /* does AM summarize tuples, with at least all tuples in the block
      * summarized in one summary */
     bool        amsummarizing;
+    /* can AM store a variable-width locator? */
+    bool        amcanvarlocator;
+    /* can AM store a version tag with each entry? */
+    bool        amcanversion;
     /* OR of parallel vacuum flags */
     uint8       amparallelvacuumoptions;
     /* type of data stored in index, or InvalidOid if variable */
     Oid         amkeytype;
+    /* built-in index AM whose indexes this AM can implement, or InvalidOid */
+    Oid         amimplements;
 
     /* interface functions */
     ambuild_function ambuild;
@@ -159,6 +168,7 @@ typedef struct IndexAmRoutine
     amcanreturn_function amcanreturn;   /* can be NULL */
     amcostestimate_function amcostestimate;
     amgettreeheight_function amgettreeheight;   /* can be NULL */
+    amorderbyopcolumn_function amorderbyopcolumn;   /* can be NULL */
     amoptions_function amoptions;
     amproperty_function amproperty;     /* can be NULL */
     ambuildphasename_function ambuildphasename;   /* can be NULL */
@@ -180,6 +190,15 @@ typedef struct IndexAmRoutine
     /* interface functions to support planning */
     amtranslate_strategy_function amtranslatestrategy;  /* can be NULL */
     amtranslate_cmptype_function amtranslatecmptype;    /* can be NULL */
+
+    /* interface function to support HOT updates */
+    amcomparedatums_function amcomparedatums;    /* can be NULL */
+
+    /* which indexes of an amcanversion AM store version tags */
+    amindexcanversion_function amindexcanversion;    /* can be NULL */
+
+    /* may an update keep a row's locator, for this index */
+    amindexmaykeeplocator_function amindexmaykeeplocator;    /* can be NULL */
 } IndexAmRoutine;
 </programlisting>
   </para>
@@ -280,6 +299,124 @@ typedef struct IndexAmRoutine
    predicates, an update of such an attribute always disables <acronym>HOT</acronym>.
   </para>
 
+  <para>
+   The <structfield>amcanversion</structfield> flag indicates that the access
+   method can store a <firstterm>version tag</firstterm> with each entry, for
+   tables whose row locator is versioned (see
+   <xref linkend="tableam-locator"/>).  Such an access method stores the tag
+   it is given with each new entry, orders entries with equal key and
+   <acronym>TID</acronym> by tag as an unsigned integer, and returns the tag
+   with the <acronym>TID</acronym>.  It never interprets a
+   tag: what a tag means, and which entries are valid for which row version,
+   is up to the table access method.  A tag of 0 means
+   <quote>untagged</quote>.  An access method that leaves the flag false
+   stores no tags, so all its entries are untagged; the executor then never
+   lets a versioned table keep a row's locator across an update that
+   changes the index's columns.
+  </para>
+
+  <para>
+   An access method may support tags for only some of its indexes, for
+   example by the format an index was built in or by the kind of its
+   operator classes.  It then sets <structfield>amcanversion</structfield>
+   and provides
+<programlisting>
+bool
+amindexcanversion (Relation indexRelation);
+</programlisting>
+   which says whether this index stores tags.  Core code asks
+   <function>index_can_version()</function>, which is true if the access
+   method sets <structfield>amcanversion</structfield> and either has no
+   <function>amindexcanversion</function> or it returns
+   <literal>true</literal>.  An index for which it is false is treated as
+   an index of an access method without <structfield>amcanversion</structfield>.
+   The answer must not change during the life of the index's relfilenode.
+   In what follows, <quote>an access method that sets
+   <structfield>amcanversion</structfield></quote> means an index for which
+   <function>index_can_version()</function> is true.
+  </para>
+
+  <para>
+   An index that stores tags may still refuse to let an update keep a
+   row's locator, for example after a constraint is added that its checks
+   cannot serve under a versioned locator.  Its access method then provides
+<programlisting>
+bool
+amindexmaykeeplocator (Relation indexRelation);
+</programlisting>
+   which the executor asks, through
+   <function>index_may_keep_locator()</function>, before it lets a
+   versioned table keep a locator across an update that needs a new entry
+   in the index.  When it returns <literal>false</literal> the row moves,
+   and the index's entries stay tagged and are judged as before.  NULL
+   means the answer of <function>amindexcanversion</function>.  Unlike
+   that one, this answer may change during the life of the index.
+  </para>
+
+  <sect2 id="index-implementations">
+   <title>Index Implementations</title>
+
+   <para>
+    An index's <firstterm>logical</firstterm> access method is the one it
+    names, <structname>pg_class</structname>.<structfield>relam</structfield>:
+    it owns the index's operator classes, decides how the planner may use
+    the index, validates operator families, and is what
+    <function>pg_get_indexdef</function> prints.  The code that stores and
+    searches the index is its <firstterm>implementation</firstterm>.
+    Normally these are the same access method, but an index access method
+    can offer to implement indexes of a built-in access method by setting
+    <structfield>amimplements</structfield> to that access method's OID.
+    Currently only <literal>btree</literal> indexes can be implemented this
+    way.
+   </para>
+
+   <para>
+    The implementation is chosen once, when the index is created, and
+    recorded in
+    <structname>pg_index</structname>.<structfield>indimplam</structfield>.
+    The table's access method is asked first, through its optional
+    <function>index_implementation</function> callback (see
+    <xref linkend="tableam"/>); if it has no preference, a
+    <literal>btree</literal> index is implemented by the access method named
+    by <xref linkend="guc-default-btree-implementation"/>, if any.  Indexes
+    on system catalogs and TOAST tables are always implemented by their own
+    access method.  <command>REINDEX</command>, <command>CLUSTER</command>,
+    <command>VACUUM FULL</command> and similar rebuilds keep the
+    implementation.
+   </para>
+
+   <para>
+    The relation cache calls the implementation's handler for an index's
+    <structname>IndexAmRoutine</structname>, so every callback and every
+    per-index capability flag comes from the implementation, and its
+    <function>amoptions</function> parses the index's reloptions.  In
+    return, the implementation promises to behave as the logical access
+    method's indexes do: it must accept the logical access method's operator
+    classes, with the same support function and strategy numbering
+    (<structfield>amstrategies</structfield>,
+    <structfield>amsupport</structfield>,
+    <structfield>amoptsprocnum</structfield>), the same
+    <structfield>amkeytype</structfield>, the same reloptions, and it must
+    set every capability flag that the logical access method sets, such as
+    <structfield>amcanunique</structfield>,
+    <structfield>amcaninclude</structfield>,
+    <structfield>amcanorder</structfield>,
+    <structfield>amcanbackward</structfield> and mark/restore support.
+    The implementation may number more support functions than the logical
+    access method: those beyond the logical access method's
+    <structfield>amsupport</structfield> are optional, and the logical
+    access method's operator classes never have them, so the implementation
+    must treat a missing one as absent.  Its
+    <structfield>amstrategies</structfield> may also be zero, meaning it
+    accepts any strategy numbering.
+    <command>CREATE INDEX</command> checks the numbering and the flags the
+    new index needs, and refuses an implementation that falls short.
+    Tools that read an index's pages directly, such as
+    <xref linkend="amcheck"/> and <xref linkend="pageinspect"/>, check the
+    implementation, not the logical access method.
+   </para>
+  </sect2>
+
  </sect1>
 
  <sect1 id="index-functions">
@@ -304,7 +441,11 @@ ambuild (Relation heapRelation,
    <function>table_index_build_scan()</function> to scan the table for existing tuples
    and compute the keys that need to be inserted into the index.
    The function must return a palloc'd struct containing statistics about
-   the new index.
+   the new index.  If the access method sets
+   <structfield>amcanversion</structfield>, its build callback reads the
+   version tag of each tuple it is given from
+   <literal>indexInfo-&gt;ii_VersionTag</literal>, which the table access
+   method sets before each call.
    The <structfield>amcanbuildparallel</structfield> flag indicates whether
    the access method supports parallel index builds. When set to <literal>true</literal>,
    the system will attempt to allocate parallel workers for the build.
@@ -346,6 +487,24 @@ aminsert (Relation indexRelation,
    Normally the access method only needs the <literal>heapRelation</literal>
    parameter when performing uniqueness checking (since then it will have to
    look into the heap to verify tuple liveness).
+  </para>
+
+  <para>
+   An access method that sets <structfield>amcanversion</structfield> stores
+   <literal>indexInfo-&gt;ii_VersionTag</literal> with the new entry.  The
+   executor sets it before every call; it is 0 (untagged) unless the table's
+   locator is versioned.  The tag is passed in the
+   <structname>IndexInfo</structname>, rather than as an argument, so that the
+   signature of <function>aminsert</function> stays the same for every
+   access method.  When a unique check finds an entry with an equal key, the
+   row being inserted is recognized by its <acronym>TID</acronym> alone, as
+   it is without tags: any entry of the same row, whatever its tag, is not a
+   conflict.  The tag of a deferred recheck
+   (<literal>UNIQUE_CHECK_EXISTING</literal>) is 0, for the same reason.
+   To ask whether a conflicting entry's row is live, an index access method
+   calls <function>table_fetch_tid_version</function> with the entry's tag
+   and the index, rather than <function>table_fetch_tid</function>; for a
+   table whose locator is not versioned the two are the same.
   </para>
 
   <para>
@@ -419,6 +578,20 @@ ambulkdelete (IndexVacuumInfo *info,
    struct containing statistics about the effects of the deletion operation.
    It is OK to return NULL if no information needs to be passed on to
    <function>amvacuumcleanup</function>.
+  </para>
+
+  <para>
+   An access method that sets <structfield>amcanversion</structfield> must
+   also check <literal>info-&gt;version_callback</literal>.  A table access
+   method whose locator is versioned may set it when it vacuums such an
+   index; it is NULL otherwise.  When it is set, the access method calls it
+   instead of <literal>callback</literal> for every entry, tagged or not, in
+   the style
+   <literal>info-&gt;version_callback(<replaceable>TID</replaceable>, <replaceable>tag</replaceable>, info-&gt;version_state)</literal>,
+   which returns <literal>INDEX_ENTRY_DEAD</literal> to delete the entry,
+   <literal>INDEX_ENTRY_LIVE</literal> to keep it, or
+   <literal>INDEX_ENTRY_LIVE_UNTAG</literal> to keep it and allow the access
+   method to rewrite it with tag 0 (it may also keep it as it is).
   </para>
 
   <para>
@@ -508,6 +681,32 @@ amgettreeheight (Relation rel);
    an integer) about the index that the cost estimation function might want to
    know.  If the computation is expensive, it could be useful to cache the
    result as part of <literal>RelationData.rd_amcache</literal>.
+  </para>
+
+  <para>
+<programlisting>
+int
+amorderbyopcolumn (IndexOptInfo *index,
+                   List *indexclauses);
+</programlisting>
+   Name the one index column, besides the first, on which an index that
+   is both ordered (<structfield>amcanorder</structfield>) and able to
+   answer ordering operators (<structfield>amcanorderbyop</structfield>)
+   can serve an ordering operator for an index path with the given
+   clauses (a list of <structname>IndexClause</structname>).  Such an index
+   keeps a later column's entries in order only within a run of entries
+   equal on every column before it, so it can order that column when the
+   path's clauses fix those columns to one value each.  The function returns
+   the zero-based column number, or 0 if no later column can be ordered.
+   Which clauses fix a column is the access method's to say: besides an
+   equality, an operator class may fix a column with an operator that is
+   not one.  The planner then matches the query's ordering operators to
+   that column as well as the first, and the scan must return the rows of
+   the run in the operator's order, given the scan keys built from the
+   same clauses.  If the function is not provided
+   (<literal>NULL</literal>), only the first column of such an index can be
+   ordered by an operator.  An index that is not ordered by its key is not
+   affected: its ordering operators may be matched on any column.
   </para>
 
   <para>
@@ -719,7 +918,10 @@ amgettuple (IndexScanDesc scan,
    This provision supports <quote>lossy</quote> index operators.
    Note that rechecking will extend only to the scan conditions; a partial
    index predicate (if any) is never rechecked by <function>amgettuple</function>
-   callers.
+   callers.  An access method that sets <structfield>amcanversion</structfield>
+   also stores the entry's version tag in
+   <literal>scan-&gt;xs_heaptag</literal>; the table access method decides
+   whether the entry is valid for the row version the scan's snapshot sees.
   </para>
 
   <para>
@@ -913,6 +1115,60 @@ amtranslatecmptype (CompareType cmptype, Oid opfamily, Oid opcintype);
    implemented.  If the functions are not implemented, the access method will
    be ignored for certain planner and executor decisions, but is otherwise
    fully functional.
+  </para>
+
+  <para>
+<programlisting>
+bool
+amcomparedatums (Relation indexRelation,
+                 IndexInfo *indexInfo,
+                 int attnum,
+                 Oid typid,
+                 int16 typlen,
+                 bool typbyval,
+                 Datum oldValue,
+                 Datum newValue);
+</programlisting>
+   Would inserting a row whose index column <parameter>attnum</parameter>
+   (counting from 1) has the value <parameter>newValue</parameter> make
+   exactly the same index entries as <parameter>oldValue</parameter> made?
+   The values are not null, are of type <parameter>typid</parameter> (the
+   type of the table column or index expression, which need not be the type
+   the index stores), whose length and by-value property are
+   <parameter>typlen</parameter> and <parameter>typbyval</parameter>, and
+   are not equal byte for byte, nor once detoasted: the executor itself
+   treats two values that are the same, but stored differently, as giving
+   the same entries in any index.  The function is
+   called during <command>UPDATE</command>, before the table access method
+   is, for every index that uses a column whose value changed; if every such
+   index answers <literal>true</literal> for every changed column, the update
+   can be a heap-only tuple (<acronym>HOT</acronym>) update, which makes no new
+   index entries at all (see <xref linkend="storage-hot"/>).  The index then
+   keeps the entries it made for the old value, and reaches the new row
+   through them.  <parameter>indexInfo</parameter> is the one
+   <function>aminsert</function> would get for the new row, so the function
+   may use <literal>ii_AmCache</literal> in the same way.
+  </para>
+
+  <para>
+   So <literal>true</literal> is only correct if no scan can tell the old
+   entries from the ones the new value would make: they must have the same
+   keys, compared as the index compares them, and anything a scan returns
+   from them must be the same.  The function is not called for a column the
+   index can return in index-only scans (see <function>amcanreturn</function>):
+   the index stores the value itself there, so only the same value gives the
+   same entries.  If the function cannot be sure, it must return <literal>false</literal>, which
+   is always correct.  It must not modify the index, and it may be called for
+   an index that is not yet valid.  Columns of unique indexes that can be
+   referenced by a foreign key, and of the replica identity index, are not
+   compared this way.  For the index of an exclusion constraint, the
+   function's answer only means the entries are the same: the executor then
+   checks the constraint itself, against the new values, whenever the
+   update makes no new index entries.  The function is not called for the
+   index of a deferrable exclusion constraint.  If
+   <structfield>amcomparedatums</structfield> is
+   <literal>NULL</literal>, a change to a column that the index stores
+   always needs new index entries.
   </para>
 
  </sect1>

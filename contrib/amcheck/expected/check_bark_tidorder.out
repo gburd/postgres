@@ -1,0 +1,920 @@
+--
+-- Runs of equal BARK keys in heap TID order: churn, entries split by a TID,
+-- the unique check, the rightmost-leaf fast path, NULLS NOT DISTINCT.
+--
+-- These cases check the index with bark_index_check() after the changes
+-- they make, so they live here rather than in the core regression suite.
+-- (The amcheck extension is created by the earlier "check" test.)
+--
+-- ===========================================================================
+-- Heap TID order.  The entries of a run of equal keys are in heap TID order,
+-- as nbtree's are: an insert goes to the place its heap TID gives it in the
+-- run, so space VACUUM frees inside a run is reused, and a pivot between
+-- entries of one key carries a heap TID.
+-- ===========================================================================
+-- Churn: DELETE a third of the rows at random and VACUUM, then insert new
+-- rows, which reuse the heap's free space and so take heap TIDs all through
+-- each key's run.  They go back into the space VACUUM freed in the index:
+-- the index grows no more than a btree index built the same way (it used to
+-- grow nearly three times as much, every new row going to the end of its
+-- key's run).  A temp table, so that only this session's snapshot limits
+-- what VACUUM can remove.
+CREATE TEMP TABLE bark_hk (id int, d int) WITH (autovacuum_enabled = off);
+INSERT INTO bark_hk SELECT g, g % 20 FROM generate_series(1, 50000) g;
+CREATE INDEX bark_hk_bark ON bark_hk USING bark (d);
+CREATE INDEX bark_hk_bt ON bark_hk USING btree (d);
+CREATE TEMP TABLE bark_hk_size AS
+  SELECT pg_relation_size('bark_hk_bark') AS bark0,
+         pg_relation_size('bark_hk_bt') AS bt0;
+DELETE FROM bark_hk WHERE hashint4(id) % 3 = 0;
+VACUUM bark_hk;
+INSERT INTO bark_hk SELECT g, g % 20 FROM generate_series(50001, 65000) g;
+VACUUM bark_hk;
+SELECT pg_relation_size('bark_hk_bark') - bark0 <=
+       pg_relation_size('bark_hk_bt') - bt0 AS bark_grows_no_more
+  FROM bark_hk_size;
+ bark_grows_no_more 
+--------------------
+ t
+(1 row)
+
+SELECT bark_index_check('bark_hk_bark');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+DROP INDEX bark_hk_bt;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT d, count(*), md5(string_agg(ctid::text, ',' ORDER BY ctid)) AS tids
+  INTO TEMP bark_hk_idx FROM bark_hk WHERE d >= 0 GROUP BY d;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SET enable_indexscan = off;
+SET enable_indexonlyscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*) AS keys, sum(count) AS rows,
+       count(*) FILTER (WHERE s.tids IS DISTINCT FROM i.tids) AS mismatches
+  FROM (SELECT d, count(*), md5(string_agg(ctid::text, ',' ORDER BY ctid)) AS tids
+        FROM bark_hk GROUP BY d) s FULL JOIN bark_hk_idx i USING (d, count);
+ keys | rows  | mismatches 
+------+-------+------------
+   20 | 48350 |          0
+(1 row)
+
+RESET enable_indexscan;
+RESET enable_indexonlyscan;
+RESET enable_bitmapscan;
+-- An index scan returns each key's rows in heap TID order.
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*) AS out_of_order FROM
+  (SELECT ctid, lag(ctid) OVER () AS prev FROM bark_hk WHERE d = 7) x
+  WHERE prev > ctid;
+ out_of_order 
+--------------
+            0
+(1 row)
+
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+DROP TABLE bark_hk, bark_hk_size, bark_hk_idx;
+-- The same churn on indexes that existed before the rows were inserted.  The
+-- inserts come in heap TID order, so each key's last page receives them, and
+-- when it fills it is split leaving the left page at its single-value fill
+-- factor, cutting its last LIST to get there (bark_singleval_cut): the pages
+-- of a run end about 96% full, as nbtree's do.  Left with every entry that
+-- fits, they would be nearly full, the reinsert into the space VACUUM freed
+-- in them would overflow most, and the index would grow four times as much
+-- as btree's.  The rows are wide enough that each key has only a few
+-- on a heap page, so its entries are LISTs, as they are for a key with fewer
+-- rows than this one.
+CREATE TEMP TABLE bark_hkr (id int, d int, pad text)
+  WITH (autovacuum_enabled = off);
+CREATE INDEX bark_hkr_bark ON bark_hkr USING bark (d);
+CREATE INDEX bark_hkr_bt ON bark_hkr USING btree (d);
+INSERT INTO bark_hkr SELECT g, g % 20, repeat('x', 200)
+  FROM generate_series(1, 100000) g;
+SELECT bark_index_check('bark_hkr_bark');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+CREATE TEMP TABLE bark_hkr_size AS
+  SELECT pg_relation_size('bark_hkr_bark') AS bark0,
+         pg_relation_size('bark_hkr_bt') AS bt0;
+DELETE FROM bark_hkr WHERE hashint4(id) % 3 = 0;
+VACUUM bark_hkr;
+INSERT INTO bark_hkr SELECT g, g % 20, repeat('x', 200)
+  FROM generate_series(100001, 130000) g;
+VACUUM bark_hkr;
+SELECT pg_relation_size('bark_hkr_bark') - bark0 <=
+       (pg_relation_size('bark_hkr_bt') - bt0) * 1.2 AS bark_grows_no_more
+  FROM bark_hkr_size;
+ bark_grows_no_more 
+--------------------
+ t
+(1 row)
+
+SELECT bark_index_check('bark_hkr_bark');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*), sum(id) FROM bark_hkr WHERE d >= 0;
+ count |    sum     
+-------+------------
+ 96657 | 6779609449
+(1 row)
+
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SELECT count(*), sum(id) FROM bark_hkr;
+ count |    sum     
+-------+------------
+ 96657 | 6779609449
+(1 row)
+
+DROP TABLE bark_hkr, bark_hkr_size;
+-- The same churn on indexes built by CREATE INDEX after the load.  The build
+-- packs each key's rows into LISTs of a tenth of a page, so the reinsert's
+-- heap TIDs fall inside them, and a full LIST is divided around the TID it
+-- cannot take; on a full page that would be a 50/50 split.  Before it splits,
+-- the page's adjacent entries of the key are merged into fewer, larger ones
+-- (bark_merge_page, as nbtree's deduplication pass), which frees the room.
+-- Without the merge the index grows 40% more than btree's.  A temp table, so
+-- that only this session's snapshot limits what VACUUM can remove.
+CREATE TEMP TABLE bark_cim (id int, d int, pad text)
+  WITH (autovacuum_enabled = off);
+INSERT INTO bark_cim SELECT g, g % 20, repeat('x', 200)
+  FROM generate_series(1, 100000) g;
+CREATE INDEX bark_cim_bark ON bark_cim USING bark (d);
+CREATE INDEX bark_cim_bt ON bark_cim USING btree (d);
+CREATE TEMP TABLE bark_cim_size AS
+  SELECT pg_relation_size('bark_cim_bark') AS bark0,
+         pg_relation_size('bark_cim_bt') AS bt0;
+DELETE FROM bark_cim WHERE hashint4(id) % 3 = 0;
+VACUUM bark_cim;
+INSERT INTO bark_cim SELECT g, g % 20, repeat('x', 200)
+  FROM generate_series(100001, 130000) g;
+VACUUM bark_cim;
+SELECT pg_relation_size('bark_cim_bark') - bark0 <=
+       (pg_relation_size('bark_cim_bt') - bt0) * 1.1 AS bark_grows_no_more
+  FROM bark_cim_size;
+ bark_grows_no_more 
+--------------------
+ t
+(1 row)
+
+SELECT bark_index_check('bark_cim_bark');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*), sum(id) FROM bark_cim WHERE d >= 0;
+ count |    sum     
+-------+------------
+ 96657 | 6779609449
+(1 row)
+
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SELECT count(*), sum(id) FROM bark_cim;
+ count |    sum     
+-------+------------
+ 96657 | 6779609449
+(1 row)
+
+DROP TABLE bark_cim, bark_cim_size;
+-- The merge on a regular table, whose changes are WAL-logged, so that a
+-- standby replaying this suite applies XLOG_BARK_MERGE records (and checks
+-- them, under wal_consistency_checking).  The heap leaves room on each page,
+-- so an UPDATE's new versions take heap TIDs inside the built LISTs of the
+-- key they move to, and the leaves fill without any VACUUM.  The u index's
+-- leaves are prefix-coded, so its merged entries are decoded and coded again.
+CREATE TABLE bark_cimu (id int, d int, u text, pad text)
+  WITH (fillfactor = 70, autovacuum_enabled = off);
+INSERT INTO bark_cimu
+  SELECT g, g % 20, 'https://www.example.com/item/' || lpad((g % 20)::text, 8, '0'),
+         repeat('x', 200)
+  FROM generate_series(1, 20000) g;
+CREATE INDEX bark_cimu_bark ON bark_cimu USING bark (d);
+CREATE INDEX bark_cimu_u ON bark_cimu USING bark (u)
+  WITH (prefix_compression = on);
+UPDATE bark_cimu
+  SET d = (d + 1) % 20,
+      u = 'https://www.example.com/item/' || lpad(((d + 1) % 20)::text, 8, '0')
+  WHERE hashint4(id) % 3 = 0;
+SELECT bark_index_check('bark_cimu_bark'), bark_index_check('bark_cimu_u');
+ bark_index_check | bark_index_check 
+------------------+------------------
+                  | 
+(1 row)
+
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*), sum(id), sum(d) FROM bark_cimu WHERE d >= 0;
+ count |    sum    |  sum   
+-------+-----------+--------
+ 20000 | 200010000 | 189519
+(1 row)
+
+SELECT count(*), sum(id), md5(string_agg(u, ',' ORDER BY id)) FROM bark_cimu
+  WHERE u > 'h';
+ count |    sum    |               md5                
+-------+-----------+----------------------------------
+ 20000 | 200010000 | 56fb7e80b7fc83c131c4eaca59a1af3b
+(1 row)
+
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SELECT count(*), sum(id), sum(d) FROM bark_cimu;
+ count |    sum    |  sum   
+-------+-----------+--------
+ 20000 | 200010000 | 189519
+(1 row)
+
+SELECT count(*), sum(id), md5(string_agg(u, ',' ORDER BY id)) FROM bark_cimu;
+ count |    sum    |               md5                
+-------+-----------+----------------------------------
+ 20000 | 200010000 | 56fb7e80b7fc83c131c4eaca59a1af3b
+(1 row)
+
+DROP TABLE bark_cimu;
+-- A heap TID that falls inside the TID range of a LIST or POSTING entry must
+-- go into that entry.  When the entry cannot take it (it is at the item
+-- ceiling, or the page is full), the entry is divided around it: in place
+-- when both parts fit on the page, else in a split of the page.  To get such
+-- TIDs, the heap leaves half of each page free (fillfactor 50) and rows of
+-- another key are updated to the key: each new version goes on its old
+-- version's page, after the rows already there, so inside the key's run.
+-- Key 1 of bark_hkl has a few TIDs per heap page (LIST entries), key 1 of
+-- bark_hkp nearly all of them (POSTING entries).  The indexes are filled by
+-- inserts, which grow entries to the item ceiling, then rebuilt by REINDEX,
+-- whose entries are smaller and whose pages are full, and updated again.
+CREATE FUNCTION bark_hk_check(tbl text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+  r1 text;
+  r2 text;
+BEGIN
+  SET LOCAL enable_seqscan = off;
+  SET LOCAL enable_bitmapscan = off;
+  EXECUTE format('SELECT count(*) || md5(string_agg(ctid::text, '','' ORDER BY k, ctid)) FROM %I WHERE k >= 0', tbl) INTO r1;
+  SET LOCAL enable_seqscan = on;
+  SET LOCAL enable_indexscan = off;
+  SET LOCAL enable_indexonlyscan = off;
+  EXECUTE format('SELECT count(*) || md5(string_agg(ctid::text, '','' ORDER BY k, ctid)) FROM %I WHERE k >= 0', tbl) INTO r2;
+  RETURN CASE WHEN r1 = r2 THEN 'ok' ELSE 'mismatch' END;
+END $$;
+CREATE TABLE bark_hkl (k int, v int) WITH (fillfactor = 50, autovacuum_enabled = off);
+CREATE INDEX bark_hkl_idx ON bark_hkl USING bark (k);
+INSERT INTO bark_hkl SELECT g % 50, g FROM generate_series(1, 100000) g;
+UPDATE bark_hkl SET k = 1 WHERE k = 2 AND v % 4 = 2;
+SELECT bark_index_check('bark_hkl_idx'), bark_hk_check('bark_hkl');
+ bark_index_check | bark_hk_check 
+------------------+---------------
+                  | ok
+(1 row)
+
+REINDEX INDEX bark_hkl_idx;
+SELECT bark_index_check('bark_hkl_idx'), bark_hk_check('bark_hkl');
+ bark_index_check | bark_hk_check 
+------------------+---------------
+                  | ok
+(1 row)
+
+UPDATE bark_hkl SET k = 1 WHERE k = 3 AND v % 4 = 3;
+SELECT bark_index_check('bark_hkl_idx'), bark_hk_check('bark_hkl');
+ bark_index_check | bark_hk_check 
+------------------+---------------
+                  | ok
+(1 row)
+
+CREATE TABLE bark_hkp (k int, v int) WITH (fillfactor = 50, autovacuum_enabled = off);
+CREATE INDEX bark_hkp_idx ON bark_hkp USING bark (k);
+INSERT INTO bark_hkp SELECT CASE WHEN g % 10 = 0 THEN 2 ELSE 1 END, g
+  FROM generate_series(1, 60000) g;
+UPDATE bark_hkp SET k = 1 WHERE k = 2 AND v % 20 = 0;
+SELECT bark_index_check('bark_hkp_idx'), bark_hk_check('bark_hkp');
+ bark_index_check | bark_hk_check 
+------------------+---------------
+                  | ok
+(1 row)
+
+REINDEX INDEX bark_hkp_idx;
+UPDATE bark_hkp SET k = 1 WHERE k = 2;
+SELECT bark_index_check('bark_hkp_idx'), bark_hk_check('bark_hkp');
+ bark_index_check | bark_hk_check 
+------------------+---------------
+                  | ok
+(1 row)
+
+DROP TABLE bark_hkl, bark_hkp;
+DROP FUNCTION bark_hk_check(text);
+-- A unique check starts at the first leaf that can hold the key, since the
+-- live entry of a key may be anywhere in its run.  Dead versions of a key,
+-- not yet vacuumed, are wide enough (a 2000-byte INCLUDE column) to span a
+-- leaf boundary; the live version comes after them, and a conflicting insert
+-- must still find it.
+CREATE TABLE bark_hku (k int, pad text) WITH (autovacuum_enabled = off);
+CREATE UNIQUE INDEX bark_hku_idx ON bark_hku USING bark (k) INCLUDE (pad);
+INSERT INTO bark_hku SELECT g, 'x' FROM generate_series(0, 2) g;
+DO $$
+BEGIN
+  FOR i IN 1..4 LOOP
+    DELETE FROM bark_hku WHERE k = 1;
+    INSERT INTO bark_hku SELECT 1, string_agg(md5(i::text || g::text), '')
+      FROM generate_series(1, 63) g;
+  END LOOP;
+END $$;
+SELECT pg_relation_size('bark_hku_idx') / current_setting('block_size')::int > 2 AS spans_leaves;
+ spans_leaves 
+--------------
+ t
+(1 row)
+
+INSERT INTO bark_hku VALUES (1, 'y');	-- fails
+ERROR:  duplicate key value violates unique constraint "bark_hku_idx"
+DETAIL:  Key (k)=(1) already exists.
+INSERT INTO bark_hku VALUES (1, 'y') ON CONFLICT DO NOTHING;
+SELECT count(*) FROM bark_hku WHERE k = 1;
+ count 
+-------
+     1
+(1 row)
+
+SELECT bark_index_check('bark_hku_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+DROP TABLE bark_hku;
+-- A leaf read after a scan's first page tests the keys that its first and
+-- last data entries both satisfy only once, for the whole page
+-- (bark_page_satisfied_keys), when every entry between them must satisfy them
+-- too: a key on column k counts only where columns 1..k-1 are equal across
+-- the page.  In bark_sk, b runs through 0..999 twice within each a, so a page
+-- that crosses from one a to the next has first and last entries satisfying
+-- b > 100 and entries in between that do not; each a also ends in NULL b's,
+-- and some rows have a NULL a.  Every query reads several leaves, forward and
+-- backward, through ASC and then DESC columns, and must return what a
+-- sequential scan and a bitmap scan do.
+CREATE TABLE bark_sk (a int, b int, c int);
+INSERT INTO bark_sk SELECT g / 2000, (g * 7) % 1000, g
+  FROM generate_series(0, 59999) g;
+INSERT INTO bark_sk SELECT g % 30, NULL, g FROM generate_series(1, 300) g;
+INSERT INTO bark_sk SELECT NULL, g % 1000, g FROM generate_series(1, 1000) g;
+CREATE INDEX bark_sk_idx ON bark_sk USING bark (a, b);
+VACUUM ANALYZE bark_sk;
+CREATE FUNCTION bark_sk_check(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+  plan json;
+  node json;
+  r1 text;
+  r2 text;
+  r3 text;
+BEGIN
+  SET LOCAL enable_seqscan = off;
+  SET LOCAL enable_bitmapscan = off;
+  SET LOCAL enable_sort = off;
+  EXECUTE 'EXPLAIN (COSTS OFF, FORMAT JSON) ' || q INTO plan;
+  node := plan->0->'Plan';
+  WHILE node->>'Index Name' IS NULL AND node->'Plans' IS NOT NULL LOOP
+    node := node->'Plans'->0;
+  END LOOP;
+  EXECUTE 'SELECT md5(string_agg(x::text, '','')) FROM (' || q || ') x' INTO r1;
+  RESET enable_bitmapscan;
+  RESET enable_sort;
+  SET LOCAL enable_indexscan = off;
+  SET LOCAL enable_indexonlyscan = off;
+  EXECUTE 'SELECT md5(string_agg(x::text, '','')) FROM (' || q || ') x' INTO r2;
+  RESET enable_seqscan;
+  SET LOCAL enable_bitmapscan = off;
+  EXECUTE 'SELECT md5(string_agg(x::text, '','')) FROM (' || q || ') x' INTO r3;
+  RETURN format('%s %s', coalesce(node->>'Scan Direction', 'no index scan'),
+    CASE WHEN r1 IS NOT DISTINCT FROM r3 AND r2 IS NOT DISTINCT FROM r3
+      THEN 'ok' ELSE 'mismatch' END);
+END $$;
+CREATE TABLE bark_sk_q (q text);
+INSERT INTO bark_sk_q VALUES
+  ('SELECT a, b FROM bark_sk WHERE a BETWEEN 3 AND 20 AND b > 100 ORDER BY a, b'),
+  ('SELECT a, b FROM bark_sk WHERE a BETWEEN 3 AND 20 AND b > 100 ORDER BY a DESC, b DESC'),
+  ('SELECT a, b FROM bark_sk WHERE a = 7 AND b BETWEEN 200 AND 700 ORDER BY a, b'),
+  ('SELECT a, b FROM bark_sk WHERE a = 7 AND b BETWEEN 200 AND 700 ORDER BY a DESC, b DESC'),
+  ('SELECT a, b FROM bark_sk WHERE a > 25 AND b < 900::int8 ORDER BY a, b'),
+  ('SELECT a, b FROM bark_sk WHERE a <= 4 AND b IS NOT NULL ORDER BY a DESC, b DESC'),
+  ('SELECT a, b FROM bark_sk WHERE a >= 0 AND b IS NULL ORDER BY a, b'),
+  ('SELECT a, b FROM bark_sk WHERE a IS NULL AND b > 500 ORDER BY a, b'),
+  ('SELECT a, b FROM bark_sk WHERE a IS NOT NULL AND b >= 990 ORDER BY a, b'),
+  ('SELECT a, b FROM bark_sk WHERE a = ANY (''{2, 9, 10}'') AND b > 500 ORDER BY a, b');
+SELECT q, bark_sk_check(q) FROM bark_sk_q;
+                                           q                                            | bark_sk_check 
+----------------------------------------------------------------------------------------+---------------
+ SELECT a, b FROM bark_sk WHERE a BETWEEN 3 AND 20 AND b > 100 ORDER BY a, b            | Forward ok
+ SELECT a, b FROM bark_sk WHERE a BETWEEN 3 AND 20 AND b > 100 ORDER BY a DESC, b DESC  | Backward ok
+ SELECT a, b FROM bark_sk WHERE a = 7 AND b BETWEEN 200 AND 700 ORDER BY a, b           | Forward ok
+ SELECT a, b FROM bark_sk WHERE a = 7 AND b BETWEEN 200 AND 700 ORDER BY a DESC, b DESC | Backward ok
+ SELECT a, b FROM bark_sk WHERE a > 25 AND b < 900::int8 ORDER BY a, b                  | Forward ok
+ SELECT a, b FROM bark_sk WHERE a <= 4 AND b IS NOT NULL ORDER BY a DESC, b DESC        | Backward ok
+ SELECT a, b FROM bark_sk WHERE a >= 0 AND b IS NULL ORDER BY a, b                      | Forward ok
+ SELECT a, b FROM bark_sk WHERE a IS NULL AND b > 500 ORDER BY a, b                     | Forward ok
+ SELECT a, b FROM bark_sk WHERE a IS NOT NULL AND b >= 990 ORDER BY a, b                | Forward ok
+ SELECT a, b FROM bark_sk WHERE a = ANY ('{2, 9, 10}') AND b > 500 ORDER BY a, b        | Forward ok
+(10 rows)
+
+DROP INDEX bark_sk_idx;
+CREATE INDEX bark_sk_idx ON bark_sk USING bark (a DESC, b DESC NULLS LAST);
+SELECT q, bark_sk_check(q) FROM bark_sk_q;
+                                           q                                            |  bark_sk_check   
+----------------------------------------------------------------------------------------+------------------
+ SELECT a, b FROM bark_sk WHERE a BETWEEN 3 AND 20 AND b > 100 ORDER BY a, b            | Backward ok
+ SELECT a, b FROM bark_sk WHERE a BETWEEN 3 AND 20 AND b > 100 ORDER BY a DESC, b DESC  | Forward ok
+ SELECT a, b FROM bark_sk WHERE a = 7 AND b BETWEEN 200 AND 700 ORDER BY a, b           | no index scan ok
+ SELECT a, b FROM bark_sk WHERE a = 7 AND b BETWEEN 200 AND 700 ORDER BY a DESC, b DESC | no index scan ok
+ SELECT a, b FROM bark_sk WHERE a > 25 AND b < 900::int8 ORDER BY a, b                  | Backward ok
+ SELECT a, b FROM bark_sk WHERE a <= 4 AND b IS NOT NULL ORDER BY a DESC, b DESC        | Forward ok
+ SELECT a, b FROM bark_sk WHERE a >= 0 AND b IS NULL ORDER BY a, b                      | Backward ok
+ SELECT a, b FROM bark_sk WHERE a IS NULL AND b > 500 ORDER BY a, b                     | Backward ok
+ SELECT a, b FROM bark_sk WHERE a IS NOT NULL AND b >= 990 ORDER BY a, b                | Backward ok
+ SELECT a, b FROM bark_sk WHERE a = ANY ('{2, 9, 10}') AND b > 500 ORDER BY a, b        | Backward ok
+(10 rows)
+
+SELECT bark_index_check('bark_sk_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+-- OVERSIZED first and last entries are read from their overflow chains.  The
+-- keys are incompressible, so every entry is OVERSIZED.
+CREATE TABLE bark_sk_big (k text, n int);
+INSERT INTO bark_sk_big SELECT 'K' || g / 250 ||
+  (SELECT string_agg(md5((g / 250)::text || h::text), '')
+   FROM generate_series(1, 100) h), g
+  FROM generate_series(0, 499) g;
+CREATE INDEX bark_sk_big_idx ON bark_sk_big USING bark (k, n);
+VACUUM ANALYZE bark_sk_big;
+SELECT pg_relation_size('bark_sk_big_idx') / current_setting('block_size')::int > 500 AS oversized;
+ oversized 
+-----------
+ t
+(1 row)
+
+SELECT bark_sk_check('SELECT n FROM bark_sk_big WHERE k >= ''K0'' AND n > 100 AND n < 450 ORDER BY k, n');
+ bark_sk_check 
+---------------
+ Forward ok
+(1 row)
+
+SELECT bark_sk_check('SELECT n FROM bark_sk_big WHERE k >= ''K0'' AND n > 100 AND n < 450 ORDER BY k DESC, n DESC');
+ bark_sk_check 
+---------------
+ Backward ok
+(1 row)
+
+SELECT bark_index_check('bark_sk_big_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+DROP TABLE bark_sk, bark_sk_q, bark_sk_big;
+DROP FUNCTION bark_sk_check(text);
+-- The rightmost-leaf fast path: an insert into a tree of three levels or
+-- more that placed its entry on the rightmost leaf caches that leaf, and the
+-- next insert goes straight to it when its (key, heap TID) sorts after the
+-- leaf's first entry and fits there.  400-byte keys give a three-level index
+-- from 3000 rows.  Then 1000 single-row ascending inserts, every key twice so
+-- that half of them coalesce on the cached leaf, read about one index block
+-- each; a descent reads three.  An insert that lands on another leaf
+-- descends, and forgets the cached leaf.
+CREATE TABLE bark_fp (k text, v int) WITH (autovacuum_enabled = off);
+CREATE INDEX bark_fp_idx ON bark_fp USING bark (k);
+INSERT INTO bark_fp SELECT lpad(g::text, 400, '0'), g
+  FROM generate_series(1, 3000) g;
+-- The cached leaf lives in the index's relcache entry, which an open cursor
+-- on the index keeps (under RELCACHE_FORCE_RELEASE an entry nothing holds
+-- open is rebuilt, without it, at the end of every statement).
+DO $$
+DECLARE
+  pin refcursor;
+  b0 bigint;
+  b1 bigint;
+  b2 bigint;
+BEGIN
+  SET LOCAL enable_seqscan = off;
+  SET LOCAL enable_bitmapscan = off;
+  OPEN pin FOR SELECT k FROM bark_fp WHERE k = '';
+  b0 := pg_stat_get_xact_idx_blocks_fetched('bark_fp_idx'::regclass);
+  FOR g IN 6002..7001 LOOP
+    INSERT INTO bark_fp VALUES (lpad((g / 2)::text, 400, '0'), g);
+  END LOOP;
+  b1 := pg_stat_get_xact_idx_blocks_fetched('bark_fp_idx'::regclass);
+  INSERT INTO bark_fp VALUES (lpad('1', 400, '0'), 0);
+  b2 := pg_stat_get_xact_idx_blocks_fetched('bark_fp_idx'::regclass);
+  RAISE NOTICE 'ascending inserts read under 2 blocks each: %, descent reads 3 or more: %',
+    b1 - b0 < 2000, b2 - b1 >= 3;
+END $$;
+NOTICE:  ascending inserts read under 2 blocks each: t, descent reads 3 or more: t
+INSERT INTO bark_fp SELECT lpad((g / 2)::text, 400, '0'), g
+  FROM generate_series(7002, 9001) g;
+SELECT bark_index_check('bark_fp_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SET debug_parallel_query = off;
+SET max_parallel_workers_per_gather = 0;
+EXPLAIN (COSTS OFF)
+SELECT count(*), count(DISTINCT k), sum(v) FROM bark_fp WHERE k >= '';
+                  QUERY PLAN                   
+-----------------------------------------------
+ Aggregate
+   ->  Index Scan using bark_fp_idx on bark_fp
+         Index Cond: (k >= ''::text)
+(3 rows)
+
+SELECT count(*), count(DISTINCT k), sum(v) FROM bark_fp WHERE k >= '';
+ count | count |   sum    
+-------+-------+----------
+  6001 |  4500 | 27006000
+(1 row)
+
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+RESET debug_parallel_query;
+RESET max_parallel_workers_per_gather;
+SET enable_indexscan = off;
+SET enable_indexonlyscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*), count(DISTINCT k), sum(v) FROM bark_fp WHERE k >= '';
+ count | count |   sum    
+-------+-------+----------
+  6001 |  4500 | 27006000
+(1 row)
+
+RESET enable_indexscan;
+RESET enable_indexonlyscan;
+RESET enable_bitmapscan;
+DROP TABLE bark_fp;
+-- The same fast path for a unique index: the cached leaf is tested on the
+-- key alone, so ascending unique inserts go straight to it and are checked
+-- there, while a key equal to the leaf's first entry descends (its run may
+-- start on the left sibling).  A duplicate of every key of the rightmost leaf,
+-- and of keys further left, must still be refused, by the cached leaf or the
+-- descent.
+CREATE TABLE bark_fpu (k text, v int) WITH (autovacuum_enabled = off);
+CREATE UNIQUE INDEX bark_fpu_idx ON bark_fpu USING bark (k);
+INSERT INTO bark_fpu SELECT lpad(g::text, 400, '0'), g
+  FROM generate_series(1, 3000) g;
+DO $$
+DECLARE
+  pin refcursor;
+  b0 bigint;
+  b1 bigint;
+BEGIN
+  SET LOCAL enable_seqscan = off;
+  SET LOCAL enable_bitmapscan = off;
+  OPEN pin FOR SELECT k FROM bark_fpu WHERE k = '';	-- as for bark_fp
+  b0 := pg_stat_get_xact_idx_blocks_fetched('bark_fpu_idx'::regclass);
+  FOR g IN 3001..4000 LOOP
+    INSERT INTO bark_fpu VALUES (lpad(g::text, 400, '0'), g);
+  END LOOP;
+  b1 := pg_stat_get_xact_idx_blocks_fetched('bark_fpu_idx'::regclass);
+  RAISE NOTICE 'ascending unique inserts read under 2 blocks each: %',
+    b1 - b0 < 2000;
+END $$;
+NOTICE:  ascending unique inserts read under 2 blocks each: t
+CREATE FUNCTION bark_fpu_dup(key int) RETURNS bool LANGUAGE plpgsql AS $$
+BEGIN
+  INSERT INTO bark_fpu VALUES (lpad(key::text, 400, '0'), -key);
+  RETURN false;
+EXCEPTION WHEN unique_violation THEN
+  RETURN true;
+END $$;
+SELECT count(*) FILTER (WHERE bark_fpu_dup(g)) AS refused, count(*)
+  FROM (SELECT g FROM generate_series(3800, 4000) g
+        UNION ALL VALUES (1), (1500)) d(g);
+ refused | count 
+---------+-------
+     203 |   203
+(1 row)
+
+SELECT count(*) FROM bark_fpu WHERE v < 0;
+ count 
+-------
+     0
+(1 row)
+
+SELECT bark_index_check('bark_fpu_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+DROP TABLE bark_fpu;
+DROP FUNCTION bark_fpu_dup(int);
+-- UNIQUE ... NULLS NOT DISTINCT: a NULL is equal to a NULL, so a key with
+-- NULLs is checked like any other, by inserts, by the build's duplicate check
+-- and by INSERT ... ON CONFLICT.  Every statement runs against a btree and a
+-- bark copy of the same table (bark_nnd_try substitutes the table for %1$I
+-- and %1$s and the access method for %2$s) and must have the same outcome
+-- and leave the same rows on both; it shows the outcome and the rows once
+-- when they agree, both when they do not.
+CREATE TABLE bark_nnd_btree (a int, b int, v text) WITH (autovacuum_enabled = off);
+CREATE TABLE bark_nnd_bark (a int, b int, v text) WITH (autovacuum_enabled = off);
+CREATE FUNCTION bark_nnd_try(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+  res text[] := '{}';
+  tab text;
+  msg text;
+  det text;
+  rows text;
+BEGIN
+  FOREACH tab IN ARRAY ARRAY['bark_nnd_btree', 'bark_nnd_bark'] LOOP
+    BEGIN
+      EXECUTE format(q, tab, substr(tab, 10));
+      msg := 'ok';
+    EXCEPTION WHEN unique_violation THEN
+      GET STACKED DIAGNOSTICS msg = MESSAGE_TEXT, det = PG_EXCEPTION_DETAIL;
+      msg := replace(msg, tab, 't') || ' ' || det;
+    END;
+    EXECUTE format($r$SELECT CASE WHEN count(*) > 10 THEN count(*) || ' rows'
+      ELSE string_agg(concat_ws('/', coalesce(a::text, '-'),
+                                coalesce(b::text, '-'), v), ' '
+                      ORDER BY a, b, v) END FROM %I$r$, tab) INTO rows;
+    res := res || (msg || ' [' || coalesce(rows, '') || ']');
+  END LOOP;
+  IF res[1] = res[2] THEN
+    RETURN res[1];
+  END IF;
+  RETURN 'btree: ' || res[1] || ' bark: ' || res[2];
+END $$;
+SELECT bark_nnd_try('CREATE UNIQUE INDEX %1$s_u ON %1$I USING %2$s (a) NULLS NOT DISTINCT');
+ bark_nnd_try 
+--------------
+ ok []
+(1 row)
+
+SELECT bark_nnd_try('INSERT INTO %I VALUES (1, 1, ''one''), (NULL, 1, ''first'')');
+      bark_nnd_try      
+------------------------
+ ok [1/1/one -/1/first]
+(1 row)
+
+SELECT bark_nnd_try('INSERT INTO %I VALUES (NULL, 2, ''second'')');	-- fails
+                                              bark_nnd_try                                               
+---------------------------------------------------------------------------------------------------------
+ duplicate key value violates unique constraint "t_u" Key (a)=(null) already exists. [1/1/one -/1/first]
+(1 row)
+
+SELECT bark_nnd_try('INSERT INTO %I VALUES (2), (NULL)');			-- fails
+                                              bark_nnd_try                                               
+---------------------------------------------------------------------------------------------------------
+ duplicate key value violates unique constraint "t_u" Key (a)=(null) already exists. [1/1/one -/1/first]
+(1 row)
+
+SELECT bark_nnd_try('UPDATE %I SET a = NULL WHERE a = 1');			-- fails
+                                              bark_nnd_try                                               
+---------------------------------------------------------------------------------------------------------
+ duplicate key value violates unique constraint "t_u" Key (a)=(null) already exists. [1/1/one -/1/first]
+(1 row)
+
+SELECT bark_nnd_try('INSERT INTO %I VALUES (NULL, 3, ''skip'') ON CONFLICT (a) DO NOTHING');
+      bark_nnd_try      
+------------------------
+ ok [1/1/one -/1/first]
+(1 row)
+
+SELECT bark_nnd_try('INSERT INTO %I VALUES (NULL, 4, ''upd'') ON CONFLICT (a) DO UPDATE SET b = excluded.b, v = excluded.v');
+     bark_nnd_try     
+----------------------
+ ok [1/1/one -/4/upd]
+(1 row)
+
+SELECT bark_nnd_try('INSERT INTO %I VALUES (3, 5, ''new'') ON CONFLICT (a) DO UPDATE SET v = excluded.v');
+         bark_nnd_try         
+------------------------------
+ ok [1/1/one 3/5/new -/4/upd]
+(1 row)
+
+-- A dead NULL entry is no conflict.
+SELECT bark_nnd_try('DELETE FROM %I WHERE a IS NULL');
+     bark_nnd_try     
+----------------------
+ ok [1/1/one 3/5/new]
+(1 row)
+
+SELECT bark_nnd_try('INSERT INTO %I VALUES (NULL, 6, ''again'')');
+          bark_nnd_try          
+--------------------------------
+ ok [1/1/one 3/5/new -/6/again]
+(1 row)
+
+SELECT bark_index_check('bark_nnd_bark_u');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+-- A build over duplicate NULLs fails as btree's does; the default (NULLS
+-- DISTINCT) index is built over them and takes more.
+SELECT bark_nnd_try('DROP INDEX %1$s_u');
+          bark_nnd_try          
+--------------------------------
+ ok [1/1/one 3/5/new -/6/again]
+(1 row)
+
+SELECT bark_nnd_try('INSERT INTO %I VALUES (NULL, 7, ''dup'')');
+              bark_nnd_try              
+----------------------------------------
+ ok [1/1/one 3/5/new -/6/again -/7/dup]
+(1 row)
+
+SELECT bark_nnd_try('CREATE UNIQUE INDEX %1$s_u ON %1$I USING %2$s (a) NULLS NOT DISTINCT');	-- fails
+                                             bark_nnd_try                                              
+-------------------------------------------------------------------------------------------------------
+ could not create unique index "t_u" Key (a)=(null) is duplicated. [1/1/one 3/5/new -/6/again -/7/dup]
+(1 row)
+
+SELECT bark_nnd_try('CREATE UNIQUE INDEX %1$s_u ON %1$I USING %2$s (a)');
+              bark_nnd_try              
+----------------------------------------
+ ok [1/1/one 3/5/new -/6/again -/7/dup]
+(1 row)
+
+SELECT bark_nnd_try('INSERT INTO %I VALUES (NULL, 8, ''more''), (NULL, 9, ''more'')');
+                       bark_nnd_try                       
+----------------------------------------------------------
+ ok [1/1/one 3/5/new -/6/again -/7/dup -/8/more -/9/more]
+(1 row)
+
+SELECT bark_nnd_try('INSERT INTO %I VALUES (1, 10, ''dup'')');		-- fails
+                                                              bark_nnd_try                                                              
+----------------------------------------------------------------------------------------------------------------------------------------
+ duplicate key value violates unique constraint "t_u" Key (a)=(1) already exists. [1/1/one 3/5/new -/6/again -/7/dup -/8/more -/9/more]
+(1 row)
+
+-- Two columns: keys conflict when they have their NULLs in the same columns
+-- and are equal elsewhere.
+SELECT bark_nnd_try('DROP INDEX %1$s_u');
+                       bark_nnd_try                       
+----------------------------------------------------------
+ ok [1/1/one 3/5/new -/6/again -/7/dup -/8/more -/9/more]
+(1 row)
+
+SELECT bark_nnd_try('TRUNCATE %I');
+ bark_nnd_try 
+--------------
+ ok []
+(1 row)
+
+SELECT bark_nnd_try('CREATE UNIQUE INDEX %1$s_u ON %1$I USING %2$s (a, b) NULLS NOT DISTINCT');
+ bark_nnd_try 
+--------------
+ ok []
+(1 row)
+
+SELECT bark_nnd_try('INSERT INTO %I VALUES (1, NULL), (2, NULL), (NULL, 1), (NULL, NULL)');
+     bark_nnd_try     
+----------------------
+ ok [1/- 2/- -/1 -/-]
+(1 row)
+
+SELECT bark_nnd_try('INSERT INTO %I VALUES (1, NULL)');				-- fails
+                                                bark_nnd_try                                                 
+-------------------------------------------------------------------------------------------------------------
+ duplicate key value violates unique constraint "t_u" Key (a, b)=(1, null) already exists. [1/- 2/- -/1 -/-]
+(1 row)
+
+SELECT bark_nnd_try('INSERT INTO %I VALUES (NULL, NULL)');			-- fails
+                                                  bark_nnd_try                                                  
+----------------------------------------------------------------------------------------------------------------
+ duplicate key value violates unique constraint "t_u" Key (a, b)=(null, null) already exists. [1/- 2/- -/1 -/-]
+(1 row)
+
+SELECT bark_nnd_try('INSERT INTO %I VALUES (NULL, 2), (3, NULL)');
+         bark_nnd_try         
+------------------------------
+ ok [1/- 2/- 3/- -/1 -/2 -/-]
+(1 row)
+
+SELECT bark_index_check('bark_nnd_bark_u');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+SELECT bark_nnd_try('DROP INDEX %1$s_u');
+         bark_nnd_try         
+------------------------------
+ ok [1/- 2/- 3/- -/1 -/2 -/-]
+(1 row)
+
+SELECT bark_nnd_try('INSERT INTO %I VALUES (2, NULL, ''dup'')');
+             bark_nnd_try             
+--------------------------------------
+ ok [1/- 2/-/dup 2/- 3/- -/1 -/2 -/-]
+(1 row)
+
+SELECT bark_nnd_try('CREATE UNIQUE INDEX %1$s_u ON %1$I USING %2$s (a, b) NULLS NOT DISTINCT');	-- fails
+                                               bark_nnd_try                                                
+-----------------------------------------------------------------------------------------------------------
+ could not create unique index "t_u" Key (a, b)=(2, null) is duplicated. [1/- 2/-/dup 2/- 3/- -/1 -/2 -/-]
+(1 row)
+
+SELECT bark_nnd_try('CREATE UNIQUE INDEX %1$s_u ON %1$I USING %2$s (a, b)');
+             bark_nnd_try             
+--------------------------------------
+ ok [1/- 2/-/dup 2/- 3/- -/1 -/2 -/-]
+(1 row)
+
+SELECT bark_nnd_try('INSERT INTO %I VALUES (1, NULL)');
+               bark_nnd_try               
+------------------------------------------
+ ok [1/- 1/- 2/-/dup 2/- 3/- -/1 -/2 -/-]
+(1 row)
+
+-- A tall tree with its rightmost leaf cached by ascending inserts: a NULL
+-- key sorts after every other key, so its insert takes the fast path to
+-- that leaf, and is checked there.
+SELECT bark_nnd_try('DROP INDEX %1$s_u');
+               bark_nnd_try               
+------------------------------------------
+ ok [1/- 1/- 2/-/dup 2/- 3/- -/1 -/2 -/-]
+(1 row)
+
+SELECT bark_nnd_try('TRUNCATE %I');
+ bark_nnd_try 
+--------------
+ ok []
+(1 row)
+
+SELECT bark_nnd_try('INSERT INTO %I (v) SELECT lpad(g::text, 400, ''0'') FROM generate_series(1, 3000) g');
+  bark_nnd_try  
+----------------
+ ok [3000 rows]
+(1 row)
+
+SELECT bark_nnd_try('CREATE UNIQUE INDEX %1$s_v ON %1$I USING %2$s (v) NULLS NOT DISTINCT');
+  bark_nnd_try  
+----------------
+ ok [3000 rows]
+(1 row)
+
+SELECT bark_nnd_try('INSERT INTO %I (v) SELECT lpad(g::text, 400, ''0'') FROM generate_series(3001, 3100) g');
+  bark_nnd_try  
+----------------
+ ok [3100 rows]
+(1 row)
+
+INSERT INTO bark_nnd_btree (v) VALUES (lpad('3101', 400, '0'));	-- as below
+INSERT INTO bark_nnd_btree (a) VALUES (1);
+DO $$
+DECLARE
+  pin refcursor;
+  b0 bigint;
+BEGIN
+  SET LOCAL enable_seqscan = off;
+  SET LOCAL enable_bitmapscan = off;
+  OPEN pin FOR SELECT v FROM bark_nnd_bark WHERE v = '';	-- as for bark_fp
+  -- an ascending insert caches the rightmost leaf again, with the pin held
+  INSERT INTO bark_nnd_bark (v) VALUES (lpad('3101', 400, '0'));
+  b0 := pg_stat_get_xact_idx_blocks_fetched('bark_nnd_bark_v'::regclass);
+  INSERT INTO bark_nnd_bark (a) VALUES (1);
+  RAISE NOTICE 'NULL key insert read one block: %',
+    pg_stat_get_xact_idx_blocks_fetched('bark_nnd_bark_v'::regclass) - b0 = 1;
+END $$;
+NOTICE:  NULL key insert read one block: t
+SELECT bark_nnd_try('INSERT INTO %I (a) VALUES (2)');				-- fails
+                                          bark_nnd_try                                           
+-------------------------------------------------------------------------------------------------
+ duplicate key value violates unique constraint "t_v" Key (v)=(null) already exists. [3102 rows]
+(1 row)
+
+SELECT count(*) FROM bark_nnd_bark WHERE v IS NULL;
+ count 
+-------
+     1
+(1 row)
+
+SELECT bark_index_check('bark_nnd_bark_v');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+DROP TABLE bark_nnd_btree, bark_nnd_bark;
+DROP FUNCTION bark_nnd_try(text);

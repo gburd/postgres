@@ -3,6 +3,7 @@
 MODULE_big	= amcheck
 OBJS = \
 	$(WIN32RES) \
+	verify_bark.o \
 	verify_common.o \
 	verify_gin.o \
 	verify_heapam.o \
@@ -10,13 +11,22 @@ OBJS = \
 
 EXTENSION = amcheck
 DATA = amcheck--1.2--1.3.sql amcheck--1.1--1.2.sql amcheck--1.0--1.1.sql amcheck--1.0.sql \
-		amcheck--1.3--1.4.sql amcheck--1.4--1.5.sql
+		amcheck--1.3--1.4.sql amcheck--1.4--1.5.sql amcheck--1.5--1.6.sql \
+		amcheck--1.6--1.7.sql \
+		amcheck--1.7--1.8.sql
 PGFILEDESC = "amcheck - function for verifying relation integrity"
 
-REGRESS = check check_btree check_gin check_heap
+REGRESS = check check_btree check_gin check_bark check_bark_unique \
+	check_bark_vacuum check_bark_knn check_bark_oversized check_bark_split \
+	check_bark_build check_bark_markpos check_bark_skip check_bark_prefix \
+	check_bark_rowcmp check_bark_tidorder check_bark_opclass \
+	check_bark_anyblock check_heap check_subattr
 
-EXTRA_INSTALL = contrib/pg_walinspect
+EXTRA_INSTALL = contrib/pg_walinspect contrib/pageinspect src/test/modules/bark_multikey \
+	src/test/modules/injection_points
 TAP_TESTS = 1
+
+export enable_injection_points
 
 ifdef USE_PGXS
 PG_CONFIG = pg_config

@@ -53,6 +53,7 @@
 #include "catalog/pg_type.h"
 #include "catalog/storage.h"
 #include "catalog/storage_xlog.h"
+#include "commands/defrem.h"
 #include "commands/event_trigger.h"
 #include "commands/progress.h"
 #include "commands/tablecmds.h"
@@ -101,6 +102,7 @@ typedef struct
 
 /* non-export function prototypes */
 static bool relationHasPrimaryKey(Relation rel);
+static void index_check_locator(Relation heapRelation, Oid accessMethodId);
 static TupleDesc ConstructTupleDescriptor(Relation heapRelation,
 										  const IndexInfo *indexInfo,
 										  const List *indexColNames,
@@ -128,6 +130,9 @@ static void IndexCheckExclusion(Relation heapRelation,
 								Relation indexRelation,
 								IndexInfo *indexInfo);
 static bool validate_index_callback(ItemPointer itemptr, void *opaque);
+static IndexEntryVerdict validate_index_version_callback(ItemPointer itemptr,
+														 IndexVersionTag tag,
+														 void *opaque);
 static bool ReindexIsCurrentlyProcessingIndex(Oid indexOid);
 static void SetReindexProcessing(Oid heapOid, Oid indexOid);
 static void ResetReindexProcessing(void);
@@ -296,8 +301,14 @@ ConstructTupleDescriptor(Relation heapRelation,
 	int			natts;			/* #atts in heap rel --- for error checks */
 	int			i;
 
-	/* We need access to the index AM's API struct */
+	/*
+	 * We need access to the index AM's API struct.  The tuple descriptor is
+	 * the logical AM's business; an implementation stores the same keys.
+	 */
 	amroutine = GetIndexAmRoutineByAmId(accessMethodId, false);
+	Assert(!OidIsValid(indexInfo->ii_ImplAm) ||
+		   GetIndexAmRoutineByAmId(indexInfo->ii_ImplAm, false)->amkeytype ==
+		   amroutine->amkeytype);
 
 	/* ... and to the table's tuple descriptor */
 	heapTupDesc = RelationGetDescr(heapRelation);
@@ -650,6 +661,7 @@ UpdateIndexRelation(Oid indexoid,
 	values[Anum_pg_index_indisready - 1] = BoolGetDatum(isready);
 	values[Anum_pg_index_indislive - 1] = BoolGetDatum(true);
 	values[Anum_pg_index_indisreplident - 1] = BoolGetDatum(false);
+	values[Anum_pg_index_indimplam - 1] = ObjectIdGetDatum(indexInfo->ii_ImplAm);
 	values[Anum_pg_index_indkey - 1] = PointerGetDatum(indkey);
 	values[Anum_pg_index_indcollation - 1] = PointerGetDatum(indcollation);
 	values[Anum_pg_index_indclass - 1] = PointerGetDatum(indclass);
@@ -675,6 +687,39 @@ UpdateIndexRelation(Oid indexoid,
 	heap_freetuple(tuple);
 }
 
+
+/*
+ * index_check_locator
+ *
+ * Unless the index AM can store a variable-width locator (amcanvarlocator),
+ * it keeps each entry's table locator in an ItemPointerData, so the table's
+ * locator must be fixed-width and fit in one.  index_create() checks this
+ * before making any catalog entries, and index_build() checks it again
+ * because a table's access method, and so its locator, can change after its
+ * indexes were created (ALTER TABLE ... SET ACCESS METHOD rebuilds them).
+ */
+static void
+index_check_locator(Relation heapRelation, Oid accessMethodId)
+{
+	const LocatorDesc *locdesc = RelationGetLocatorDesc(heapRelation);
+	const IndexAmRoutine *amroutine;
+
+	if (locdesc->width > 0 && locdesc->width <= sizeof(ItemPointerData))
+		return;
+
+	amroutine = GetIndexAmRoutineByAmId(accessMethodId, false);
+	if (!amroutine->amcanvarlocator)
+	{
+		char	   *amname = get_am_name(accessMethodId);
+
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("access method \"%s\" cannot index table \"%s\"",
+						amname, RelationGetRelationName(heapRelation)),
+				 errdetail("The table's access method identifies rows using the \"%s\" locator, which \"%s\" cannot store.",
+						   locdesc->name, amname)));
+	}
+}
 
 /*
  * index_create
@@ -854,6 +899,15 @@ index_create(Relation heapRelation,
 			}
 		}
 	}
+
+	/*
+	 * A partitioned table has no table AM; each partition's index_create()
+	 * checks its own locator.
+	 */
+	if (heapRelation->rd_tableam != NULL)
+		index_check_locator(heapRelation,
+							OidIsValid(indexInfo->ii_ImplAm) ?
+							indexInfo->ii_ImplAm : accessMethodId);
 
 	/*
 	 * Concurrent index build on a system catalog is unsafe because we tend to
@@ -1200,6 +1254,14 @@ index_create(Relation heapRelation,
 			add_exact_object_address(&referenced, addrs);
 		}
 
+		/* Store dependency on the implementing access method, if any */
+		if (OidIsValid(indexInfo->ii_ImplAm))
+		{
+			ObjectAddressSet(referenced, AccessMethodRelationId,
+							 indexInfo->ii_ImplAm);
+			add_exact_object_address(&referenced, addrs);
+		}
+
 		record_object_address_dependencies(&myself, addrs, DEPENDENCY_NORMAL);
 		free_object_addresses(addrs);
 
@@ -1418,6 +1480,9 @@ index_create_copy(Relation heapRelation, uint16 flags,
 							concurrently,	/* concurrent */
 							indexRelation->rd_indam->amsummarizing,
 							oldInfo->ii_WithoutOverlaps);
+
+	/* The copy is implemented by the same code as the original. */
+	newInfo->ii_ImplAm = oldInfo->ii_ImplAm;
 
 	/* fetch exclusion constraint info if any */
 	if (indexRelation->rd_index->indisexclusion)
@@ -2486,6 +2551,7 @@ BuildIndexInfo(Relation index)
 					   false,
 					   index->rd_indam->amsummarizing,
 					   indexStruct->indisexclusion && indexStruct->indisunique);
+	ii->ii_ImplAm = indexStruct->indimplam;
 
 	/* fill in attribute numbers */
 	for (i = 0; i < numAtts; i++)
@@ -2546,6 +2612,7 @@ BuildDummyIndexInfo(Relation index)
 					   false,
 					   index->rd_indam->amsummarizing,
 					   indexStruct->indisexclusion && indexStruct->indisunique);
+	ii->ii_ImplAm = indexStruct->indimplam;
 
 	/* fill in attribute numbers */
 	for (i = 0; i < numAtts; i++)
@@ -2580,7 +2647,11 @@ CompareIndexInfo(const IndexInfo *info1, const IndexInfo *info2,
 	if (info1->ii_NullsNotDistinct != info2->ii_NullsNotDistinct)
 		return false;
 
-	/* indexes are only equivalent if they have the same access method */
+	/*
+	 * Indexes are only equivalent if they have the same access method.  The
+	 * implementation need not match: each partition's index is implemented as
+	 * its own table chooses.
+	 */
 	if (info1->ii_Am != info2->ii_Am)
 		return false;
 
@@ -2738,7 +2809,21 @@ BuildSpeculativeIndexInfo(Relation index, IndexInfo *ii)
 			IndexAmTranslateCompareType(COMPARE_EQ,
 										index->rd_rel->relam,
 										index->rd_opfamily[i],
-										false);
+										true);
+
+		/*
+		 * A column with no equality may still be unique under overlap: in a
+		 * unique index over a column that holds several keys per row (an
+		 * array's elements, say), two rows conflict when their values share a
+		 * key, and that is what the AM's overlap operator tests.  The
+		 * pre-check then scans for overlapping values instead of equal ones.
+		 */
+		if (ii->ii_UniqueStrats[i] == InvalidStrategy)
+			ii->ii_UniqueStrats[i] =
+				IndexAmTranslateCompareType(COMPARE_OVERLAP,
+											index->rd_rel->relam,
+											index->rd_opfamily[i],
+											false);
 		ii->ii_UniqueOps[i] =
 			get_opfamily_member(index->rd_opfamily[i],
 								index->rd_opcintype[i],
@@ -3140,6 +3225,8 @@ index_build(Relation heapRelation,
 	Assert(indexRelation->rd_indam->ambuild);
 	Assert(indexRelation->rd_indam->ambuildempty);
 
+	index_check_locator(heapRelation, IndexRelationGetImplAm(indexRelation));
+
 	/*
 	 * Determine worker process details for parallel CREATE INDEX.  Currently,
 	 * only btree, GIN, and BRIN have support for parallel builds.
@@ -3535,17 +3622,49 @@ validate_index(Oid heapId, Oid indexId, Snapshot snapshot)
 	ivinfo.message_level = DEBUG2;
 	ivinfo.num_heap_tuples = heapRelation->rd_rel->reltuples;
 	ivinfo.strategy = NULL;
+	ivinfo.version_callback = NULL;
+	ivinfo.version_state = NULL;	/* see below */
 
 	/*
 	 * Encode TIDs as int8 values for the sort, rather than directly sorting
 	 * item pointers.  This can be significantly faster, primarily because TID
 	 * is a pass-by-reference type on all platforms, whereas int8 is
 	 * pass-by-value on most platforms.
+	 *
+	 * If the index names row versions, collect (TID, tag) pairs instead; see
+	 * ValidateIndexState.
 	 */
-	state.tuplesort = tuplesort_begin_datum(INT8OID, Int8LessOperator,
-											InvalidOid, false,
-											maintenance_work_mem,
-											NULL, TUPLESORT_NONE);
+	state.versioned = table_locator_is_versioned(heapRelation) &&
+		index_can_version(indexRelation);
+	state.tupdesc = NULL;
+	state.slot = NULL;
+	if (!state.versioned)
+		state.tuplesort = tuplesort_begin_datum(INT8OID, Int8LessOperator,
+												InvalidOid, false,
+												maintenance_work_mem,
+												NULL, TUPLESORT_NONE);
+	else
+	{
+		AttrNumber	attnums[2] = {1, 2};
+		Oid			sortops[2] = {Int8LessOperator, Int8LessOperator};
+		Oid			collations[2] = {InvalidOid, InvalidOid};
+		bool		nullsfirst[2] = {false, false};
+
+		state.tupdesc = CreateTemplateTupleDesc(2);
+		TupleDescInitBuiltinEntry(state.tupdesc, (AttrNumber) 1, "tid",
+								  INT8OID, -1, 0);
+		TupleDescInitBuiltinEntry(state.tupdesc, (AttrNumber) 2, "tag",
+								  INT8OID, -1, 0);
+		TupleDescFinalize(state.tupdesc);
+		state.tuplesort = tuplesort_begin_heap(state.tupdesc, 2, attnums,
+											   sortops, collations,
+											   nullsfirst,
+											   maintenance_work_mem,
+											   NULL, TUPLESORT_NONE);
+		state.slot = MakeSingleTupleTableSlot(state.tupdesc, &TTSOpsVirtual);
+		ivinfo.version_callback = validate_index_version_callback;
+		ivinfo.version_state = &state;
+	}
 	state.htups = state.itups = state.tups_inserted = 0;
 
 	/* ambulkdelete updates progress metrics */
@@ -3581,6 +3700,11 @@ validate_index(Oid heapId, Oid indexId, Snapshot snapshot)
 
 	/* Done with tuplesort object */
 	tuplesort_end(state.tuplesort);
+	if (state.versioned)
+	{
+		ExecDropSingleTupleTableSlot(state.slot);
+		FreeTupleDesc(state.tupdesc);
+	}
 
 	/* Make sure to release resources cached in indexInfo (if needed). */
 	index_insert_cleanup(indexRelation, indexInfo);
@@ -3612,6 +3736,26 @@ validate_index_callback(ItemPointer itemptr, void *opaque)
 	tuplesort_putdatum(state->tuplesort, Int64GetDatum(encoded), false);
 	state->itups += 1;
 	return false;				/* never actually delete anything */
+}
+
+/*
+ * validate_index_version_callback - the same, collecting (TID, tag) pairs
+ */
+static IndexEntryVerdict
+validate_index_version_callback(ItemPointer itemptr, IndexVersionTag tag,
+								void *opaque)
+{
+	ValidateIndexState *state = (ValidateIndexState *) opaque;
+	TupleTableSlot *slot = state->slot;
+
+	ExecClearTuple(slot);
+	slot->tts_values[0] = Int64GetDatum(itemptr_encode(itemptr));
+	slot->tts_values[1] = Int64GetDatum((int64) tag);
+	slot->tts_isnull[0] = slot->tts_isnull[1] = false;
+	ExecStoreVirtualTuple(slot);
+	tuplesort_puttupleslot(state->tuplesort, slot);
+	state->itups += 1;
+	return INDEX_ENTRY_LIVE;	/* never actually delete anything */
 }
 
 /*
@@ -3818,7 +3962,7 @@ reindex_index(const ReindexStmt *stmt, Oid indexId,
 
 	if (progress)
 		pgstat_progress_update_param(PROGRESS_CREATEIDX_ACCESS_METHOD_OID,
-									 iRel->rd_rel->relam);
+									 IndexRelationGetImplAm(iRel));
 
 	/*
 	 * If a statement is available, telling that this comes from a REINDEX

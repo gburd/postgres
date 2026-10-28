@@ -1,0 +1,38 @@
+# src/test/modules/bark_multikey/Makefile
+
+MODULE_big = bark_multikey
+OBJS = \
+	$(WIN32RES) \
+	bark_multikey.o \
+	bark_wideblock.o
+PGFILEDESC = "bark_multikey - test code for BARK multikey operator classes"
+
+EXTENSION = bark_multikey
+DATA = bark_multikey--1.0.sql
+
+REGRESS = bark_multikey bark_multikey_scan bark_multikey_unique bark_multikey_gin \
+	bark_multikey_ginmerge bark_multikey_ginscan bark_multikey_ginco bark_multikey_ginbound bark_multikey_sim \
+	bark_locator bark_wideblock bark_multikey_hot bark_multikey_exclude
+ISOLATION = bark_multikey_concurrent bark_multikey_unique_concurrent \
+	bark_multikey_hot_epq bark_multikey_exclude_concurrent
+EXTRA_INSTALL = contrib/amcheck contrib/pageinspect src/test/modules/injection_points
+REGRESS_OPTS = --load-extension=amcheck
+TAP_TESTS = 1
+
+export enable_injection_points
+
+# This one stops a scan at an injection point.
+ifeq ($(enable_injection_points),yes)
+ISOLATION += bark_multikey_gin_concurrent
+endif
+
+ifdef USE_PGXS
+PG_CONFIG = pg_config
+PGXS := $(shell $(PG_CONFIG) --pgxs)
+include $(PGXS)
+else
+subdir = src/test/modules/bark_multikey
+top_builddir = ../../../..
+include $(top_builddir)/src/Makefile.global
+include $(top_srcdir)/contrib/contrib-global.mk
+endif
