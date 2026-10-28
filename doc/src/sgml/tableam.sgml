@@ -383,11 +383,59 @@ my_tableam_handler(PG_FUNCTION_ARGS)
    </itemizedlist>
 
    <para>
-    Entries made for a new row (by <command>INSERT</command>,
-    <command>COPY</command>, or an <command>UPDATE</command> that moved the
-    row) are untagged; a new row has no history, so that is valid.  Tags
-    come only from the table access method: from an
-    <command>UPDATE</command> that keeps the row's locator, and from its index
+    When the executor updates a row of such a table, it works out which
+    indexed attributes the update changes.  If every non-summarizing index
+    whose attributes (as computed by
+    <function>RelationGetIndexedAttrs</function>: key and included columns,
+    and the columns its expressions and predicate reference) overlap them
+    can store tags and is ready for inserts, it passes
+    <symbol>TABLE_UPDATE_MAY_KEEP_LOCATOR</symbol> to
+    <function>tuple_update</function>.  The access method may then keep the
+    row's locator.  It reports the outcome in
+    <literal>*update_indexes</literal>, and in
+    <literal>*version_tag</literal> the tag of the new version, which every
+    entry the executor makes for that version carries:
+   </para>
+
+   <variablelist>
+    <varlistentry>
+     <term><literal>TU_Affected</literal></term>
+     <listitem>
+      <para>
+       The row kept its locator, and the indexed attributes the executor
+       passed as <literal>modified_idx_attrs</literal> changed.  Every
+       non-summarizing index whose attributes overlap them, and every
+       summarizing index, gets an entry carrying
+       <literal>*version_tag</literal>, which must not be 0; every other
+       index keeps its entries.  Only an access method whose locator is
+       versioned, given <symbol>TABLE_UPDATE_MAY_KEEP_LOCATOR</symbol>, may
+       report this.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><literal>TU_All</literal>, <literal>TU_Summarizing</literal>, <literal>TU_None</literal></term>
+     <listitem>
+      <para>
+       As for any access method: every index, only the summarizing ones, or
+       none get entries.  With <literal>TU_All</literal> the row may have
+       moved, and <literal>*version_tag</literal> may be 0 or not, as the
+       access method chooses: a moved row has no history at its new locator.
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+
+   <para>
+    The same rule applies to logical replication apply and to
+    <command>REPACK (CONCURRENTLY)</command>.
+   </para>
+
+   <para>
+    Entries made for a new row (by <command>INSERT</command> or
+    <command>COPY</command>) are untagged; a new row has no history, so that
+    is valid.  Tags come only from the table access method: with the new
+    versions <function>tuple_update</function> makes, and from its index
     build and validation scans, which set
     <structfield>ii_VersionTag</structfield> in the
     <structname>IndexInfo</structname> before handing each row to the index.
