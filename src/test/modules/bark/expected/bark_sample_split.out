@@ -1,0 +1,56 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1_level s1_wait s1_plan s2_split s2_wake s1_again
+injection_points_set_local
+--------------------------
+                          
+(1 row)
+
+step s1_level: SELECT level FROM bark_metap('ss_idx');
+level
+-----
+    2
+(1 row)
+
+step s1_wait: SELECT injection_points_attach('bark-sample-build', 'wait');
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+step s1_plan: SELECT ss_sane(300) AS sane; <waiting ...>
+step s2_split: 
+	INSERT INTO ss SELECT g, ss_doc(g) FROM generate_series(2, 6000, 2) g;
+	SELECT level >= 3 AS root_split FROM bark_metap('ss_idx');
+
+root_split
+----------
+t         
+(1 row)
+
+step s2_wake: 
+	SELECT injection_points_detach('bark-sample-build');
+	SELECT injection_points_wakeup('bark-sample-build');
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+injection_points_wakeup
+-----------------------
+                       
+(1 row)
+
+step s1_plan: <... completed>
+sane
+----
+t   
+(1 row)
+
+step s1_again: SELECT ss_sane(3300) AS sane;
+sane
+----
+t   
+(1 row)
+
