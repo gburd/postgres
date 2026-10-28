@@ -63,7 +63,12 @@
  *   amcanversion says an index AM may store tags; amindexcanversion says
  *   which of its indexes do, since an AM may support tags for only some of
  *   them (by the format an index was built in, or by the kind of its
- *   operator classes).
+ *   operator classes).  An index that stores tags may refuse to keep a
+ *   locator (amindexmaykeeplocator, index_may_keep_locator()), for example
+ *   after a constraint is added that its checks cannot serve under a
+ *   versioned locator; the executor then moves the row on an update that
+ *   needs a new entry in it, and its entries are still judged by the
+ *   validity rule.
  *
  * - The table AM hands out tags and alone defines what they mean.  Entries
  *   made by INSERT, COPY and other insertions of a new row are untagged,
