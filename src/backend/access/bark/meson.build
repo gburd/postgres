@@ -13,5 +13,6 @@ backend_sources += files(
   'barkutils.c',
   'barkvacuum.c',
   'barkvalidate.c',
+  'barkverify.c',
   'barkxlog.c',
 )

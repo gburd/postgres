@@ -227,7 +227,9 @@ ORDER BY c.relpages DESC LIMIT 10;
       are in key order and within its high key, with equal keys in heap TID
       order, that sibling links and downlinks agree with the pages they
       point to, and that each LIST, POSTING and OVERSIZED entry is well
-      formed (an OVERSIZED entry's overflow chain is read in full).  It
+      formed (an OVERSIZED entry's overflow chain is read in full).  A
+      unique index must have no LIST or POSTING entry: each of its entries
+      has one heap TID.  It
       acquires an <literal>AccessShareLock</literal> on the index and its
       table, as <function>bt_index_check</function> does.  The
       one-argument form <function>bark_index_check(index

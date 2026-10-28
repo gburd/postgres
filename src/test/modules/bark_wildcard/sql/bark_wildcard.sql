@@ -180,3 +180,62 @@ SELECT count(*) FILTER (WHERE (doc #? p) IS DISTINCT FROM
        count(*) FILTER (WHERE doc #? p) AS exists_true
   FROM (SELECT DISTINCT id, doc, p FROM wc_opq) x;
 DROP TABLE wc_opq, wc_opdocs;
+
+-- HOT updates (barkcomparedatums).  Under include = 'a', a change to
+-- another path leaves the keys as they are: HOT.  A change at a: not HOT.
+-- 4 to 4.000 is HOT, since procedure 7 trims a number's scale, so both
+-- give the same key bytes.  A scalar becoming a one-element array gives
+-- the same [a, value] key but a new marker [a], an insert the index
+-- needs: not HOT, and the marker is then in the index; a second row doing
+-- the same afterwards is not HOT either, since its old value lacks the
+-- marker.  The array going back to a scalar drops the marker: HOT.  The
+-- index without a projection sees every change.
+CREATE TABLE wc_hot (id int, doc jsonb) WITH (fillfactor = 10);
+CREATE INDEX wc_hot_a ON wc_hot USING bark (doc bark_jsonb_wildcard_ops (include = 'a'));
+CREATE INDEX wc_hot_ia ON wc_hot USING bark (id, doc bark_jsonb_wildcard_ops (include = 'a'));
+INSERT INTO wc_hot SELECT g, jsonb_build_object('a', g % 5, 'b', g) FROM generate_series(1, 20) g;
+CREATE FUNCTION wc_hot_count(OUT upd bigint, OUT hot bigint) LANGUAGE sql AS $$
+  SELECT pg_stat_get_xact_tuples_updated('wc_hot'::regclass),
+         pg_stat_get_xact_tuples_hot_updated('wc_hot'::regclass) $$;
+BEGIN;
+UPDATE wc_hot SET doc = jsonb_set(doc, '{b}', to_jsonb(id * 10));
+SELECT 'path not indexed' AS step, * FROM wc_hot_count();
+UPDATE wc_hot SET doc = doc || '{"c": {"d": [1, 2]}}' WHERE id <= 5;
+SELECT 'array at a path not indexed' AS step, * FROM wc_hot_count();
+UPDATE wc_hot SET doc = jsonb_set(doc, '{a}', '7') WHERE id = 1;
+SELECT 'indexed path' AS step, * FROM wc_hot_count();
+UPDATE wc_hot SET doc = jsonb_set(doc, '{a}', '4.000') WHERE id = 4;
+SELECT 'indexed path, 4 to 4.000' AS step, * FROM wc_hot_count();
+UPDATE wc_hot SET doc = jsonb_set(doc, '{a}', jsonb_build_array(doc->'a')) WHERE id = 2;
+SELECT 'scalar to one-element array' AS step, * FROM wc_hot_count();
+UPDATE wc_hot SET doc = jsonb_set(doc, '{a}', jsonb_build_array(doc->'a')) WHERE id = 3;
+SELECT 'again, marker in the index' AS step, * FROM wc_hot_count();
+UPDATE wc_hot SET doc = jsonb_set(doc, '{a}', doc->'a'->0) WHERE id = 2;
+SELECT 'array back to scalar' AS step, * FROM wc_hot_count();
+COMMIT;
+SELECT key FROM bark_wildcard_entries('wc_hot_a') WHERE marker;
+SELECT bark_index_check('wc_hot_a', true), bark_index_check('wc_hot_ia', true);
+-- The counts start again from zero once this backend's are flushed.
+SELECT pg_stat_force_next_flush();
+CREATE INDEX wc_hot_all ON wc_hot USING bark (doc bark_jsonb_wildcard_ops);
+BEGIN;
+UPDATE wc_hot SET doc = jsonb_set(doc, '{b}', to_jsonb(id)) WHERE id <= 4;
+SELECT 'no projection' AS step, * FROM wc_hot_count();
+COMMIT;
+SELECT bark_index_check('wc_hot_all', true);
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT array_agg(id ORDER BY id) FROM wc_hot WHERE doc #= '["a", 4]';
+SELECT array_agg(id ORDER BY id) FROM wc_hot WHERE doc #= '["a", 2]';
+SELECT array_agg(id ORDER BY id) FROM wc_hot WHERE doc #= '["b", 30]';
+SET enable_indexscan = off;
+SET enable_bitmapscan = on;
+SELECT array_agg(id ORDER BY id) FROM wc_hot WHERE doc #= '["a", 4]';
+SELECT array_agg(id ORDER BY id) FROM wc_hot WHERE doc #= '["a", 2]';
+RESET enable_seqscan;
+RESET enable_indexscan;
+RESET enable_bitmapscan;
+SELECT array_agg(id ORDER BY id) FROM wc_hot WHERE doc->'a' @> '4' OR doc->'a' = '4';
+SELECT array_agg(id ORDER BY id) FROM wc_hot WHERE doc->'a' @> '2' OR doc->'a' = '2';
+DROP TABLE wc_hot;
+DROP FUNCTION wc_hot_count;
