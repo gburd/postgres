@@ -1,0 +1,3 @@
+key: xtc-ab7-20260805-135622
+sg: sg-0fac321920e0cb391
+iid: i-09b7dcebeb361e045

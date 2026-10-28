@@ -1,0 +1,5 @@
+profile: chiuso
+region: us-east-1
+key: xtc-rbv-20260824-081823
+sg: sg-07608e231217492df
+iid: i-087dc0d8c1557b60b

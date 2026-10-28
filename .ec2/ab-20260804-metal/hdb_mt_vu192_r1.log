@@ -1,0 +1,996 @@
+HammerDB CLI v5.0
+Copyright © HammerDB Ltd hosted by tpc.org 2019-2025
+Type "help" for a list of commands
+Initialized Jobs on-disk database /tmp/hammer.DB using existing tables (901,120 bytes)
+Database set to PostgreSQL
+Benchmark set to TPC-C for PostgreSQL
+Value localhost for connection:pg_host is the same as existing value localhost, no change made
+Value 5432 for connection:pg_port is the same as existing value 5432, no change made
+Dictionary "connection" for PostgreSQL exists but key "pg_superuser" doesn't, key "pg_superuser" is in the "tpcc" dictionary
+Type "print dict" for valid dictionaries and keys for PostgreSQL
+Dictionary "connection" for PostgreSQL exists but key "pg_superuserpass" doesn't, key "pg_superuserpass" is in the "tpcc" dictionary
+Type "print dict" for valid dictionaries and keys for PostgreSQL
+Dictionary "connection" for PostgreSQL exists but key "pg_defaultdbase" doesn't, key "pg_defaultdbase" is in the "tpcc" dictionary
+Type "print dict" for valid dictionaries and keys for PostgreSQL
+Value timed for tpcc:pg_driver is the same as existing value timed, no change made
+Value 2 for tpcc:pg_rampup is the same as existing value 2, no change made
+Value 5 for tpcc:pg_duration is the same as existing value 5, no change made
+Value 100 for tpcc:pg_count_ware is the same as existing value 100, no change made
+Value false for tpcc:pg_storedprocs is the same as existing value false, no change made
+Value true for tpcc:pg_allwarehouse is the same as existing value true, no change made
+Script loaded, Type "print script" to view
+Vuser 1 created MONITOR - WAIT IDLE
+Vuser 2 created - WAIT IDLE
+Vuser 3 created - WAIT IDLE
+Vuser 4 created - WAIT IDLE
+Vuser 5 created - WAIT IDLE
+Vuser 6 created - WAIT IDLE
+Vuser 7 created - WAIT IDLE
+Vuser 8 created - WAIT IDLE
+Vuser 9 created - WAIT IDLE
+Vuser 10 created - WAIT IDLE
+Vuser 11 created - WAIT IDLE
+Vuser 12 created - WAIT IDLE
+Vuser 13 created - WAIT IDLE
+Vuser 14 created - WAIT IDLE
+Vuser 15 created - WAIT IDLE
+Vuser 16 created - WAIT IDLE
+Vuser 17 created - WAIT IDLE
+Vuser 18 created - WAIT IDLE
+Vuser 19 created - WAIT IDLE
+Vuser 20 created - WAIT IDLE
+Vuser 21 created - WAIT IDLE
+Vuser 22 created - WAIT IDLE
+Vuser 23 created - WAIT IDLE
+Vuser 24 created - WAIT IDLE
+Vuser 25 created - WAIT IDLE
+Vuser 26 created - WAIT IDLE
+Vuser 27 created - WAIT IDLE
+Vuser 28 created - WAIT IDLE
+Vuser 29 created - WAIT IDLE
+Vuser 30 created - WAIT IDLE
+Vuser 31 created - WAIT IDLE
+Vuser 32 created - WAIT IDLE
+Vuser 33 created - WAIT IDLE
+Vuser 34 created - WAIT IDLE
+Vuser 35 created - WAIT IDLE
+Vuser 36 created - WAIT IDLE
+Vuser 37 created - WAIT IDLE
+Vuser 38 created - WAIT IDLE
+Vuser 39 created - WAIT IDLE
+Vuser 40 created - WAIT IDLE
+Vuser 41 created - WAIT IDLE
+Vuser 42 created - WAIT IDLE
+Vuser 43 created - WAIT IDLE
+Vuser 44 created - WAIT IDLE
+Vuser 45 created - WAIT IDLE
+Vuser 46 created - WAIT IDLE
+Vuser 47 created - WAIT IDLE
+Vuser 48 created - WAIT IDLE
+Vuser 49 created - WAIT IDLE
+Vuser 50 created - WAIT IDLE
+Vuser 51 created - WAIT IDLE
+Vuser 52 created - WAIT IDLE
+Vuser 53 created - WAIT IDLE
+Vuser 54 created - WAIT IDLE
+Vuser 55 created - WAIT IDLE
+Vuser 56 created - WAIT IDLE
+Vuser 57 created - WAIT IDLE
+Vuser 58 created - WAIT IDLE
+Vuser 59 created - WAIT IDLE
+Vuser 60 created - WAIT IDLE
+Vuser 61 created - WAIT IDLE
+Vuser 62 created - WAIT IDLE
+Vuser 63 created - WAIT IDLE
+Vuser 64 created - WAIT IDLE
+Vuser 65 created - WAIT IDLE
+Vuser 66 created - WAIT IDLE
+Vuser 67 created - WAIT IDLE
+Vuser 68 created - WAIT IDLE
+Vuser 69 created - WAIT IDLE
+Vuser 70 created - WAIT IDLE
+Vuser 71 created - WAIT IDLE
+Vuser 72 created - WAIT IDLE
+Vuser 73 created - WAIT IDLE
+Vuser 74 created - WAIT IDLE
+Vuser 75 created - WAIT IDLE
+Vuser 76 created - WAIT IDLE
+Vuser 77 created - WAIT IDLE
+Vuser 78 created - WAIT IDLE
+Vuser 79 created - WAIT IDLE
+Vuser 80 created - WAIT IDLE
+Vuser 81 created - WAIT IDLE
+Vuser 82 created - WAIT IDLE
+Vuser 83 created - WAIT IDLE
+Vuser 84 created - WAIT IDLE
+Vuser 85 created - WAIT IDLE
+Vuser 86 created - WAIT IDLE
+Vuser 87 created - WAIT IDLE
+Vuser 88 created - WAIT IDLE
+Vuser 89 created - WAIT IDLE
+Vuser 90 created - WAIT IDLE
+Vuser 91 created - WAIT IDLE
+Vuser 92 created - WAIT IDLE
+Vuser 93 created - WAIT IDLE
+Vuser 94 created - WAIT IDLE
+Vuser 95 created - WAIT IDLE
+Vuser 96 created - WAIT IDLE
+Vuser 97 created - WAIT IDLE
+Vuser 98 created - WAIT IDLE
+Vuser 99 created - WAIT IDLE
+Vuser 100 created - WAIT IDLE
+Vuser 101 created - WAIT IDLE
+Vuser 102 created - WAIT IDLE
+Vuser 103 created - WAIT IDLE
+Vuser 104 created - WAIT IDLE
+Vuser 105 created - WAIT IDLE
+Vuser 106 created - WAIT IDLE
+Vuser 107 created - WAIT IDLE
+Vuser 108 created - WAIT IDLE
+Vuser 109 created - WAIT IDLE
+Vuser 110 created - WAIT IDLE
+Vuser 111 created - WAIT IDLE
+Vuser 112 created - WAIT IDLE
+Vuser 113 created - WAIT IDLE
+Vuser 114 created - WAIT IDLE
+Vuser 115 created - WAIT IDLE
+Vuser 116 created - WAIT IDLE
+Vuser 117 created - WAIT IDLE
+Vuser 118 created - WAIT IDLE
+Vuser 119 created - WAIT IDLE
+Vuser 120 created - WAIT IDLE
+Vuser 121 created - WAIT IDLE
+Vuser 122 created - WAIT IDLE
+Vuser 123 created - WAIT IDLE
+Vuser 124 created - WAIT IDLE
+Vuser 125 created - WAIT IDLE
+Vuser 126 created - WAIT IDLE
+Vuser 127 created - WAIT IDLE
+Vuser 128 created - WAIT IDLE
+Vuser 129 created - WAIT IDLE
+Vuser 130 created - WAIT IDLE
+Vuser 131 created - WAIT IDLE
+Vuser 132 created - WAIT IDLE
+Vuser 133 created - WAIT IDLE
+Vuser 134 created - WAIT IDLE
+Vuser 135 created - WAIT IDLE
+Vuser 136 created - WAIT IDLE
+Vuser 137 created - WAIT IDLE
+Vuser 138 created - WAIT IDLE
+Vuser 139 created - WAIT IDLE
+Vuser 140 created - WAIT IDLE
+Vuser 141 created - WAIT IDLE
+Vuser 142 created - WAIT IDLE
+Vuser 143 created - WAIT IDLE
+Vuser 144 created - WAIT IDLE
+Vuser 145 created - WAIT IDLE
+Vuser 146 created - WAIT IDLE
+Vuser 147 created - WAIT IDLE
+Vuser 148 created - WAIT IDLE
+Vuser 149 created - WAIT IDLE
+Vuser 150 created - WAIT IDLE
+Vuser 151 created - WAIT IDLE
+Vuser 152 created - WAIT IDLE
+Vuser 153 created - WAIT IDLE
+Vuser 154 created - WAIT IDLE
+Vuser 155 created - WAIT IDLE
+Vuser 156 created - WAIT IDLE
+Vuser 157 created - WAIT IDLE
+Vuser 158 created - WAIT IDLE
+Vuser 159 created - WAIT IDLE
+Vuser 160 created - WAIT IDLE
+Vuser 161 created - WAIT IDLE
+Vuser 162 created - WAIT IDLE
+Vuser 163 created - WAIT IDLE
+Vuser 164 created - WAIT IDLE
+Vuser 165 created - WAIT IDLE
+Vuser 166 created - WAIT IDLE
+Vuser 167 created - WAIT IDLE
+Vuser 168 created - WAIT IDLE
+Vuser 169 created - WAIT IDLE
+Vuser 170 created - WAIT IDLE
+Vuser 171 created - WAIT IDLE
+Vuser 172 created - WAIT IDLE
+Vuser 173 created - WAIT IDLE
+Vuser 174 created - WAIT IDLE
+Vuser 175 created - WAIT IDLE
+Vuser 176 created - WAIT IDLE
+Vuser 177 created - WAIT IDLE
+Vuser 178 created - WAIT IDLE
+Vuser 179 created - WAIT IDLE
+Vuser 180 created - WAIT IDLE
+Vuser 181 created - WAIT IDLE
+Vuser 182 created - WAIT IDLE
+Vuser 183 created - WAIT IDLE
+Vuser 184 created - WAIT IDLE
+Vuser 185 created - WAIT IDLE
+Vuser 186 created - WAIT IDLE
+Vuser 187 created - WAIT IDLE
+Vuser 188 created - WAIT IDLE
+Vuser 189 created - WAIT IDLE
+Vuser 190 created - WAIT IDLE
+Vuser 191 created - WAIT IDLE
+Vuser 192 created - WAIT IDLE
+Vuser 193 created - WAIT IDLE
+Logging activated
+to /tmp/hammerdb_6A72039F37CE03E213837343.log
+193 Virtual Users Created with Monitor VU
+Vuser 1:RUNNING
+Vuser 1:DBVersion:20devel
+Vuser 1:Beginning rampup time of 2 minutes
+Vuser 2:RUNNING
+Vuser 2:Assigned 1 WIDs = 1 based on VU count 192, Warehouses = 1 out of 100
+Vuser 2:Processing 10000000 transactions with output suppressed...
+Vuser 3:RUNNING
+Vuser 3:Assigned 1 WIDs = 2 based on VU count 192, Warehouses = 1 out of 100
+Vuser 3:Processing 10000000 transactions with output suppressed...
+Vuser 4:RUNNING
+Vuser 4:Assigned 1 WIDs = 3 based on VU count 192, Warehouses = 1 out of 100
+Vuser 4:Processing 10000000 transactions with output suppressed...
+Vuser 5:RUNNING
+Vuser 5:Assigned 1 WIDs = 4 based on VU count 192, Warehouses = 1 out of 100
+Vuser 5:Processing 10000000 transactions with output suppressed...
+Vuser 6:RUNNING
+Vuser 6:Assigned 1 WIDs = 5 based on VU count 192, Warehouses = 1 out of 100
+Vuser 6:Processing 10000000 transactions with output suppressed...
+Vuser 7:RUNNING
+Vuser 7:Assigned 1 WIDs = 6 based on VU count 192, Warehouses = 1 out of 100
+Vuser 7:Processing 10000000 transactions with output suppressed...
+Vuser 8:RUNNING
+Vuser 8:Assigned 1 WIDs = 7 based on VU count 192, Warehouses = 1 out of 100
+Vuser 8:Processing 10000000 transactions with output suppressed...
+Vuser 9:RUNNING
+Vuser 9:Assigned 1 WIDs = 8 based on VU count 192, Warehouses = 1 out of 100
+Vuser 9:Processing 10000000 transactions with output suppressed...
+Vuser 10:RUNNING
+Vuser 10:Assigned 1 WIDs = 9 based on VU count 192, Warehouses = 1 out of 100
+Vuser 10:Processing 10000000 transactions with output suppressed...
+Vuser 11:RUNNING
+Vuser 11:Assigned 1 WIDs = 10 based on VU count 192, Warehouses = 1 out of 100
+Vuser 11:Processing 10000000 transactions with output suppressed...
+Vuser 12:RUNNING
+Vuser 12:Assigned 1 WIDs = 11 based on VU count 192, Warehouses = 1 out of 100
+Vuser 12:Processing 10000000 transactions with output suppressed...
+Vuser 13:RUNNING
+Vuser 13:Assigned 1 WIDs = 12 based on VU count 192, Warehouses = 1 out of 100
+Vuser 13:Processing 10000000 transactions with output suppressed...
+Vuser 14:RUNNING
+Vuser 14:Assigned 1 WIDs = 13 based on VU count 192, Warehouses = 1 out of 100
+Vuser 14:Processing 10000000 transactions with output suppressed...
+Vuser 15:RUNNING
+Vuser 15:Assigned 1 WIDs = 14 based on VU count 192, Warehouses = 1 out of 100
+Vuser 15:Processing 10000000 transactions with output suppressed...
+Vuser 16:RUNNING
+Vuser 16:Assigned 1 WIDs = 15 based on VU count 192, Warehouses = 1 out of 100
+Vuser 16:Processing 10000000 transactions with output suppressed...
+Vuser 17:RUNNING
+Vuser 17:Assigned 1 WIDs = 16 based on VU count 192, Warehouses = 1 out of 100
+Vuser 17:Processing 10000000 transactions with output suppressed...
+Vuser 18:RUNNING
+Vuser 18:Assigned 1 WIDs = 17 based on VU count 192, Warehouses = 1 out of 100
+Vuser 18:Processing 10000000 transactions with output suppressed...
+Vuser 19:RUNNING
+Vuser 19:Assigned 1 WIDs = 18 based on VU count 192, Warehouses = 1 out of 100
+Vuser 19:Processing 10000000 transactions with output suppressed...
+Vuser 20:RUNNING
+Vuser 20:Assigned 1 WIDs = 19 based on VU count 192, Warehouses = 1 out of 100
+Vuser 20:Processing 10000000 transactions with output suppressed...
+Vuser 21:RUNNING
+Vuser 21:Assigned 1 WIDs = 20 based on VU count 192, Warehouses = 1 out of 100
+Vuser 21:Processing 10000000 transactions with output suppressed...
+Vuser 22:RUNNING
+Vuser 22:Assigned 1 WIDs = 21 based on VU count 192, Warehouses = 1 out of 100
+Vuser 22:Processing 10000000 transactions with output suppressed...
+Vuser 23:RUNNING
+Vuser 23:Assigned 1 WIDs = 22 based on VU count 192, Warehouses = 1 out of 100
+Vuser 23:Processing 10000000 transactions with output suppressed...
+Vuser 24:RUNNING
+Vuser 24:Assigned 1 WIDs = 23 based on VU count 192, Warehouses = 1 out of 100
+Vuser 24:Processing 10000000 transactions with output suppressed...
+Vuser 25:RUNNING
+Vuser 25:Assigned 1 WIDs = 24 based on VU count 192, Warehouses = 1 out of 100
+Vuser 25:Processing 10000000 transactions with output suppressed...
+Vuser 26:RUNNING
+Vuser 26:Assigned 1 WIDs = 25 based on VU count 192, Warehouses = 1 out of 100
+Vuser 26:Processing 10000000 transactions with output suppressed...
+Vuser 27:RUNNING
+Vuser 27:Assigned 1 WIDs = 26 based on VU count 192, Warehouses = 1 out of 100
+Vuser 27:Processing 10000000 transactions with output suppressed...
+Vuser 28:RUNNING
+Vuser 28:Assigned 1 WIDs = 27 based on VU count 192, Warehouses = 1 out of 100
+Vuser 28:Processing 10000000 transactions with output suppressed...
+Vuser 29:RUNNING
+Vuser 29:Assigned 1 WIDs = 28 based on VU count 192, Warehouses = 1 out of 100
+Vuser 29:Processing 10000000 transactions with output suppressed...
+Vuser 30:RUNNING
+Vuser 30:Assigned 1 WIDs = 29 based on VU count 192, Warehouses = 1 out of 100
+Vuser 30:Processing 10000000 transactions with output suppressed...
+Vuser 31:RUNNING
+Vuser 31:Assigned 1 WIDs = 30 based on VU count 192, Warehouses = 1 out of 100
+Vuser 31:Processing 10000000 transactions with output suppressed...
+Vuser 32:RUNNING
+Vuser 32:Assigned 1 WIDs = 31 based on VU count 192, Warehouses = 1 out of 100
+Vuser 32:Processing 10000000 transactions with output suppressed...
+Vuser 33:RUNNING
+Vuser 33:Assigned 1 WIDs = 32 based on VU count 192, Warehouses = 1 out of 100
+Vuser 33:Processing 10000000 transactions with output suppressed...
+Vuser 34:RUNNING
+Vuser 34:Assigned 1 WIDs = 33 based on VU count 192, Warehouses = 1 out of 100
+Vuser 34:Processing 10000000 transactions with output suppressed...
+Vuser 35:RUNNING
+Vuser 35:Assigned 1 WIDs = 34 based on VU count 192, Warehouses = 1 out of 100
+Vuser 35:Processing 10000000 transactions with output suppressed...
+Vuser 36:RUNNING
+Vuser 36:Assigned 1 WIDs = 35 based on VU count 192, Warehouses = 1 out of 100
+Vuser 36:Processing 10000000 transactions with output suppressed...
+Vuser 37:RUNNING
+Vuser 37:Assigned 1 WIDs = 36 based on VU count 192, Warehouses = 1 out of 100
+Vuser 37:Processing 10000000 transactions with output suppressed...
+Vuser 38:RUNNING
+Vuser 38:Assigned 1 WIDs = 37 based on VU count 192, Warehouses = 1 out of 100
+Vuser 38:Processing 10000000 transactions with output suppressed...
+Vuser 39:RUNNING
+Vuser 39:Assigned 1 WIDs = 38 based on VU count 192, Warehouses = 1 out of 100
+Vuser 39:Processing 10000000 transactions with output suppressed...
+Vuser 40:RUNNING
+Vuser 40:Assigned 1 WIDs = 39 based on VU count 192, Warehouses = 1 out of 100
+Vuser 40:Processing 10000000 transactions with output suppressed...
+Vuser 41:RUNNING
+Vuser 41:Assigned 1 WIDs = 40 based on VU count 192, Warehouses = 1 out of 100
+Vuser 41:Processing 10000000 transactions with output suppressed...
+Vuser 42:RUNNING
+Vuser 42:Assigned 1 WIDs = 41 based on VU count 192, Warehouses = 1 out of 100
+Vuser 42:Processing 10000000 transactions with output suppressed...
+Vuser 43:RUNNING
+Vuser 43:Assigned 1 WIDs = 42 based on VU count 192, Warehouses = 1 out of 100
+Vuser 43:Processing 10000000 transactions with output suppressed...
+Vuser 44:RUNNING
+Vuser 44:Assigned 1 WIDs = 43 based on VU count 192, Warehouses = 1 out of 100
+Vuser 44:Processing 10000000 transactions with output suppressed...
+Vuser 45:RUNNING
+Vuser 45:Assigned 1 WIDs = 44 based on VU count 192, Warehouses = 1 out of 100
+Vuser 45:Processing 10000000 transactions with output suppressed...
+Vuser 46:RUNNING
+Vuser 46:Assigned 1 WIDs = 45 based on VU count 192, Warehouses = 1 out of 100
+Vuser 46:Processing 10000000 transactions with output suppressed...
+Vuser 47:RUNNING
+Vuser 47:Assigned 1 WIDs = 46 based on VU count 192, Warehouses = 1 out of 100
+Vuser 47:Processing 10000000 transactions with output suppressed...
+Vuser 48:RUNNING
+Vuser 48:Assigned 1 WIDs = 47 based on VU count 192, Warehouses = 1 out of 100
+Vuser 48:Processing 10000000 transactions with output suppressed...
+Vuser 49:RUNNING
+Vuser 49:Assigned 1 WIDs = 48 based on VU count 192, Warehouses = 1 out of 100
+Vuser 49:Processing 10000000 transactions with output suppressed...
+Vuser 50:RUNNING
+Vuser 50:Assigned 1 WIDs = 49 based on VU count 192, Warehouses = 1 out of 100
+Vuser 50:Processing 10000000 transactions with output suppressed...
+Vuser 51:RUNNING
+Vuser 51:Assigned 1 WIDs = 50 based on VU count 192, Warehouses = 1 out of 100
+Vuser 51:Processing 10000000 transactions with output suppressed...
+Vuser 52:RUNNING
+Vuser 52:Assigned 1 WIDs = 51 based on VU count 192, Warehouses = 1 out of 100
+Vuser 52:Processing 10000000 transactions with output suppressed...
+Vuser 53:RUNNING
+Vuser 53:Assigned 1 WIDs = 52 based on VU count 192, Warehouses = 1 out of 100
+Vuser 53:Processing 10000000 transactions with output suppressed...
+Vuser 54:RUNNING
+Vuser 54:Assigned 1 WIDs = 53 based on VU count 192, Warehouses = 1 out of 100
+Vuser 54:Processing 10000000 transactions with output suppressed...
+Vuser 55:RUNNING
+Vuser 55:Assigned 1 WIDs = 54 based on VU count 192, Warehouses = 1 out of 100
+Vuser 55:Processing 10000000 transactions with output suppressed...
+Vuser 56:RUNNING
+Vuser 56:Assigned 1 WIDs = 55 based on VU count 192, Warehouses = 1 out of 100
+Vuser 56:Processing 10000000 transactions with output suppressed...
+Vuser 57:RUNNING
+Vuser 57:Assigned 1 WIDs = 56 based on VU count 192, Warehouses = 1 out of 100
+Vuser 57:Processing 10000000 transactions with output suppressed...
+Vuser 58:RUNNING
+Vuser 58:Assigned 1 WIDs = 57 based on VU count 192, Warehouses = 1 out of 100
+Vuser 58:Processing 10000000 transactions with output suppressed...
+Vuser 59:RUNNING
+Vuser 59:Assigned 1 WIDs = 58 based on VU count 192, Warehouses = 1 out of 100
+Vuser 59:Processing 10000000 transactions with output suppressed...
+Vuser 60:RUNNING
+Vuser 60:Assigned 1 WIDs = 59 based on VU count 192, Warehouses = 1 out of 100
+Vuser 60:Processing 10000000 transactions with output suppressed...
+Vuser 61:RUNNING
+Vuser 61:Assigned 1 WIDs = 60 based on VU count 192, Warehouses = 1 out of 100
+Vuser 61:Processing 10000000 transactions with output suppressed...
+Vuser 62:RUNNING
+Vuser 62:Assigned 1 WIDs = 61 based on VU count 192, Warehouses = 1 out of 100
+Vuser 62:Processing 10000000 transactions with output suppressed...
+Vuser 63:RUNNING
+Vuser 63:Assigned 1 WIDs = 62 based on VU count 192, Warehouses = 1 out of 100
+Vuser 63:Processing 10000000 transactions with output suppressed...
+Vuser 64:RUNNING
+Vuser 64:Assigned 1 WIDs = 63 based on VU count 192, Warehouses = 1 out of 100
+Vuser 64:Processing 10000000 transactions with output suppressed...
+Vuser 65:RUNNING
+Vuser 65:Assigned 1 WIDs = 64 based on VU count 192, Warehouses = 1 out of 100
+Vuser 65:Processing 10000000 transactions with output suppressed...
+Vuser 66:RUNNING
+Vuser 66:Assigned 1 WIDs = 65 based on VU count 192, Warehouses = 1 out of 100
+Vuser 66:Processing 10000000 transactions with output suppressed...
+Vuser 67:RUNNING
+Vuser 67:Assigned 1 WIDs = 66 based on VU count 192, Warehouses = 1 out of 100
+Vuser 67:Processing 10000000 transactions with output suppressed...
+Vuser 68:RUNNING
+Vuser 68:Assigned 1 WIDs = 67 based on VU count 192, Warehouses = 1 out of 100
+Vuser 68:Processing 10000000 transactions with output suppressed...
+Vuser 69:RUNNING
+Vuser 69:Assigned 1 WIDs = 68 based on VU count 192, Warehouses = 1 out of 100
+Vuser 69:Processing 10000000 transactions with output suppressed...
+Vuser 70:RUNNING
+Vuser 70:Assigned 1 WIDs = 69 based on VU count 192, Warehouses = 1 out of 100
+Vuser 70:Processing 10000000 transactions with output suppressed...
+Vuser 71:RUNNING
+Vuser 71:Assigned 1 WIDs = 70 based on VU count 192, Warehouses = 1 out of 100
+Vuser 71:Processing 10000000 transactions with output suppressed...
+Vuser 72:RUNNING
+Vuser 72:Assigned 1 WIDs = 71 based on VU count 192, Warehouses = 1 out of 100
+Vuser 72:Processing 10000000 transactions with output suppressed...
+Vuser 73:RUNNING
+Vuser 73:Assigned 1 WIDs = 72 based on VU count 192, Warehouses = 1 out of 100
+Vuser 73:Processing 10000000 transactions with output suppressed...
+Vuser 74:RUNNING
+Vuser 74:Assigned 1 WIDs = 73 based on VU count 192, Warehouses = 1 out of 100
+Vuser 74:Processing 10000000 transactions with output suppressed...
+Vuser 75:RUNNING
+Vuser 75:Assigned 1 WIDs = 74 based on VU count 192, Warehouses = 1 out of 100
+Vuser 75:Processing 10000000 transactions with output suppressed...
+Vuser 76:RUNNING
+Vuser 76:Assigned 1 WIDs = 75 based on VU count 192, Warehouses = 1 out of 100
+Vuser 76:Processing 10000000 transactions with output suppressed...
+Vuser 77:RUNNING
+Vuser 77:Assigned 1 WIDs = 76 based on VU count 192, Warehouses = 1 out of 100
+Vuser 77:Processing 10000000 transactions with output suppressed...
+Vuser 78:RUNNING
+Vuser 78:Assigned 1 WIDs = 77 based on VU count 192, Warehouses = 1 out of 100
+Vuser 78:Processing 10000000 transactions with output suppressed...
+Vuser 79:RUNNING
+Vuser 79:Assigned 1 WIDs = 78 based on VU count 192, Warehouses = 1 out of 100
+Vuser 79:Processing 10000000 transactions with output suppressed...
+Vuser 80:RUNNING
+Vuser 80:Assigned 1 WIDs = 79 based on VU count 192, Warehouses = 1 out of 100
+Vuser 80:Processing 10000000 transactions with output suppressed...
+Vuser 81:RUNNING
+Vuser 81:Assigned 1 WIDs = 80 based on VU count 192, Warehouses = 1 out of 100
+Vuser 81:Processing 10000000 transactions with output suppressed...
+Vuser 82:RUNNING
+Vuser 82:Assigned 1 WIDs = 81 based on VU count 192, Warehouses = 1 out of 100
+Vuser 82:Processing 10000000 transactions with output suppressed...
+Vuser 83:RUNNING
+Vuser 83:Assigned 1 WIDs = 82 based on VU count 192, Warehouses = 1 out of 100
+Vuser 83:Processing 10000000 transactions with output suppressed...
+Vuser 84:RUNNING
+Vuser 84:Assigned 1 WIDs = 83 based on VU count 192, Warehouses = 1 out of 100
+Vuser 84:Processing 10000000 transactions with output suppressed...
+Vuser 85:RUNNING
+Vuser 85:Assigned 1 WIDs = 84 based on VU count 192, Warehouses = 1 out of 100
+Vuser 85:Processing 10000000 transactions with output suppressed...
+Vuser 86:RUNNING
+Vuser 86:Assigned 1 WIDs = 85 based on VU count 192, Warehouses = 1 out of 100
+Vuser 86:Processing 10000000 transactions with output suppressed...
+Vuser 87:RUNNING
+Vuser 87:Assigned 1 WIDs = 86 based on VU count 192, Warehouses = 1 out of 100
+Vuser 87:Processing 10000000 transactions with output suppressed...
+Vuser 88:RUNNING
+Vuser 88:Assigned 1 WIDs = 87 based on VU count 192, Warehouses = 1 out of 100
+Vuser 88:Processing 10000000 transactions with output suppressed...
+Vuser 89:RUNNING
+Vuser 89:Assigned 1 WIDs = 88 based on VU count 192, Warehouses = 1 out of 100
+Vuser 89:Processing 10000000 transactions with output suppressed...
+Vuser 90:RUNNING
+Vuser 90:Assigned 1 WIDs = 89 based on VU count 192, Warehouses = 1 out of 100
+Vuser 90:Processing 10000000 transactions with output suppressed...
+Vuser 91:RUNNING
+Vuser 91:Assigned 1 WIDs = 90 based on VU count 192, Warehouses = 1 out of 100
+Vuser 91:Processing 10000000 transactions with output suppressed...
+Vuser 92:RUNNING
+Vuser 92:Assigned 1 WIDs = 91 based on VU count 192, Warehouses = 1 out of 100
+Vuser 92:Processing 10000000 transactions with output suppressed...
+Vuser 93:RUNNING
+Vuser 93:Assigned 1 WIDs = 92 based on VU count 192, Warehouses = 1 out of 100
+Vuser 93:Processing 10000000 transactions with output suppressed...
+Vuser 94:RUNNING
+Vuser 94:Assigned 1 WIDs = 93 based on VU count 192, Warehouses = 1 out of 100
+Vuser 94:Processing 10000000 transactions with output suppressed...
+Vuser 95:RUNNING
+Vuser 95:Assigned 1 WIDs = 94 based on VU count 192, Warehouses = 1 out of 100
+Vuser 95:Processing 10000000 transactions with output suppressed...
+Vuser 96:RUNNING
+Vuser 96:Assigned 1 WIDs = 95 based on VU count 192, Warehouses = 1 out of 100
+Vuser 96:Processing 10000000 transactions with output suppressed...
+Vuser 97:RUNNING
+Vuser 97:Assigned 1 WIDs = 96 based on VU count 192, Warehouses = 1 out of 100
+Vuser 97:Processing 10000000 transactions with output suppressed...
+Vuser 98:RUNNING
+Vuser 98:Assigned 1 WIDs = 97 based on VU count 192, Warehouses = 1 out of 100
+Vuser 98:Processing 10000000 transactions with output suppressed...
+Vuser 99:RUNNING
+Vuser 99:Assigned 1 WIDs = 98 based on VU count 192, Warehouses = 1 out of 100
+Vuser 99:Processing 10000000 transactions with output suppressed...
+Vuser 100:RUNNING
+Vuser 100:Assigned 1 WIDs = 99 based on VU count 192, Warehouses = 1 out of 100
+Vuser 100:Processing 10000000 transactions with output suppressed...
+Vuser 101:RUNNING
+Vuser 101:Assigned 1 WIDs = 100 based on VU count 192, Warehouses = 1 out of 100
+Vuser 101:Processing 10000000 transactions with output suppressed...
+Vuser 102:RUNNING
+Vuser 102:Assigned 1 WIDs = 1 based on VU count 192, Warehouses = 1 out of 100
+Vuser 102:Processing 10000000 transactions with output suppressed...
+Vuser 103:RUNNING
+Vuser 103:Assigned 1 WIDs = 2 based on VU count 192, Warehouses = 1 out of 100
+Vuser 103:Processing 10000000 transactions with output suppressed...
+Vuser 104:RUNNING
+Vuser 104:Assigned 1 WIDs = 3 based on VU count 192, Warehouses = 1 out of 100
+Vuser 104:Processing 10000000 transactions with output suppressed...
+Vuser 105:RUNNING
+Vuser 105:Assigned 1 WIDs = 4 based on VU count 192, Warehouses = 1 out of 100
+Vuser 105:Processing 10000000 transactions with output suppressed...
+Vuser 106:RUNNING
+Vuser 106:Assigned 1 WIDs = 5 based on VU count 192, Warehouses = 1 out of 100
+Vuser 106:Processing 10000000 transactions with output suppressed...
+Vuser 107:RUNNING
+Vuser 107:Assigned 1 WIDs = 6 based on VU count 192, Warehouses = 1 out of 100
+Vuser 107:Processing 10000000 transactions with output suppressed...
+Vuser 108:RUNNING
+Vuser 108:Assigned 1 WIDs = 7 based on VU count 192, Warehouses = 1 out of 100
+Vuser 108:Processing 10000000 transactions with output suppressed...
+Vuser 109:RUNNING
+Vuser 109:Assigned 1 WIDs = 8 based on VU count 192, Warehouses = 1 out of 100
+Vuser 109:Processing 10000000 transactions with output suppressed...
+Vuser 110:RUNNING
+Vuser 110:Assigned 1 WIDs = 9 based on VU count 192, Warehouses = 1 out of 100
+Vuser 110:Processing 10000000 transactions with output suppressed...
+Vuser 111:RUNNING
+Vuser 111:Assigned 1 WIDs = 10 based on VU count 192, Warehouses = 1 out of 100
+Vuser 111:Processing 10000000 transactions with output suppressed...
+Vuser 112:RUNNING
+Vuser 112:Assigned 1 WIDs = 11 based on VU count 192, Warehouses = 1 out of 100
+Vuser 112:Processing 10000000 transactions with output suppressed...
+Vuser 113:RUNNING
+Vuser 113:Assigned 1 WIDs = 12 based on VU count 192, Warehouses = 1 out of 100
+Vuser 113:Processing 10000000 transactions with output suppressed...
+Vuser 114:RUNNING
+Vuser 114:Assigned 1 WIDs = 13 based on VU count 192, Warehouses = 1 out of 100
+Vuser 114:Processing 10000000 transactions with output suppressed...
+Vuser 115:RUNNING
+Vuser 115:Assigned 1 WIDs = 14 based on VU count 192, Warehouses = 1 out of 100
+Vuser 115:Processing 10000000 transactions with output suppressed...
+Vuser 116:RUNNING
+Vuser 116:Assigned 1 WIDs = 15 based on VU count 192, Warehouses = 1 out of 100
+Vuser 116:Processing 10000000 transactions with output suppressed...
+Vuser 117:RUNNING
+Vuser 117:Assigned 1 WIDs = 16 based on VU count 192, Warehouses = 1 out of 100
+Vuser 117:Processing 10000000 transactions with output suppressed...
+Vuser 118:RUNNING
+Vuser 118:Assigned 1 WIDs = 17 based on VU count 192, Warehouses = 1 out of 100
+Vuser 118:Processing 10000000 transactions with output suppressed...
+Vuser 119:RUNNING
+Vuser 119:Assigned 1 WIDs = 18 based on VU count 192, Warehouses = 1 out of 100
+Vuser 119:Processing 10000000 transactions with output suppressed...
+Vuser 120:RUNNING
+Vuser 120:Assigned 1 WIDs = 19 based on VU count 192, Warehouses = 1 out of 100
+Vuser 120:Processing 10000000 transactions with output suppressed...
+Vuser 1:Rampup 1 minutes complete ...
+Vuser 121:RUNNING
+Vuser 121:Assigned 1 WIDs = 20 based on VU count 192, Warehouses = 1 out of 100
+Vuser 121:Processing 10000000 transactions with output suppressed...
+Vuser 122:RUNNING
+Vuser 122:Assigned 1 WIDs = 21 based on VU count 192, Warehouses = 1 out of 100
+Vuser 122:Processing 10000000 transactions with output suppressed...
+Vuser 123:RUNNING
+Vuser 123:Assigned 1 WIDs = 22 based on VU count 192, Warehouses = 1 out of 100
+Vuser 123:Processing 10000000 transactions with output suppressed...
+Vuser 124:RUNNING
+Vuser 124:Assigned 1 WIDs = 23 based on VU count 192, Warehouses = 1 out of 100
+Vuser 124:Processing 10000000 transactions with output suppressed...
+Vuser 125:RUNNING
+Vuser 125:Assigned 1 WIDs = 24 based on VU count 192, Warehouses = 1 out of 100
+Vuser 125:Processing 10000000 transactions with output suppressed...
+Vuser 126:RUNNING
+Vuser 126:Assigned 1 WIDs = 25 based on VU count 192, Warehouses = 1 out of 100
+Vuser 126:Processing 10000000 transactions with output suppressed...
+Vuser 127:RUNNING
+Vuser 127:Assigned 1 WIDs = 26 based on VU count 192, Warehouses = 1 out of 100
+Vuser 127:Processing 10000000 transactions with output suppressed...
+Vuser 128:RUNNING
+Vuser 128:Assigned 1 WIDs = 27 based on VU count 192, Warehouses = 1 out of 100
+Vuser 128:Processing 10000000 transactions with output suppressed...
+Vuser 129:RUNNING
+Vuser 129:Assigned 1 WIDs = 28 based on VU count 192, Warehouses = 1 out of 100
+Vuser 129:Processing 10000000 transactions with output suppressed...
+Vuser 130:RUNNING
+Vuser 130:Assigned 1 WIDs = 29 based on VU count 192, Warehouses = 1 out of 100
+Vuser 130:Processing 10000000 transactions with output suppressed...
+Vuser 131:RUNNING
+Vuser 131:Assigned 1 WIDs = 30 based on VU count 192, Warehouses = 1 out of 100
+Vuser 131:Processing 10000000 transactions with output suppressed...
+Vuser 132:RUNNING
+Vuser 132:Assigned 1 WIDs = 31 based on VU count 192, Warehouses = 1 out of 100
+Vuser 132:Processing 10000000 transactions with output suppressed...
+Vuser 133:RUNNING
+Vuser 133:Assigned 1 WIDs = 32 based on VU count 192, Warehouses = 1 out of 100
+Vuser 133:Processing 10000000 transactions with output suppressed...
+Vuser 134:RUNNING
+Vuser 134:Assigned 1 WIDs = 33 based on VU count 192, Warehouses = 1 out of 100
+Vuser 134:Processing 10000000 transactions with output suppressed...
+Vuser 135:RUNNING
+Vuser 135:Assigned 1 WIDs = 34 based on VU count 192, Warehouses = 1 out of 100
+Vuser 135:Processing 10000000 transactions with output suppressed...
+Vuser 136:RUNNING
+Vuser 136:Assigned 1 WIDs = 35 based on VU count 192, Warehouses = 1 out of 100
+Vuser 136:Processing 10000000 transactions with output suppressed...
+Vuser 137:RUNNING
+Vuser 137:Assigned 1 WIDs = 36 based on VU count 192, Warehouses = 1 out of 100
+Vuser 137:Processing 10000000 transactions with output suppressed...
+Vuser 138:RUNNING
+Vuser 138:Assigned 1 WIDs = 37 based on VU count 192, Warehouses = 1 out of 100
+Vuser 138:Processing 10000000 transactions with output suppressed...
+Vuser 139:RUNNING
+Vuser 139:Assigned 1 WIDs = 38 based on VU count 192, Warehouses = 1 out of 100
+Vuser 139:Processing 10000000 transactions with output suppressed...
+Vuser 140:RUNNING
+Vuser 140:Assigned 1 WIDs = 39 based on VU count 192, Warehouses = 1 out of 100
+Vuser 140:Processing 10000000 transactions with output suppressed...
+Vuser 141:RUNNING
+Vuser 141:Assigned 1 WIDs = 40 based on VU count 192, Warehouses = 1 out of 100
+Vuser 141:Processing 10000000 transactions with output suppressed...
+Vuser 142:RUNNING
+Vuser 142:Assigned 1 WIDs = 41 based on VU count 192, Warehouses = 1 out of 100
+Vuser 142:Processing 10000000 transactions with output suppressed...
+Vuser 143:RUNNING
+Vuser 143:Assigned 1 WIDs = 42 based on VU count 192, Warehouses = 1 out of 100
+Vuser 143:Processing 10000000 transactions with output suppressed...
+Vuser 144:RUNNING
+Vuser 144:Assigned 1 WIDs = 43 based on VU count 192, Warehouses = 1 out of 100
+Vuser 144:Processing 10000000 transactions with output suppressed...
+Vuser 145:RUNNING
+Vuser 145:Assigned 1 WIDs = 44 based on VU count 192, Warehouses = 1 out of 100
+Vuser 145:Processing 10000000 transactions with output suppressed...
+Vuser 146:RUNNING
+Vuser 146:Assigned 1 WIDs = 45 based on VU count 192, Warehouses = 1 out of 100
+Vuser 146:Processing 10000000 transactions with output suppressed...
+Vuser 147:RUNNING
+Vuser 147:Assigned 1 WIDs = 46 based on VU count 192, Warehouses = 1 out of 100
+Vuser 147:Processing 10000000 transactions with output suppressed...
+Vuser 148:RUNNING
+Vuser 148:Assigned 1 WIDs = 47 based on VU count 192, Warehouses = 1 out of 100
+Vuser 148:Processing 10000000 transactions with output suppressed...
+Vuser 149:RUNNING
+Vuser 149:Assigned 1 WIDs = 48 based on VU count 192, Warehouses = 1 out of 100
+Vuser 149:Processing 10000000 transactions with output suppressed...
+Vuser 150:RUNNING
+Vuser 150:Assigned 1 WIDs = 49 based on VU count 192, Warehouses = 1 out of 100
+Vuser 150:Processing 10000000 transactions with output suppressed...
+Vuser 151:RUNNING
+Vuser 151:Assigned 1 WIDs = 50 based on VU count 192, Warehouses = 1 out of 100
+Vuser 151:Processing 10000000 transactions with output suppressed...
+Vuser 152:RUNNING
+Vuser 152:Assigned 1 WIDs = 51 based on VU count 192, Warehouses = 1 out of 100
+Vuser 152:Processing 10000000 transactions with output suppressed...
+Vuser 153:RUNNING
+Vuser 153:Assigned 1 WIDs = 52 based on VU count 192, Warehouses = 1 out of 100
+Vuser 153:Processing 10000000 transactions with output suppressed...
+Vuser 154:RUNNING
+Vuser 154:Assigned 1 WIDs = 53 based on VU count 192, Warehouses = 1 out of 100
+Vuser 154:Processing 10000000 transactions with output suppressed...
+Vuser 155:RUNNING
+Vuser 155:Assigned 1 WIDs = 54 based on VU count 192, Warehouses = 1 out of 100
+Vuser 155:Processing 10000000 transactions with output suppressed...
+Vuser 156:RUNNING
+Vuser 156:Assigned 1 WIDs = 55 based on VU count 192, Warehouses = 1 out of 100
+Vuser 156:Processing 10000000 transactions with output suppressed...
+Vuser 157:RUNNING
+Vuser 157:Assigned 1 WIDs = 56 based on VU count 192, Warehouses = 1 out of 100
+Vuser 157:Processing 10000000 transactions with output suppressed...
+Vuser 158:RUNNING
+Vuser 158:Assigned 1 WIDs = 57 based on VU count 192, Warehouses = 1 out of 100
+Vuser 158:Processing 10000000 transactions with output suppressed...
+Vuser 159:RUNNING
+Vuser 159:Assigned 1 WIDs = 58 based on VU count 192, Warehouses = 1 out of 100
+Vuser 159:Processing 10000000 transactions with output suppressed...
+Vuser 160:RUNNING
+Vuser 160:Assigned 1 WIDs = 59 based on VU count 192, Warehouses = 1 out of 100
+Vuser 160:Processing 10000000 transactions with output suppressed...
+Vuser 161:RUNNING
+Vuser 161:Assigned 1 WIDs = 60 based on VU count 192, Warehouses = 1 out of 100
+Vuser 161:Processing 10000000 transactions with output suppressed...
+Vuser 162:RUNNING
+Vuser 162:Assigned 1 WIDs = 61 based on VU count 192, Warehouses = 1 out of 100
+Vuser 162:Processing 10000000 transactions with output suppressed...
+Vuser 163:RUNNING
+Vuser 163:Assigned 1 WIDs = 62 based on VU count 192, Warehouses = 1 out of 100
+Vuser 163:Processing 10000000 transactions with output suppressed...
+Vuser 164:RUNNING
+Vuser 164:Assigned 1 WIDs = 63 based on VU count 192, Warehouses = 1 out of 100
+Vuser 164:Processing 10000000 transactions with output suppressed...
+Vuser 165:RUNNING
+Vuser 165:Assigned 1 WIDs = 64 based on VU count 192, Warehouses = 1 out of 100
+Vuser 165:Processing 10000000 transactions with output suppressed...
+Vuser 166:RUNNING
+Vuser 166:Assigned 1 WIDs = 65 based on VU count 192, Warehouses = 1 out of 100
+Vuser 166:Processing 10000000 transactions with output suppressed...
+Vuser 167:RUNNING
+Vuser 167:Assigned 1 WIDs = 66 based on VU count 192, Warehouses = 1 out of 100
+Vuser 167:Processing 10000000 transactions with output suppressed...
+Vuser 168:RUNNING
+Vuser 168:Assigned 1 WIDs = 67 based on VU count 192, Warehouses = 1 out of 100
+Vuser 168:Processing 10000000 transactions with output suppressed...
+Vuser 169:RUNNING
+Vuser 169:Assigned 1 WIDs = 68 based on VU count 192, Warehouses = 1 out of 100
+Vuser 169:Processing 10000000 transactions with output suppressed...
+Vuser 170:RUNNING
+Vuser 170:Assigned 1 WIDs = 69 based on VU count 192, Warehouses = 1 out of 100
+Vuser 170:Processing 10000000 transactions with output suppressed...
+Vuser 171:RUNNING
+Vuser 171:Assigned 1 WIDs = 70 based on VU count 192, Warehouses = 1 out of 100
+Vuser 171:Processing 10000000 transactions with output suppressed...
+Vuser 172:RUNNING
+Vuser 172:Assigned 1 WIDs = 71 based on VU count 192, Warehouses = 1 out of 100
+Vuser 172:Processing 10000000 transactions with output suppressed...
+Vuser 173:RUNNING
+Vuser 173:Assigned 1 WIDs = 72 based on VU count 192, Warehouses = 1 out of 100
+Vuser 173:Processing 10000000 transactions with output suppressed...
+Vuser 174:RUNNING
+Vuser 174:Assigned 1 WIDs = 73 based on VU count 192, Warehouses = 1 out of 100
+Vuser 174:Processing 10000000 transactions with output suppressed...
+Vuser 175:RUNNING
+Vuser 175:Assigned 1 WIDs = 74 based on VU count 192, Warehouses = 1 out of 100
+Vuser 175:Processing 10000000 transactions with output suppressed...
+Vuser 176:RUNNING
+Vuser 176:Assigned 1 WIDs = 75 based on VU count 192, Warehouses = 1 out of 100
+Vuser 176:Processing 10000000 transactions with output suppressed...
+Vuser 177:RUNNING
+Vuser 177:Assigned 1 WIDs = 76 based on VU count 192, Warehouses = 1 out of 100
+Vuser 177:Processing 10000000 transactions with output suppressed...
+Vuser 178:RUNNING
+Vuser 178:Assigned 1 WIDs = 77 based on VU count 192, Warehouses = 1 out of 100
+Vuser 178:Processing 10000000 transactions with output suppressed...
+Vuser 179:RUNNING
+Vuser 179:Assigned 1 WIDs = 78 based on VU count 192, Warehouses = 1 out of 100
+Vuser 179:Processing 10000000 transactions with output suppressed...
+Vuser 180:RUNNING
+Vuser 180:Assigned 1 WIDs = 79 based on VU count 192, Warehouses = 1 out of 100
+Vuser 180:Processing 10000000 transactions with output suppressed...
+Vuser 181:RUNNING
+Vuser 181:Assigned 1 WIDs = 80 based on VU count 192, Warehouses = 1 out of 100
+Vuser 181:Processing 10000000 transactions with output suppressed...
+Vuser 182:RUNNING
+Vuser 182:Assigned 1 WIDs = 81 based on VU count 192, Warehouses = 1 out of 100
+Vuser 182:Processing 10000000 transactions with output suppressed...
+Vuser 183:RUNNING
+Vuser 183:Assigned 1 WIDs = 82 based on VU count 192, Warehouses = 1 out of 100
+Vuser 183:Processing 10000000 transactions with output suppressed...
+Vuser 184:RUNNING
+Vuser 184:Assigned 1 WIDs = 83 based on VU count 192, Warehouses = 1 out of 100
+Vuser 184:Processing 10000000 transactions with output suppressed...
+Vuser 185:RUNNING
+Vuser 185:Assigned 1 WIDs = 84 based on VU count 192, Warehouses = 1 out of 100
+Vuser 185:Processing 10000000 transactions with output suppressed...
+Vuser 186:RUNNING
+Vuser 186:Assigned 1 WIDs = 85 based on VU count 192, Warehouses = 1 out of 100
+Vuser 186:Processing 10000000 transactions with output suppressed...
+Vuser 187:RUNNING
+Vuser 187:Assigned 1 WIDs = 86 based on VU count 192, Warehouses = 1 out of 100
+Vuser 187:Processing 10000000 transactions with output suppressed...
+Vuser 188:RUNNING
+Vuser 188:Assigned 1 WIDs = 87 based on VU count 192, Warehouses = 1 out of 100
+Vuser 188:Processing 10000000 transactions with output suppressed...
+Vuser 189:RUNNING
+Vuser 189:Assigned 1 WIDs = 88 based on VU count 192, Warehouses = 1 out of 100
+Vuser 189:Processing 10000000 transactions with output suppressed...
+Vuser 190:RUNNING
+Vuser 190:Assigned 1 WIDs = 89 based on VU count 192, Warehouses = 1 out of 100
+Vuser 190:Processing 10000000 transactions with output suppressed...
+Vuser 191:RUNNING
+Vuser 191:Assigned 1 WIDs = 90 based on VU count 192, Warehouses = 1 out of 100
+Vuser 191:Processing 10000000 transactions with output suppressed...
+Vuser 192:RUNNING
+Vuser 192:Assigned 1 WIDs = 91 based on VU count 192, Warehouses = 1 out of 100
+Vuser 192:Processing 10000000 transactions with output suppressed...
+Vuser 193:RUNNING
+Vuser 193:Assigned 1 WIDs = 92 based on VU count 192, Warehouses = 1 out of 100
+Vuser 193:Processing 10000000 transactions with output suppressed...
+Vuser 1:Rampup 2 minutes complete ...
+Vuser 1:Rampup complete, Taking start Transaction Count.
+Vuser 9:New Order Procedure Error set RAISEERROR for Details
+Vuser 145:FINISHED SUCCESS
+Vuser 112:FINISHED SUCCESS
+Vuser 31:FINISHED SUCCESS
+Vuser 131:FINISHED SUCCESS
+Vuser 140:FINISHED SUCCESS
+Vuser 106:FINISHED SUCCESS
+Vuser 184:FINISHED SUCCESS
+Vuser 133:FINISHED SUCCESS
+Vuser 139:FINISHED SUCCESS
+Vuser 101:FINISHED SUCCESS
+Vuser 29:FINISHED SUCCESS
+Vuser 144:FINISHED SUCCESS
+Vuser 153:FINISHED SUCCESS
+Vuser 65:FINISHED SUCCESS
+Vuser 147:FINISHED SUCCESS
+Vuser 155:FINISHED SUCCESS
+Vuser 168:FINISHED SUCCESS
+Vuser 92:FINISHED SUCCESS
+Vuser 165:FINISHED SUCCESS
+Vuser 176:FINISHED SUCCESS
+Vuser 175:FINISHED SUCCESS
+Vuser 21:FINISHED SUCCESS
+Vuser 109:FINISHED SUCCESS
+Vuser 160:FINISHED SUCCESS
+Vuser 174:FINISHED SUCCESS
+Vuser 122:FINISHED SUCCESS
+Vuser 126:FINISHED SUCCESS
+Vuser 151:FINISHED SUCCESS
+Vuser 76:FINISHED SUCCESS
+Vuser 135:FINISHED SUCCESS
+Vuser 95:FINISHED SUCCESS
+Vuser 67:FINISHED SUCCESS
+Vuser 171:FINISHED SUCCESS
+Vuser 34:FINISHED SUCCESS
+Vuser 79:FINISHED SUCCESS
+Vuser 72:FINISHED SUCCESS
+Vuser 99:FINISHED SUCCESS
+Vuser 173:FINISHED SUCCESS
+Vuser 152:FINISHED SUCCESS
+Vuser 80:FINISHED SUCCESS
+Vuser 10:FINISHED SUCCESS
+Vuser 162:FINISHED SUCCESS
+Vuser 150:FINISHED SUCCESS
+Vuser 6:FINISHED SUCCESS
+Vuser 143:FINISHED SUCCESS
+Vuser 189:FINISHED SUCCESS
+Vuser 120:FINISHED SUCCESS
+Vuser 186:FINISHED SUCCESS
+Vuser 188:FINISHED SUCCESS
+Vuser 159:FINISHED SUCCESS
+Vuser 89:FINISHED SUCCESS
+Vuser 127:FINISHED SUCCESS
+Vuser 123:FINISHED SUCCESS
+Vuser 154:FINISHED SUCCESS
+Vuser 148:FINISHED SUCCESS
+Vuser 54:FINISHED SUCCESS
+Vuser 32:FINISHED SUCCESS
+Vuser 35:FINISHED SUCCESS
+Vuser 103:FINISHED SUCCESS
+Vuser 27:FINISHED SUCCESS
+Vuser 181:FINISHED SUCCESS
+Vuser 30:FINISHED SUCCESS
+Vuser 113:FINISHED SUCCESS
+Vuser 19:FINISHED SUCCESS
+Vuser 179:FINISHED SUCCESS
+Vuser 74:FINISHED SUCCESS
+Vuser 33:FINISHED SUCCESS
+Vuser 146:FINISHED SUCCESS
+Vuser 39:FINISHED SUCCESS
+Vuser 8:FINISHED SUCCESS
+Vuser 11:FINISHED SUCCESS
+Vuser 142:FINISHED SUCCESS
+Vuser 52:FINISHED SUCCESS
+Vuser 115:FINISHED SUCCESS
+Vuser 121:FINISHED SUCCESS
+Vuser 111:FINISHED SUCCESS
+Vuser 87:FINISHED SUCCESS
+Vuser 50:FINISHED SUCCESS
+Vuser 90:FINISHED SUCCESS
+Vuser 166:FINISHED SUCCESS
+Vuser 55:FINISHED SUCCESS
+Vuser 45:FINISHED SUCCESS
+Vuser 94:FINISHED SUCCESS
+Vuser 96:FINISHED SUCCESS
+Vuser 66:FINISHED SUCCESS
+Vuser 100:FINISHED SUCCESS
+Vuser 192:FINISHED SUCCESS
+Vuser 84:FINISHED SUCCESS
+Vuser 91:FINISHED SUCCESS
+Vuser 134:FINISHED SUCCESS
+Vuser 61:FINISHED SUCCESS
+Vuser 68:FINISHED SUCCESS
+Vuser 118:FINISHED SUCCESS
+Vuser 105:FINISHED SUCCESS
+Vuser 22:FINISHED SUCCESS
+Vuser 177:FINISHED SUCCESS
+Vuser 180:FINISHED SUCCESS
+Vuser 62:FINISHED SUCCESS
+Vuser 191:FINISHED SUCCESS
+Vuser 136:FINISHED SUCCESS
+Vuser 183:FINISHED SUCCESS
+Vuser 172:FINISHED SUCCESS
+Vuser 73:FINISHED SUCCESS
+Vuser 77:FINISHED SUCCESS
+Vuser 60:FINISHED SUCCESS
+Vuser 59:FINISHED SUCCESS
+Vuser 110:FINISHED SUCCESS
+Vuser 40:FINISHED SUCCESS
+Vuser 47:FINISHED SUCCESS
+Vuser 18:FINISHED SUCCESS
+Vuser 132:FINISHED SUCCESS
+Vuser 137:FINISHED SUCCESS
+Vuser 104:FINISHED SUCCESS
+Vuser 187:FINISHED SUCCESS
+Vuser 161:FINISHED SUCCESS
+Vuser 36:FINISHED SUCCESS
+Vuser 86:FINISHED SUCCESS
+Vuser 4:FINISHED SUCCESS
+Vuser 13:FINISHED SUCCESS
+Vuser 16:FINISHED SUCCESS
+Vuser 102:FINISHED SUCCESS
+Vuser 12:FINISHED SUCCESS
+Vuser 5:FINISHED SUCCESS
+Vuser 23:FINISHED SUCCESS
+Vuser 56:FINISHED SUCCESS
+Vuser 158:FINISHED SUCCESS
+Vuser 119:FINISHED SUCCESS
+Vuser 117:FINISHED SUCCESS
+Vuser 49:FINISHED SUCCESS
+Vuser 85:FINISHED SUCCESS
+Vuser 170:FINISHED SUCCESS
+Vuser 38:FINISHED SUCCESS
+Vuser 20:FINISHED SUCCESS
+Vuser 44:FINISHED SUCCESS
+Vuser 128:FINISHED SUCCESS
+Vuser 114:FINISHED SUCCESS
+Vuser 71:FINISHED SUCCESS
+Vuser 9:FINISHED SUCCESS
+Vuser 138:FINISHED SUCCESS
+Vuser 69:FINISHED SUCCESS
+Vuser 116:FINISHED SUCCESS
+Vuser 57:FINISHED SUCCESS
+Vuser 70:FINISHED SUCCESS
+Vuser 141:FINISHED SUCCESS
+Vuser 81:FINISHED SUCCESS
+Vuser 24:FINISHED SUCCESS
+Vuser 2:FINISHED SUCCESS
+Vuser 28:FINISHED SUCCESS
+Vuser 107:FINISHED SUCCESS
+Vuser 46:FINISHED SUCCESS
+Vuser 82:FINISHED SUCCESS
+Vuser 42:FINISHED SUCCESS
+Vuser 156:FINISHED SUCCESS
+Vuser 182:FINISHED SUCCESS
+Vuser 15:FINISHED SUCCESS
+Vuser 7:FINISHED SUCCESS
+Vuser 51:FINISHED SUCCESS
+Vuser 124:FINISHED SUCCESS
+Vuser 164:FINISHED SUCCESS
+Vuser 167:FINISHED SUCCESS
+Vuser 157:FINISHED SUCCESS
+Vuser 41:FINISHED SUCCESS
+Vuser 108:FINISHED SUCCESS
+Vuser 93:FINISHED SUCCESS
+Vuser 3:FINISHED SUCCESS
+Vuser 63:FINISHED SUCCESS
+Vuser 25:FINISHED SUCCESS
+Vuser 149:FINISHED SUCCESS
+Vuser 78:FINISHED SUCCESS
+Vuser 97:FINISHED SUCCESS
+Vuser 178:FINISHED SUCCESS
+Vuser 26:FINISHED SUCCESS
+Vuser 190:FINISHED SUCCESS
+Vuser 163:FINISHED SUCCESS
+Vuser 193:FINISHED SUCCESS
+Vuser 64:FINISHED SUCCESS
+Vuser 83:FINISHED SUCCESS
+Vuser 14:FINISHED SUCCESS
+Vuser 1:FINISHED FAILED
+Vuser 58:FINISHED SUCCESS
+Vuser 169:FINISHED SUCCESS
+Vuser 98:FINISHED SUCCESS
+Vuser 88:FINISHED SUCCESS
+Vuser 48:FINISHED SUCCESS
+Vuser 130:FINISHED SUCCESS
+Vuser 129:FINISHED SUCCESS
+Vuser 75:FINISHED SUCCESS
+Vuser 53:FINISHED SUCCESS
+Vuser 17:FINISHED SUCCESS
+Vuser 37:FINISHED SUCCESS
+Vuser 43:FINISHED SUCCESS
+Vuser 125:FINISHED SUCCESS
+Vuser 185:FINISHED SUCCESS
+ALL VIRTUAL USERS COMPLETE
+vudestroy success
+
