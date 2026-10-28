@@ -150,6 +150,14 @@ do
 	test "$f" = contrib/isn/ISSN.h && continue
 	test "$f" = contrib/isn/UPC.h && continue
 
+	# The property-based testing harness headers are only ever included by
+	# the pg_prop test binary's own translation units, which add
+	# -Isrc/test/prop (and -Isrc/test/prop/sql) to the include path.  They are
+	# not public API and are not meant to be compiled standalone.
+	test "$f" = src/test/prop/pg_prop.h && continue
+	test "$f" = src/test/prop/sql/query_gen.h && continue
+	test "$f" = src/test/prop/sql/index_traits.h && continue
+
 	test "$f" = src/include/common/unicode_nonspacing_table.h && continue
 	test "$f" = src/include/common/unicode_east_asian_fw_table.h && continue
 

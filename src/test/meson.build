@@ -26,3 +26,7 @@ if icu.found()
 endif
 
 subdir('perl')
+
+if prop_tests_enabled
+  subdir('prop')
+endif
