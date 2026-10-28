@@ -51,6 +51,7 @@
 #include "utils/datum.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
+#include "utils/memutils.h"
 #include "utils/pg_locale.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
@@ -146,17 +147,20 @@ BarkKeyInfo *
 bark_build_keyinfo(Relation index)
 {
 	return bark_build_keyinfo_stride(index, bark_index_tid_stride(index),
-									 bark_index_versioned(index));
+									 bark_index_versioned(index),
+									 bark_index_mktags(index));
 }
 
 /*
- * bark_build_keyinfo for an index whose TID stride is `stride` and whose
- * entries may carry tags when `versioned`: CREATE INDEX's, whose meta page
- * is not written yet, takes the heap's (bark_heap_tid_stride,
- * bark_heap_versioned).
+ * bark_build_keyinfo for an index whose TID stride is `stride`, built for
+ * tags when `versioned`, and whose key entries may carry them, if it has an
+ * extracted column, when `mktags`: CREATE INDEX's, whose meta page is not
+ * written yet, takes the heap's (bark_heap_tid_stride, bark_heap_versioned,
+ * bark_build_mktags).
  */
 BarkKeyInfo *
-bark_build_keyinfo_stride(Relation index, uint16 stride, bool versioned)
+bark_build_keyinfo_stride(Relation index, uint16 stride, bool versioned,
+						  bool mktags)
 {
 	int			nkeys = IndexRelationGetNumberOfKeyAttributes(index);
 	BarkKeyInfo *keyinfo;
@@ -167,7 +171,9 @@ bark_build_keyinfo_stride(Relation index, uint16 stride, bool versioned)
 	keyinfo->nkeys = nkeys;
 	keyinfo->tidstride = stride;
 	keyinfo->versioned = versioned;
-	keyinfo->canversion = versioned && bark_index_extracted_column(index) == 0;
+	keyinfo->mktags = mktags;
+	keyinfo->canversion = versioned &&
+		(bark_index_extracted_column(index) == 0 || mktags);
 
 	for (int i = 0; i < nkeys; i++)
 	{
@@ -535,35 +541,37 @@ bark_index_tid_stride(Relation index)
 }
 
 /*
- * May the index hold version tags?  Its meta page's BARK_META_VERSIONED,
- * which a version 2 meta page never has.  Fixed for the relfilenode, so it
- * is read once per relcache entry, as the TID stride is.
+ * Read the meta page's BARK_META_VERSIONED and BARK_META_MKTAGS into the
+ * cache, or, during CREATE INDEX or REINDEX, when the meta page is not
+ * written yet and the table AM's build scan asks (index_can_version), put
+ * what the build will write in *versioned and *mktags and leave the cache
+ * alone.  The caller holds a lock on the table.
  */
-bool
-bark_index_versioned(Relation index)
+static void
+bark_read_meta_flags(Relation index, BarkAmCache *cache, bool *versioned,
+					 bool *mktags)
 {
-	BarkAmCache *cache = bark_get_amcache(index);
-
-	/*
-	 * During CREATE INDEX or REINDEX the meta page is not written yet, and
-	 * the table AM's build scan asks (index_can_version): answer what the
-	 * build will write.  The caller holds a lock on the table.
-	 */
-	if (cache->versioned < 0 && RelationGetNumberOfBlocks(index) == 0)
+	if (cache->versioned >= 0)
 	{
-		Relation	heap = table_open(index->rd_index->indrelid, NoLock);
-		bool		versioned = bark_heap_versioned(heap);
-
-		table_close(heap, NoLock);
-		return versioned;
+		*versioned = cache->versioned > 0;
+		*mktags = cache->mktags > 0;
+		return;
 	}
 
-	if (cache->versioned < 0)
+	if (RelationGetNumberOfBlocks(index) == 0)
+	{
+		Relation	heap = table_open(index->rd_index->indrelid, NoLock);
+
+		*versioned = bark_heap_versioned(heap);
+		table_close(heap, NoLock);
+		*mktags = bark_build_mktags(index, *versioned);
+	}
+	else
 	{
 		Buffer		metabuf = ReadBuffer(index, BARK_METAPAGE);
 		Page		metapage;
 		BarkMetaPageData *meta;
-		bool		versioned = false;
+		uint32		flags = 0;
 
 		LockBuffer(metabuf, BUFFER_LOCK_SHARE);
 		metapage = BufferGetPage(metabuf);
@@ -572,27 +580,101 @@ bark_index_versioned(Relation index)
 			((PageHeader) metapage)->pd_lower >=
 			((char *) &meta->bark_flags + sizeof(meta->bark_flags)) -
 			(char *) metapage)
-			versioned = (meta->bark_flags & BARK_META_VERSIONED) != 0;
+			flags = meta->bark_flags;
 		UnlockReleaseBuffer(metabuf);
-		cache->versioned = versioned ? 1 : 0;
+		*versioned = (flags & BARK_META_VERSIONED) != 0;
+		*mktags = (flags & BARK_META_MKTAGS) != 0;
+		cache->versioned = *versioned ? 1 : 0;
+		cache->mktags = *mktags ? 1 : 0;
 	}
-	return cache->versioned > 0;
+}
+
+/*
+ * May the index hold version tags?  Its meta page's BARK_META_VERSIONED,
+ * which a version 2 meta page never has.  Fixed for the relfilenode, so it
+ * is read once per relcache entry, as the TID stride is.
+ */
+bool
+bark_index_versioned(Relation index)
+{
+	bool		versioned;
+	bool		mktags;
+
+	bark_read_meta_flags(index, bark_get_amcache(index), &versioned, &mktags);
+	return versioned;
+}
+
+/*
+ * May the index's key entries, if it has an extracted column, hold version
+ * tags?  Its meta page's BARK_META_MKTAGS, read as bark_index_versioned
+ * reads BARK_META_VERSIONED.
+ */
+bool
+bark_index_mktags(Relation index)
+{
+	bool		versioned;
+	bool		mktags;
+
+	bark_read_meta_flags(index, bark_get_amcache(index), &versioned, &mktags);
+	return mktags;
+}
+
+/*
+ * Does a build of `index`, built for tags when `versioned`, set
+ * BARK_META_MKTAGS?  Only for an index with an extracted column that is
+ * neither GIN-interface nor, in the catalog, unique or exclusion.  The
+ * catalog, not the IndexInfo: CLUSTER, VACUUM FULL and REPACK rebuild with
+ * ii_Unique cleared (see bark_index_coalesces).  A GIN-interface scan
+ * returns rows from a TIDBitmap, which carries no tag to judge; a unique or
+ * exclusion check under a dirty snapshot would meet two versions at one
+ * locator.  Such indexes store no tags, and a row moves when an update
+ * affects them.
+ */
+bool
+bark_build_mktags(Relation index, bool versioned)
+{
+	return versioned && bark_index_extracted_column(index) > 0 &&
+		!bark_index_gin_query(index) &&
+		!index->rd_index->indisunique && !index->rd_index->indisexclusion;
 }
 
 /*
  * amindexcanversion: does the index store version tags?  Only an index
- * built for them (BARK_META_VERSIONED, so never a version 2 index), and
- * without an extracted column.  A multikey index's scans return each row
- * once by TID (the seen set, and a GIN-interface scan's TIDBitmap), which is
- * right only while no row has two entries valid for different versions; so
- * such an index stores no tags, and the executor moves a row whenever an
- * update affects it, as for an index of an AM without amcanversion.
+ * built for them (BARK_META_VERSIONED, so never a version 2 index), and,
+ * if it has an extracted column, built for tags on its key entries
+ * (BARK_META_MKTAGS).  Its scans then settle each entry of a row by the
+ * table AM's verdict ("Versioned multikey scans" in the README).  Every
+ * other multikey index returns each row once by TID (the seen set, and a
+ * GIN-interface scan's TIDBitmap), which is right only while no row has
+ * two entries valid for different versions; so it stores no tags, and the
+ * executor moves a row whenever an update affects it, as for an index of
+ * an AM without amcanversion.  The answer is the meta page's alone, never
+ * rd_index's, which can change after the build.
  */
 bool
 bark_indexcanversion(Relation index)
 {
 	return bark_index_versioned(index) &&
-		bark_index_extracted_column(index) == 0;
+		(bark_index_extracted_column(index) == 0 || bark_index_mktags(index));
+}
+
+/*
+ * amindexmaykeeplocator: may an update that needs new entries in the index
+ * keep the row's locator?  A multikey index that stores tags refuses once
+ * the catalog says it is unique or exclusion (a constraint added after the
+ * build, as DocumentDB's collMod prepareUnique adds one): a check under a
+ * dirty snapshot could meet two versions at one locator.  Read at run
+ * time, from rd_index, which a writer whose statement began after the
+ * change has.  The index keeps BARK_META_MKTAGS, so its tagged entries are
+ * still judged, and its scans keep rule D.  Every other index that stores
+ * tags lets the locator be kept.
+ */
+bool
+bark_indexmaykeeplocator(Relation index)
+{
+	if (bark_index_extracted_column(index) == 0)
+		return true;
+	return !index->rd_index->indisunique && !index->rd_index->indisexclusion;
 }
 
 /* Is an index of `heap` built to hold tags (BARK_META_VERSIONED)? */
@@ -1206,6 +1288,211 @@ bark_get_free_page(Relation index, Relation heaprel)
 }
 
 /*
+ * Order two values of a bytewise column (text under a C/POSIX collation:
+ * memcmp, then length) by their leading bytes alone, as an OVERSIZED entry
+ * keeps them inline (BarkOverflowRef.prefix): `alen` bytes of a and `blen` of
+ * b, each the whole value when its `complete` flag is set.  Returns -1 or 1
+ * when the bytes decide, in value order (before any DESC); 0 with *known set
+ * when both are whole and equal; 0 with *known clear when only the full
+ * values can tell: equal bytes, and the shorter side cut short.
+ */
+static int
+bark_prefix_cmp(const uint8 *a, uint16 alen, bool acomplete,
+				const uint8 *b, uint16 blen, bool bcomplete, bool *known)
+{
+	int			c = memcmp(a, b, Min(alen, blen));
+
+	*known = true;
+	if (c != 0)
+		return c < 0 ? -1 : 1;
+	/* A whole value no longer than the other side's bytes is a prefix of it. */
+	if (acomplete && bcomplete)
+		return (alen > blen) - (alen < blen);
+	if (acomplete && alen <= blen)
+		return -1;
+	if (bcomplete && blen <= alen)
+		return 1;
+	*known = false;
+	return 0;
+}
+
+/*
+ * The leading bytes of varlena datum `d` for bark_prefix_cmp: its own bytes
+ * when it is stored plain, or else up to one byte past the prefix length
+ * detoasted into `buf` (bark_value_prefix).
+ */
+static void
+bark_datum_prefix(Datum d, const uint8 **pfx, uint16 *len, bool *complete,
+				  uint8 *buf)
+{
+	varlena    *attr = (varlena *) DatumGetPointer(d);
+	Size		rawlen;
+
+	if (VARATT_IS_EXTERNAL(attr) || VARATT_IS_COMPRESSED(attr))
+	{
+		bark_value_prefix(d, buf, len, complete);
+		*pfx = buf;
+		return;
+	}
+	rawlen = VARSIZE_ANY_EXHDR(attr);
+	*pfx = (const uint8 *) VARDATA_ANY(attr);
+	*len = (uint16) Min(rawlen, BARK_OVERSIZED_PREFIX_LEN);
+	*complete = rawlen <= BARK_OVERSIZED_PREFIX_LEN;
+}
+
+/*
+ * The leading bytes of the first key column of itup, which has that column,
+ * in a bytewise index: an OVERSIZED entry's inline prefix, or an inline
+ * tuple's value.  The insert key bark_insert_entries is placing
+ * (keyinfo->pfxkey) is detoasted once and its bytes kept in keyinfo.  False
+ * when there are none: an OVERSIZED entry without a prefix, or a NULL.
+ */
+static bool
+bark_tuple_prefix(BarkKeyInfo *keyinfo, TupleDesc tupdesc, IndexTuple itup,
+				  const uint8 **pfx, uint16 *len, bool *complete, uint8 *buf)
+{
+	Datum		d;
+	bool		isnull;
+
+	if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED)
+	{
+		BarkOverflowRef *ref = BarkOverflowGetRef(itup);
+
+		*pfx = ref->prefix;
+		*len = ref->prefixlen;
+		*complete = ref->prefixcomplete;
+		return ref->prefixlen > 0;
+	}
+	if (itup == keyinfo->pfxkey && keyinfo->pfxready)
+	{
+#ifdef USE_ASSERT_CHECKING
+		/* The cache must be this key's, not a previous key's. */
+		uint8		check[BARK_OVERSIZED_PREFIX_LEN];
+		uint16		checklen;
+		bool		checkcomplete;
+
+		d = index_getattr(itup, 1, tupdesc, &isnull);
+		Assert(isnull == keyinfo->pfxnull);
+		if (!isnull)
+		{
+			bark_value_prefix(d, check, &checklen, &checkcomplete);
+			Assert(checklen == keyinfo->pfxlen &&
+				   checkcomplete == keyinfo->pfxcomplete &&
+				   memcmp(check, keyinfo->pfx, checklen) == 0);
+		}
+#endif
+		*pfx = keyinfo->pfx;
+		*len = keyinfo->pfxlen;
+		*complete = keyinfo->pfxcomplete;
+		return !keyinfo->pfxnull;
+	}
+	d = index_getattr(itup, 1, tupdesc, &isnull);
+	if (itup == keyinfo->pfxkey)
+	{
+		keyinfo->pfxready = true;
+		keyinfo->pfxnull = isnull;
+		if (!isnull)
+			bark_value_prefix(d, keyinfo->pfx, &keyinfo->pfxlen,
+							  &keyinfo->pfxcomplete);
+		return bark_tuple_prefix(keyinfo, tupdesc, itup, pfx, len, complete,
+								 buf);
+	}
+	if (isnull)
+		return false;
+	bark_datum_prefix(d, pfx, len, complete, buf);
+	return true;
+}
+
+/*
+ * Order a and b on their first key column by its leading bytes, as
+ * bark_prefix_cmp does, when the column is bytewise, both carry it, and one
+ * is an OVERSIZED entry with an inline prefix (the other may be OVERSIZED
+ * too, or inline): the fast path that spares reading overflow chains.
+ * Returns 0 with *known clear when the bytes cannot tell.
+ */
+static int
+bark_itups_prefix_cmp(BarkKeyInfo *keyinfo, TupleDesc tupdesc,
+					  IndexTuple a, IndexTuple b, bool *known)
+{
+	bool		aover = BarkEntryGetShape(a) == BARK_SHAPE_OVERSIZED;
+	bool		bover = BarkEntryGetShape(b) == BARK_SHAPE_OVERSIZED;
+	uint8		abuf[BARK_OVERSIZED_PREFIX_LEN];
+	uint8		bbuf[BARK_OVERSIZED_PREFIX_LEN];
+	const uint8 *apfx;
+	const uint8 *bpfx;
+	uint16		alen;
+	uint16		blen;
+	bool		acomplete;
+	bool		bcomplete;
+
+	*known = false;
+	if (!keyinfo->cols[0].bytewise || !(aover || bover))
+		return 0;
+
+	/*
+	 * An OVERSIZED side first: its bytes are inline, an inline side's may not
+	 * be.
+	 */
+	if ((aover && !bark_tuple_prefix(keyinfo, tupdesc, a, &apfx, &alen,
+									 &acomplete, abuf)) ||
+		(bover && !bark_tuple_prefix(keyinfo, tupdesc, b, &bpfx, &blen,
+									 &bcomplete, bbuf)) ||
+		(!aover && !bark_tuple_prefix(keyinfo, tupdesc, a, &apfx, &alen,
+									  &acomplete, abuf)) ||
+		(!bover && !bark_tuple_prefix(keyinfo, tupdesc, b, &bpfx, &blen,
+									  &bcomplete, bbuf)))
+		return 0;
+	return bark_prefix_cmp(apfx, alen, acomplete, bpfx, blen, bcomplete,
+						   known);
+}
+
+/*
+ * Order OVERSIZED entry `entry`'s first key column against `arg` by the
+ * entry's inline prefix, as bark_prefix_cmp does, for a scan bound or key
+ * that compares the column with `proc` under `collation`: <0 or >0 (value
+ * order, entry against arg) when the bytes decide, 0 with *known set when
+ * the column equals arg, 0 with *known clear when only the full value can
+ * tell.  Only text's own comparator under the index's bytewise collation
+ * qualifies; any other (a cross-type name argument, say) cannot use it.
+ */
+int
+bark_oversized_prefix_cmp(BarkKeyInfo *keyinfo, IndexTuple entry,
+						  const FmgrInfo *proc, Oid collation, Datum arg,
+						  bool *known)
+{
+	BarkOverflowRef *ref = BarkOverflowGetRef(entry);
+	uint8		buf[BARK_OVERSIZED_PREFIX_LEN];
+	const uint8 *apfx;
+	uint16		alen;
+	bool		acomplete;
+
+	Assert(BarkEntryGetShape(entry) == BARK_SHAPE_OVERSIZED);
+	*known = false;
+	if (!keyinfo->cols[0].bytewise || ref->prefixlen == 0 ||
+		proc->fn_oid != F_BTTEXTCMP || collation != keyinfo->cols[0].collation)
+		return 0;
+	bark_datum_prefix(arg, &apfx, &alen, &acomplete, buf);
+	return bark_prefix_cmp(ref->prefix, ref->prefixlen, ref->prefixcomplete,
+						   apfx, alen, acomplete, known);
+}
+
+/* The key attributes a BARK tuple of any shape carries (see below). */
+static inline int
+bark_entry_key_natts(BarkKeyInfo *keyinfo, IndexTuple itup)
+{
+	switch (BarkEntryGetShape(itup))
+	{
+		case BARK_SHAPE_OVERSIZED:
+			return BarkOverflowIsLeaf(itup) ? keyinfo->nkeys :
+				BarkOverflowGetRef(itup)->natts;
+		case BARK_SHAPE_PIVOT:
+			return BarkPivotGetNAtts(itup);
+		default:
+			return keyinfo->nkeys;
+	}
+}
+
+/*
  * Compare two BARK index tuples by their key columns.
  *
  * Returns <0, 0, or >0 as a sorts before, equal to, or after b.  NULLs are
@@ -1214,15 +1501,19 @@ bark_get_free_page(Relation index, Relation heaprel)
  * imposes, which is what lets BARK share btree operator families.
  *
  * An OVERSIZED entry carries no key attributes inline (its full tuple lives on
- * an overflow chain).  Two OVERSIZED entries whose first key column sorts
- * bytewise (a C/POSIX collation) are first compared on the short inline prefix
- * each one caches (BarkOverflowRef.prefix); only when those prefixes tie, or
- * when either operand lacks a usable prefix, do we fetch the full tuple(s) from
- * the chain and compare those.  Fetching the whole key is what makes out-of-
- * line storage transparent: two keys that share a long prefix still order on
- * their full value, because the comparison ultimately sees the whole key.  (The
- * caller must pass a non-NULL `index` so the overflow chain can be read; every
- * caller does.)
+ * an overflow chain).  When the first key column sorts bytewise (text under a
+ * C/POSIX collation), an OVERSIZED operand is first compared on the short
+ * inline prefix it caches (BarkOverflowRef.prefix) against the other
+ * operand's leading bytes, whether that is another OVERSIZED entry's prefix
+ * or an inline tuple's value, an insert key's among them
+ * (bark_itups_prefix_cmp).  Only when those tie and one is cut short, when
+ * they tie whole on the first column and there are later columns to compare,
+ * or when an operand has no usable prefix, do we fetch the full tuple(s)
+ * from the chain and compare those.  Fetching the whole key is what makes
+ * out-of-line storage transparent: two keys that share a long prefix still
+ * order on their full value, because the comparison ultimately sees the
+ * whole key.  (The caller must pass a non-NULL `index` so the overflow chain
+ * can be read; every caller does.)
  */
 int
 bark_compare_itups(BarkKeyInfo *keyinfo, Relation index,
@@ -1231,98 +1522,41 @@ bark_compare_itups(BarkKeyInfo *keyinfo, Relation index,
 	TupleDesc	tupdesc = RelationGetDescr(index);
 	IndexTuple	afull = NULL;
 	IndexTuple	bfull = NULL;
-	int			na;
-	int			nb;
-	int			ncmp;
+	int			na = bark_entry_key_natts(keyinfo, a);
+	int			nb = bark_entry_key_natts(keyinfo, b);
+	int			ncmp = Min(na, nb);
 	int			result = 0;
-	int			na_override = -1;
-	int			nb_override = -1;
 
 	/*
-	 * OVERSIZED compare fast path.  When both operands are OVERSIZED entries
-	 * that carry an inline prefix of a bytewise (C/POSIX-collation) first key
-	 * column, compare those prefixes before touching the overflow chains: a
-	 * leading-byte difference decides the order with no I/O.  The chains are
-	 * fetched (below) only when the prefixes tie and at least one is
-	 * truncated, so a tie might not be real.  Two complete prefixes that are
-	 * byte-equal and the same length are equal on the first column -- but
-	 * there may be further key columns, so a decisive answer here requires
-	 * the prefix comparison to be non-zero; an equal prefix always falls
-	 * through to the full compare.  reverse is applied exactly as the
-	 * per-column loop does.
+	 * OVERSIZED compare fast path.  A leading-byte difference decides the
+	 * order with no I/O, and reverse is applied exactly as the per-column
+	 * loop does.  A whole-value tie on the first column decides only when it
+	 * is the last column both carry; otherwise the later columns are read
+	 * from the full tuples.
 	 */
-	if (keyinfo->nkeys > 0 && keyinfo->cols[0].bytewise &&
-		BarkEntryGetShape(a) == BARK_SHAPE_OVERSIZED &&
-		BarkEntryGetShape(b) == BARK_SHAPE_OVERSIZED)
+	if (ncmp > 0 &&
+		(BarkEntryGetShape(a) == BARK_SHAPE_OVERSIZED ||
+		 BarkEntryGetShape(b) == BARK_SHAPE_OVERSIZED))
 	{
-		BarkOverflowRef *ra = BarkOverflowGetRef(a);
-		BarkOverflowRef *rb = BarkOverflowGetRef(b);
+		bool		known;
+		int			c = bark_itups_prefix_cmp(keyinfo, tupdesc, a, b, &known);
 
-		if (ra->prefixlen > 0 && rb->prefixlen > 0)
-		{
-			uint16		cmplen = Min(ra->prefixlen, rb->prefixlen);
-			int			c = memcmp(ra->prefix, rb->prefix, cmplen);
-
-			if (c != 0)
-				return keyinfo->cols[0].reverse ? -c : c;
-
-			/*
-			 * Equal over the shared prefix length.  If the shorter prefix is
-			 * COMPLETE (its whole column fit), the columns differ in length:
-			 * the shorter column sorts first (bytewise, a prefix is less than
-			 * a longer string sharing it).  Only decide here when the longer
-			 * side actually has more bytes; equal length + both complete is a
-			 * genuine first-column tie that must fall through to later
-			 * columns.
-			 */
-			if (ra->prefixlen != rb->prefixlen)
-			{
-				bool		shorter_a = ra->prefixlen < rb->prefixlen;
-				bool		shorter_complete = shorter_a ? ra->prefixcomplete
-					: rb->prefixcomplete;
-
-				if (shorter_complete)
-				{
-					c = shorter_a ? -1 : 1;
-					return keyinfo->cols[0].reverse ? -c : c;
-				}
-			}
-
-			/*
-			 * else: tie so far with a truncated prefix -- fall through,
-			 * fetch.
-			 */
-		}
+		if (c != 0)
+			return keyinfo->cols[0].reverse ? -c : c;
+		if (known && ncmp == 1)
+			return (na > nb) - (na < nb);
 	}
 
 	/*
-	 * Resolve any OVERSIZED operand to its full, inline-comparable tuple.  An
+	 * Resolve any OVERSIZED operand to its full, inline-comparable tuple,
+	 * unless there is no attribute to compare (a minus-infinity pivot).  An
 	 * OVERSIZED pivot's full tuple is a plain truncated key tuple carrying
-	 * only its natts attributes, so remember that count from the ref before
-	 * fetching (the fetched tuple no longer records that it is a pivot).
+	 * only its natts attributes, which is why na and nb come from the refs.
 	 */
-	if (BarkEntryGetShape(a) == BARK_SHAPE_OVERSIZED)
-	{
-		if (!BarkOverflowIsLeaf(a))
-			na_override = BarkOverflowGetRef(a)->natts;
+	if (ncmp > 0 && BarkEntryGetShape(a) == BARK_SHAPE_OVERSIZED)
 		a = afull = bark_fetch_oversized(index, a);
-	}
-	if (BarkEntryGetShape(b) == BARK_SHAPE_OVERSIZED)
-	{
-		if (!BarkOverflowIsLeaf(b))
-			nb_override = BarkOverflowGetRef(b)->natts;
+	if (ncmp > 0 && BarkEntryGetShape(b) == BARK_SHAPE_OVERSIZED)
 		b = bfull = bark_fetch_oversized(index, b);
-	}
-
-	if (na_override >= 0)
-		na = na_override;
-	else
-		na = (BarkEntryGetShape(a) == BARK_SHAPE_PIVOT) ? BarkPivotGetNAtts(a) : keyinfo->nkeys;
-	if (nb_override >= 0)
-		nb = nb_override;
-	else
-		nb = (BarkEntryGetShape(b) == BARK_SHAPE_PIVOT) ? BarkPivotGetNAtts(b) : keyinfo->nkeys;
-	ncmp = Min(na, nb);
 
 	/*
 	 * Compare the key attributes both tuples carry.  Only a PIVOT tuple may
@@ -1403,6 +1637,16 @@ bark_keep_natts(Relation index, BarkKeyInfo *keyinfo, IndexTuple lastleft,
 	IndexTuple	left = lastleft;
 	IndexTuple	right = firstright;
 	int			keepnatts = 1;
+	bool		known;
+
+	/*
+	 * An OVERSIZED item's inline prefix may show the first column differs, or
+	 * is the whole (single-column) key and equal, with no chain read.
+	 */
+	if (bark_itups_prefix_cmp(keyinfo, tupdesc, left, right, &known) != 0)
+		return 1;
+	if (known && keyinfo->nkeys == 1)
+		return 2;
 
 	if (BarkEntryGetShape(left) == BARK_SHAPE_OVERSIZED)
 		left = bark_fetch_oversized(index, left);
@@ -1878,22 +2122,22 @@ bark_form_coded_list(IndexTuple key, ItemPointer tids, int ntids, bool force,
 }
 
 /*
- * Decode a coded LIST entry's locators, ascending, into `out` (capacity
- * maxout).  Returns the number written.
+ * Decode the n locators of a coded LIST body (`body` is where its
+ * BarkCodedListHdr starts, in the entry or in a copy of it), ascending, into
+ * `out`, which has room for n.
  */
-static int
-bark_coded_list_get_tids(IndexTuple itup, ItemPointer out, int maxout,
+void
+bark_coded_body_get_tids(const char *body, int n, ItemPointer out,
 						 uint16 stride)
 {
 	int			offbits = bark_vb_offset_bits(stride);
-	int			n = BarkListGetCount(itup);
-	BarkCodedListHdr *hdr = BarkCodedListGetHdr(itup);
-	unsigned char *ptr = BarkCodedListGetDeltas(itup);
-	unsigned char *endptr = ptr + hdr->nbytes;
+	BarkCodedListHdr *hdr = (BarkCodedListHdr *) body;
+	unsigned char *ptr = (unsigned char *) body + sizeof(BarkCodedListHdr) +
+		sizeof(ItemPointerData);
+	unsigned char *endptr PG_USED_FOR_ASSERTS_ONLY = ptr + hdr->nbytes;
 	uint64		val;
 
-	Assert(maxout >= n);
-	out[0] = *BarkCodedListGetFirst(itup);
+	memcpy(&out[0], body + sizeof(BarkCodedListHdr), sizeof(ItemPointerData));
 	val = bark_tid_to_vb(&out[0], offbits);
 	for (int i = 1; i < n; i++)
 	{
@@ -1902,6 +2146,21 @@ bark_coded_list_get_tids(IndexTuple itup, ItemPointer out, int maxout,
 		bark_vb_to_tid(val, &out[i], offbits);
 	}
 	Assert(ptr == endptr);
+}
+
+/*
+ * Decode a coded LIST entry's locators, ascending, into `out` (capacity
+ * maxout).  Returns the number written.
+ */
+static int
+bark_coded_list_get_tids(IndexTuple itup, ItemPointer out, int maxout,
+						 uint16 stride)
+{
+	int			n = BarkListGetCount(itup);
+
+	Assert(maxout >= n);
+	bark_coded_body_get_tids((char *) BarkCodedListGetHdr(itup), n, out,
+							 stride);
 	return n;
 }
 
@@ -2176,10 +2435,13 @@ int
 bark_posting_count(IndexTuple itup)
 {
 	Sbm		   *map = bark_posting_open(itup);
-	int			n = (int) sbm_cardinality(map);
+	uint64		n = sbm_cardinality(map);
 
 	sbm_free(map);
-	return n;
+	/* the members are TIDs in one entry, far fewer than this */
+	if (n > (uint64) (MaxAllocSize / sizeof(ItemPointerData)))
+		elog(ERROR, "BARK posting entry has a corrupt sbm serialization");
+	return (int) n;
 }
 
 /* Destination for bark_posting_collect: an ItemPointer array and its fill. */
@@ -2204,6 +2466,41 @@ bark_posting_collect(uint64 vec[], size_t n, void *aux)
 	Assert(sink->n + n <= (size_t) sink->maxout);
 	for (size_t i = 0; i < n; i++)
 		bark_key_to_tid(vec[i], &sink->out[sink->n++], sink->stride);
+}
+
+/*
+ * Read the locators of a POSTING entry's sbm serialization (`data`, `len`
+ * bytes, in the entry or in a copy of it), ascending, into *out, which holds
+ * *outalloc and is grown in `cxt` when the set is larger.  Returns the
+ * number read.
+ */
+int
+bark_posting_body_get_tids(const uint8 *data, Size len, ItemPointer *out,
+						   int *outalloc, MemoryContext cxt, uint16 stride)
+{
+	Sbm		   *map = sbm_deserialize(data, len);
+	BarkTidSink sink;
+	uint64		n;
+
+	if (map == NULL)
+		elog(ERROR, "BARK posting entry has a corrupt sbm serialization");
+	n = sbm_cardinality(map);
+	if (n > (uint64) (MaxAllocSize / sizeof(ItemPointerData)))
+		elog(ERROR, "BARK posting entry has a corrupt sbm serialization");
+	if (n > (uint64) *outalloc)
+	{
+		if (*out != NULL)
+			pfree(*out);
+		*outalloc = Max((int) n, 64);
+		*out = MemoryContextAlloc(cxt, *outalloc * sizeof(ItemPointerData));
+	}
+	sink.out = *out;
+	sink.n = 0;
+	sink.maxout = *outalloc;
+	sink.stride = stride;
+	sbm_scan(map, bark_posting_collect, 0, &sink);
+	sbm_free(map);
+	return sink.n;
 }
 
 /*
@@ -2280,6 +2577,151 @@ bark_entry_key_part(IndexTuple entry)
 	return key;
 }
 
+static IndexTuple
+bark_coded_list_add_tid_reform(IndexTuple entry, ItemPointer tid, Size maxsz,
+							   uint16 stride)
+{
+	/*
+	 * Re-form the coded LIST as the smaller of a coded and a plain LIST
+	 * around the new TID: decode, insert in order (dropping a duplicate), and
+	 * re-code, a pure function of the resulting sorted set.  O(n), so it is
+	 * only the fallback of bark_coded_list_add_tid and its assert-build
+	 * cross-check.
+	 */
+	int			ncur = BarkListGetCount(entry);
+	ItemPointer tids = palloc_array(ItemPointerData, ncur + 1);
+	int			ins;
+	IndexTuple	key;
+	IndexTuple	ext;
+
+	if (ncur >= BARK_LIST_MAX_COUNT)
+	{
+		pfree(tids);
+		return NULL;
+	}
+	bark_entry_get_tids(entry, tids, ncur, stride);
+	for (ins = ncur; ins > 0 && ItemPointerCompare(&tids[ins - 1], tid) > 0;)
+		ins--;
+	if (ins > 0 && ItemPointerEquals(&tids[ins - 1], tid))
+	{
+		pfree(tids);
+		return NULL;
+	}
+	memmove(&tids[ins + 1], &tids[ins],
+			(ncur - ins) * sizeof(ItemPointerData));
+	tids[ins] = *tid;
+
+	key = bark_entry_key_part(entry);
+	ext = bark_form_list_best(NULL, key, tids, ncur + 1, stride);
+	pfree(key);
+	pfree(tids);
+	if (MAXALIGN(IndexTupleSize(ext)) > maxsz)
+	{
+		pfree(ext);
+		return NULL;
+	}
+	return ext;
+}
+
+/*
+ * Add `tid` to a coded LIST by splicing its delta stream, never decoding the
+ * whole set: after the last TID (the common case, heap TIDs ascend) it is one
+ * more delta at the end; before the first it becomes the raw first and the
+ * old first a delta; in between, the delta spanning it is replaced by two.
+ * The coded form of a sorted set is canonical (raw first, varbyte deltas,
+ * zero padding), so the result is byte for byte the re-form's.  When the
+ * result would not stay coded (not smaller than the plain LIST of n + 1) the
+ * re-form decides, and picks plain.
+ */
+static IndexTuple
+bark_coded_list_add_tid(IndexTuple entry, ItemPointer tid, Size maxsz,
+						uint16 stride)
+{
+	int			offbits = bark_vb_offset_bits(stride);
+	int			ncur = BarkListGetCount(entry);
+	Size		bodyoff = BarkEntryGetBodyOffset(entry);
+	BarkCodedListHdr *hdr = BarkCodedListGetHdr(entry);
+	unsigned char *deltas = BarkCodedListGetDeltas(entry);
+	Size		deltaoff = deltas - (unsigned char *) entry;
+	Size		nbytes = hdr->nbytes;
+	uint64		vt = bark_tid_to_vb(tid, offbits);
+	uint64		vfirst = bark_tid_to_vb(BarkCodedListGetFirst(entry), offbits);
+	uint64		vlast = bark_tid_to_vb(&hdr->last, offbits);
+	unsigned char newbytes[2 * BARK_VARBYTE_MAX];
+	unsigned char *np = newbytes;
+	Size		pos;			/* where in the stream the change starts */
+	Size		oldlen = 0;		/* stream bytes the change replaces */
+	Size		newlen;
+	Size		newnbytes;
+	Size		total;
+	IndexTuple	ext;
+
+	if (ncur >= BARK_LIST_MAX_COUNT)
+		return NULL;
+	if (vt > vlast)
+	{
+		pos = nbytes;
+		bark_encode_varbyte(vt - vlast, &np);
+	}
+	else if (vt < vfirst)
+	{
+		pos = 0;
+		bark_encode_varbyte(vfirst - vt, &np);
+	}
+	else
+	{
+		unsigned char *ptr = deltas;
+		unsigned char *p0 = deltas;
+		uint64		prev = 0;
+		uint64		next = vfirst;
+
+		/* vfirst <= vt <= vlast: find the first member >= vt. */
+		while (next < vt)
+		{
+			Assert(ptr < deltas + nbytes);
+			prev = next;
+			p0 = ptr;
+			next += bark_decode_varbyte(&ptr);
+		}
+		if (next == vt)
+			return NULL;		/* already a member */
+		pos = p0 - deltas;
+		oldlen = ptr - p0;
+		bark_encode_varbyte(vt - prev, &np);
+		bark_encode_varbyte(next - vt, &np);
+	}
+	newlen = np - newbytes;
+	newnbytes = nbytes - oldlen + newlen;
+	total = bark_coded_list_size(bodyoff, newnbytes);
+
+	/*
+	 * bark_form_coded_list's rule: coded only when strictly smaller and
+	 * within t_info's size (which also bounds nbytes).
+	 */
+	if (total > INDEX_SIZE_MASK ||
+		total >= MAXALIGN(bodyoff + (Size) (ncur + 1) * sizeof(ItemPointerData)))
+		return bark_coded_list_add_tid_reform(entry, tid, maxsz, stride);
+	if (total > maxsz)
+		return NULL;
+
+	ext = (IndexTuple) palloc0(total);
+	memcpy(ext, entry, deltaoff + pos);
+	memcpy((char *) ext + deltaoff + pos, newbytes, newlen);
+	memcpy((char *) ext + deltaoff + pos + newlen, deltas + pos + oldlen,
+		   nbytes - pos - oldlen);
+	ext->t_info = (entry->t_info & ~INDEX_SIZE_MASK) | INDEX_AM_RESERVED_BIT |
+		(uint16) total;
+	ItemPointerSetOffsetNumber(&ext->t_tid,
+							   (OffsetNumber) ((uint16) (ncur + 1) |
+											   BARK_IS_LIST | BARK_LIST_CODED));
+	BarkCodedListGetHdr(ext)->nbytes = (uint16) newnbytes;
+	if (vt > vlast)
+		BarkCodedListGetHdr(ext)->last = *tid;
+	else if (vt < vfirst)
+		*BarkCodedListGetFirst(ext) = *tid;
+	return ext;
+}
+
 /*
  * Return `entry`, a LIST or POSTING entry, with heap TID `tid` added, or NULL
  * when the result would be larger than `maxsz` (or, for a LIST, when the
@@ -2300,45 +2742,22 @@ bark_entry_add_tid(IndexTuple entry, ItemPointer tid, Size maxsz,
 {
 	if (BarkEntryGetShape(entry) == BARK_SHAPE_LIST && BarkListIsCoded(entry))
 	{
-		/*
-		 * A coded LIST is re-formed as the smaller of a coded and a plain
-		 * LIST around the new TID.  Decode, insert in order (dropping a
-		 * duplicate), and re-code: a pure function of the resulting sorted
-		 * set, so WAL replay repeats it.  There is no in-place append the way
-		 * a plain LIST has, since a delta may change width.
-		 */
-		int			ncur = BarkListGetCount(entry);
-		ItemPointer tids = palloc_array(ItemPointerData, ncur + 1);
-		int			ins;
-		IndexTuple	key;
-		IndexTuple	ext;
+		IndexTuple	ext = bark_coded_list_add_tid(entry, tid, maxsz, stride);
 
-		if (ncur >= BARK_LIST_MAX_COUNT)
+#ifdef USE_ASSERT_CHECKING
 		{
-			pfree(tids);
-			return NULL;
-		}
-		bark_entry_get_tids(entry, tids, ncur, stride);
-		for (ins = ncur; ins > 0 && ItemPointerCompare(&tids[ins - 1], tid) > 0;)
-			ins--;
-		if (ins > 0 && ItemPointerEquals(&tids[ins - 1], tid))
-		{
-			pfree(tids);
-			return NULL;
-		}
-		memmove(&tids[ins + 1], &tids[ins],
-				(ncur - ins) * sizeof(ItemPointerData));
-		tids[ins] = *tid;
+			/* The splice must equal the re-form, which redo also repeats. */
+			IndexTuple	slow = bark_coded_list_add_tid_reform(entry, tid,
+															  maxsz, stride);
 
-		key = bark_entry_key_part(entry);
-		ext = bark_form_list_best(NULL, key, tids, ncur + 1, stride);
-		pfree(key);
-		pfree(tids);
-		if (MAXALIGN(IndexTupleSize(ext)) > maxsz)
-		{
-			pfree(ext);
-			return NULL;
+			Assert((ext == NULL) == (slow == NULL));
+			Assert(ext == NULL ||
+				   (IndexTupleSize(ext) == IndexTupleSize(slow) &&
+					memcmp(ext, slow, IndexTupleSize(ext)) == 0));
+			if (slow != NULL)
+				pfree(slow);
 		}
+#endif
 		return ext;
 	}
 	else if (BarkEntryGetShape(entry) == BARK_SHAPE_LIST)
@@ -3511,14 +3930,43 @@ bark_form_oversized_entry(ItemPointer locator, Size fulllen,
 }
 
 /*
+ * The leading bytes of the value of varlena datum `d`, as an OVERSIZED
+ * entry's inline prefix holds them: up to BARK_OVERSIZED_PREFIX_LEN bytes
+ * into `buf`, their count into *len, and into *complete whether they are the
+ * whole value.  A compressed datum (index_form_tuple compresses large keys)
+ * or an external one is detoasted only as far as one byte past the prefix,
+ * which tells a complete value from a truncated one: compressed bytes do not
+ * sort like the value.
+ */
+void
+bark_value_prefix(Datum d, uint8 *buf, uint16 *len, bool *complete)
+{
+	varlena    *attr = (varlena *) DatumGetPointer(d);
+	varlena    *slice = NULL;
+	Size		rawlen;
+
+	if (VARATT_IS_EXTERNAL(attr) || VARATT_IS_COMPRESSED(attr))
+		attr = slice = detoast_attr_slice(attr, 0,
+										  BARK_OVERSIZED_PREFIX_LEN + 1);
+	rawlen = VARSIZE_ANY_EXHDR(attr);
+	*complete = rawlen <= BARK_OVERSIZED_PREFIX_LEN;
+	*len = (uint16) Min(rawlen, BARK_OVERSIZED_PREFIX_LEN);
+	memcpy(buf, VARDATA_ANY(attr), *len);
+	if (slice)
+		pfree(slice);
+}
+
+/*
  * Populate an OVERSIZED entry's inline comparison prefix from the full tuple it
  * references, when the first key column sorts bytewise (keyinfo->cols[0].
- * bytewise).  The prefix is the leading bytes of the first key column's datum;
- * up to BARK_OVERSIZED_PREFIX_LEN bytes are copied, and prefixcomplete records
- * whether the whole column fit.  A NULL or non-bytewise first column leaves
- * prefixlen 0, so bark_compare_itups always fetches the full tuple for that
- * entry -- the safe default.  `full` is the complete (uncapped) index tuple
- * that was written to the overflow chain.
+ * bytewise).  The prefix is the leading bytes of the first key column's value
+ * (bark_value_prefix); up to BARK_OVERSIZED_PREFIX_LEN bytes are copied, and
+ * prefixcomplete records whether the whole column fit.  A NULL or
+ * non-bytewise first column leaves prefixlen 0, so comparison always fetches
+ * the full tuple for that entry -- the safe default, which is also what an
+ * entry written before prefixes were taken from compressed values has.
+ * `full` is the complete (uncapped) index tuple that was written to the
+ * overflow chain.
  */
 void
 bark_set_oversized_prefix(IndexTuple entry, Relation index, IndexTuple full)
@@ -3527,8 +3975,6 @@ bark_set_oversized_prefix(IndexTuple entry, Relation index, IndexTuple full)
 	TupleDesc	tupdesc = RelationGetDescr(index);
 	Datum		d;
 	bool		isnull;
-	char	   *data;
-	Size		len;
 
 	ref->prefixlen = 0;
 	ref->prefixcomplete = false;
@@ -3544,28 +3990,7 @@ bark_set_oversized_prefix(IndexTuple entry, Relation index, IndexTuple full)
 	d = index_getattr(full, 1, tupdesc, &isnull);
 	if (isnull)
 		return;
-
-	/*
-	 * The prefix must be the value's own leading bytes.  bark_form_full_tuple
-	 * may have compressed the datum (index_form_tuple compresses large
-	 * varlenas), and compressed bytes do not sort like the value, so leave
-	 * such an entry without a prefix.  An external datum cannot occur: index
-	 * tuples hold their values inline.
-	 */
-	if (VARATT_IS_COMPRESSED(DatumGetPointer(d)))
-		return;
-	Assert(!VARATT_IS_EXTERNAL(DatumGetPointer(d)));
-
-	/* A C-collation text datum is a varlena: use its data area. */
-	data = VARDATA_ANY(DatumGetPointer(d));
-	len = VARSIZE_ANY_EXHDR(DatumGetPointer(d));
-
-	if (len <= BARK_OVERSIZED_PREFIX_LEN)
-		ref->prefixcomplete = true;
-	else
-		len = BARK_OVERSIZED_PREFIX_LEN;
-	memcpy(ref->prefix, data, len);
-	ref->prefixlen = (uint16) len;
+	bark_value_prefix(d, ref->prefix, &ref->prefixlen, &ref->prefixcomplete);
 }
 
 /*

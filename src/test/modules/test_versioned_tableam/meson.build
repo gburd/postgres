@@ -28,6 +28,7 @@ tests += {
   'regress': {
     'sql': [
       'versioned',
+      'bark_mk_versioned',
     ],
     'regress_args': ['--temp-config', files('versioned.conf')],
     'runningcheck': false,
@@ -52,6 +53,7 @@ tests += {
       't/005_bark_more.pl',
       't/006_bark_corrupt.pl',
       't/007_bark_lower_bound.pl',
+      't/008_bark_mktags.pl',
     ],
   },
 }

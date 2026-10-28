@@ -1,0 +1,969 @@
+--
+-- Versioned multikey BARK indexes: rule D.  An index with BARK_META_MKTAGS
+-- keeps every entry a page read accepts, and returns a row's entries until
+-- the table AM returns the row through one (its verdict VALID puts the row
+-- in R, whose later entries are skipped); an entry it rejects (INVALID) is
+-- remembered as (TID, tag) in J.  heap_versioned plays an AM that updated
+-- rows in place: test_versioned_mark_history makes a row's entries valid
+-- only when tagged with its xmin, and test_versioned_insert_entry adds the
+-- untagged entries of an older value.
+--
+CREATE EXTENSION test_versioned_tableam;
+CREATE EXTENSION bark_multikey;
+CREATE EXTENSION pageinspect;
+CREATE EXTENSION amcheck;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+-- Row 1 was {1,2}, updated in place to {2,3}: (1,L,0) and (2,L,0) are stale,
+-- (2,L,x) and (3,L,x) valid.  Rows 2..40 have two keys each, all valid.
+CREATE TABLE tmv (id int, doc int4[]) USING heap_versioned
+  WITH (autovacuum_enabled = off);
+INSERT INTO tmv SELECT g, ARRAY[10 * g, 10 * g + 1] FROM generate_series(2, 40) g;
+INSERT INTO tmv VALUES (1, '{1,2}');
+CREATE INDEX tmv_doc ON tmv USING bark (doc bark_int4_array_ops);
+SELECT flags & 6 AS versioned_mktags FROM bark_metap('tmv_doc');
+ versioned_mktags 
+------------------
+                6
+(1 row)
+
+UPDATE tmv SET doc = '{2,3}' WHERE id = 1;
+SELECT test_versioned_mark_history('tmv', ctid, 'doc') FROM tmv WHERE id = 1;
+ test_versioned_mark_history 
+-----------------------------
+ 
+(1 row)
+
+SELECT test_versioned_insert_entry('tmv_doc', ctid, 0, '{1,2}') FROM tmv WHERE id = 1;
+ test_versioned_insert_entry 
+-----------------------------
+ 
+(1 row)
+
+-- T2a: the stale entries come first; the row comes back once, through its
+-- valid entry.  A TID seen set filled at page read returns 0.
+EXPLAIN (COSTS OFF) SELECT count(*) FROM tmv WHERE doc && '{1,2}';
+                   QUERY PLAN                    
+-------------------------------------------------
+ Aggregate
+   ->  Index Scan using tmv_doc on tmv
+         Index Cond: (doc && '{1,2}'::integer[])
+(3 rows)
+
+SELECT test_versioned_reset();
+ test_versioned_reset 
+----------------------
+ 
+(1 row)
+
+SELECT count(*) FROM tmv WHERE doc && '{1,2}';
+ count 
+-------
+     1
+(1 row)
+
+SELECT counter, n FROM test_versioned_seen WHERE counter LIKE 'verdict%' OR counter LIKE 'judge%';
+    counter    | n 
+---------------+---
+ judge_invalid | 1
+ judge_valid   | 1
+(2 rows)
+
+SELECT id FROM tmv WHERE doc && '{1}';
+ id 
+----
+(0 rows)
+
+SELECT id FROM tmv WHERE doc && '{3}';
+ id 
+----
+  1
+(1 row)
+
+SELECT id FROM tmv WHERE doc && '{2}';
+ id 
+----
+  1
+(1 row)
+
+-- Rows whose two keys both match come back once (R).
+SELECT count(*) FROM tmv WHERE doc && '{100,101,110,111,1,2,3}';
+ count 
+-------
+     3
+(1 row)
+
+-- T2b: a row with valid entries of two tags (untagged and tagged, both
+-- valid for a row without history) for each key is returned once.
+SELECT test_versioned_insert_entry('tmv_doc', ctid, 0) FROM tmv WHERE id = 10;
+ test_versioned_insert_entry 
+-----------------------------
+ 
+(1 row)
+
+SELECT count(*), count(*) FILTER (WHERE tag IS NULL) AS untagged
+  FROM bark_page_items('tmv_doc', 1) WHERE htid = (SELECT ctid FROM tmv WHERE id = 10);
+ count | untagged 
+-------+----------
+     4 |        2
+(1 row)
+
+SELECT id FROM tmv WHERE doc && '{100,101}';
+ id 
+----
+ 10
+(1 row)
+
+-- T2c: an ordered scan on the column returns a row at its first valid key:
+-- row 1's smallest key is now 2, not the stale 1.
+SELECT id, doc |<| 0 AS k FROM tmv WHERE id < 4 ORDER BY doc |<| 0;
+ id | k  
+----+----
+  1 |  2
+  2 | 20
+  3 | 30
+(3 rows)
+
+-- Backward: the same rows in reverse.
+CREATE TABLE tmw (id int, doc int4[]) USING heap_versioned
+  WITH (autovacuum_enabled = off);
+INSERT INTO tmw SELECT g, ARRAY[g % 3, g % 3 + 1] FROM generate_series(1, 30) g;
+CREATE INDEX tmw_id_doc ON tmw USING bark (id, doc bark_int4_array_ops);
+UPDATE tmw SET doc = '{7,8}' WHERE id IN (4, 5);
+SELECT test_versioned_mark_history('tmw', ctid, 'doc') FROM tmw WHERE id IN (4, 5);
+ test_versioned_mark_history 
+-----------------------------
+ 
+ 
+(2 rows)
+
+SELECT test_versioned_insert_entry('tmw_id_doc', ctid, 0, '{0,1}') FROM tmw WHERE id IN (4, 5);
+ test_versioned_insert_entry 
+-----------------------------
+ 
+ 
+(2 rows)
+
+EXPLAIN (COSTS OFF) SELECT id FROM tmw WHERE id < 10 AND doc && '{1,7}' ORDER BY id DESC;
+                        QUERY PLAN                         
+-----------------------------------------------------------
+ Index Scan Backward using tmw_id_doc on tmw
+   Index Cond: ((id < 10) AND (doc && '{1,7}'::integer[]))
+(2 rows)
+
+SELECT id FROM tmw WHERE id < 10 AND doc && '{1,7}' ORDER BY id DESC;
+ id 
+----
+  9
+  7
+  6
+  5
+  4
+  3
+  1
+(7 rows)
+
+SELECT id FROM tmw WHERE id < 10 AND doc && '{1,7}' ORDER BY id;
+ id 
+----
+  1
+  3
+  4
+  5
+  6
+  7
+  9
+(7 rows)
+
+-- each group (id) holds one row: R and J empty at each group change
+SELECT id FROM tmw WHERE id < 10 AND doc && '{0,1,2,7,8}' ORDER BY id;
+ id 
+----
+  1
+  2
+  3
+  4
+  5
+  6
+  7
+  8
+  9
+(9 rows)
+
+-- T2f: a cursor read partly and closed, LIMIT 1, and a nested-loop inner
+-- rescan each leave a verdict unread; the next scan starts clean.
+BEGIN;
+DECLARE c CURSOR FOR SELECT id FROM tmv WHERE doc && '{1,2,3}';
+FETCH 1 FROM c;
+ id 
+----
+  1
+(1 row)
+
+CLOSE c;
+COMMIT;
+SELECT id FROM tmv WHERE doc && '{1,2,3}' LIMIT 1;
+ id 
+----
+  1
+(1 row)
+
+SET enable_hashjoin = off;
+SET enable_mergejoin = off;
+SET enable_material = off;
+EXPLAIN (COSTS OFF)
+SELECT o.v, count(i.id) FROM (VALUES (1), (2), (3)) o(v)
+  JOIN tmw i ON i.id < 10 AND i.doc && ARRAY[o.v, 7] GROUP BY o.v ORDER BY o.v;
+                                      QUERY PLAN                                       
+---------------------------------------------------------------------------------------
+ GroupAggregate
+   Group Key: "*VALUES*".column1
+   ->  Sort
+         Sort Key: "*VALUES*".column1
+         ->  Nested Loop
+               ->  Values Scan on "*VALUES*"
+               ->  Index Scan using tmw_id_doc on tmw i
+                     Index Cond: ((id < 10) AND (doc && ARRAY["*VALUES*".column1, 7]))
+(8 rows)
+
+SELECT o.v, count(i.id) FROM (VALUES (1), (2), (3)) o(v)
+  JOIN tmw i ON i.id < 10 AND i.doc && ARRAY[o.v, 7] GROUP BY o.v ORDER BY o.v;
+ v | count 
+---+-------
+ 1 |     7
+ 2 |     6
+ 3 |     4
+(3 rows)
+
+RESET enable_hashjoin;
+RESET enable_mergejoin;
+RESET enable_material;
+-- A SCROLL cursor over the index is materialized (no backward scan of a
+-- multikey index with a seen set), and reads the same rows both ways.
+BEGIN;
+DECLARE s SCROLL CURSOR FOR SELECT id FROM tmw WHERE id < 10 AND doc && '{1,7}' ORDER BY id;
+FETCH 3 FROM s;
+ id 
+----
+  1
+  3
+  4
+(3 rows)
+
+FETCH BACKWARD 2 FROM s;
+ id 
+----
+  3
+  1
+(2 rows)
+
+FETCH ALL FROM s;
+ id 
+----
+  3
+  4
+  5
+  6
+  7
+  9
+(6 rows)
+
+COMMIT;
+-- Mark and restore: a merge join whose inner side is an index scan of the
+-- (id, doc) index restores to marks taken inside a group; each outer row
+-- meets the inner rows of its id once.
+SET enable_hashjoin = off;
+SET enable_nestloop = off;
+SET enable_material = off;
+SET enable_sort = off;
+CREATE TABLE tmo (id int) WITH (autovacuum_enabled = off);
+INSERT INTO tmo SELECT g FROM generate_series(1, 9) g, generate_series(1, 3);
+CREATE INDEX tmo_id ON tmo (id);
+ANALYZE tmo;
+EXPLAIN (COSTS OFF)
+SELECT o.id, count(*) FROM tmo o JOIN tmw i ON i.id = o.id
+  WHERE i.doc && '{1,7}' GROUP BY o.id ORDER BY o.id;
+                      QUERY PLAN                       
+-------------------------------------------------------
+ GroupAggregate
+   Group Key: o.id
+   ->  Merge Join
+         Merge Cond: (o.id = i.id)
+         ->  Index Only Scan using tmo_id on tmo o
+         ->  Index Scan using tmw_id_doc on tmw i
+               Index Cond: (doc && '{1,7}'::integer[])
+(7 rows)
+
+SELECT o.id, count(*) FROM tmo o JOIN tmw i ON i.id = o.id
+  WHERE i.doc && '{1,7}' GROUP BY o.id ORDER BY o.id;
+ id | count 
+----+-------
+  1 |     3
+  3 |     3
+  4 |     3
+  5 |     3
+  6 |     3
+  7 |     3
+  9 |     3
+(7 rows)
+
+RESET enable_hashjoin;
+RESET enable_nestloop;
+RESET enable_material;
+RESET enable_sort;
+-- KNN on the leading column: the same rows, nearest first.
+EXPLAIN (COSTS OFF) SELECT id FROM tmw WHERE doc && '{1,7}' ORDER BY id <~> 5 LIMIT 5;
+                   QUERY PLAN                    
+-------------------------------------------------
+ Limit
+   ->  Index Scan using tmw_id_doc on tmw
+         Index Cond: (doc && '{1,7}'::integer[])
+         Order By: (id <~> 5)
+(4 rows)
+
+SELECT id FROM tmw WHERE doc && '{1,7}' ORDER BY id <~> 5 LIMIT 5;
+ id 
+----
+  5
+  6
+  4
+  7
+  3
+(5 rows)
+
+-- T2d: a table AM that leaves the verdict unset gets an error from the
+-- next call, never a wrong answer.
+SET test_versioned_tableam.forget_verdict = 'all';
+SELECT count(*) FROM tmv WHERE doc && '{1,2}';
+ERROR:  table access method gave no verdict on an entry of BARK index "tmv_doc"
+SELECT id FROM tmw WHERE doc && '{1,7}' ORDER BY id <~> 5 LIMIT 5;
+ERROR:  table access method gave no verdict on an entry of BARK index "tmw_id_doc"
+RESET test_versioned_tableam.forget_verdict;
+-- T3a: a row with valid entries of two tags whose keys lie on different
+-- leaves (the build's tagged ones, and untagged twins, as VACUUM's partial
+-- untagging leaves a row) is returned once, by an index scan, a bitmap
+-- scan and an ordered scan.
+CREATE TABLE tml (id int, doc int4[]) USING heap_versioned
+  WITH (autovacuum_enabled = off);
+INSERT INTO tml SELECT g, ARRAY[g + 1] FROM generate_series(1, 3000) g;
+INSERT INTO tml VALUES (0, '{1,5000}');
+CREATE INDEX tml_doc ON tml USING bark (doc bark_int4_array_ops);
+SELECT test_versioned_insert_entry('tml_doc', ctid, 0) FROM tml WHERE id = 0;
+ test_versioned_insert_entry 
+-----------------------------
+ 
+(1 row)
+
+SELECT count(DISTINCT blk) AS leaves, count(*) AS entries,
+       count(*) FILTER (WHERE tag IS NULL) AS untagged
+  FROM (SELECT b AS blk, i.tag FROM generate_series(1, pg_relation_size('tml_doc') / current_setting('block_size')::int - 1) b,
+          LATERAL bark_page_items('tml_doc', b) i
+         WHERE i.htid = (SELECT ctid FROM tml WHERE id = 0)) e;
+ leaves | entries | untagged 
+--------+---------+----------
+      2 |       4 |        2
+(1 row)
+
+SELECT count(*) FROM tml WHERE doc && '{1,5000}';
+ count 
+-------
+     1
+(1 row)
+
+SELECT id, doc |<| 0 AS k FROM tml WHERE doc && '{1,5000}' ORDER BY doc |<| 0;
+ id | k 
+----+---
+  0 | 1
+(1 row)
+
+SET enable_indexscan = off;
+SET enable_bitmapscan = on;
+EXPLAIN (COSTS OFF) SELECT count(*) FROM tml WHERE doc && '{1,5000}';
+                        QUERY PLAN                        
+----------------------------------------------------------
+ Aggregate
+   ->  Bitmap Heap Scan on tml
+         Recheck Cond: (doc && '{1,5000}'::integer[])
+         ->  Bitmap Index Scan on tml_doc
+               Index Cond: (doc && '{1,5000}'::integer[])
+(5 rows)
+
+SELECT count(*) FROM tml WHERE doc && '{1,5000}';
+ count 
+-------
+     1
+(1 row)
+
+RESET enable_indexscan;
+SET enable_bitmapscan = off;
+-- T2e: bitmap scans need no rule D.  The bitmap holds row 1 through its
+-- stale (1,L,0); the table AM rechecks a row with history on its visible
+-- version ({2,3}), so the row is not returned for '{1}', and returned once
+-- for '{1,2}'.  A BitmapOr with a scalar index, too.
+SET enable_indexscan = off;
+SET enable_bitmapscan = on;
+EXPLAIN (COSTS OFF) SELECT id FROM tmv WHERE doc && '{1}';
+                  QUERY PLAN                   
+-----------------------------------------------
+ Bitmap Heap Scan on tmv
+   Recheck Cond: (doc && '{1}'::integer[])
+   ->  Bitmap Index Scan on tmv_doc
+         Index Cond: (doc && '{1}'::integer[])
+(4 rows)
+
+SELECT id FROM tmv WHERE doc && '{1}';
+ id 
+----
+(0 rows)
+
+SELECT count(*) FROM tmv WHERE doc && '{1,2}';
+ count 
+-------
+     1
+(1 row)
+
+CREATE INDEX tmv_id ON tmv USING bark (id);
+EXPLAIN (COSTS OFF) SELECT id FROM tmv WHERE doc && '{1}' OR id = 2;
+                       QUERY PLAN                        
+---------------------------------------------------------
+ Bitmap Heap Scan on tmv
+   Recheck Cond: ((doc && '{1}'::integer[]) OR (id = 2))
+   ->  BitmapOr
+         ->  Bitmap Index Scan on tmv_doc
+               Index Cond: (doc && '{1}'::integer[])
+         ->  Bitmap Index Scan on tmv_id
+               Index Cond: (id = 2)
+(7 rows)
+
+SELECT id FROM tmv WHERE doc && '{1}' OR id = 2;
+ id 
+----
+  2
+(1 row)
+
+SELECT id FROM tmv WHERE doc && '{2}' OR id = 1;
+ id 
+----
+  1
+(1 row)
+
+EXPLAIN (COSTS OFF) SELECT id FROM tmv WHERE doc && '{1,2,3}' AND id < 3;
+                    QUERY PLAN                     
+---------------------------------------------------
+ Bitmap Heap Scan on tmv
+   Recheck Cond: (doc && '{1,2,3}'::integer[])
+   Filter: (id < 3)
+   ->  Bitmap Index Scan on tmv_doc
+         Index Cond: (doc && '{1,2,3}'::integer[])
+(5 rows)
+
+SELECT id FROM tmv WHERE doc && '{1,2,3}' AND id < 3;
+ id 
+----
+  1
+(1 row)
+
+DROP INDEX tmv_id;
+RESET enable_indexscan;
+SET enable_bitmapscan = off;
+-- T4a: index-only scans.  Row 1 was (a 1, doc {5,6}), now (2, {6,7}) in
+-- place: (1,6,L,0) and (1,7,L,0) are stale, (2,6,L,x) and (2,7,L,x)
+-- valid.  VACUUM keeps the stale entries (stale_tags = live) and sets the
+-- page all-visible (no heap fetches), so only the table AM's judgment of
+-- each entry keeps the IOS right: a = 1 has no row.
+CREATE TABLE tmi (id int, a int, doc int4[]) USING heap_versioned
+  WITH (autovacuum_enabled = off);
+INSERT INTO tmi SELECT g, g + 10, ARRAY[g, g + 100] FROM generate_series(2, 20) g;
+INSERT INTO tmi VALUES (1, 1, '{5,6}');
+CREATE INDEX tmi_a_doc ON tmi USING bark (a, doc bark_int4_array_ops);
+UPDATE tmi SET a = 2, doc = '{6,7}' WHERE id = 1;
+SELECT test_versioned_mark_history('tmi', ctid, 'a') FROM tmi WHERE id = 1;
+ test_versioned_mark_history 
+-----------------------------
+ 
+(1 row)
+
+SELECT test_versioned_insert_entry('tmi_a_doc', ctid, 0, '1') FROM tmi WHERE id = 1;
+ test_versioned_insert_entry 
+-----------------------------
+ 
+(1 row)
+
+SET test_versioned_tableam.stale_tags = live;
+VACUUM tmi;
+RESET test_versioned_tableam.stale_tags;
+SELECT count(*) FILTER (WHERE tag IS NULL) AS untagged, count(*) AS entries
+  FROM bark_page_items('tmi_a_doc', 1) WHERE htid = (SELECT ctid FROM tmi WHERE id = 1);
+ untagged | entries 
+----------+---------
+        2 |       4
+(1 row)
+
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF)
+  SELECT count(*) FROM tmi WHERE a = 1;
+                               QUERY PLAN                                
+-------------------------------------------------------------------------
+ Aggregate (actual rows=1.00 loops=1)
+   ->  Index Only Scan using tmi_a_doc on tmi (actual rows=0.00 loops=1)
+         Index Cond: (a = 1)
+         Heap Fetches: 0
+         Index Searches: 1
+(5 rows)
+
+SELECT count(*) FROM tmi WHERE a = 1;
+ count 
+-------
+     0
+(1 row)
+
+SELECT count(*) FROM tmi WHERE a = 2;
+ count 
+-------
+     1
+(1 row)
+
+SELECT count(*) FROM tmi WHERE a <= 2;
+ count 
+-------
+     1
+(1 row)
+
+-- T4b: a full index-only scan with no keys after an in-place update of
+-- every row counts each row once.  Every row's stale entries sort before
+-- its valid ones; a page-read seen set would lose every row.
+CREATE TABLE tmb (id int, doc int4[]) USING heap_versioned
+  WITH (autovacuum_enabled = off);
+INSERT INTO tmb SELECT g, ARRAY[g, g + 1000] FROM generate_series(1, 20) g;
+CREATE INDEX tmb_doc ON tmb USING bark (doc bark_int4_array_ops);
+UPDATE tmb SET doc = ARRAY[id + 1000, id + 2000];
+SELECT count(test_versioned_mark_history('tmb', ctid, 'doc')) FROM tmb;
+ count 
+-------
+    20
+(1 row)
+
+SELECT count(test_versioned_insert_entry('tmb_doc', ctid, 0, format('{%s,%s}', id, id + 1000)))
+  FROM tmb;
+ count 
+-------
+    20
+(1 row)
+
+SET test_versioned_tableam.stale_tags = live;
+VACUUM tmb;
+RESET test_versioned_tableam.stale_tags;
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF)
+  SELECT count(*) FROM tmb;
+                               QUERY PLAN                               
+------------------------------------------------------------------------
+ Aggregate (actual rows=1.00 loops=1)
+   ->  Index Only Scan using tmb_doc on tmb (actual rows=20.00 loops=1)
+         Heap Fetches: 0
+         Index Searches: 1
+(4 rows)
+
+SELECT count(*) FROM tmb;
+ count 
+-------
+    20
+(1 row)
+
+SELECT count(*) FROM tmb WHERE doc && '{1,2,3,1001,1002,2003}';
+ count 
+-------
+     3
+(1 row)
+
+-- T4c: a table AM that skips its verdict in index-only scans only: the IOS
+-- errors, the plain index scan does not.
+SET test_versioned_tableam.forget_verdict = 'ios';
+SELECT count(*) FROM tmb;
+ERROR:  table access method gave no verdict on an entry of BARK index "tmb_doc"
+SELECT count(*) FROM tmi WHERE a = 2;
+ERROR:  table access method gave no verdict on an entry of BARK index "tmi_a_doc"
+SELECT id FROM tmb WHERE doc && '{1001}';
+ id 
+----
+  1
+(1 row)
+
+RESET test_versioned_tableam.forget_verdict;
+-- T6a: an update that keeps the locator inserts the new value's full key
+-- set, tagged, unchanged keys included.  ({1,2} -> {2,3}: with only the
+-- added key 3 inserted, doc && '{2}' would lose the row.)  heap_versioned
+-- moves the row and, with keep_locator = pretend, says it kept it, so the
+-- executor inserts only into the indexes the update affected.
+CREATE TABLE tmu (id int, doc int4[]) USING heap_versioned
+  WITH (autovacuum_enabled = off);
+INSERT INTO tmu SELECT g, ARRAY[10 * g, 10 * g + 1] FROM generate_series(2, 40) g;
+INSERT INTO tmu VALUES (1, '{1,2}');
+CREATE INDEX tmu_doc ON tmu USING bark (doc bark_int4_array_ops);
+SET test_versioned_tableam.keep_locator = pretend;
+SELECT test_versioned_reset();
+ test_versioned_reset 
+----------------------
+ 
+(1 row)
+
+UPDATE tmu SET doc = '{2,3}' WHERE id = 1;
+SELECT n FROM test_versioned_counts() WHERE counter = 'update_kept';
+ n 
+---
+ 1
+(1 row)
+
+RESET test_versioned_tableam.keep_locator;
+SELECT count(*) AS entries,
+       count(*) FILTER (WHERE tag = (SELECT xmin::text::int8 FROM tmu WHERE id = 1)) AS tagged_new
+  FROM bark_page_items('tmu_doc', 1) WHERE htid = (SELECT ctid FROM tmu WHERE id = 1);
+ entries | tagged_new 
+---------+------------
+       2 |          2
+(1 row)
+
+SELECT id FROM tmu WHERE doc && '{2}';
+ id 
+----
+  1
+(1 row)
+
+SELECT id FROM tmu WHERE doc && '{3}';
+ id 
+----
+  1
+(1 row)
+
+SELECT id FROM tmu WHERE doc && '{1}';
+ id 
+----
+(0 rows)
+
+SELECT id, doc |<| 0 AS k FROM tmu WHERE id < 3 ORDER BY doc |<| 0;
+ id | k  
+----+----
+  1 |  2
+  2 | 20
+(2 rows)
+
+SET enable_indexscan = off;
+SET enable_bitmapscan = on;
+SELECT id FROM tmu WHERE doc && '{2}';
+ id 
+----
+  1
+(1 row)
+
+SELECT id FROM tmu WHERE doc && '{1}';
+ id 
+----
+(0 rows)
+
+RESET enable_indexscan;
+SET enable_bitmapscan = off;
+-- T6b: {20,21} -> {21,20} gives the same entries (the class sorts keys):
+-- the index is not affected, keeps its entries, and gets none.
+SELECT count(*) AS before FROM bark_page_items('tmu_doc', 1);
+ before 
+--------
+     82
+(1 row)
+
+SET test_versioned_tableam.keep_locator = pretend;
+SELECT test_versioned_reset();
+ test_versioned_reset 
+----------------------
+ 
+(1 row)
+
+UPDATE tmu SET doc = '{21,20}' WHERE id = 2;
+SELECT n FROM test_versioned_counts() WHERE counter = 'update_kept';
+ n 
+---
+ 0
+(1 row)
+
+RESET test_versioned_tableam.keep_locator;
+SELECT count(*) AS after FROM bark_page_items('tmu_doc', 1);
+ after 
+-------
+    82
+(1 row)
+
+-- T6c: an index on an expression of the column and the multikey index are
+-- both affected, both get tagged entries, and both find the row.
+CREATE INDEX tmu_len ON tmu USING bark (cardinality(doc));
+SET test_versioned_tableam.keep_locator = pretend;
+SELECT test_versioned_reset();
+ test_versioned_reset 
+----------------------
+ 
+(1 row)
+
+UPDATE tmu SET doc = '{30,31,32}' WHERE id = 3;
+SELECT n FROM test_versioned_counts() WHERE counter = 'update_kept';
+ n 
+---
+ 1
+(1 row)
+
+RESET test_versioned_tableam.keep_locator;
+SELECT (SELECT count(*) FROM bark_page_items('tmu_len', 1)
+         WHERE htid = t.ctid AND tag = t.xmin::text::int8) AS len_tagged,
+       (SELECT count(*) FROM bark_page_items('tmu_doc', 1)
+         WHERE htid = t.ctid AND tag = t.xmin::text::int8) AS doc_tagged
+  FROM tmu t WHERE id = 3;
+ len_tagged | doc_tagged 
+------------+------------
+          1 |          3
+(1 row)
+
+SELECT id FROM tmu WHERE cardinality(doc) = 3;
+ id 
+----
+  3
+(1 row)
+
+SELECT id FROM tmu WHERE doc && '{32}';
+ id 
+----
+  3
+(1 row)
+
+DROP INDEX tmu_len;
+-- T6d: an aborted update's tagged entries are valid for no snapshot; the
+-- row is found by its old keys only, and VACUUM removes them.
+SELECT count(*) AS before FROM bark_page_items('tmu_doc', 1);
+ before 
+--------
+     85
+(1 row)
+
+BEGIN;
+SET LOCAL test_versioned_tableam.keep_locator = pretend;
+UPDATE tmu SET doc = '{40,41,42}' WHERE id = 4;
+ROLLBACK;
+SELECT count(*) AS with_aborted FROM bark_page_items('tmu_doc', 1);
+ with_aborted 
+--------------
+           88
+(1 row)
+
+SELECT id FROM tmu WHERE doc && '{40,41,42}';
+ id 
+----
+  4
+(1 row)
+
+SELECT id FROM tmu WHERE doc && '{42}';
+ id 
+----
+(0 rows)
+
+VACUUM tmu;
+SELECT count(*) AS after_vacuum FROM bark_page_items('tmu_doc', 1);
+ after_vacuum 
+--------------
+           81
+(1 row)
+
+SELECT bark_index_check('tmu_doc');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+DROP TABLE tmu;
+-- A tagged multikey index made an exclusion constraint's after its build
+-- (as DocumentDB's collMod prepareUnique does: index_constraint_create on
+-- the existing index, then pg_index.indisexclusion by hand) keeps
+-- BARK_META_MKTAGS and its tags, but no longer lets an update keep the
+-- locator (amindexmaykeeplocator).  Its MVCC scans still skip a stale
+-- entry (rule D), and the constraint is checked through it.
+CREATE TABLE tmc (id int, doc int4[]) USING heap_versioned
+  WITH (autovacuum_enabled = off);
+INSERT INTO tmc SELECT g, ARRAY[10 * g, 10 * g + 1] FROM generate_series(2, 40) g;
+INSERT INTO tmc VALUES (1, '{1,2}');
+CREATE INDEX tmc_doc ON tmc USING bark (doc bark_int4_array_ops);
+UPDATE tmc SET doc = '{2,3}' WHERE id = 1;
+SELECT test_versioned_mark_history('tmc', ctid, 'doc') FROM tmc WHERE id = 1;
+ test_versioned_mark_history 
+-----------------------------
+ 
+(1 row)
+
+SELECT test_versioned_insert_entry('tmc_doc', ctid, 0, '{1,2}') FROM tmc WHERE id = 1;
+ test_versioned_insert_entry 
+-----------------------------
+ 
+(1 row)
+
+SET test_versioned_tableam.keep_locator = pretend;
+SELECT test_versioned_reset();
+ test_versioned_reset 
+----------------------
+ 
+(1 row)
+
+UPDATE tmc SET doc = '{100,101,102}' WHERE id = 10;
+SELECT n AS kept_before FROM test_versioned_counts() WHERE counter = 'update_kept';
+ kept_before 
+-------------
+           1
+(1 row)
+
+RESET test_versioned_tableam.keep_locator;
+SELECT test_versioned_add_exclusion('tmc_doc', '&&(anyarray,anyarray)');
+ test_versioned_add_exclusion 
+------------------------------
+ 
+(1 row)
+
+UPDATE pg_catalog.pg_index SET indisexclusion = true
+  WHERE indexrelid = 'tmc_doc'::regclass;
+SELECT contype, conname FROM pg_constraint WHERE conindid = 'tmc_doc'::regclass;
+ contype | conname 
+---------+---------
+ x       | tmc_doc
+(1 row)
+
+SELECT flags & 6 AS versioned_mktags FROM bark_metap('tmc_doc');
+ versioned_mktags 
+------------------
+                6
+(1 row)
+
+-- an update of the column now moves the row; its new entries are tagged
+SET test_versioned_tableam.keep_locator = pretend;
+SELECT test_versioned_reset();
+ test_versioned_reset 
+----------------------
+ 
+(1 row)
+
+UPDATE tmc SET doc = '{110,111,112}' WHERE id = 11;
+SELECT n AS kept_after FROM test_versioned_counts() WHERE counter = 'update_kept';
+ kept_after 
+------------
+          0
+(1 row)
+
+RESET test_versioned_tableam.keep_locator;
+SELECT count(*) FILTER (WHERE tag = t.xmin::text::int8) AS tagged
+  FROM tmc t, bark_page_items('tmc_doc', 1) i WHERE t.id = 11 AND i.htid = t.ctid;
+ tagged 
+--------
+      3
+(1 row)
+
+-- MVCC scans: the stale (1,L,0) is skipped, the valid (2,L,x) returned
+SELECT id FROM tmc WHERE doc && '{1,2}';
+ id 
+----
+  1
+(1 row)
+
+SELECT id FROM tmc WHERE doc && '{1}';
+ id 
+----
+(0 rows)
+
+-- the exclusion check: {1} overlaps only row 1's stale entry, no conflict;
+-- {3} overlaps row 1's valid one, and {112} row 11's
+INSERT INTO tmc VALUES (100, '{1}');
+INSERT INTO tmc VALUES (101, '{3}');
+ERROR:  conflicting key value violates exclusion constraint "tmc_doc"
+DETAIL:  Key (doc)=({3}) conflicts with existing key (doc)=({2,3}).
+INSERT INTO tmc VALUES (102, '{112,500}');
+ERROR:  conflicting key value violates exclusion constraint "tmc_doc"
+DETAIL:  Key (doc)=({112,500}) conflicts with existing key (doc)=({110,111,112}).
+INSERT INTO tmc VALUES (103, '{500,501}');
+SELECT id FROM tmc WHERE doc && '{1,500}' ORDER BY id;
+ id  
+-----
+ 100
+ 103
+(2 rows)
+
+SELECT bark_index_check('tmc_doc');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+DROP TABLE tmc;
+-- The same for a unique index (pg_index.indisunique set by hand): the
+-- unique check judges each entry with its tag, so the stale (1,L,0) is no
+-- conflict, and a live key is.
+CREATE TABLE tmq (id int, doc int4[]) USING heap_versioned
+  WITH (autovacuum_enabled = off);
+INSERT INTO tmq SELECT g, ARRAY[10 * g, 10 * g + 1] FROM generate_series(2, 40) g;
+INSERT INTO tmq VALUES (1, '{1,2}');
+CREATE INDEX tmq_doc ON tmq USING bark (doc bark_int4_array_ops);
+UPDATE tmq SET doc = '{2,3}' WHERE id = 1;
+SELECT test_versioned_mark_history('tmq', ctid, 'doc') FROM tmq WHERE id = 1;
+ test_versioned_mark_history 
+-----------------------------
+ 
+(1 row)
+
+SELECT test_versioned_insert_entry('tmq_doc', ctid, 0, '{1,2}') FROM tmq WHERE id = 1;
+ test_versioned_insert_entry 
+-----------------------------
+ 
+(1 row)
+
+UPDATE pg_catalog.pg_index SET indisunique = true
+  WHERE indexrelid = 'tmq_doc'::regclass;
+SET test_versioned_tableam.keep_locator = pretend;
+SELECT test_versioned_reset();
+ test_versioned_reset 
+----------------------
+ 
+(1 row)
+
+UPDATE tmq SET doc = '{110,111,112}' WHERE id = 11;
+SELECT n AS kept FROM test_versioned_counts() WHERE counter = 'update_kept';
+ kept 
+------
+    0
+(1 row)
+
+RESET test_versioned_tableam.keep_locator;
+INSERT INTO tmq VALUES (100, '{1}');
+INSERT INTO tmq VALUES (101, '{3}');
+ERROR:  duplicate key value violates unique constraint "tmq_doc"
+DETAIL:  Key (doc)=({3}) shares key 3 with an existing row.
+INSERT INTO tmq VALUES (102, '{112}');
+ERROR:  duplicate key value violates unique constraint "tmq_doc"
+DETAIL:  Key (doc)=({112}) shares key 112 with an existing row.
+SELECT id FROM tmq WHERE doc && '{1,2,3}' ORDER BY id;
+ id  
+-----
+   1
+ 100
+(2 rows)
+
+SELECT bark_index_check('tmq_doc');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+DROP TABLE tmq;
+-- An index without MKTAGS keeps the page-read seen set: the GIN-interface
+-- class, and a multikey index on heap.
+CREATE INDEX tmv_gin ON tmv USING bark (doc bark_gin_int4_array_ops);
+SELECT flags & 6 AS versioned_mktags FROM bark_metap('tmv_gin');
+ versioned_mktags 
+------------------
+                2
+(1 row)
+
+DROP INDEX tmv_gin;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+DROP TABLE tmv, tmw, tmo, tml, tmi, tmb;
+DROP EXTENSION amcheck;
+DROP EXTENSION pageinspect;
+DROP EXTENSION bark_multikey;
+DROP EXTENSION test_versioned_tableam;

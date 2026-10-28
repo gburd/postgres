@@ -243,13 +243,15 @@ bark_check_structure(Relation rel, Relation heaprel, void *callback_state,
 	state->heaprel = heaprel;
 	LockBuffer(metabuf, BUFFER_LOCK_SHARE);
 	version = BarkPageGetMeta(BufferGetPage(metabuf))->bark_version;
-	UnlockReleaseBuffer(metabuf);
 	if (version < BARK_MIN_VERSION)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("index \"%s\" was built by an older BARK version",
 						RelationGetRelationName(rel)),
 				 errhint("REINDEX the index.")));
+	/* the meta page's flags against the index's definition */
+	bark_verify_meta(rel, NULL, BufferGetPage(metabuf), BARK_METAPAGE, ERROR);
+	UnlockReleaseBuffer(metabuf);
 
 	/*
 	 * The heap scan must see only tuples whose entries the index walk will
