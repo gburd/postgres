@@ -1,6 +1,7 @@
 # src/test/modules/bark/Makefile
 
 EXTRA_INSTALL = src/test/modules/injection_points src/test/modules/bark_multikey \
+	src/test/modules/test_versioned_tableam \
 	contrib/amcheck contrib/pg_buffercache contrib/pageinspect \
 	contrib/pg_freespacemap contrib/pg_walinspect contrib/pgstattuple
 
