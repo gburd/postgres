@@ -486,6 +486,9 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 								  slot, estate, values, isnull))
 			continue;
 
+		/* The executor does not tag the row versions it inserts. */
+		indexInfo->ii_VersionTag = InvalidIndexVersionTag;
+
 		/* Check whether to apply noDupErr to this index */
 		applyNoDupErr = (flags & EIIT_NO_DUPE_ERROR) &&
 			(arbiterIndexes == NIL ||
