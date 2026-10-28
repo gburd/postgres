@@ -121,7 +121,7 @@ sub vacuum_line
 {
 	my ($idx, $err) = @_;
 	my $line =
-	  $err =~ /index "$idx": untagged (\d+) entries in place, kept (\d+) tagged whose page's lower bound may carry a tag and (\d+) whose untagged position is in another entry, after lowering (\d+) lower bounds/
+	  $err =~ /index "$idx": (\d+) entries untagged in place, (\d+) kept tagged for their page's lower bound, (\d+) kept tagged beside their untagged twin, (\d+) lower bounds lowered/
 	  ? "untagged $1, kept $2, dup $3, lowered $4"
 	  : '';
 	my @why = $err =~ /index "$idx": kept the tagged lower bound of block \d+: ([^\n]*)/g;
@@ -403,14 +403,12 @@ check_index('tc_k', 'P1 split');
 
 # (4d) Decline: an empty P1 whose own lower bound is in the run.  The run
 # spans the leftmost leaf Pa, then P1 and P2, both flagged.  VACUUM
-# empties P1 (every tag on it dead) but cannot delete it: an insert into
-# P2 stopped mid-split (odd tags after P2's first, below the row's own
-# entry, which is on P2 here) holds P2 when the deletion tries its lock.  The
-# insert goes on once VACUUM waits for P2 in bark_lower_bound, which then
-# finds P1's own downlink, Pa's high key, tagged in the run, which (K, L)
-# would not sort above.  INDEX_CLEANUP off leaves heap_versioned's version
-# pass the only scan of the index, which stops after its last block
-# (bark-bulkdelete-after-page) for the insert.
+# empties P1 (every tag on it dead), but an insert puts an entry back on P1
+# after VACUUM's scan and before its page deletion, which then declines.
+# bark_lower_bound then finds P1's own downlink, Pa's high key, tagged in
+# the run, which (K, L) would not sort above.  INDEX_CLEANUP off leaves
+# heap_versioned's version pass the only scan of the index, which stops
+# after its last block (bark-bulkdelete-after-page) for the insert.
 make_run('te', 1, 5);
 ($p2, $p1, $lo, $hi, $first, $t0) = pages('te_k',
 	q{p1.prev <> 0 AND (SELECT l.prev FROM leaves('te_k') l WHERE l.blk = p1.prev) = 0});
@@ -430,34 +428,13 @@ $vac->query_until(qr/start/, qq{
 	VACUUM (INDEX_CLEANUP OFF) te;
 });
 $node->wait_for_event('client backend', 'bark-bulkdelete-after-page');
-$node->safe_psql('postgres',
-	q{SELECT injection_points_attach('bark-leave-leaf-split-incomplete', 'wait')});
-# Enough entries to split P2 whatever an entry's size on this platform:
-# twice as many as its free space holds, but no tag at or above the row's
-# xmin, which its own entry has (the run sorts below it).
-my $nsplit = $node->safe_psql('postgres', qq{
-	SELECT least(2 * free_size / (avg_item_size + 4),
-	             ((SELECT xmin::text::int FROM te WHERE id = 1) - $first - 2) / 2)
-	  FROM bark_page_stats('te_k', $p2)});
-$ins = $node->background_psql('postgres', on_error_stop => 0);
-$ins->query_until(qr/start/, qq{
+# an odd tag, between two of P1's even ones
+$node->safe_psql('postgres', qq{
 	SET test_versioned_tableam.stale_tags = live;
-	\\echo start
-	SELECT count(test_versioned_insert_entry('te_k', ctid, g))
-	  FROM te, generate_series($first + 1, $first + 1 + 2 * $nsplit, 2) g WHERE id = 1;
-});
-$node->wait_for_event('client backend', 'bark-leave-leaf-split-incomplete');
+	SELECT test_versioned_insert_entry('te_k', ctid, $lo + 1) FROM te WHERE id = 1});
 $node->safe_psql('postgres', q{
 	SELECT injection_points_detach('bark-bulkdelete-after-page');
 	SELECT injection_points_wakeup('bark-bulkdelete-after-page')});
-$node->poll_query_until('postgres', q{
-	SELECT wait_event_type = 'Buffer' FROM pg_stat_activity WHERE query LIKE 'VACUUM (INDEX_CLEANUP OFF) te%'})
-  or die 'VACUUM did not wait for P2';
-$node->safe_psql('postgres', q{
-	SELECT injection_points_detach('bark-leave-leaf-split-incomplete');
-	SELECT injection_points_wakeup('bark-leave-leaf-split-incomplete')});
-$ins->query('SELECT 1');
-$ins->quit;
 $vac->query('SELECT 1');
 is_deeply([ vacuum_line('te_k', $vac->{stderr}) ],
 	[ 'untagged 0, kept 1, dup 0, lowered 0',
@@ -465,8 +442,70 @@ is_deeply([ vacuum_line('te_k', $vac->{stderr}) ],
 	'empty P1: VACUUM keeps the bound');
 $vac->quit;
 is($node->safe_psql('postgres', qq{SELECT n FROM leaves('te_k') WHERE blk = $p1}),
-	'0', 'empty P1: P1 is empty and still linked');
+	'1', 'empty P1: refilled, P1 is still linked');
 check_index('te_k', 'empty P1');
+
+# (4d, busy) The same run, emptied, but an insert into P2 stopped mid-split
+# (odd tags after P2's first, below the row's own entry, which is on P2
+# here) holds P2 when VACUUM's page deletion locks it, after P1.  The
+# deletion waits for P2, which takes every lock it needs in the order every
+# writer does (left to right, then up), and deletes P1 once the insert is
+# done.  P2's new left sibling is Pa, whose entries of the run keep the bound.
+make_run('tw', 1, 5);
+($p2, $p1, $lo, $hi, $first, $t0) = pages('tw_k',
+	q{p1.prev <> 0 AND (SELECT l.prev FROM leaves('tw_k') l WHERE l.blk = p1.prev) = 0});
+$last = $node->safe_psql('postgres', q{SELECT pg_relation_size('tw_k') / current_setting('block_size')::int - 1});
+$node->safe_psql('postgres',
+	qq{SELECT injection_points_attach('bark-bulkdelete-after-page', 'wait', '$last')});
+$vac = $node->background_psql('postgres', on_error_stop => 0);
+$vac->query_until(qr/start/, qq{
+	SET test_versioned_tableam.stale_tags = live;
+	SET test_versioned_tableam.stale_dead_min = $lo;
+	SET test_versioned_tableam.stale_dead_max = $hi;
+	SET test_versioned_tableam.untag_tag = $first;
+	SET client_min_messages = debug2;
+	\\echo start
+	VACUUM (INDEX_CLEANUP OFF) tw;
+});
+$node->wait_for_event('client backend', 'bark-bulkdelete-after-page');
+$node->safe_psql('postgres',
+	q{SELECT injection_points_attach('bark-leave-leaf-split-incomplete', 'wait')});
+# Enough entries to split P2 whatever an entry's size on this platform:
+# twice as many as its free space holds, but no tag at or above the row's
+# xmin, which its own entry has (the run sorts below it).
+my $nsplit = $node->safe_psql('postgres', qq{
+	SELECT least(2 * free_size / (avg_item_size + 4),
+	             ((SELECT xmin::text::int FROM tw WHERE id = 1) - $first - 2) / 2)
+	  FROM bark_page_stats('tw_k', $p2)});
+$ins = $node->background_psql('postgres', on_error_stop => 0);
+$ins->query_until(qr/start/, qq{
+	SET test_versioned_tableam.stale_tags = live;
+	\\echo start
+	SELECT count(test_versioned_insert_entry('tw_k', ctid, g))
+	  FROM tw, generate_series($first + 1, $first + 1 + 2 * $nsplit, 2) g WHERE id = 1;
+});
+$node->wait_for_event('client backend', 'bark-leave-leaf-split-incomplete');
+$node->safe_psql('postgres', q{
+	SELECT injection_points_detach('bark-bulkdelete-after-page');
+	SELECT injection_points_wakeup('bark-bulkdelete-after-page')});
+$node->poll_query_until('postgres', q{
+	SELECT wait_event_type = 'Buffer' FROM pg_stat_activity WHERE query LIKE 'VACUUM (INDEX_CLEANUP OFF) tw%'})
+  or die 'VACUUM did not wait for P2';
+$node->safe_psql('postgres', q{
+	SELECT injection_points_detach('bark-leave-leaf-split-incomplete');
+	SELECT injection_points_wakeup('bark-leave-leaf-split-incomplete')});
+$ins->query('SELECT 1');
+$ins->quit;
+$vac->query('SELECT 1');
+# (The insert may still hold P2 when bark_lower_bound tries it, or not.)
+my @busy = vacuum_line('tw_k', $vac->{stderr});
+is($busy[0], 'untagged 0, kept 1, dup 0, lowered 0', 'busy P2: VACUUM keeps the bound');
+like($busy[1], qr/^(its left sibling holds an entry at or above the new bound|a lock was busy)$/,
+	'busy P2: because Pa holds the run, or P2 is still locked');
+$vac->quit;
+is($node->safe_psql('postgres', qq{SELECT type FROM bark_page_stats('tw_k', $p1)}),
+	'deleted', 'busy P2: the deletion waited for P2 and deleted P1');
+check_index('tw_k', 'busy P2');
 
 # (4e) Decline: an OVERSIZED bound.  A run of one row's entries whose key
 # is too long for a pivot inline leaves OVERSIZED tagged high keys.

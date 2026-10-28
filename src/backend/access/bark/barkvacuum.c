@@ -50,6 +50,8 @@ typedef struct BarkVacInfo
 {
 	/* bark_end_of_recovery's FullTransactionId, or 0 (see bark_marks_trusted) */
 	pg_atomic_uint64 marks_horizon;
+	/* level-1 pages deleted so far, by any index (see bark_l1_epoch) */
+	pg_atomic_uint64 l1epoch;
 	uint32		cycle_ctr;		/* how many cycle IDs have been given out */
 	BarkOneVacInfo vacuums[FLEXIBLE_ARRAY_MEMBER];	/* by ProcNumber */
 }			BarkVacInfo;
@@ -169,8 +171,40 @@ BarkShmemInit(void *arg)
 {
 	memset(barkvacinfo, 0, BarkVacInfoSize());
 	pg_atomic_init_u64(&barkvacinfo->marks_horizon, 0);
+	pg_atomic_init_u64(&barkvacinfo->l1epoch, 0);
 	/* Start the counter somewhere that differs from run to run. */
 	barkvacinfo->cycle_ctr = (uint32) time(NULL);
+}
+
+/*
+ * The level-1 epoch: a count of the deletions that removed a level-1 page,
+ * in any BARK index of the cluster.  A backend's level-1 entry table
+ * (BarkAmCache) remembers level-1 pages across transactions, so no snapshot
+ * keeps their blocks from being recycled; a slot whose block was deleted and
+ * then reused as another level-1 page, further right, would send a descent to
+ * the wrong page.  So the table records the epoch it was filled under, and a
+ * descent that starts at a slot reads the epoch again once it holds the
+ * slot's page locked, and forgets the table when it changed.
+ *
+ * A deletion advances the epoch while it still holds the deleted level-1 page
+ * locked, and so does its redo.  A backend that finds the block recycled
+ * locked it after the recycler did, who locked it after the deleter unlocked
+ * it, so it reads the advanced value: the atomic increment and the buffer
+ * locks are full barriers.  One counter serves every index; a deletion makes
+ * every backend refill its tables once, which costs a descent from the root
+ * per level-1 page each backend goes on to use.
+ */
+uint64
+bark_l1_epoch(void)
+{
+	return pg_atomic_read_u64(&barkvacinfo->l1epoch);
+}
+
+/* A level-1 page is being deleted (see bark_l1_epoch). */
+void
+bark_l1_epoch_advance(void)
+{
+	pg_atomic_fetch_add_u64(&barkvacinfo->l1epoch, 1);
 }
 
 /*
