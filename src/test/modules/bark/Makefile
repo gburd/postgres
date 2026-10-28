@@ -1,11 +1,15 @@
 # src/test/modules/bark/Makefile
 
-EXTRA_INSTALL = src/test/modules/injection_points contrib/amcheck \
-	contrib/pg_freespacemap
+EXTRA_INSTALL = src/test/modules/injection_points src/test/modules/bark_multikey \
+	contrib/amcheck contrib/pg_buffercache contrib/pageinspect \
+	contrib/pg_freespacemap contrib/pg_walinspect contrib/pgstattuple
 
-REGRESS = bark_incomplete_splits bark_split_moveright
+REGRESS = bark_incomplete_splits bark_split_moveright bark_walinspect \
+	bark_validate bark_bottomup bark_alias_am bark_knn_inttypes bark_codedlist \
+	bark_l1_cache
 ISOLATION = bark_concurrent_split bark_vacuum_split bark_deleted_page \
-	bark_nnd_upsert
+	bark_nnd_upsert bark_recently_dead bark_broken_hot_chain \
+	bark_lock_right bark_root_split_race bark_walk_left bark_l1_concurrent
 TAP_TESTS = 1
 
 ifdef USE_PGXS

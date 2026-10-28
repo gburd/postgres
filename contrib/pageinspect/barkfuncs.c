@@ -76,8 +76,7 @@ bark_open_index(text *relname)
 	relrv = makeRangeVarFromNameList(textToQualifiedNameList(relname));
 	rel = relation_openrv(relrv, AccessShareLock);
 
-	if (rel->rd_rel->relkind != RELKIND_INDEX ||
-		rel->rd_rel->relam != BARK_AM_OID)
+	if (!bark_relation_is_bark(rel))
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				 errmsg("\"%s\" is not a %s index",
@@ -155,8 +154,8 @@ bark_metap(PG_FUNCTION_ARGS)
 	Page		page;
 	BarkMetaPageData *meta;
 	TupleDesc	tupleDesc;
-	Datum		values[5];
-	bool		nulls[5] = {0};
+	Datum		values[7];
+	bool		nulls[7] = {0};
 	int			j = 0;
 
 	check_superuser();
@@ -181,6 +180,12 @@ bark_metap(PG_FUNCTION_ARGS)
 	else
 		nulls[j] = true;
 	j++;
+
+	/* An index whose meta page predates these has neither: 0. */
+	values[j++] = Int64GetDatum(BarkMetaHasField(page, bark_flags) ?
+								meta->bark_flags : 0);
+	values[j++] = Int64GetDatum(BarkMetaHasField(page, bark_nkeys) ?
+								(int64) meta->bark_nkeys : 0);
 
 	Assert(j == tupleDesc->natts);
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(tupleDesc, values,
@@ -437,9 +442,37 @@ bark_check_entry_bounds(IndexTuple itup, BarkEntryShape shape, OffsetNumber off)
 	switch (shape)
 	{
 		case BARK_SHAPE_LIST:
-			ok = ok && BarkEntryGetBodyOffset(itup) >= dataoff &&
-				BarkEntryGetBodyOffset(itup) +
-				BarkListGetCount(itup) * sizeof(ItemPointerData) <= size;
+			if (BarkListIsCoded(itup))
+			{
+				/* body: header + raw first locator + varbyte delta stream */
+				Size		bodyoff = BarkEntryGetBodyOffset(itup);
+
+				ok = ok && bodyoff >= dataoff &&
+					bodyoff + sizeof(BarkCodedListHdr) +
+					sizeof(ItemPointerData) <= size &&
+					bodyoff + sizeof(BarkCodedListHdr) +
+					sizeof(ItemPointerData) +
+					BarkCodedListGetHdr(itup)->nbytes <= size;
+
+				/*
+				 * Decoding reads a delta per locator after the first, each
+				 * ending at a byte without the continuation bit: the stream
+				 * must hold that many, or decoding runs past it.
+				 */
+				if (ok)
+				{
+					const unsigned char *deltas = BarkCodedListGetDeltas(itup);
+					int			nends = 0;
+
+					for (int i = 0; i < BarkCodedListGetHdr(itup)->nbytes; i++)
+						nends += (deltas[i] & 0x80) == 0;
+					ok = nends >= BarkListGetCount(itup) - 1;
+				}
+			}
+			else
+				ok = ok && BarkEntryGetBodyOffset(itup) >= dataoff &&
+					BarkEntryGetBodyOffset(itup) +
+					BarkListGetCount(itup) * sizeof(ItemPointerData) <= size;
 			break;
 		case BARK_SHAPE_POSTING:
 			ok = ok && BarkEntryGetBodyOffset(itup) >= dataoff &&
