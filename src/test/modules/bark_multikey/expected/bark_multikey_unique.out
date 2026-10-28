@@ -1,5 +1,5 @@
--- Unique BARK indexes with an extracted column ("M4" in
--- BARK-Design.mediawiki): unique over the entries' keys.  Two rows conflict
+-- Unique BARK indexes with an extracted column ("Unique indexes over
+-- multikey keys" in BARK-Design.mediawiki): unique over the entries' keys.  Two rows conflict
 -- when they share a key; one row may repeat one; NULL keys never conflict.
 CREATE EXTENSION IF NOT EXISTS bark_multikey;
 -- Try one insert, reporting a unique violation instead of raising it.
