@@ -26,7 +26,7 @@ include $(top_builddir)/src/Makefile.global
 # the TAP tests and bark_lower_bound need injection points
 export enable_injection_points
 ifeq ($(enable_injection_points),yes)
-ISOLATION += bark_lower_bound
+ISOLATION += bark_lower_bound bark_mk_convert bark_mk_convert_race
 endif
 include $(top_srcdir)/contrib/contrib-global.mk
 endif
