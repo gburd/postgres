@@ -109,6 +109,13 @@ bark_desc(StringInfo buf, XLogReaderState *record)
 								 xlrec->poffset,
 								 (xlrec->flags & XLH_BARK_UNLINK_LOWTAG) ?
 								 ", lower bound tagged" : "");
+				if (xlrec->flags & XLH_BARK_UNLINK_SUBTREE)
+				{
+					uint16		nlevels;
+
+					memcpy(&nlevels, rec + SizeOfBarkUnlinkPage, sizeof(uint16));
+					appendStringInfo(buf, ", internal levels: %u", nlevels);
+				}
 				break;
 			}
 		case XLOG_BARK_REUSE_PAGE:
