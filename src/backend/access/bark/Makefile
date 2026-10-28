@@ -25,6 +25,7 @@ OBJS = \
 	barkutils.o \
 	barkvacuum.o \
 	barkvalidate.o \
+	barkverify.o \
 	barkxlog.o
 
 include $(top_srcdir)/src/backend/common.mk
