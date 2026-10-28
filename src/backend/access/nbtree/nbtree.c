@@ -33,6 +33,7 @@
 #include "storage/lwlock.h"
 #include "storage/read_stream.h"
 #include "utils/datum.h"
+#include "utils/fmgroids.h"
 #include "utils/fmgrprotos.h"
 #include "utils/index_selfuncs.h"
 #include "utils/memutils.h"
@@ -175,6 +176,22 @@ bthandler(PG_FUNCTION_ARGS)
 	};
 
 	PG_RETURN_POINTER(&amroutine);
+}
+
+/*
+ * IndexIsNbtree() -- is this index stored and searched by nbtree's own code?
+ *
+ * An index created USING btree may be implemented by another index AM (see
+ * pg_index.indimplam), so relam == BTREE_AM_OID only says the index has
+ * btree semantics.  Code that reads an index's pages, or calls nbtree
+ * internals on it, must ask this instead.  It compares handlers, so an AM
+ * registered with bthandler under another name counts as nbtree.
+ */
+bool
+IndexIsNbtree(Relation rel)
+{
+	return rel->rd_rel->relkind == RELKIND_INDEX &&
+		rel->rd_amhandler == F_BTHANDLER;
 }
 
 /*
