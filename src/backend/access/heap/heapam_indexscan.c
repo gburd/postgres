@@ -352,7 +352,15 @@ heapam_index_getnext_slot(IndexScanDesc scan, ScanDirection direction,
 		{
 			/* Plain index scan */
 			if (!heapam_index_heap_fetch(scan, hscan, slot, false))
-				continue;		/* no visible tuple, try next index entry */
+			{
+				/*
+				 * No visible tuple.  At the end of a HOT chain that already
+				 * returned a member, the entry stays valid.
+				 */
+				if (scan->xs_entry_verdict == INDEX_SCAN_ENTRY_UNKNOWN)
+					scan->xs_entry_verdict = INDEX_SCAN_ENTRY_INVALID;
+				continue;		/* try next index entry */
+			}
 		}
 		else
 		{
@@ -371,6 +379,7 @@ heapam_index_getnext_slot(IndexScanDesc scan, ScanDirection direction,
 				if (!heapam_index_only_heap_fetch(scan))
 				{
 					/* No visible tuple */
+					scan->xs_entry_verdict = INDEX_SCAN_ENTRY_INVALID;
 					if (heapam_index_visited_pages_exceeded(scan))
 						return false;	/* give up */
 
@@ -398,6 +407,8 @@ heapam_index_getnext_slot(IndexScanDesc scan, ScanDirection direction,
 			tableam_index_fill_ios_slot(scan, slot);
 		}
 
+		/* heap's locator is not versioned: every entry is valid */
+		scan->xs_entry_verdict = INDEX_SCAN_ENTRY_VALID;
 		return true;
 	}
 
