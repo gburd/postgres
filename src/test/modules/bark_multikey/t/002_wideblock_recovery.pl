@@ -24,9 +24,14 @@ autovacuum = off
 wal_consistency_checking = 'Bark'
 ]);
 $node->start;
+# A slot keeps the WAL the standby has not streamed yet: the primary's
+# crash recovery below ends with a checkpoint that may otherwise recycle it.
+$node->safe_psql('postgres',
+	"SELECT pg_create_physical_replication_slot('standby')");
 $node->backup('backup');
 my $standby = PostgreSQL::Test::Cluster->new('standby');
 $standby->init_from_backup($node, 'backup', has_streaming => 1);
+$standby->append_conf('postgresql.conf', "primary_slot_name = 'standby'");
 $standby->start;
 
 # An index of every shape, then inserts that coalesce into them in order

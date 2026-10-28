@@ -16,6 +16,7 @@ REGRESS = bark_multikey bark_multikey_scan bark_multikey_unique bark_multikey_gi
 ISOLATION = bark_multikey_concurrent bark_multikey_unique_concurrent \
 	bark_multikey_hot_epq bark_multikey_exclude_concurrent
 EXTRA_INSTALL = contrib/amcheck contrib/pageinspect src/test/modules/injection_points
+REGRESS_OPTS = --load-extension=amcheck
 TAP_TESTS = 1
 
 export enable_injection_points

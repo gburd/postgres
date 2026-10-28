@@ -42,6 +42,7 @@
 #include "postgres.h"
 
 #include "access/bark.h"
+#include "access/detoast.h"
 #include "access/genam.h"
 #include "access/xlogreader.h"
 #include "lib/sbm.h"
@@ -448,6 +449,11 @@ bark_verify_tag(BarkVerify * v, OffsetNumber off, IndexTuple itup)
 	if (BarkEntryGetTag(itup) == InvalidIndexVersionTag)
 		bark_verify_fail(v, "BARK index \"%s\" has a tagged entry with tag 0 on page %u at offset %u",
 						 v->relname, v->blkno, off);
+	/* A marker names no row, so nothing could judge a tag on it. */
+	if (BarkEntryGetShape(itup) == BARK_SHAPE_SINGLE &&
+		BarkTidIsMarker(BarkEntryGetHeapTid(itup)))
+		bark_verify_fail(v, "BARK index \"%s\" has a tagged marker on page %u at offset %u",
+						 v->relname, v->blkno, off);
 	if (v->keyinfo != NULL && !v->keyinfo->canversion)
 		bark_verify_fail(v, "BARK index \"%s\" has a tagged entry on page %u at offset %u but does not store tags",
 						 v->relname, v->blkno, off);
@@ -595,7 +601,7 @@ bark_verify_posting(BarkVerify * v, OffsetNumber off, IndexTuple itup)
 						 v->relname, v->blkno, off);
 
 	if (!sbm_validate(map) || sbm_cardinality(map) < 2)
-		bark_verify_fail(v, "BARK index \"%s\" has an invalid posting set (%zu members) on page %u at offset %u",
+		bark_verify_fail(v, "BARK index \"%s\" has an invalid posting set (" UINT64_FORMAT " members) on page %u at offset %u",
 						 v->relname, sbm_cardinality(map), v->blkno, off);
 
 	reserved = BarkPostingEntrySize(BarkEntryGetBodyOffset(itup),
@@ -639,6 +645,15 @@ bark_verify_chain(BarkVerify * v, OffsetNumber off, IndexTuple itup)
 			bark_verify_fail(v, "BARK index \"%s\" oversized entry on page %u at offset %u points at out-of-range overflow block %u",
 							 v->relname, v->blkno, off, chainblk);
 
+		/*
+		 * The page being checked is locked by the caller and is not an
+		 * overflow page: report a chain that leads back to it here, as the
+		 * check below would, rather than lock its buffer a second time.
+		 */
+		if (chainblk == v->blkno)
+			bark_verify_fail(v, "BARK index \"%s\" oversized entry on page %u at offset %u references non-overflow block %u",
+							 v->relname, v->blkno, off, chainblk);
+
 		cbuf = ReadBuffer(v->rel, chainblk);
 		LockBuffer(cbuf, BUFFER_LOCK_SHARE);
 		cpage = BufferGetPage(cbuf);
@@ -665,34 +680,82 @@ bark_verify_chain(BarkVerify * v, OffsetNumber off, IndexTuple itup)
 	full = bark_fetch_oversized(v->rel, itup);
 
 	/*
-	 * If the entry carries an inline comparison prefix, it must match the
-	 * leading bytes of the reconstructed first key column (that is the
-	 * invariant the compare fast path relies on).
+	 * If the entry carries an inline comparison prefix, it must be exactly
+	 * the leading bytes of the reconstructed first key column's value,
+	 * decompressed (bark_value_prefix): that is the invariant the compare
+	 * fast path relies on.
 	 */
 	if (ref->prefixlen > 0)
 	{
 		TupleDesc	tupdesc = RelationGetDescr(v->rel);
 		Datum		d;
 		bool		isnull;
-		char	   *data;
+		uint8		want[BARK_OVERSIZED_PREFIX_LEN];
+		uint16		wantlen;
+		bool		wantcomplete;
 		Size		fulllen1;
 
 		d = index_getattr(full, 1, tupdesc, &isnull);
 		if (isnull)
 			bark_verify_fail(v, "BARK index \"%s\" oversized entry on page %u at offset %u has a prefix but a NULL first key column",
 							 v->relname, v->blkno, off);
-		data = VARDATA_ANY(DatumGetPointer(d));
-		fulllen1 = VARSIZE_ANY_EXHDR(DatumGetPointer(d));
+		fulllen1 = toast_raw_datum_size(d) - VARHDRSZ;
 		if (ref->prefixcomplete && fulllen1 != ref->prefixlen)
 			bark_verify_fail(v, "BARK index \"%s\" oversized entry on page %u at offset %u claims a complete %u-byte prefix but the first key column is %zu bytes",
 							 v->relname, v->blkno, off,
 							 ref->prefixlen, fulllen1);
-		if (fulllen1 < ref->prefixlen ||
-			memcmp(data, ref->prefix, ref->prefixlen) != 0)
+		bark_value_prefix(d, want, &wantlen, &wantcomplete);
+		if (ref->prefixlen != wantlen ||
+			ref->prefixcomplete != wantcomplete ||
+			memcmp(want, ref->prefix, wantlen) != 0)
 			bark_verify_fail(v, "BARK index \"%s\" oversized entry on page %u at offset %u has a prefix that does not match its first key column",
 							 v->relname, v->blkno, off);
 	}
 	pfree(full);
+}
+
+/*
+ * Check the meta page `page`, block `blkno` of `index`: its magic number and
+ * version, and its flags.  BARK_META_MKTAGS needs BARK_META_VERSIONED, which
+ * the page shows by itself, so redo (index NULL, relname its name) checks
+ * that too.  With the index at hand, MKTAGS also needs an extracted column
+ * whose scans are not GIN-interface (bark_build_mktags); that the index is
+ * unique or exclusion now is no corruption, since rd_index can change after
+ * the build.  The caller holds a lock on the page.
+ */
+void
+bark_verify_meta(Relation index, const char *relname, Page page,
+				 BlockNumber blkno, int elevel)
+{
+	BarkVerify	v = {.rel = index, .blkno = blkno, .elevel = elevel};
+	BarkMetaPageData *meta = BarkPageGetMeta(page);
+	uint32		flags;
+
+	v.relname = relname != NULL ? relname : RelationGetRelationName(index);
+	if (meta->bark_magic != BARK_MAGIC ||
+		meta->bark_version < BARK_MIN_VERSION ||
+		meta->bark_version > BARK_VERSION)
+		bark_verify_fail(&v, "BARK index \"%s\" has a meta page %u with magic number %08X and version %u",
+						 v.relname, blkno, meta->bark_magic,
+						 meta->bark_version);
+	/* a meta page written before bark_flags existed ends before it */
+	flags = ((PageHeader) page)->pd_lower >=
+		((char *) &meta->bark_flags + sizeof(meta->bark_flags)) - (char *) page ?
+		meta->bark_flags : 0;
+	if (meta->bark_version < 3 && (flags & BARK_META_VERSIONED) != 0)
+		bark_verify_fail(&v, "BARK index \"%s\" has a version %u meta page %u built for version tags",
+						 v.relname, meta->bark_version, blkno);
+	if ((flags & BARK_META_MKTAGS) == 0)
+		return;
+	if ((flags & BARK_META_VERSIONED) == 0)
+		bark_verify_fail(&v, "BARK index \"%s\" has a meta page %u with version tags on its keys but not built for version tags",
+						 v.relname, blkno);
+	if (index != NULL && bark_index_extracted_column(index) == 0)
+		bark_verify_fail(&v, "BARK index \"%s\" has a meta page %u with version tags on its keys but no extracted column",
+						 v.relname, blkno);
+	if (index != NULL && bark_index_gin_query(index))
+		bark_verify_fail(&v, "BARK index \"%s\" has a meta page %u with version tags on its keys but answers scans through GIN's interface",
+						 v.relname, blkno);
 }
 
 /* ----------------------------------------------------------------------------
@@ -703,32 +766,19 @@ bark_verify_chain(BarkVerify * v, OffsetNumber off, IndexTuple itup)
 #ifdef USE_ASSERT_CHECKING
 
 /*
- * Check a page bark_page_verify skips: the meta page's magic number and
- * version, and an overflow page's layout (one chunk of 1 to
- * BarkOverflowChunkSize bytes, BARK_OVERFLOW its only flag, no left link).
+ * Check a page bark_page_verify skips: the meta page (bark_verify_meta), and
+ * an overflow page's layout (one chunk of 1 to BarkOverflowChunkSize bytes,
+ * BARK_OVERFLOW its only flag, no left link).  `index` is NULL in redo.
  */
 static void
-bark_verify_other_page(Page page, const char *relname, BlockNumber blkno,
-					   int elevel)
+bark_verify_other_page(Relation index, Page page, const char *relname,
+					   BlockNumber blkno, int elevel)
 {
 	BarkVerify	v = {.relname = relname, .blkno = blkno, .elevel = elevel};
 	BarkPageOpaque opaque = BarkPageGetOpaque(page);
 
 	if (BarkPageIsMeta(opaque))
-	{
-		BarkMetaPageData *meta = BarkPageGetMeta(page);
-
-		if (meta->bark_magic != BARK_MAGIC ||
-			meta->bark_version < BARK_MIN_VERSION ||
-			meta->bark_version > BARK_VERSION)
-			bark_verify_fail(&v, "BARK index \"%s\" has a meta page %u with magic number %08X and version %u",
-							 relname, blkno, meta->bark_magic,
-							 meta->bark_version);
-		if (meta->bark_version < 3 &&
-			(meta->bark_flags & BARK_META_VERSIONED) != 0)
-			bark_verify_fail(&v, "BARK index \"%s\" has a version %u meta page %u built for version tags",
-							 relname, meta->bark_version, blkno);
-	}
+		bark_verify_meta(index, relname, page, blkno, elevel);
 	else if (BarkPageIsOverflow(opaque))
 	{
 		Size		len = ((PageHeader) page)->pd_lower -
@@ -833,7 +883,7 @@ bark_verify_page_change_impl(Relation index, Buffer buf, OffsetNumber lo,
 #endif
 	if (BarkPageIsMeta(BarkPageGetOpaque(page)) ||
 		BarkPageIsOverflow(BarkPageGetOpaque(page)))
-		bark_verify_other_page(page, RelationGetRelationName(index),
+		bark_verify_other_page(index, page, RelationGetRelationName(index),
 							   ctx.blkno, ERROR);
 	else if (BarkPageIsDeleted(BarkPageGetOpaque(page)))
 		bark_page_verify(index, NULL, NULL, page, ctx.blkno,
@@ -919,10 +969,11 @@ bark_verify_plant_fault(Page page, OffsetNumber off)
 
 #ifdef USE_ASSERT_CHECKING
 /*
- * Plant a fault in a meta or overflow page the caller has just changed,
- * for the validator's tests: with bark-verify-fault-meta, a meta page's
- * version is set to 0; with bark-verify-fault-overflow, an overflow page
- * gets a left link.
+ * Plant a fault in a meta or overflow page the caller has just changed, or
+ * redo has just replayed, for the validator's tests: with bark-verify-fault-meta, a meta page's
+ * version is set to 0; with bark-verify-fault-mktags, it gets
+ * BARK_META_MKTAGS; with bark-verify-fault-overflow, an overflow page gets
+ * a left link.
  */
 static void
 bark_verify_plant_page_fault(Page page)
@@ -932,6 +983,9 @@ bark_verify_plant_page_fault(Page page)
 	if (BarkPageIsMeta(opaque) &&
 		IS_INJECTION_POINT_ATTACHED("bark-verify-fault-meta"))
 		BarkPageGetMeta(page)->bark_version = 0;
+	if (BarkPageIsMeta(opaque) &&
+		IS_INJECTION_POINT_ATTACHED("bark-verify-fault-mktags"))
+		BarkPageGetMeta(page)->bark_flags |= BARK_META_MKTAGS;
 	if (BarkPageIsOverflow(opaque) &&
 		IS_INJECTION_POINT_ATTACHED("bark-verify-fault-overflow"))
 		opaque->bark_prev = 1;
@@ -986,9 +1040,12 @@ bark_verify_redo(XLogReaderState *record, uint8 block_id, Buffer buf,
 	snprintf(relname, sizeof(relname), "%u", rlocator.relNumber);
 	page = BufferGetPage(buf);
 	Assert(!PageIsNew(page));
+#ifdef USE_INJECTION_POINTS
+	bark_verify_plant_page_fault(page);
+#endif
 	if (BarkPageIsMeta(BarkPageGetOpaque(page)) ||
 		BarkPageIsOverflow(BarkPageGetOpaque(page)))
-		bark_verify_other_page(page, relname, blkno, PANIC);
+		bark_verify_other_page(NULL, page, relname, blkno, PANIC);
 	else
 		bark_page_verify(NULL, NULL, relname, page, blkno,
 						 BARK_VERIFY_SHAPES, PANIC);
