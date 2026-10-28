@@ -1,0 +1,297 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1_begin s2_update s2_build_serial s2_flag s1_count s1_commit s2_check
+step s1_begin: 
+	BEGIN ISOLATION LEVEL REPEATABLE READ;
+	SELECT 1 AS snapshot;
+
+snapshot
+--------
+       1
+(1 row)
+
+step s2_update: UPDATE bhc SET k = k + 100000 WHERE id <= 20;
+step s2_build_serial: 
+	BEGIN;
+	SET LOCAL max_parallel_maintenance_workers = 0;
+	CREATE INDEX bhc_k ON bhc USING bark (k);
+	COMMIT;
+
+step s2_flag: 
+	SELECT indisvalid, indcheckxmin FROM pg_index
+	 WHERE indexrelid = 'bhc_k'::regclass;
+
+indisvalid|indcheckxmin
+----------+------------
+t         |t           
+(1 row)
+
+step s1_count: 
+	SET LOCAL enable_seqscan = off;
+	SET LOCAL enable_bitmapscan = off;
+	SELECT count(*) AS forced_index_count FROM bhc WHERE k <= 20;
+	SET LOCAL enable_seqscan = on;
+	SET LOCAL enable_indexscan = off;
+	SET LOCAL enable_indexonlyscan = off;
+	SELECT count(*) AS seqscan_count FROM bhc WHERE k <= 20;
+
+forced_index_count
+------------------
+                20
+(1 row)
+
+seqscan_count
+-------------
+           20
+(1 row)
+
+step s1_commit: COMMIT;
+step s2_check: 
+	SELECT bark_index_check('bhc_k', true);
+	BEGIN;
+	SET LOCAL enable_seqscan = off;
+	SET LOCAL enable_bitmapscan = off;
+	SELECT count(*) AS index_count, sum(k) AS index_sum FROM bhc
+	 WHERE k <= 20 OR k > 100000;
+	SET LOCAL enable_seqscan = on;
+	SET LOCAL enable_indexscan = off;
+	SET LOCAL enable_indexonlyscan = off;
+	SELECT count(*) AS seqscan_count, sum(k) AS seqscan_sum FROM bhc
+	 WHERE k <= 20 OR k > 100000;
+	COMMIT;
+
+bark_index_check
+----------------
+                
+(1 row)
+
+index_count|index_sum
+-----------+---------
+         20|  2000210
+(1 row)
+
+seqscan_count|seqscan_sum
+-------------+-----------
+           20|    2000210
+(1 row)
+
+
+starting permutation: s1_begin s2_update s2_build_par s2_flag s1_count s1_commit s2_check
+step s1_begin: 
+	BEGIN ISOLATION LEVEL REPEATABLE READ;
+	SELECT 1 AS snapshot;
+
+snapshot
+--------
+       1
+(1 row)
+
+step s2_update: UPDATE bhc SET k = k + 100000 WHERE id <= 20;
+step s2_build_par: CREATE INDEX bhc_k ON bhc USING bark (k);
+step s2_flag: 
+	SELECT indisvalid, indcheckxmin FROM pg_index
+	 WHERE indexrelid = 'bhc_k'::regclass;
+
+indisvalid|indcheckxmin
+----------+------------
+t         |t           
+(1 row)
+
+step s1_count: 
+	SET LOCAL enable_seqscan = off;
+	SET LOCAL enable_bitmapscan = off;
+	SELECT count(*) AS forced_index_count FROM bhc WHERE k <= 20;
+	SET LOCAL enable_seqscan = on;
+	SET LOCAL enable_indexscan = off;
+	SET LOCAL enable_indexonlyscan = off;
+	SELECT count(*) AS seqscan_count FROM bhc WHERE k <= 20;
+
+forced_index_count
+------------------
+                20
+(1 row)
+
+seqscan_count
+-------------
+           20
+(1 row)
+
+step s1_commit: COMMIT;
+step s2_check: 
+	SELECT bark_index_check('bhc_k', true);
+	BEGIN;
+	SET LOCAL enable_seqscan = off;
+	SET LOCAL enable_bitmapscan = off;
+	SELECT count(*) AS index_count, sum(k) AS index_sum FROM bhc
+	 WHERE k <= 20 OR k > 100000;
+	SET LOCAL enable_seqscan = on;
+	SET LOCAL enable_indexscan = off;
+	SET LOCAL enable_indexonlyscan = off;
+	SELECT count(*) AS seqscan_count, sum(k) AS seqscan_sum FROM bhc
+	 WHERE k <= 20 OR k > 100000;
+	COMMIT;
+
+bark_index_check
+----------------
+                
+(1 row)
+
+index_count|index_sum
+-----------+---------
+         20|  2000210
+(1 row)
+
+seqscan_count|seqscan_sum
+-------------+-----------
+           20|    2000210
+(1 row)
+
+
+starting permutation: s1_begin s2_update s2_build_serial s2_reindex_par s2_flag s1_count s1_commit s2_check
+step s1_begin: 
+	BEGIN ISOLATION LEVEL REPEATABLE READ;
+	SELECT 1 AS snapshot;
+
+snapshot
+--------
+       1
+(1 row)
+
+step s2_update: UPDATE bhc SET k = k + 100000 WHERE id <= 20;
+step s2_build_serial: 
+	BEGIN;
+	SET LOCAL max_parallel_maintenance_workers = 0;
+	CREATE INDEX bhc_k ON bhc USING bark (k);
+	COMMIT;
+
+step s2_reindex_par: REINDEX INDEX bhc_k;
+step s2_flag: 
+	SELECT indisvalid, indcheckxmin FROM pg_index
+	 WHERE indexrelid = 'bhc_k'::regclass;
+
+indisvalid|indcheckxmin
+----------+------------
+t         |t           
+(1 row)
+
+step s1_count: 
+	SET LOCAL enable_seqscan = off;
+	SET LOCAL enable_bitmapscan = off;
+	SELECT count(*) AS forced_index_count FROM bhc WHERE k <= 20;
+	SET LOCAL enable_seqscan = on;
+	SET LOCAL enable_indexscan = off;
+	SET LOCAL enable_indexonlyscan = off;
+	SELECT count(*) AS seqscan_count FROM bhc WHERE k <= 20;
+
+forced_index_count
+------------------
+                20
+(1 row)
+
+seqscan_count
+-------------
+           20
+(1 row)
+
+step s1_commit: COMMIT;
+step s2_check: 
+	SELECT bark_index_check('bhc_k', true);
+	BEGIN;
+	SET LOCAL enable_seqscan = off;
+	SET LOCAL enable_bitmapscan = off;
+	SELECT count(*) AS index_count, sum(k) AS index_sum FROM bhc
+	 WHERE k <= 20 OR k > 100000;
+	SET LOCAL enable_seqscan = on;
+	SET LOCAL enable_indexscan = off;
+	SET LOCAL enable_indexonlyscan = off;
+	SELECT count(*) AS seqscan_count, sum(k) AS seqscan_sum FROM bhc
+	 WHERE k <= 20 OR k > 100000;
+	COMMIT;
+
+bark_index_check
+----------------
+                
+(1 row)
+
+index_count|index_sum
+-----------+---------
+         20|  2000210
+(1 row)
+
+seqscan_count|seqscan_sum
+-------------+-----------
+           20|    2000210
+(1 row)
+
+
+starting permutation: s1_begin s2_update s2_cic_par s1_count s1_commit s2_flag s2_check
+step s1_begin: 
+	BEGIN ISOLATION LEVEL REPEATABLE READ;
+	SELECT 1 AS snapshot;
+
+snapshot
+--------
+       1
+(1 row)
+
+step s2_update: UPDATE bhc SET k = k + 100000 WHERE id <= 20;
+step s2_cic_par: CREATE INDEX CONCURRENTLY bhc_k ON bhc USING bark (k); <waiting ...>
+step s1_count: 
+	SET LOCAL enable_seqscan = off;
+	SET LOCAL enable_bitmapscan = off;
+	SELECT count(*) AS forced_index_count FROM bhc WHERE k <= 20;
+	SET LOCAL enable_seqscan = on;
+	SET LOCAL enable_indexscan = off;
+	SET LOCAL enable_indexonlyscan = off;
+	SELECT count(*) AS seqscan_count FROM bhc WHERE k <= 20;
+
+forced_index_count
+------------------
+                20
+(1 row)
+
+seqscan_count
+-------------
+           20
+(1 row)
+
+step s1_commit: COMMIT;
+step s2_cic_par: <... completed>
+step s2_flag: 
+	SELECT indisvalid, indcheckxmin FROM pg_index
+	 WHERE indexrelid = 'bhc_k'::regclass;
+
+indisvalid|indcheckxmin
+----------+------------
+t         |f           
+(1 row)
+
+step s2_check: 
+	SELECT bark_index_check('bhc_k', true);
+	BEGIN;
+	SET LOCAL enable_seqscan = off;
+	SET LOCAL enable_bitmapscan = off;
+	SELECT count(*) AS index_count, sum(k) AS index_sum FROM bhc
+	 WHERE k <= 20 OR k > 100000;
+	SET LOCAL enable_seqscan = on;
+	SET LOCAL enable_indexscan = off;
+	SET LOCAL enable_indexonlyscan = off;
+	SELECT count(*) AS seqscan_count, sum(k) AS seqscan_sum FROM bhc
+	 WHERE k <= 20 OR k > 100000;
+	COMMIT;
+
+bark_index_check
+----------------
+                
+(1 row)
+
+index_count|index_sum
+-----------+---------
+         20|  2000210
+(1 row)
+
+seqscan_count|seqscan_sum
+-------------+-----------
+           20|    2000210
+(1 row)
+
