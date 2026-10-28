@@ -1,0 +1,171 @@
+Parsed test spec with 4 sessions
+
+starting permutation: s1_attach_written s1_insert s2_reclaim s3_wakeup_written s1_detach s1_check
+injection_points_set_local
+--------------------------
+                          
+(1 row)
+
+injection_points_set_local
+--------------------------
+                          
+(1 row)
+
+step s1_attach_written: 
+	SELECT injection_points_attach('bark-overflow-chain-written', 'wait');
+
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+step s1_insert: INSERT INTO bark_ro VALUES (100, bark_ro_big(100)); <waiting ...>
+step s2_reclaim: SELECT bark_reclaim_orphans('bark_ro_idx') AS freed; <waiting ...>
+step s3_wakeup_written: 
+	SELECT injection_points_wakeup('bark-overflow-chain-written');
+
+injection_points_wakeup
+-----------------------
+                       
+(1 row)
+
+step s1_insert: <... completed>
+step s2_reclaim: <... completed>
+freed
+-----
+    0
+(1 row)
+
+step s1_detach: 
+	SELECT injection_points_detach('bark-overflow-chain-written');
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+step s1_check: 
+	SELECT bark_index_parent_check('bark_ro_idx');
+	SELECT bark_ro_same();
+
+bark_index_parent_check
+-----------------------
+                       
+(1 row)
+
+bark_ro_same 
+-------------
+11 rows, same
+(1 row)
+
+
+starting permutation: s1_orphan s1_detach s2_attach_counted s2_reclaim s3_scan s3_insert s4_wakeup_counted s3_check
+injection_points_set_local
+--------------------------
+                          
+(1 row)
+
+injection_points_set_local
+--------------------------
+                          
+(1 row)
+
+step s1_orphan: 
+	SELECT injection_points_attach('bark-overflow-chain-written', 'error');
+	INSERT INTO bark_ro VALUES (200, bark_ro_big(200));
+
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+ERROR:  error triggered for injection point bark-overflow-chain-written
+step s1_detach: 
+	SELECT injection_points_detach('bark-overflow-chain-written');
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+step s2_attach_counted: 
+	SELECT injection_points_attach('bark-reclaim-orphans-counted', 'wait');
+
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+step s2_reclaim: SELECT bark_reclaim_orphans('bark_ro_idx') AS freed; <waiting ...>
+step s3_scan: 
+	SET enable_seqscan = off; SET enable_bitmapscan = off;
+	SELECT count(*) AS index_count FROM bark_ro WHERE k > '';
+	SELECT bark_index_check('bark_ro_idx');
+
+index_count
+-----------
+         10
+(1 row)
+
+bark_index_check
+----------------
+                
+(1 row)
+
+step s3_insert: INSERT INTO bark_ro VALUES (300, bark_ro_big(300)); <waiting ...>
+step s4_wakeup_counted: 
+	SELECT injection_points_detach('bark-reclaim-orphans-counted');
+	SELECT injection_points_wakeup('bark-reclaim-orphans-counted');
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+injection_points_wakeup
+-----------------------
+                       
+(1 row)
+
+step s2_reclaim: <... completed>
+freed
+-----
+    3
+(1 row)
+
+step s3_insert: <... completed>
+step s3_check: 
+	SELECT bark_index_parent_check('bark_ro_idx');
+	SELECT bark_ro_same();
+
+bark_index_parent_check
+-----------------------
+                       
+(1 row)
+
+bark_ro_same 
+-------------
+11 rows, same
+(1 row)
+
+
+starting permutation: s1_temp s2_reclaim_temp
+injection_points_set_local
+--------------------------
+                          
+(1 row)
+
+injection_points_set_local
+--------------------------
+                          
+(1 row)
+
+step s1_temp: 
+	CREATE TEMP TABLE bark_ro_tmp (k text);
+	CREATE INDEX bark_ro_tmp_idx ON bark_ro_tmp USING bark (k);
+
+step s2_reclaim_temp: 
+	SELECT bark_reclaim_orphans(c.oid)
+	  FROM pg_class c WHERE c.relname = 'bark_ro_tmp_idx';
+
+ERROR:  cannot access temporary indexes of other sessions

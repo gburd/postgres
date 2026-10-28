@@ -43,6 +43,7 @@ tests += {
       'bark_lpdead_snapshot',
       'bark_unique_rebuild',
       'bark_excl_hot',
+      'bark_reclaim_orphans',
     ],
     'regress_args': ['--temp-config', files('../injection_points/extra.conf')],
     # Injection points are cluster-wide.
@@ -65,7 +66,10 @@ tests += {
       't/013_btree_impl_dump_upgrade.pl',
       't/014_lpdead_standby.pl',
       't/015_page_validator.pl',
+      't/016_version2.pl',
       't/017_promoted_lpdead.pl',
+      't/018_reclaim_orphans.pl',
+      't/019_vacuum_new_pages.pl',
     ],
   },
 }

@@ -86,7 +86,8 @@ END $$;
 SET default_btree_implementation = bark;
 -- The setting picks BARK; the index is a btree index in every catalog
 -- answer but its implementation.
-CREATE TABLE t (id int, a int, b text, c int, d numeric);
+CREATE TABLE t (id int, a int, b text, c int, d numeric)
+  WITH (autovacuum_enabled = off);
 INSERT INTO t SELECT g, g % 500, 'v' || (g % 1000), g, round((g % 7) / 3.0, g % 3)
 FROM generate_series(1, 20000) g;
 UPDATE t SET a = NULL WHERE id % 97 = 0;
@@ -386,7 +387,7 @@ FETCH RELATIVE -40 FROM cur;
 
 COMMIT;
 -- Mark and restore: a merge join over duplicates on both sides.
-CREATE TABLE u (a int);
+CREATE TABLE u (a int) WITH (autovacuum_enabled = off);
 INSERT INTO u SELECT g % 50 FROM generate_series(1, 300) g;
 CREATE INDEX u_a ON u (a);
 ANALYZE u;
@@ -452,12 +453,12 @@ SELECT * FROM checked('t');
 -- KNN through BARK's <~> operators, which live in btree's integer_ops
 -- family: a capability of the implementation.  The nbtree-implemented index
 -- on the same column gets a Sort.
-CREATE TABLE k (a int, b int);
+CREATE TABLE k (a int, b int) WITH (autovacuum_enabled = off);
 INSERT INTO k SELECT (g * 7919) % 1000, g FROM generate_series(1, 5000) g;
 INSERT INTO k VALUES (NULL, 0), (NULL, -1);
 CREATE INDEX k_bark ON k (a);
 RESET default_btree_implementation;
-CREATE TABLE kn (a int, b int);
+CREATE TABLE kn (a int, b int) WITH (autovacuum_enabled = off);
 INSERT INTO kn SELECT * FROM k;
 CREATE INDEX kn_btree ON kn (a);
 SET default_btree_implementation = bark;
@@ -769,7 +770,8 @@ ERROR:  invalid value for boolean option "deduplicate_items": 3
 CREATE INDEX dd_bad ON dd (a) WITH (no_such_option = 1);
 ERROR:  unrecognized parameter "no_such_option"
 -- Parallel CREATE INDEX and parallel index scans.
-CREATE TABLE par (a int, b int) WITH (parallel_workers = 2);
+CREATE TABLE par (a int, b int)
+  WITH (parallel_workers = 2, autovacuum_enabled = off);
 INSERT INTO par SELECT g % 3000, g FROM generate_series(1, 120000) g;
 SET max_parallel_maintenance_workers = 2;
 SET maintenance_work_mem = '64MB';
