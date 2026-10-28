@@ -1,0 +1,130 @@
+# Build and test with LLVM 21 and JIT forced on, alongside upstream's pg-ci.yml
+# (whose Debian trixie image has LLVM 19, the trixie default).
+#
+# Fork-owned: upstream CI never forces JIT, and jit is off by default since
+# 7f8c88c2b87, so nothing else exercises JIT code generation or inlining.
+# Uses the same trixie CI image and adds llvm-21 from trixie-backports.
+#
+# autoconf, because only autoconf builds install the bitcode that JIT
+# inlining needs (meson support is CF 5671).
+
+name: LLVM 21 JIT
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  jit:
+    name: Linux - LLVM ${{ matrix.llvm }} - ${{ matrix.mode }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/anarazel/pg-vm-images/main/linux_debian_trixie_ci:latest
+      options: --privileged --pid=host --ipc=host --ulimit memlock=-1:-1
+    strategy:
+      fail-fast: false
+      matrix:
+        llvm: [21]
+        # jit:    every query compiled, no inlining or optimization
+        # inline: + inlining without optimization (the mode that found
+        #         unresolvable references to hidden extension symbols)
+        # opt:    + inlining and O3
+        mode: [jit, inline, opt]
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/ccache_dir
+      CCACHE_MAXSIZE: 250M
+      LLVM_CONFIG: /usr/lib/llvm-${{ matrix.llvm }}/bin/llvm-config
+      CLANG: ccache /usr/lib/llvm-${{ matrix.llvm }}/bin/clang
+      CC: ccache gcc
+      CXX: ccache g++
+      CFLAGS: -O2 -ggdb
+      CXXFLAGS: -O2 -ggdb
+      PGCTLTIMEOUT: 120
+      PG_TEST_TIMEOUT_DEFAULT: 360
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Install LLVM ${{ matrix.llvm }} from trixie-backports
+        run: |
+          echo 'deb http://deb.debian.org/debian trixie-backports main' \
+            > /etc/apt/sources.list.d/backports.list
+          apt-get update -q
+          apt-get install -y -q -t trixie-backports \
+            llvm-${{ matrix.llvm }}-dev clang-${{ matrix.llvm }}
+          $LLVM_CONFIG --version
+
+      - name: Set JIT mode
+        run: |
+          case ${{ matrix.mode }} in
+            jit)    o="-c jit_inline_above_cost=-1 -c jit_optimize_above_cost=-1" ;;
+            inline) o="-c jit_inline_above_cost=0 -c jit_optimize_above_cost=-1" ;;
+            opt)    o="-c jit_inline_above_cost=0 -c jit_optimize_above_cost=0" ;;
+          esac
+          echo "PG_TEST_INITDB_EXTRA_OPTS=-c jit=on -c jit_above_cost=0 $o" >> "$GITHUB_ENV"
+
+      - uses: actions/cache/restore@v5
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-llvm${{ matrix.llvm }}-${{ github.sha }}
+          restore-keys: ccache-llvm${{ matrix.llvm }}-
+
+      - name: Prepare workspace
+        run: |
+          useradd -m postgres
+          chown -R postgres:postgres .
+          sysctl -w kernel.io_uring_disabled=0
+
+      - name: Configure
+        shell: su postgres -c "bash --noprofile --norc -eo pipefail {0}"
+        run: |
+          ./configure --enable-cassert --enable-debug --enable-tap-tests \
+            --with-llvm --with-icu --with-openssl --with-lz4 --with-zstd \
+            --with-libxml --with-libxslt --with-perl --with-python \
+            --with-tcl --with-tclconfig=/usr/lib/tcl8.6/
+          grep -E '^(LLVM_CONFIG|CLANG) =' src/Makefile.global
+
+      - name: Build
+        shell: su postgres -c "bash --noprofile --norc -eo pipefail {0}"
+        run: make -s -j4 world-bin COPT=-Werror
+
+      - uses: actions/cache/save@v5
+        if: always()
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-llvm${{ matrix.llvm }}-${{ github.sha }}
+
+      - name: Test world
+        shell: su postgres -c "bash --noprofile --norc -eo pipefail {0}"
+        run: make -s -k check-world PROVE_FLAGS=--timer -Otarget -j4
+
+      - name: JIT crash check
+        if: always()
+        run: |
+          # a JIT bug often shows up only as a FATAL in a server log while the
+          # test itself is retried or masked; fail loudly on any of these
+          if grep -rhE 'fatal llvm error|LLVM ERROR|Broken module|Unknown attribute kind|TRAP:' \
+               --include='*.log' . ; then
+            exit 1
+          fi
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: logs-llvm${{ matrix.llvm }}-${{ matrix.mode }}
+          path: |
+            **/regression.diffs
+            **/regress_log_*
+            **/postmaster.log
+            **/tmp_check/log/*.log
+          retention-days: 7
