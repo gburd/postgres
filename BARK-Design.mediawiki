@@ -59,9 +59,8 @@ Beyond nbtree it has keys of any size, LIST and POSTING entries, leaf prefix
 compression and KNN ordering.
 
 '''Not yet at parity.''' No PRIMARY KEY or UNIQUE constraint can use a BARK
-index, so there is no deferrable uniqueness. IS NULL and IS NOT NULL only
-filter. Skip scan runs forward only and over one column; that waits on
-<code>amgetbatch</code> (CF 4351). CLUSTER
+index, so there is no deferrable uniqueness. Skip scan runs forward only
+and over one column; that waits on <code>amgetbatch</code> (CF 4351). CLUSTER
 and REPACK read through a BARK index rather than sorting
 (<code>tuplesort_begin_cluster</code> asserts btree). The RI trigger fast
 path is btree-only. A multikey index cannot be scanned backward after a
@@ -924,8 +923,8 @@ planner's ordered-path generation (see the sweep below) treats a BARK scalar
 index as interchangeable with a B-tree for costing.
 
 barkcostestimate is btcostestimate applied to the quals BARK's scan uses to
-position and stop (no IS NULL bound, equality arrays on the equality prefix
-in either direction with one descent per combination of their elements,
+position and stop (IS NULL as an equality, equality arrays on the equality
+prefix in either direction with one descent per combination of their elements,
 skipping only over column 1), with the index correlation
 from <code>btcost_correlation</code>, plus a charge for overflow chains.
 It counts the entries a scan reads in heap rows, as nbtree does after
@@ -989,8 +988,11 @@ Implemented:
   descent and move-right with lock coupling, incomplete splits, split points
   by bytes and fillfactor, suffix truncation, heap TID order, uniqueness,
   speculative insertion and NULLS NOT DISTINCT, page-at-a-time scans with
-  nbtree's pin rule, mark/restore, cross-type keys, row comparisons,
-  required array keys, forward skip scan over one column, per-page
+  nbtree's pin rule and its high-key stop for forward scans,
+  mark/restore, cross-type keys, row comparisons,
+  required array keys, IS NULL and IS NOT NULL as scan bounds (IS NULL an
+  equality on NULL, IS NOT NULL a bound past the NULLs, as nbtree's
+  preprocessing makes them), forward skip scan over one column, per-page
   satisfied keys, the rightmost-leaf fast path, VACUUM in one physical pass
   with cycle IDs and cleanup locks, parallel build, scan and VACUUM, page
   deletion with safe recycling, bottom-up deletion, dead-entry hints from
@@ -1020,8 +1022,6 @@ Not implemented:
 
 * PRIMARY KEY and UNIQUE constraints on a BARK index, and with them
   deferrable uniqueness.
-* IS NULL and IS NOT NULL position and stop scans as nbtree's do; in BARK
-  they only filter.
 * <code>amgetbatch</code> (CF 4351), and the features waiting on it:
   backward skip scan and skipping over several leading columns.
 * CLUSTER and REPACK sorts and the RI trigger fast path for a BARK index
@@ -1248,10 +1248,17 @@ HANDLER barkhandler</code>, which DocumentDB's alternate index AM hook
 needs, since it creates indexes <code>USING documentdb_<am_name></code>). So
 BARK tests a family for not being btree's (bark_opfamily_is_own; with
 ambtreeopfamilies those are the only foreign families a BARK class can name)
-and a relation for its handler (bark_relation_is_bark). Testing for
+and a relation for its routine (bark_relation_is_bark). Testing for
 BARK_AM_OID, as the first version did, read an alias's multikey family as a btree
 family: its strategies taken for btree's, its keys never extracted, and an
-assertion failure in an assert build. amcheck compares handlers too;
+assertion failure in an assert build. The routine, not the handler, because
+DocumentDB's handler is its own function: it returns a copy of BARK's
+routine with the build, insert and scan entry points wrapped, and a handler
+test refused its indexes in pageinspect, pgstattuple and amcheck and failed
+an assertion in the reloption accessors. A routine is BARK's when its
+reloption parser is barkoptions, which every BARK function depends on, so
+a wrapper keeps it. amcheck compares handlers, so bark_index_check names
+the index's own access method as expected when its routine is BARK's;
 pg_amcheck still selects indexes by access method OID.
 
 '''Support procedures.''' Numbered after btree's 1-6, so the scalar classes

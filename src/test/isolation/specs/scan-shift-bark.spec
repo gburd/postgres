@@ -18,6 +18,11 @@ setup
 	CREATE TABLE bark_shift_vac (a int, pad text) WITH (autovacuum_enabled = off);
 	INSERT INTO bark_shift_vac SELECT g, repeat('y', 100) FROM generate_series(1, 5000) g;
 	CREATE INDEX bark_shift_vac_idx ON bark_shift_vac USING bark (a);
+	CREATE TABLE bark_shift_hk (a int, w text COLLATE "C") WITH (autovacuum_enabled = off);
+	INSERT INTO bark_shift_hk SELECT g * 10, lpad((g * 10)::text, 400, '0')
+	  FROM generate_series(1, 2000) g;
+	CREATE INDEX bark_shift_hk_idx ON bark_shift_hk USING bark (w);
+	DELETE FROM bark_shift_hk WHERE a > 1000 AND a <= 18000;
 	ANALYZE bark_shift, bark_shift_list, bark_shift_vac;
 	CREATE TABLE bark_shift_got (a int);
 	CREATE FUNCTION bark_shift_fetch(cur refcursor, maxrows int) RETURNS void
@@ -32,10 +37,11 @@ setup
 		END LOOP;
 	END $$;
 }
+setup { VACUUM ANALYZE bark_shift_hk; }
 
 teardown
 {
-	DROP TABLE bark_shift, bark_shift_list, bark_shift_vac, bark_shift_got;
+	DROP TABLE bark_shift, bark_shift_list, bark_shift_vac, bark_shift_hk, bark_shift_got;
 	DROP FUNCTION bark_shift_fetch(refcursor, int);
 }
 
@@ -52,6 +58,7 @@ step s1fwd		{ DECLARE c CURSOR FOR SELECT a FROM bark_shift WHERE a > 0 ORDER BY
 step s1bwd		{ DECLARE c CURSOR FOR SELECT a FROM bark_shift WHERE a > 0 ORDER BY a DESC; }
 step s1list		{ DECLARE c CURSOR FOR SELECT a FROM bark_shift_list WHERE a >= 0 ORDER BY a; }
 step s1vac		{ DECLARE c CURSOR FOR SELECT a FROM bark_shift_vac WHERE a > 0 ORDER BY a; }
+step s1hk		{ DECLARE c CURSOR FOR SELECT a FROM bark_shift_hk WHERE w < lpad('10000', 400, '0') ORDER BY w; }
 step s1fetch	{ SELECT bark_shift_fetch('c', 50); }
 step s1fetch1	{ SELECT bark_shift_fetch('c', 1); }
 step s1rest		{ SELECT bark_shift_fetch('c', 1000000); }
@@ -69,6 +76,9 @@ step s2split	{ INSERT INTO bark_shift SELECT g * 10 + 5, 'z' FROM generate_serie
 step s2inslist	{ INSERT INTO bark_shift_list SELECT 0 FROM generate_series(1, 30); }
 step s2delhalf	{ DELETE FROM bark_shift_vac WHERE a % 2 = 0; }
 step s2vacuum	{ VACUUM (INDEX_CLEANUP ON) bark_shift_vac; }
+step s2splithk	{ INSERT INTO bark_shift_hk SELECT g, lpad(g::text, 400, '0') FROM generate_series(5, 19995, 10) g; }
+step s2delhk	{ DELETE FROM bark_shift_hk WHERE a > 300 AND a <= 1000; }
+step s2vachk	{ VACUUM (INDEX_CLEANUP ON) bark_shift_hk; }
 
 # Smaller keys inserted onto the leaf the cursor is reading, forward and
 # backward: the rest of the scan returns exactly the rows the snapshot sees.
@@ -91,3 +101,15 @@ permutation s1begin s1list s1fetch1 s2inslist s1rest s1commit s1count
 # it forever (isolationtester cannot see a buffer-pin wait).  An index-only
 # scan does keep its pin; that is not testable here for the same reason.
 permutation s2delhalf s1beginrc s1vac s1fetch s2vacuum s1rest s1commit s1count
+
+# A forward scan with an upper bound stops at the first page whose high key
+# is past it (bark_readpage_hikey), here among the empty leaves VACUUM left
+# where the keys were deleted.  It reads the high key under the page's lock,
+# as it reads the entries, and a page's high key never rises (a split lowers
+# it, page deletion moves key space right), so a split or a page deletion
+# while the cursor is between pages cannot end the scan early.  Inserts
+# split the leaf the cursor read and the empty leaves after it; VACUUM
+# deletes the leaves after it.
+permutation s1begin s1hk s1fetch s2splithk s1rest s1commit s1count
+permutation s1beginrc s1hk s1fetch s2splithk s1rest s1commit s1count
+permutation s2delhk s1beginrc s1hk s1fetch1 s2vachk s1rest s1commit s1count
