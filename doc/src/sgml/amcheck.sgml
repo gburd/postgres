@@ -278,7 +278,11 @@ ORDER BY c.relpages DESC LIMIT 10;
       the downlinks of each level must name, in order, every page of the
       level below and no other, each downlink must equal the high key of
       the page to its child's left, and each page's high key must equal its
-      last child's.  Every live page must be reachable from the root.  As
+      last child's.  A page's first downlink may instead have no key (minus
+      infinity, as the first downlink of a level always has): page deletion
+      truncates it so when it deletes the page's left neighbour together
+      with that page's empty subtree.  Every live page must be reachable
+      from the root.  As
       with <function>bt_index_parent_check</function>, it acquires a
       <literal>ShareLock</literal> on the index and its table, which blocks
       writes while it runs, and cannot be used in hot standby mode.  The
@@ -295,7 +299,9 @@ ORDER BY c.relpages DESC LIMIT 10;
       pages, not as corruption: an oversized key's overflow chain is written
       before the entry that references it, so a crash in between leaves the
       chain's pages unreferenced; so does a crash while
-      <command>VACUUM</command> frees a chain, one page at a time, and an
+      <command>VACUUM</command> frees a chain, one page at a time, or after
+      it deleted a page whose removed downlink had a chain and before it
+      freed that chain, and an
       error, such as running out of disk space, that ends an insert after
       it wrote a chain and before it placed the entry.  No other path leaves
       such pages, so in an index that has been through no crash and no such

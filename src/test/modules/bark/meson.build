@@ -22,6 +22,8 @@ tests += {
       'bark_zerofree',
       'bark_btree_impl',
       'bark_lpdead',
+      'bark_scan_members',
+      'bark_subtree_delete',
     ],
     'regress_args': ['--temp-config', files('../injection_points/extra.conf')],
     # The injection points are run in the same backend, so disable
@@ -43,7 +45,9 @@ tests += {
       'bark_lpdead_snapshot',
       'bark_unique_rebuild',
       'bark_excl_hot',
+      'bark_sample_split',
       'bark_reclaim_orphans',
+      'bark_subtree_concurrent',
     ],
     'regress_args': ['--temp-config', files('../injection_points/extra.conf')],
     # Injection points are cluster-wide.
@@ -70,6 +74,7 @@ tests += {
       't/017_promoted_lpdead.pl',
       't/018_reclaim_orphans.pl',
       't/019_vacuum_new_pages.pl',
+      't/020_subtree_delete.pl',
     ],
   },
 }

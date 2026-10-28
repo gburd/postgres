@@ -6,11 +6,14 @@ EXTENSION = test_versioned_tableam
 DATA = test_versioned_tableam--1.0.sql
 PGFILEDESC = "test_versioned_tableam - test version-tag plumbing"
 
-EXTRA_INSTALL = contrib/amcheck contrib/pageinspect src/test/modules/bark_multikey contrib/pg_walinspect \
+EXTRA_INSTALL = contrib/amcheck contrib/pageinspect src/test/modules/bark_multikey \
+	src/test/modules/bark_wildcard contrib/pg_walinspect \
 	src/test/modules/injection_points
 
-REGRESS = versioned
-ISOLATION = cic_versioned
+REGRESS = versioned bark_mk_versioned
+REGRESS_OPTS = --temp-config $(top_srcdir)/src/test/modules/test_versioned_tableam/versioned.conf
+ISOLATION = cic_versioned cic_bark
+ISOLATION_OPTS = --temp-config $(top_srcdir)/src/test/modules/test_versioned_tableam/versioned.conf
 TAP_TESTS = 1
 
 ifdef USE_PGXS

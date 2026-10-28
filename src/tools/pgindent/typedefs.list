@@ -272,6 +272,7 @@ BarkInsertState
 BarkItemBuf
 BarkKeyColumn
 BarkKeyInfo
+BarkKillRun
 BarkKnnCursor
 BarkKnnItem
 BarkKnnScanState
@@ -291,6 +292,7 @@ BarkPrefixPlan
 BarkQueryFlags
 BarkRecheckResult
 BarkRowKeys
+BarkScanMembers
 BarkScanOpaque
 BarkScanOpaqueData
 BarkScanPos
