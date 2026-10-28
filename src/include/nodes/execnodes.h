@@ -29,6 +29,7 @@
 #ifndef EXECNODES_H
 #define EXECNODES_H
 
+#include "access/amlocator.h"
 #include "access/htup.h"
 #include "executor/instrument_node.h"
 #include "fmgr.h"
@@ -236,6 +237,19 @@ typedef struct IndexInfo
 	Oid			ii_ImplAm;
 	/* private cache area for index AM */
 	void	   *ii_AmCache;
+
+	/*
+	 * The version tag of the row version being indexed, or
+	 * InvalidIndexVersionTag if none; see "Versioned locators" in
+	 * amlocator.h.  Whoever hands an entry to the index AM sets it first: the
+	 * executor before index_insert, and a table AM whose locator is versioned
+	 * before each callback of its index build and validation scans.  An index
+	 * AM with amcanversion reads it in aminsert and in its build callback
+	 * (which finds this IndexInfo through its own callback state).  Passing
+	 * it here rather than as an argument leaves the signatures of aminsert
+	 * and IndexBuildCallback, which every index AM implements, unchanged.
+	 */
+	IndexVersionTag ii_VersionTag;
 
 	/* memory context holding this IndexInfo */
 	MemoryContext ii_Context;
