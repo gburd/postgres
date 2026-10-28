@@ -70,7 +70,10 @@
     <listitem>
      <para>
       <function>bt_index_check</function> tests that its target, a
-      B-Tree index, respects a variety of invariants.  Example usage:
+      B-Tree index, respects a variety of invariants.  The index must be
+      implemented by B-Tree's own code; a B-Tree index implemented by another
+      access method (see <xref linkend="index-implementations"/>) is
+      refused.  Example usage:
 <screen>
 test=# SELECT bt_index_check(index =&gt; c.oid, heapallindexed =&gt; i.indisunique),
                c.relname,
