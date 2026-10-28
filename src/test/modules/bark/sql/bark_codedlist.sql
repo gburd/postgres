@@ -19,8 +19,10 @@ CREATE FUNCTION v6_plain_len(ntids int) RETURNS int LANGUAGE sql
   AS $$ SELECT (SELECT ((8 + 4 + max_data_alignment - 1) / max_data_alignment) * max_data_alignment FROM pg_control_init()) + 6 * ntids $$;
 
 -- Key k has n rows inserted together, so their heap TIDs are consecutive on
--- one page: the deltas are 1, a byte each, and the entry codes.
-CREATE TABLE v6c (k int4) WITH (autovacuum_enabled = off);
+-- one page: the deltas are 1, a byte each, and the entry codes.  A temporary
+-- table, so that the VACUUM below removes the deleted rows whatever
+-- snapshots other backends hold.
+CREATE TEMP TABLE v6c (k int4) WITH (autovacuum_enabled = off);
 INSERT INTO v6c SELECT k FROM generate_series(1, 10) n, generate_series(3, 11) k
   ORDER BY k, n;
 CREATE INDEX v6c_k ON v6c USING bark (k);
@@ -200,4 +202,57 @@ RESET enable_seqscan;
 SELECT count(*), md5(string_agg(u, ',' ORDER BY id)) AS m_heap FROM v6m;
 SELECT bark_index_check('v6m_u', true);
 DROP TABLE v6m;
+
+-- Inserts into a coded LIST splice its delta stream (bark_entry_add_tid)
+-- instead of decoding and re-coding the set; an assert build checks each
+-- splice against the full re-form byte for byte.  Key 1 is every tenth row
+-- of heap pages 8 to 17, a coded LIST; updating other rows to key 1 puts the
+-- new version on its own page (fillfactor 50 leaves room), so the order of
+-- the updates is the order of the TIDs the entry takes: ascending,
+-- descending and scattered inside its range, before its first TID (which
+-- does not join the entry), and after its last.  Key 3 is three adjacent
+-- rows, coded 32 bytes against 40 plain; a fourth makes 40 either way, so
+-- the entry turns plain; where MAXALIGN is 4 (12-byte key part) the
+-- sizes are 28 and 30 coded against 30 and 36 plain, so it stays coded.  The
+-- entries show their member count, whether they are coded, and whether they
+-- are no larger than the plain form, which every entry is.
+CREATE TABLE v6o (g int, k int) WITH (fillfactor = 50, autovacuum_enabled = off);
+INSERT INTO v6o SELECT g, CASE WHEN g BETWEEN 1001 AND 2000 AND g % 10 = 0 THEN 1
+                               WHEN g BETWEEN 2501 AND 2503 THEN 3 ELSE 2 END
+  FROM generate_series(1, 3000) g;
+CREATE INDEX v6o_k ON v6o USING bark (k);
+CREATE FUNCTION v6o_entries(key int) RETURNS TABLE (ntids int, coded bool, smaller bool)
+  LANGUAGE sql AS $$
+  SELECT i.ntids, i.shape = 'LIST' AND i.itemlen < v6_plain_len(i.ntids),
+         i.itemlen <= v6_plain_len(i.ntids)
+    FROM generate_series(1, pg_relation_size('v6o_k') / current_setting('block_size')::int - 1) b,
+         bark_page_items('v6o_k', b) i
+   WHERE i.shape IN ('SINGLE', 'LIST', 'POSTING')
+     AND i.tids <@ (SELECT array_agg(ctid) FROM v6o WHERE k = key)
+   ORDER BY i.tids[1] $$;
+SELECT * FROM v6o_entries(1);
+SELECT * FROM v6o_entries(3);
+UPDATE v6o SET k = 1 WHERE g IN (1105, 1205, 1305);
+SELECT format('UPDATE v6o SET k = 1 WHERE g = %s', g)
+  FROM generate_series(1995, 1405, -100) g \gexec
+SELECT format('UPDATE v6o SET k = 1 WHERE g = %s', g)
+  FROM generate_series(1013, 1993, 70) g ORDER BY hashint4(g) \gexec
+SELECT format('UPDATE v6o SET k = 1 WHERE g = %s', g)
+  FROM generate_series(505, 105, -200) g \gexec
+INSERT INTO v6o VALUES (3001, 1), (3002, 1);
+UPDATE v6o SET k = 3 WHERE g = 2504;
+-- Key 1 is still one coded LIST of everything inside or after its range,
+-- with the rows before it in entries of their own; key 3 is one LIST of 4,
+-- in whichever form is smaller.
+SELECT * FROM v6o_entries(1);
+SELECT ntids, coded = (v6_plain_len(4) < 40) AS coded_where_smaller FROM v6o_entries(3);
+SELECT bark_index_check('v6o_k', true);
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT k, count(*), sum(g) AS o_index FROM v6o WHERE k IN (1, 3) GROUP BY k ORDER BY k;
+RESET enable_bitmapscan;
+RESET enable_seqscan;
+SELECT k, count(*), sum(g) AS o_heap FROM v6o WHERE k IN (1, 3) GROUP BY k ORDER BY k;
+DROP TABLE v6o;
+DROP FUNCTION v6o_entries(int);
 DROP FUNCTION v6_plain_len(int);

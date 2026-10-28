@@ -4,7 +4,8 @@
 # VACUUM and deletion of BARK's tagged entries on heap_versioned: splits that keep tags out of pivots, the
 # BARK_LOWBOUND_TAGGED flag and its propagation by page deletion, untagging
 # in place (and what the lower-bound rule prevents), LP_DEAD marks on
-# tagged entries, and the cleanup of stale tagged entries before a split.
+# tagged entries, the cleanup of stale tagged entries before a split, and
+# an entry kept tagged because its untagged position is in its twin.
 # The primary runs with wal_consistency_checking = bark and a standby
 # replays everything.
 #
@@ -88,7 +89,7 @@ sub vacuum
 		SET client_min_messages = debug2;
 		VACUUM $tab});
 	die "VACUUM $tab failed: $err" if $ret != 0;
-	return $err =~ /index "$idx": (untagged \d+ entries in place, kept \d+ tagged whose page's lower bound may carry a tag and \d+ whose untagged position is in another entry)/
+	return $err =~ /index "$idx": (untagged \d+ entries in place, kept \d+ tagged whose page's lower bound may carry a tag and \d+ kept \(dup, AM gave LIVE to an older entry\))/
 	  ? $1 : '';
 }
 
@@ -201,7 +202,7 @@ check_index('t2_k', 'one run');
 my $firsttag = $node->safe_psql('postgres',
 	qq{SELECT split_part(first, ' ', 2) FROM leaves('t2_k') WHERE blk = $flagged[0]});
 is(vacuum('t2', 't2_k', "SET test_versioned_tableam.untag_tag = $firsttag;"),
-	"untagged 0 entries in place, kept 1 tagged whose page's lower bound may carry a tag and 0 whose untagged position is in another entry",
+	"untagged 0 entries in place, kept 1 tagged whose page's lower bound may carry a tag and 0 kept (dup, AM gave LIVE to an older entry)",
 	'one run: VACUUM keeps the flagged page\'s first entry tagged');
 is($node->safe_psql('postgres', qq{SELECT first FROM leaves('t2_k') WHERE blk = $flagged[0]}),
 	"(0,1) $firsttag", 'one run: the entry is still tagged');
@@ -220,7 +221,7 @@ my $page300 = $node->safe_psql(
 like($node->safe_psql('postgres', qq{SELECT flags FROM leaves('t2_k') WHERE blk = $page300}),
 	qr/lowbound_tagged/, 'one run: row 300\'s new entry is on a flagged page');
 is(vacuum('t2', 't2_k', "SET test_versioned_tableam.untag_tag = $xmin300;"),
-	"untagged 1 entries in place, kept 0 tagged whose page's lower bound may carry a tag and 0 whose untagged position is in another entry",
+	"untagged 1 entries in place, kept 0 tagged whose page's lower bound may carry a tag and 0 kept (dup, AM gave LIVE to an older entry)",
 	'one run: VACUUM untags it in place');
 is( $node->safe_psql(
 		'postgres', qq{
@@ -238,7 +239,7 @@ SKIP:
 	$node->safe_psql('postgres',
 		q{SELECT injection_points_attach('bark-untag-ignore-bound', 'notice')});
 	is(vacuum('t2', 't2_k', "SET test_versioned_tableam.untag_tag = $firsttag;"),
-		"untagged 1 entries in place, kept 0 tagged whose page's lower bound may carry a tag and 0 whose untagged position is in another entry",
+		"untagged 1 entries in place, kept 0 tagged whose page's lower bound may carry a tag and 0 kept (dup, AM gave LIVE to an older entry)",
 		'rule off: VACUUM untags the entry');
 	$node->safe_psql('postgres',
 		q{SELECT injection_points_detach('bark-untag-ignore-bound')});
@@ -264,7 +265,7 @@ is($node->safe_psql('postgres', q{SELECT tagged('t3_k')}), '2000', 'untag: every
 cmp_ok($node->safe_psql('postgres', q{SELECT count(*) FROM leaves('t3_k') WHERE prev <> 0}),
 	'>=', 3, 'untag: right pages, none flagged') ;
 is(vacuum('t3', 't3_k'),
-	"untagged 2000 entries in place, kept 0 tagged whose page's lower bound may carry a tag and 0 whose untagged position is in another entry",
+	"untagged 2000 entries in place, kept 0 tagged whose page's lower bound may carry a tag and 0 kept (dup, AM gave LIVE to an older entry)",
 	'untag: VACUUM untags every entry in place');
 is($node->safe_psql('postgres', q{SELECT tagged('t3_k')}), '0', 'untag: no entry is tagged');
 is( $node->safe_psql(
@@ -402,6 +403,182 @@ is( $node->safe_psql(
 	$node->safe_psql('postgres', q{SELECT count(*), sum(id) FROM t6 WHERE k > 0}),
 	'pre-split: index scan');
 check_index('t6_k', 'pre-split');
+
+# (7) An entry whose untagged position (K, L, 0) is in another entry: the
+# row's own untagged entry, its twin, which is a SINGLE or the last member
+# of a LIST or POSTING (an entry of its key never holds L strictly inside
+# its range: a tagged insert divides it at L first).  The table AM answers
+# LIVE_UNTAG for (K, L, t) and LIVE for the twin, which under the
+# executor's insert rule cannot both be right: t's update changed the
+# index's key.  VACUUM keeps the tag, which is right whichever is wrong.
+# Scans run as if the twin's LIVE was the wrong one (invalid_untagged
+# rejects it), so the tagged entry is the row's only valid one; an
+# injection point that deletes the tagged entry instead shows the row lost.
+# Each table: rows with keys from `keys`, then (k, L, xmin) for row `id`.
+sub twin_case
+{
+	my ($tab, $opts, $rows, $keys, $id) = @_;
+	$node->safe_psql(
+		'postgres', qq{
+		CREATE TABLE $tab (id int, k int, pad text) USING heap_versioned $opts;
+		INSERT INTO $tab SELECT g, $keys, $rows FROM generate_series(1, 400) g WHERE $keys IS NOT NULL;
+		SET test_versioned_tableam.build_tag_percent = 0;
+		CREATE INDEX ${tab}_k ON $tab USING bark (k);
+		SELECT test_versioned_insert_entry('${tab}_k', ctid, xmin::text::int8)
+		  FROM $tab WHERE id = $id;
+	});
+	return $node->safe_psql('postgres', "SELECT ctid FROM $tab WHERE id = $id");
+}
+$node->safe_psql(
+	'postgres', q{
+	-- the entry before the tagged entry of `l`, as "shape count holds-l",
+	-- a LIST as plain or coded (an int4 key's plain LIST is 16 bytes, 12
+	-- where MAXALIGN is 4, and 6 a locator), and the tagged entry's tag
+	CREATE FUNCTION twin(idx regclass, l tid) RETURNS text LANGUAGE sql AS $$
+	  WITH e AS (
+	    SELECT b, i.itemoffset AS off, i.shape, i.ntids, i.itemlen, i.htid, i.tag,
+	           coalesce(i.tids[i.ntids], i.htid) AS last
+	      FROM generate_series(1, pg_relation_size(idx) / current_setting('block_size')::int - 1) b,
+	           LATERAL bark_page_stats(idx::text, b) s,
+	           LATERAL bark_page_items(idx::text, b) i
+	     WHERE s.type = 'leaf' AND i.shape IN ('SINGLE', 'LIST', 'POSTING'))
+	  SELECT coalesce(max(p.shape ||
+	           CASE WHEN p.shape <> 'LIST' OR p.ntids = 4 THEN ''
+	                WHEN p.itemlen = (SELECT ((8 + 4 + max_data_alignment - 1) / max_data_alignment) * max_data_alignment FROM pg_control_init()) + 6 * p.ntids
+	                THEN ' plain' ELSE ' coded' END ||
+	           ' ' || p.ntids || ' ' || (p.last = l) || ' tag ' || t.tag), 'no tagged entry')
+	    FROM e t JOIN e p ON p.b = t.b AND p.off = t.off - 1
+	   WHERE t.htid = l AND t.tag IS NOT NULL $$;
+});
+my $xminq = q{SELECT xmin FROM %s WHERE id = %d};
+my %twins = (
+	# (a) the row's own SINGLE: distinct keys
+	td_a => [ '', 'NULL', 'CASE WHEN g <= 20 THEN 10 * g END', 7 ],
+	# a LIST of rows on four heap pages: plain where MAXALIGN is 8, coded
+	# where it is 4 (MAXALIGN rounds the coded form below the plain one), so
+	# its form is not shown
+	td_l => [ 'WITH (fillfactor = 10)', "repeat('x', 700)",
+		'CASE WHEN g <= 4 THEN 5 END', 4 ],
+	# a coded LIST: twenty consecutive rows
+	td_c => [ '', 'NULL', 'CASE WHEN g <= 20 THEN 5 END', 20 ],
+	# a POSTING: four hundred
+	td_p => [ '', 'NULL', '5', 400 ]);
+my %twinwant = (
+	td_a => 'SINGLE 1 true',
+	td_l => 'LIST 4 true',
+	td_c => 'LIST coded 20 true',
+	td_p => 'POSTING 400 true');
+my %l;
+for my $tab (sort keys %twins)
+{
+	my ($opts, $rows, $keys, $id) = @{ $twins{$tab} };
+	$l{$tab} = twin_case($tab, $opts, $rows, $keys, $id);
+	my $xmin = $node->safe_psql('postgres', sprintf($xminq, $tab, $id));
+	is($node->safe_psql('postgres', "SELECT twin('${tab}_k', '$l{$tab}')"),
+		"$twinwant{$tab} tag $xmin", "twin $tab: the tagged entry follows its twin");
+	is(vacuum($tab, "${tab}_k"),
+		"untagged 0 entries in place, kept 0 tagged whose page's lower bound may carry a tag and 1 kept (dup, AM gave LIVE to an older entry)",
+		"twin $tab: VACUUM keeps the tag");
+	is($node->safe_psql('postgres', "SELECT twin('${tab}_k', '$l{$tab}')"),
+		"$twinwant{$tab} tag $xmin", "twin $tab: the entry is still tagged");
+	# A range qual, so that ORDER BY k DESC makes a backward scan.
+	my $k = $node->safe_psql('postgres', "SELECT k FROM $tab WHERE id = $id");
+	my $q = "FROM $tab WHERE k >= $k AND k <= $k";
+	my $want = $node->safe_psql('postgres',
+		"SET enable_indexscan = off; SET enable_bitmapscan = off; SELECT count(*), sum(id) $q");
+	for my $scan (
+		[ 'index', 'enable_bitmapscan = off; SET enable_indexonlyscan = off', "id $q ORDER BY k" ],
+		[ 'backward index', 'enable_bitmapscan = off; SET enable_indexonlyscan = off', "id $q ORDER BY k DESC" ],
+		[ 'index-only', 'enable_bitmapscan = off', "$id AS id $q ORDER BY k" ],
+		[ 'bitmap', 'enable_indexscan = off; SET enable_indexonlyscan = off', "id $q" ])
+	{
+		my ($what, $sets, $sel) = @$scan;
+		my $wantscan = $what eq 'index-only'
+		  ? $node->safe_psql('postgres',
+			"SET enable_indexscan = off; SET enable_bitmapscan = off; SELECT count(*), count(*) * $id $q")
+		  : $want;
+		is( $node->safe_psql(
+				'postgres', qq{
+				SET test_versioned_tableam.invalid_untagged = '$l{$tab}';
+				SET enable_seqscan = off; SET $sets;
+				SELECT count(*), sum(id) FROM (SELECT $sel) s}),
+			$wantscan, "twin $tab: $what scan, the twin rejected, matches seqscan");
+	}
+	check_index("${tab}_k", "twin $tab");
+}
+
+# L inside a LIST's range without being a member: the tagged insert divided
+# the LIST at L, so VACUUM untags it in place, between the parts.  Rows 1,
+# 2, 5, 6 have k = 7, rows 3 and 4 k = 8, two to a heap page; the update
+# keeps row 3 on its page (keep_locator = pretend), so its tagged entry
+# (7, (1,3), xmin) falls between (0,2) and (2,1).
+$node->safe_psql(
+	'postgres', q{
+	CREATE TABLE td_n (id int, k int, pad text) USING heap_versioned
+	  WITH (fillfactor = 50);
+	CREATE INDEX td_n_k ON td_n USING bark (k);
+	INSERT INTO td_n SELECT g, CASE WHEN g IN (3, 4) THEN 8 ELSE 7 END,
+	  repeat('x', 1800) FROM generate_series(1, 6) g;
+	SET test_versioned_tableam.keep_locator = pretend;
+	UPDATE td_n SET k = 7 WHERE id = 3;
+});
+my $nentries = q{
+	SELECT string_agg(i.shape || ' ' || coalesce(i.tids::text, i.htid::text) ||
+	                  CASE WHEN i.tag IS NULL THEN '' ELSE ' tagged' END, ' / ' ORDER BY i.itemoffset)
+	  FROM bark_page_items('td_n_k', 1) i WHERE i.shape <> 'PIVOT'};
+like($node->safe_psql('postgres', $nentries),
+	qr{^LIST \{"\(0,1\)","\(0,2\)"\} / SINGLE \(1,3\) tagged / LIST \{"\(2,1\)","\(2,2\)"\} / },
+	'not a member: the LIST is divided around the tagged entry');
+is(vacuum('td_n', 'td_n_k'),
+	"untagged 1 entries in place, kept 0 tagged whose page's lower bound may carry a tag and 0 kept (dup, AM gave LIVE to an older entry)",
+	'not a member: VACUUM untags it in place');
+like($node->safe_psql('postgres', $nentries),
+	qr{^LIST \{"\(0,1\)","\(0,2\)"\} / SINGLE \(1,3\) / LIST \{"\(2,1\)","\(2,2\)"\} / },
+	'not a member: the entry is untagged between the parts');
+is( $node->safe_psql(
+		'postgres', q{
+		SET enable_seqscan = off; SET enable_bitmapscan = off;
+		SELECT string_agg(id::text, ' ' ORDER BY id) FROM td_n WHERE k = 7}),
+	'1 2 3 5 6', 'not a member: index scan');
+check_index('td_n_k', 'not a member');
+
+# What keeping protects: VACUUM deletes the tagged entry instead (an
+# injection point), and a scan that rejects the twin misses the row.
+# amcheck's heapallindexed cannot tell: the twin still indexes (K, L).
+SKIP:
+{
+	skip 'injection points not supported by this build', 4 if !$inj;
+	$node->safe_psql('postgres',
+		q{SELECT injection_points_attach('bark-untag-delete', 'notice')});
+	vacuum('td_a', 'td_a_k');
+	$node->safe_psql('postgres',
+		q{SELECT injection_points_detach('bark-untag-delete')});
+	is($node->safe_psql('postgres', "SELECT twin('td_a_k', '$l{td_a}')"),
+		'no tagged entry', 'twin deleted: the tagged entry is gone');
+	is( $node->safe_psql(
+			'postgres', qq{
+			SET test_versioned_tableam.invalid_untagged = '$l{td_a}';
+			SET enable_seqscan = off; SET enable_bitmapscan = off;
+			SELECT count(*) FROM td_a WHERE k = 70}),
+		'0', 'twin deleted: an index scan misses the row');
+	is($node->safe_psql('postgres', q{SELECT count(*) FROM td_a WHERE k = 70}),
+		'1', 'twin deleted: a seqscan finds it');
+	is($node->safe_psql('postgres', q{SELECT bark_index_parent_check('td_a_k', true)}),
+		'', 'twin deleted: heapallindexed does not see it');
+}
+
+# Crash recovery replays all of it; the standby checked every record.
+my $twinsig = q{SELECT md5(string_agg(c.relname || ' ' || b || ' ' || i.itemoffset || ' ' || i.shape || ' ' ||
+  coalesce(i.htid::text, '') || ' ' || coalesce(i.tag::text, '') || ' ' || i.data, ',' ORDER BY c.relname, b, i.itemoffset))
+  FROM pg_class c, generate_series(1, pg_relation_size(c.oid) / current_setting('block_size')::int - 1) b, LATERAL bark_page_items(c.relname, b) i
+  WHERE c.relname IN ('td_a_k', 'td_l_k', 'td_c_k', 'td_p_k', 'td_n_k')
+    AND (SELECT type FROM bark_page_stats(c.relname, b)) = 'leaf'};
+my $twinbefore = $node->safe_psql('postgres', $twinsig);
+$node->wait_for_catchup($standby);
+$node->stop('immediate');
+$node->start;
+is($node->safe_psql('postgres', $twinsig), $twinbefore, 'twin: crash recovery replays the entries');
+check_index("${_}_k", "twin $_ after crash") for qw(td_a td_l td_c td_p td_n);
 
 $node->wait_for_catchup($standby);
 unlike(slurp_file($standby->logfile), qr/inconsistent page found/,
