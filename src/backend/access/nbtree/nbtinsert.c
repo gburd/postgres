@@ -2910,6 +2910,7 @@ _bt_simpledel_pass(Relation rel, Buffer buffer, Relation heapRel,
 			ostatus->knowndeletable = ItemIdIsDead(itemid);
 			ostatus->promising = false; /* unused */
 			ostatus->freespace = 0; /* unused */
+			ostatus->tag = InvalidIndexVersionTag;
 
 			delstate.ndeltids++;
 		}
@@ -2941,6 +2942,7 @@ _bt_simpledel_pass(Relation rel, Buffer buffer, Relation heapRel,
 				ostatus->knowndeletable = ItemIdIsDead(itemid);
 				ostatus->promising = false; /* unused */
 				ostatus->freespace = 0; /* unused */
+				ostatus->tag = InvalidIndexVersionTag;
 
 				odeltid++;
 				ostatus++;

@@ -343,6 +343,7 @@ index_compute_xid_horizon_for_tuples(Relation irel,
 		delstate.status[i].knowndeletable = true;	/* LP_DEAD-marked */
 		delstate.status[i].promising = false;	/* unused */
 		delstate.status[i].freespace = 0;	/* unused */
+		delstate.status[i].tag = InvalidIndexVersionTag;
 
 		delstate.ndeltids++;
 	}
