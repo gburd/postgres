@@ -11,10 +11,27 @@ tests += {
   'regress': {
     'sql': [
       'bark_incomplete_splits',
+      'bark_split_moveright',
     ],
     'regress_args': ['--temp-config', files('../injection_points/extra.conf')],
     # The injection points are run in the same backend, so disable
     # parallelism to keep the local-attach semantics deterministic.
     'runningcheck': false,
+  },
+  'isolation': {
+    'specs': [
+      'bark_concurrent_split',
+      'bark_vacuum_split',
+      'bark_deleted_page',
+    ],
+    'regress_args': ['--temp-config', files('../injection_points/extra.conf')],
+    # Injection points are cluster-wide.
+    'runningcheck': false,
+  },
+  'tap': {
+    'tests': [
+      't/001_empty_index_race.pl',
+      't/002_standby.pl',
+    ],
   },
 }

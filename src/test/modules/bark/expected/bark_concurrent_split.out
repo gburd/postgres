@@ -1,0 +1,131 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1_insert_root s2_insert_root s3_release s2_check_root
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+step s1_insert_root: INSERT INTO bark_split_root SELECT g FROM generate_series(101, 1100) g; <waiting ...>
+step s2_insert_root: INSERT INTO bark_split_root VALUES (0); <waiting ...>
+step s3_release: 
+	SELECT bark_wait_for_buffer_lock('s2');
+	SELECT injection_points_detach('bark-leave-leaf-split-incomplete');
+	SELECT injection_points_wakeup('bark-leave-leaf-split-incomplete');
+
+bark_wait_for_buffer_lock
+-------------------------
+blocked on buffer lock   
+(1 row)
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+injection_points_wakeup
+-----------------------
+                       
+(1 row)
+
+step s1_insert_root: <... completed>
+step s2_insert_root: <... completed>
+step s2_check_root: 
+	SELECT bark_index_check('bark_split_root_idx');
+	SET enable_seqscan = off;
+	SET enable_bitmapscan = off;
+	SELECT count(*) AS index_count FROM bark_split_root WHERE i >= 0;
+	RESET enable_seqscan;
+	RESET enable_bitmapscan;
+	SELECT count(*) AS heap_count FROM bark_split_root;
+
+bark_index_check
+----------------
+                
+(1 row)
+
+index_count
+-----------
+       1101
+(1 row)
+
+heap_count
+----------
+      1101
+(1 row)
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+
+starting permutation: s1_insert_leaf s2_insert_leaf s3_release s2_check_leaf
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+step s1_insert_leaf: INSERT INTO bark_split_leaf SELECT g FROM generate_series(5001, 6000) g; <waiting ...>
+step s2_insert_leaf: INSERT INTO bark_split_leaf VALUES (1000000); <waiting ...>
+step s3_release: 
+	SELECT bark_wait_for_buffer_lock('s2');
+	SELECT injection_points_detach('bark-leave-leaf-split-incomplete');
+	SELECT injection_points_wakeup('bark-leave-leaf-split-incomplete');
+
+bark_wait_for_buffer_lock
+-------------------------
+blocked on buffer lock   
+(1 row)
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+injection_points_wakeup
+-----------------------
+                       
+(1 row)
+
+step s1_insert_leaf: <... completed>
+step s2_insert_leaf: <... completed>
+step s2_check_leaf: 
+	SELECT bark_index_check('bark_split_leaf_idx');
+	SET enable_seqscan = off;
+	SET enable_bitmapscan = off;
+	SELECT count(*) AS index_count FROM bark_split_leaf WHERE i >= 0;
+	RESET enable_seqscan;
+	RESET enable_bitmapscan;
+	SELECT count(*) AS heap_count FROM bark_split_leaf;
+
+bark_index_check
+----------------
+                
+(1 row)
+
+index_count
+-----------
+       6001
+(1 row)
+
+heap_count
+----------
+      6001
+(1 row)
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
