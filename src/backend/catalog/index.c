@@ -2780,7 +2780,21 @@ BuildSpeculativeIndexInfo(Relation index, IndexInfo *ii)
 			IndexAmTranslateCompareType(COMPARE_EQ,
 										index->rd_rel->relam,
 										index->rd_opfamily[i],
-										false);
+										true);
+
+		/*
+		 * A column with no equality may still be unique under overlap: in a
+		 * unique index over a column that holds several keys per row (an
+		 * array's elements, say), two rows conflict when their values share a
+		 * key, and that is what the AM's overlap operator tests.  The
+		 * pre-check then scans for overlapping values instead of equal ones.
+		 */
+		if (ii->ii_UniqueStrats[i] == InvalidStrategy)
+			ii->ii_UniqueStrats[i] =
+				IndexAmTranslateCompareType(COMPARE_OVERLAP,
+											index->rd_rel->relam,
+											index->rd_opfamily[i],
+											false);
 		ii->ii_UniqueOps[i] =
 			get_opfamily_member(index->rd_opfamily[i],
 								index->rd_opcintype[i],
