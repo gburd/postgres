@@ -41,6 +41,7 @@ extern "C"
 
 #include <llvm-c/Core.h>
 #include <llvm-c/BitReader.h>
+#include <llvm-c/Support.h>
 
 /* Avoid macro clash with LLVM's C++ headers */
 #undef Min
@@ -136,6 +137,7 @@ static void function_references(llvm::Function &F,
 								llvm::SmallPtrSet<llvm::Function *, 8> &referencedFunctions);
 
 static void add_module_to_inline_search_path(InlineSearchPath& path, llvm::StringRef modpath);
+static bool symbol_resolvable(const llvm::GlobalValue *gv);
 static llvm::SmallVector<llvm::GlobalValueSummary *, 1>
 summaries_for_guid(const InlineSearchPath& path, llvm::GlobalValue::GUID guid);
 
@@ -625,10 +627,18 @@ function_inlinable(llvm::Function &F,
 
 		/*
 		 * Never want to inline externally visible vars, cheap enough to
-		 * reference.
+		 * reference.  But the reference has to be resolvable.
 		 */
 		if (rv->hasExternalLinkage() || rv->hasAvailableExternallyLinkage())
+		{
+			if (!symbol_resolvable(rv))
+			{
+				ilog(DEBUG1, "cannot inline %s due to unresolvable variable %s",
+					 F.getName().data(), rv->getName().data());
+				return false;
+			}
 			continue;
+		}
 
 		/*
 		 * If variable is file-local, we need to inline it, to be able to
@@ -681,6 +691,17 @@ function_inlinable(llvm::Function &F,
 		if (referencedFunction->hasExternalLinkage())
 		{
 			llvm::StringRef funcName = referencedFunction->getName();
+
+			/*
+			 * The function might not get inlined, in which case the call has
+			 * to be resolvable.
+			 */
+			if (!symbol_resolvable(referencedFunction))
+			{
+				ilog(DEBUG1, "cannot inline %s due to unresolvable function %s",
+					 F.getName().data(), funcName.data());
+				return false;
+			}
 
 			/*
 			 * Don't bother checking for inlining if remaining cost budget is
@@ -819,6 +840,24 @@ add_module_to_inline_search_path(InlineSearchPath& searchpath, llvm::StringRef m
 	/* if the entry isn't NULL, it's validly loaded */
 	if (it->second)
 		searchpath.push_back(it->second.get());
+}
+
+/*
+ * Check whether a reference to gv from JITed code can be resolved at
+ * emission time, the way llvm_resolve_symbol() resolves names that aren't
+ * qualified with a module name.
+ *
+ * Not every symbol with external linkage in an extension's bitcode is
+ * exported by its shared library: extension libraries are built with
+ * -fvisibility=hidden, so only symbols marked PGDLLEXPORT are.  A reference
+ * to any other one would make emission fail with a FATAL error.
+ */
+static bool
+symbol_resolvable(const llvm::GlobalValue *gv)
+{
+	std::string name(llvm::GlobalValue::dropLLVMManglingEscape(gv->getName()));
+
+	return LLVMSearchForAddressOfSymbol(name.c_str()) != nullptr;
 }
 
 /*
