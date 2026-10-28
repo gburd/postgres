@@ -939,6 +939,10 @@
   proname => 'barkhandler', provolatile => 'v',
   prorettype => 'index_am_handler', proargtypes => 'internal',
   prosrc => 'barkhandler' },
+{ oid => '9462', descr => 'bark: free overflow pages no entry references',
+  proname => 'bark_reclaim_orphans', provolatile => 'v', proparallel => 'u',
+  prorettype => 'int8', proargtypes => 'regclass',
+  prosrc => 'bark_reclaim_orphans' },
 
 # BARK KNN distance functions: |a - b| as float8, backing the `<->` ordering
 # operators used for ORDER BY col <-> const (amcanorderbyop).  No descr: these
