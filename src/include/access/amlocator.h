@@ -55,23 +55,65 @@
  * is versioned: every index entry then carries a version tag, and an entry
  * names a row version as (key, locator, tag).
  *
- * - A tag is an IndexVersionTag.  InvalidIndexVersionTag (0) means untagged:
- *   the entry was made by a table AM that does not tag, or for a version
- *   older than whatever the table AM keeps history for (its "base").  An
- *   untagged entry does not mean "the current version".
+ * - A tag is an IndexVersionTag.  InvalidIndexVersionTag (0) means untagged.
+ *   In an index whose AM can store tags (amcanversion), an untagged entry
+ *   was made for a version older than whatever history the table AM keeps
+ *   for the row (its "base"); it does not mean "the current version".  An
+ *   index AM without amcanversion stores no tags, so all its entries are
+ *   untagged.
  *
- * - The table AM hands out tags (with a new row version from
- *   table_tuple_update, and before each callback of its index build and
- *   validation scans) and alone defines what they mean.
+ * - The table AM hands out tags and alone defines what they mean.  Entries
+ *   made by INSERT, COPY and every other insertion of a new row are
+ *   untagged, which is valid because a new row has no history.  Tags come
+ *   from the table AM: from an UPDATE that keeps the row's locator, and
+ *   from its own index build and validation scans (IndexInfo.ii_VersionTag).
  *
- * - An index AM that can store tags (amcanversion) stores each entry's tag,
- *   orders equal (key, locator) entries by it as an unsigned integer, and
- *   returns it with the locator, but never interprets it.  Other index AMs
- *   store no tag; their entries are untagged.
+ * - An index AM with amcanversion stores each entry's tag, orders equal
+ *   (key, locator) entries by it as an unsigned integer, and returns it
+ *   with the locator, but never interprets it.
  *
  * - Deciding whether an entry is valid for the version a snapshot sees, and
- *   when tags may be discarded, is the table AM's obligation.  Core only
+ *   when history may be discarded, is the table AM's obligation.  Core only
  *   carries tags between the index AM and the table AM.
+ *
+ * The table AM's obligations, in more detail:
+ *
+ * - It decides, for an entry (key, locator, tag) of index i and the version
+ *   v of the row a snapshot sees, whether the entry is valid for v: whether
+ *   its key is v's key for i.  The rule this interface was designed for is
+ *   that the entry is valid iff its tag names v or an earlier version, and
+ *   no version after it up to v changed an attribute that i reads; an
+ *   untagged entry counts as naming the base.
+ *
+ * - The validity rule applies only to entries of indexes with amcanversion.
+ *   Every other index keeps the invariant heap keeps (its entries' keys
+ *   describe every version their locator reaches), because the executor
+ *   makes the table AM move the row whenever an update affects one of its
+ *   attributes.  So the table AM resolves such an index's entries by
+ *   locator alone, as fetch_tid does.  Every reader of an entry knows its
+ *   index: scan->indexRelation in an index scan (IndexScanDescData's
+ *   xs_heaptag holds the entry's tag), and the index is passed wherever else
+ *   core code asks the table AM about an entry.
+ *
+ * - When the table AM's index build or validation scan hands an
+ *   amcanversion index a row whose history since its base changed some
+ *   attribute the index reads, it must set ii_VersionTag to the current
+ *   version's tag; it may leave it untagged only if that history is empty.
+ *   Otherwise the new entry would be judged as older than the base and
+ *   rejected.
+ *
+ * - An index built from a row's current version cannot serve a snapshot
+ *   that sees an older version whose values for the index differ, whether
+ *   or not the index can store tags.  The build scan sets ii_BrokenHotChain
+ *   in that case, as heap does for a HOT chain whose members differ, so
+ *   that the index is not used by transactions that might see the older
+ *   version (pg_index.indcheckxmin).
+ *
+ * - A unique check recognizes the row being inserted by its locator alone,
+ *   so an entry of the same row with another tag (a stale entry, or the
+ *   entry of an A -> B -> A update's first A) is never a conflict.  A
+ *   deferred recheck (UNIQUE_CHECK_EXISTING) is untagged for the same
+ *   reason.
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
