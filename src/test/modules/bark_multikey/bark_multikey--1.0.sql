@@ -31,8 +31,61 @@ CREATE OPERATOR |<| (
     FUNCTION = bark_multikey_least
 );
 
+-- The greatest element, for a descending order.  An ordering operator is
+-- read ascending in its sort family, so |>>| sorts in a btree family whose
+-- less-than is int4's > (>>>): ORDER BY a |>>| 0 USING >>> asks for the
+-- largest element first.
+CREATE FUNCTION bark_multikey_greatest(int4[], int4)
+RETURNS int4
+AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE OPERATOR |>>| (
+    LEFTARG = int4[],
+    RIGHTARG = int4,
+    FUNCTION = bark_multikey_greatest
+);
+
+CREATE FUNCTION bark_multikey_desc_cmp(int4, int4) RETURNS int4
+  AS 'SELECT btint4cmp($2, $1)' LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE;
+CREATE OPERATOR >>> (LEFTARG = int4, RIGHTARG = int4, FUNCTION = int4gt);
+CREATE OPERATOR === (LEFTARG = int4, RIGHTARG = int4, FUNCTION = int4eq);
+CREATE OPERATOR FAMILY bark_int4_desc_ops USING btree;
+CREATE OPERATOR CLASS bark_int4_desc_ops
+FOR TYPE int4 USING btree FAMILY bark_int4_desc_ops AS
+    OPERATOR 1 >>>,
+    OPERATOR 3 ===,
+    FUNCTION 1 bark_multikey_desc_cmp(int4, int4);
+
+-- |<| as an int8, which a BARK scan cannot report: the keys are int4.
+-- (PL/pgSQL, so that the planner does not inline it into a cast of |<|.)
+CREATE FUNCTION bark_multikey_least8(int4[], int4) RETURNS int8
+  AS 'BEGIN RETURN $1 |<| $2; END' LANGUAGE plpgsql IMMUTABLE STRICT;
+CREATE OPERATOR |<<| (LEFTARG = int4[], RIGHTARG = int4,
+                      FUNCTION = bark_multikey_least8);
+
+-- The conflict operator of a unique index: overlap over int4[].  BARK and
+-- the executor look it up under the class's input type, and core's && is
+-- declared over anyarray; a name of its own leaves && resolving as before.
+-- arrayoverlap ignores NULL elements and an empty array overlaps nothing,
+-- so it is true exactly when two values share a key that is not NULL.
+CREATE FUNCTION bark_multikey_overlap(int4[], int4[]) RETURNS bool
+AS 'arrayoverlap' LANGUAGE internal IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE OPERATOR |&&| (
+    LEFTARG = int4[],
+    RIGHTARG = int4[],
+    FUNCTION = bark_multikey_overlap,
+    COMMUTATOR = |&&|
+);
+
+-- Procedure 15: COMPARE_OVERLAP is strategy 1.
+CREATE FUNCTION bark_multikey_translate_cmptype(int4)
+RETURNS int2
+AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
 -- The class.  Its operators are core's array operators, numbered as GIN's
--- array_ops numbers them, and the element-order operator.  Procedures 1, 2,
+-- array_ops numbers them, the element-order operator, and |&&| under the
+-- input type, at &&'s number, which procedure 15 names.  Procedures 1, 2,
 -- 4 and 6 are core's int4 ones, over the storage type.  BARK looks every
 -- support function up under the input type; procedure 1 has to say so,
 -- since CREATE OPERATOR CLASS would register a comparator under its
@@ -42,14 +95,92 @@ CREATE OPERATOR FAMILY bark_int4_array_ops USING bark;
 CREATE OPERATOR CLASS bark_int4_array_ops
 FOR TYPE int4[] USING bark FAMILY bark_int4_array_ops AS
     OPERATOR 1 && (anyarray, anyarray),
+    OPERATOR 1 |&&| (int4[], int4[]),
     OPERATOR 2 @> (anyarray, anyarray),
     OPERATOR 3 <@ (anyarray, anyarray),
     OPERATOR 4 = (anyarray, anyarray),
     OPERATOR 5 |<| (int4[], int4) FOR ORDER BY integer_ops,
+    OPERATOR 15 |>>| (int4[], int4) FOR ORDER BY bark_int4_desc_ops,
     FUNCTION 1 (int4[], int4[]) btint4cmp(int4, int4),
     FUNCTION 2 btint4sortsupport(internal),
     FUNCTION 4 btequalimage(oid),
     FUNCTION 6 btint4skipsupport(internal),
+    FUNCTION 7 bark_multikey_extract_value(int4[], internal, internal),
+    FUNCTION 8 bark_multikey_extract_query(int4[], int2, internal, internal,
+                                           internal, internal, internal),
+    FUNCTION 9 bark_multikey_recheck(int4, int2, internal),
+    FUNCTION 15 ("any", "any") bark_multikey_translate_cmptype(int4),
+    STORAGE int4;
+
+-- Operators over an array's elements, for the range class below: some
+-- element is greater than x, at most x, in [q[1], q[2]), an even element
+-- of q, or equal to x; no element above x; some element other than x; some
+-- element near x / 10 (see bark_multikey_extract_query).  |!| is always
+-- true; its class's procedures misbehave on purpose.  They are in C
+-- because the sequential scans that check every index answer call them
+-- once a row; COST 100, a SQL function's default, keeps the plans of SQL
+-- versions of them.
+CREATE FUNCTION bark_multikey_any_gt(int4[], int4) RETURNS bool
+  AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT COST 100;
+CREATE FUNCTION bark_multikey_any_le(int4[], int4) RETURNS bool
+  AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT COST 100;
+CREATE FUNCTION bark_multikey_any_within(int4[], int4[]) RETURNS bool
+  AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT COST 100;
+CREATE FUNCTION bark_multikey_any_even_in(int4[], int4[]) RETURNS bool
+  AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT COST 100;
+CREATE FUNCTION bark_multikey_has(int4[], int4) RETURNS bool
+  AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT COST 100;
+CREATE FUNCTION bark_multikey_none_gt(int4[], int4) RETURNS bool
+  AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT COST 100;
+CREATE FUNCTION bark_multikey_any_ne(int4[], int4) RETURNS bool
+  AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT COST 100;
+CREATE FUNCTION bark_multikey_any_near(int4[], int4) RETURNS bool
+  AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT COST 100;
+CREATE FUNCTION bark_multikey_true(int4[], int4) RETURNS bool
+  AS 'SELECT true' LANGUAGE sql IMMUTABLE STRICT;
+CREATE OPERATOR |>| (LEFTARG = int4[], RIGHTARG = int4,
+                     FUNCTION = bark_multikey_any_gt);
+CREATE OPERATOR |<=| (LEFTARG = int4[], RIGHTARG = int4,
+                      FUNCTION = bark_multikey_any_le);
+CREATE OPERATOR |><| (LEFTARG = int4[], RIGHTARG = int4[],
+                      FUNCTION = bark_multikey_any_within);
+CREATE OPERATOR |%| (LEFTARG = int4[], RIGHTARG = int4[],
+                     FUNCTION = bark_multikey_any_even_in);
+CREATE OPERATOR |=| (LEFTARG = int4[], RIGHTARG = int4,
+                     FUNCTION = bark_multikey_has);
+CREATE OPERATOR |?| (LEFTARG = int4[], RIGHTARG = int4,
+                     FUNCTION = bark_multikey_none_gt);
+CREATE OPERATOR |<>| (LEFTARG = int4[], RIGHTARG = int4,
+                      FUNCTION = bark_multikey_any_ne);
+CREATE OPERATOR |~| (LEFTARG = int4[], RIGHTARG = int4,
+                     FUNCTION = bark_multikey_any_near);
+CREATE OPERATOR |!| (LEFTARG = int4[], RIGHTARG = int4,
+                     FUNCTION = bark_multikey_true);
+
+-- The range class: the same keys as bark_int4_array_ops, with operators
+-- whose boundaries are ranges, strict ends and procedure 9 decisions, so
+-- the scan's walk over boundaries is tested on more than points.  Like
+-- GIN's extractQuery, procedure 8 reads its first argument as the type the
+-- strategy's operator takes, an int4 for all but |><| and |%|.
+CREATE OPERATOR FAMILY bark_int4_array_range_ops USING bark;
+
+CREATE OPERATOR CLASS bark_int4_array_range_ops
+FOR TYPE int4[] USING bark FAMILY bark_int4_array_range_ops AS
+    OPERATOR 1 && (anyarray, anyarray),
+    OPERATOR 2 @> (anyarray, anyarray),
+    OPERATOR 6 |>| (int4[], int4),
+    OPERATOR 7 |<=| (int4[], int4),
+    OPERATOR 8 |><| (int4[], int4[]),
+    OPERATOR 9 |%| (int4[], int4[]),
+    OPERATOR 10 |=| (int4[], int4),
+    OPERATOR 11 |!| (int4[], int4),
+    OPERATOR 12 |?| (int4[], int4),
+    OPERATOR 13 |<>| (int4[], int4),
+    OPERATOR 14 |~| (int4[], int4),
+    OPERATOR 16 |<<| (int4[], int4) FOR ORDER BY integer_ops,
+    FUNCTION 1 (int4[], int4[]) btint4cmp(int4, int4),
+    FUNCTION 2 btint4sortsupport(internal),
+    FUNCTION 4 btequalimage(oid),
     FUNCTION 7 bark_multikey_extract_value(int4[], internal, internal),
     FUNCTION 8 bark_multikey_extract_query(int4[], int2, internal, internal,
                                            internal, internal, internal),
@@ -65,3 +196,231 @@ CREATE FUNCTION bark_multikey_boundaries(opclass oid, query anyelement,
                                          strategy int2)
 RETURNS text
 AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
+
+-- Procedure 7 of a class with markers: the elements, and a marker (the key
+-- -2147483648, which no element may be) for an array of two or more.
+CREATE FUNCTION bark_multikey_extract_marked(int4[], internal, internal,
+                                             internal, internal)
+RETURNS internal
+AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE OPERATOR FAMILY bark_int4_array_marked_ops USING bark;
+
+CREATE OPERATOR CLASS bark_int4_array_marked_ops
+FOR TYPE int4[] USING bark FAMILY bark_int4_array_marked_ops AS
+    OPERATOR 1 && (anyarray, anyarray),
+    FUNCTION 1 (int4[], int4[]) btint4cmp(int4, int4),
+    FUNCTION 2 btint4sortsupport(internal),
+    FUNCTION 4 btequalimage(oid),
+    FUNCTION 7 bark_multikey_extract_marked(int4[], internal, internal,
+                                            internal, internal),
+    STORAGE int4;
+
+-- What BARK stored: the meta page's multikey flag and member count; every
+-- (key, heap TID) member of an index whose first column is int4, in index
+-- order; and whether a marker key is in an index.
+CREATE FUNCTION bark_multikey_meta(index text, OUT multikey bool,
+                                   OUT nkeys int8)
+AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
+
+CREATE FUNCTION bark_multikey_entries(index text, OUT key int4, OUT tid tid,
+                                      OUT marker bool)
+RETURNS SETOF record
+AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
+
+CREATE FUNCTION bark_multikey_has_marker(index text, key int4)
+RETURNS bool
+AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
+
+-- Scan an index on column 1 op query, mark after mark_at rows, read
+-- read_after more, restore, and compare what follows with a plain scan.
+CREATE FUNCTION bark_multikey_mark_restore(index text, op regoperator,
+                                           query anyelement, mark_at int,
+                                           read_after int)
+RETURNS text
+AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
+
+-- Scan an index on column 1 op query, read n rows forward, then one
+-- backward, without asking whether the index scans backward.
+CREATE FUNCTION bark_multikey_reverse(index text, op regoperator,
+                                      query anyelement, n int)
+RETURNS text
+AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
+
+-- Scan an index on column 1 op query, one step per character of steps
+-- ('f' forward, 'b' backward), and list the TIDs read ("-" for none).
+CREATE FUNCTION bark_multikey_walk(index text, op regoperator,
+                                   query anyelement, steps text)
+RETURNS text
+AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
+
+-- Begin a scan with two key slots, then call the AM's amrescan directly with
+-- one key (as DocumentDB's composite-scan fold does), and report whether it
+-- read the same TIDs as a plain one-key scan of the qual.
+CREATE FUNCTION bark_multikey_rescan_fewer(index text, op regoperator,
+                                           query anyelement)
+RETURNS bool
+AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
+
+-- Count the TIDs a scan on column 1 op query returns when driven through the
+-- AM's routine alone, with no heap relation and no snapshot (DocumentDB's
+-- metadata probe).
+CREATE FUNCTION bark_multikey_bare_scan(index text, op regoperator,
+                                        query anyelement)
+RETURNS int
+AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
+
+-- Scan an index on column 1 op query as the only participant of a parallel
+-- scan, and count the rows, without asking whether it may be parallel.
+CREATE FUNCTION bark_multikey_parallel(index text, op regoperator,
+                                       query anyelement)
+RETURNS int8
+AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
+
+-- An ordered scan with the scan keys and ordering key given, as the index
+-- AM gets them: key i is column cols[i] ops[i] args[i] (a NULL op is a NULL
+-- test, IS NULL for 'null'; an argument '{...}' of an operator on scalars is
+-- a ScalarArrayOp), the ordering key column ordcol ordop center.
+-- Returns each TID in the order returned, its distance and its recheck flag.
+CREATE FUNCTION bark_multikey_knn(index text, cols int2[], ops regoperator[],
+                                  args text[], ordcol int, ordop regoperator,
+                                  center int4, OUT tid tid, OUT dist float8,
+                                  OUT recheck bool)
+RETURNS SETOF record
+AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
+
+-- The executor's conflict pre-check for the row at tid, which passes its own
+-- TID; "ok" or the violation.
+CREATE FUNCTION bark_multikey_precheck(index regclass, tid tid)
+RETURNS text
+AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
+
+-- GIN's query interface (procedures 10-13) over int4[]: core's GIN array
+-- support functions, unchanged.  ginarrayextract has GIN's extractValue
+-- signature, which is procedure 7's three-argument form, so it needs no
+-- wrapper.  With procedure 10 and not 8 a scan computes its whole result first.
+CREATE OPERATOR FAMILY bark_gin_int4_array_ops USING bark;
+CREATE OPERATOR CLASS bark_gin_int4_array_ops
+FOR TYPE int4[] USING bark FAMILY bark_gin_int4_array_ops AS
+    OPERATOR 1 && (anyarray, anyarray),
+    OPERATOR 2 @> (anyarray, anyarray),
+    OPERATOR 3 <@ (anyarray, anyarray),
+    OPERATOR 4 = (anyarray, anyarray),
+    FUNCTION 1 (int4[], int4[]) btint4cmp(int4, int4),
+    FUNCTION 4 btequalimage(oid),
+    FUNCTION 7 ginarrayextract(anyarray, internal, internal),
+    FUNCTION 10 ginqueryarrayextract(anyarray, internal, int2, internal,
+                                     internal, internal, internal),
+    FUNCTION 11 ginarrayconsistent(internal, int2, anyarray, int4, internal,
+                                   internal, internal, internal),
+    FUNCTION 13 ginarraytriconsistent(internal, int2, anyarray, int4,
+                                      internal, internal, internal),
+    STORAGE int4;
+
+-- The same without triConsistent, so that consistent (11) decides.
+CREATE OPERATOR FAMILY bark_gin11_int4_array_ops USING bark;
+CREATE OPERATOR CLASS bark_gin11_int4_array_ops
+FOR TYPE int4[] USING bark FAMILY bark_gin11_int4_array_ops AS
+    OPERATOR 1 && (anyarray, anyarray),
+    OPERATOR 2 @> (anyarray, anyarray),
+    OPERATOR 3 <@ (anyarray, anyarray),
+    OPERATOR 4 = (anyarray, anyarray),
+    FUNCTION 1 (int4[], int4[]) btint4cmp(int4, int4),
+    FUNCTION 4 btequalimage(oid),
+    FUNCTION 7 ginarrayextract(anyarray, internal, internal),
+    FUNCTION 10 ginqueryarrayextract(anyarray, internal, int2, internal,
+                                     internal, internal, internal),
+    FUNCTION 11 ginarrayconsistent(internal, int2, anyarray, int4, internal,
+                                   internal, internal, internal),
+    STORAGE int4;
+
+-- Partial match: some element of a text[] starts with the query (%^%),
+-- under the C collation, whose order is gin_cmp_prefix's byte order.
+CREATE FUNCTION bark_multikey_prefix_query(text, internal, int2, internal,
+                                           internal, internal, internal)
+RETURNS internal AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT;
+CREATE FUNCTION bark_multikey_prefix_consistent(internal, int2, text, int4,
+                                                internal, internal, internal,
+                                                internal)
+RETURNS bool AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT;
+CREATE FUNCTION bark_multikey_any_prefix(text[], text) RETURNS bool
+  AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT COST 100;
+CREATE OPERATOR %^% (LEFTARG = text[], RIGHTARG = text,
+                     FUNCTION = bark_multikey_any_prefix);
+CREATE OPERATOR FAMILY bark_text_prefix_ops USING bark;
+CREATE OPERATOR CLASS bark_text_prefix_ops
+FOR TYPE text[] USING bark FAMILY bark_text_prefix_ops AS
+    OPERATOR 1 %^% (text[], text),
+    FUNCTION 1 (text[], text[]) bttextcmp(text, text),
+    FUNCTION 7 ginarrayextract(anyarray, internal, internal),
+    FUNCTION 10 bark_multikey_prefix_query(text, internal, int2, internal,
+                                           internal, internal, internal),
+    FUNCTION 11 bark_multikey_prefix_consistent(internal, int2, text, int4,
+                                                internal, internal, internal,
+                                                internal),
+    FUNCTION 12 gin_cmp_prefix(text, text, int2, internal),
+    STORAGE text;
+
+-- Array similarity, after RUM's rum_anyarray_ops: a % b when the cosine
+-- similarity of the two sets of non-NULL elements, |a & b| / sqrt(|a| |b|),
+-- is at least 0.5, and a <=> b is 1 minus it.  The class serves % through
+-- GIN's interface; <=> is not in it, since BARK's scans cannot order by it
+-- (BARK-Design.mediawiki, "As built, an array similarity class"), so
+-- ORDER BY a <=> q
+-- sorts.
+CREATE FUNCTION bark_multikey_sim_match(int4[], int4[]) RETURNS bool
+AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION bark_multikey_sim_distance(int4[], int4[]) RETURNS float8
+AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE OPERATOR % (LEFTARG = int4[], RIGHTARG = int4[],
+                   FUNCTION = bark_multikey_sim_match, COMMUTATOR = %);
+CREATE OPERATOR <=> (LEFTARG = int4[], RIGHTARG = int4[],
+                     FUNCTION = bark_multikey_sim_distance, COMMUTATOR = <=>);
+CREATE FUNCTION bark_multikey_sim_query(int4[], internal, int2, internal,
+                                        internal, internal, internal)
+RETURNS internal AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT;
+CREATE FUNCTION bark_multikey_sim_consistent(internal, int2, int4[], int4,
+                                             internal, internal, internal,
+                                             internal)
+RETURNS bool AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT;
+CREATE FUNCTION bark_multikey_sim_triconsistent(internal, int2, int4[], int4,
+                                                internal, internal, internal)
+RETURNS "char" AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT;
+CREATE OPERATOR FAMILY bark_int4_array_sim_ops USING bark;
+CREATE OPERATOR CLASS bark_int4_array_sim_ops
+FOR TYPE int4[] USING bark FAMILY bark_int4_array_sim_ops AS
+    OPERATOR 1 % (int4[], int4[]),
+    FUNCTION 1 (int4[], int4[]) btint4cmp(int4, int4),
+    FUNCTION 4 btequalimage(oid),
+    FUNCTION 7 ginarrayextract(anyarray, internal, internal),
+    FUNCTION 10 bark_multikey_sim_query(int4[], internal, int2, internal,
+                                        internal, internal, internal),
+    FUNCTION 11 bark_multikey_sim_consistent(internal, int2, int4[], int4,
+                                             internal, internal, internal,
+                                             internal),
+    FUNCTION 13 bark_multikey_sim_triconsistent(internal, int2, int4[], int4,
+                                                internal, internal, internal),
+    STORAGE int4;
+
+-- The same without triConsistent, as RUM's class has none.
+CREATE OPERATOR FAMILY bark_int4_array_sim11_ops USING bark;
+CREATE OPERATOR CLASS bark_int4_array_sim11_ops
+FOR TYPE int4[] USING bark FAMILY bark_int4_array_sim11_ops AS
+    OPERATOR 1 % (int4[], int4[]),
+    FUNCTION 1 (int4[], int4[]) btint4cmp(int4, int4),
+    FUNCTION 4 btequalimage(oid),
+    FUNCTION 7 ginarrayextract(anyarray, internal, internal),
+    FUNCTION 10 bark_multikey_sim_query(int4[], internal, int2, internal,
+                                        internal, internal, internal),
+    FUNCTION 11 bark_multikey_sim_consistent(internal, int2, int4[], int4,
+                                             internal, internal, internal,
+                                             internal),
+    STORAGE int4;
+
+-- Heap declaring offsets up to MaxOffsetNumber, only to reach BARK's refusal
+-- of such a table (bark_locator.sql).
+CREATE FUNCTION bark_test_bigoffset_handler(internal)
+RETURNS table_am_handler
+AS 'MODULE_PATHNAME' LANGUAGE C;
+CREATE ACCESS METHOD bark_test_bigoffset TYPE TABLE
+    HANDLER bark_test_bigoffset_handler;

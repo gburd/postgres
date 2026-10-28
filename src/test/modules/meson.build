@@ -2,6 +2,7 @@
 
 subdir('bark')
 subdir('bark_multikey')
+subdir('bark_wildcard')
 subdir('brin')
 subdir('commit_ts')
 subdir('delay_execution')

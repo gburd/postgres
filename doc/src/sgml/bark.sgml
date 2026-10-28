@@ -1,0 +1,1203 @@
+<!-- doc/src/sgml/bark.sgml -->
+
+<sect1 id="bark">
+<title>BARK Indexes</title>
+
+   <indexterm>
+    <primary>index</primary>
+    <secondary>BARK</secondary>
+   </indexterm>
+
+<sect2 id="bark-intro">
+ <title>Introduction</title>
+
+ <para>
+  <acronym>BARK</acronym> is a B-tree index access method, selected with
+  <literal>USING bark</literal>, that is being developed as a successor to
+  the standard B-tree (<xref linkend="btree"/>).  Its tree is built the
+  way B-tree's is: a multi-level tree of right-linked pages, searched and
+  split with the same Lehman and Yao algorithm, with sorted keys, suffix
+  truncation of the separator keys, and heap TIDs as a tiebreaker among
+  equal keys.  It uses B-tree's operator classes and answers the same
+  queries: equality and range conditions on the indexed columns,
+  <literal>IN</literal> lists, row comparisons, ordered scans in either
+  direction, index-only scans, bitmap scans, parallel scans and parallel
+  builds, unique indexes, multicolumn indexes and
+  <literal>INCLUDE</literal> columns.
+ </para>
+
+ <para>
+  BARK adds the following to what B-tree does; each is described in
+  <xref linkend="bark-features"/>:
+ </para>
+
+ <itemizedlist>
+  <listitem>
+   <para>
+    Keys of any size.  B-tree refuses an index entry larger than about a
+    third of a page; BARK stores such an entry on a chain of overflow
+    pages, so a column whose values can be several kilobytes can be
+    indexed directly.
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    Sorted duplicates in two forms: a list of heap TIDs, and a compressed
+    bitmap of heap TIDs for keys with many rows close together in the
+    table, which makes indexes on columns with few distinct values much
+    smaller than B-tree's.
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    Leaf prefix compression, an option that stores the leading bytes that
+    a leaf page's keys share once per page.
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    Nearest-neighbor ordering, <literal>ORDER BY col &lt;~&gt;
+    constant</literal>, on <type>smallint</type>, <type>integer</type>
+    and <type>bigint</type> columns.
+   </para>
+  </listitem>
+ </itemizedlist>
+
+ <para>
+  Consider BARK instead of B-tree for an index whose keys can exceed
+  B-tree's size limit, an index with many rows per key, an index on long
+  keys that share leading bytes (URLs, paths, prefixed codes), or an
+  integer column queried for the nearest values to a constant.  For other
+  indexes, BARK and B-tree behave alike.  B-tree remains the right choice
+  for a primary key or a unique constraint, which BARK cannot back today,
+  and for anything else listed in <xref linkend="bark-limitations"/>.
+ </para>
+
+ <para>
+  BARK is a new access method, and parts of it are still being built.
+  Its on-disk format can still change between development versions; an
+  index written in a format the server no longer reads is refused, with
+  a hint to rebuild it with <command>REINDEX</command>.  The system
+  catalogs and TOAST tables keep using B-tree.
+ </para>
+
+ <para>
+  An example:
+<programlisting>
+CREATE TABLE orders (id int, customer int, placed date, note text);
+CREATE UNIQUE INDEX orders_id_idx ON orders USING bark (id);
+CREATE INDEX orders_customer_idx ON orders USING bark (customer);
+</programlisting>
+ </para>
+
+</sect2>
+
+<sect2 id="bark-behavior">
+ <title>Behavior of BARK Operator Classes</title>
+
+ <para>
+  BARK has no operator families of its own for ordinary data types: each
+  BARK operator class is a member of the B-tree operator family of its
+  type.  For every B-tree operator class in the system catalogs there is
+  a BARK operator class with the same name, operator family, input type,
+  storage type and default status, so an index that can be built with
+  B-tree can be built with BARK, with the same operator class names:
+<programlisting>
+CREATE INDEX ON orders USING bark (note text_pattern_ops);
+</programlisting>
+  Because the operator family is shared, BARK uses B-tree's operators and
+  support functions unchanged, and everything <xref linkend="btree-behavior"/>
+  says about the operators of a B-tree operator family applies to BARK: the
+  five comparison operators, with strategy numbers 1 through 5 as in
+  <xref linkend="xindex-btree-strat-table"/>, and the laws they must obey.
+  The planner treats a BARK index on a column as it treats a B-tree index:
+  the same quals are index conditions (including <literal>LIKE</literal>
+  prefixes on the pattern classes, as described in
+  <xref linkend="indexes-types-btree"/>), and the index provides the same
+  sort orders.
+ </para>
+
+ <para>
+  BARK adds one strategy to the B-tree families of the integer types:
+  strategy 6, the ordering operator <literal>&lt;~&gt;</literal> for
+  nearest-neighbor scans (see <xref linkend="bark-features-knn"/>).  It is
+  registered for BARK only (B-tree does not use it), with purpose
+  <literal>ORDER BY</literal>, for <type>smallint</type>,
+  <type>integer</type> and <type>bigint</type>.
+ </para>
+
+ <para>
+  Cross-type comparisons work as they do for B-tree.  A condition comparing
+  an indexed column with a constant of another type of the same operator
+  family, such as an <type>integer</type> column with a <type>bigint</type>
+  constant, positions and stops the scan through the family's cross-type
+  comparison support function for that pair of types.  If the family has
+  no such function, the condition is checked against each index entry
+  instead.  The elements of an <literal>IN</literal> list or
+  <literal>= ANY(<replaceable>array</replaceable>)</literal> of another type
+  are sorted and compared through the family's support functions for that
+  type.
+ </para>
+
+ <para>
+  NULLs are stored and sorted as in B-tree: an index column's
+  <literal>NULLS FIRST</literal> or <literal>NULLS LAST</literal> option
+  (by default, <literal>NULLS LAST</literal> for an ascending column and
+  <literal>NULLS FIRST</literal> for a descending one) says where they go,
+  and within a column all NULLs compare equal to each other for the
+  purpose of ordering entries.  In a unique index, a key with a NULL in any
+  column never conflicts with another key unless the index is declared
+  <literal>NULLS NOT DISTINCT</literal>.
+ </para>
+
+ <para>
+  <literal>IS NULL</literal> and <literal>IS NOT NULL</literal> conditions
+  are accepted as index conditions, but at present BARK only uses them to
+  filter entries; they do not position or stop the scan, as they do in
+  B-tree.  A query such as <literal>WHERE col IS NULL</literal> therefore
+  reads every leaf page of an index on <literal>col</literal> (or every leaf
+  page in the range that the query's other index conditions select), and
+  the planner's cost estimate charges for reading them.
+ </para>
+
+ <para>
+  New operator classes for scalar types work as for B-tree, with one
+  difference: a BARK operator class for a scalar type must be placed in a
+  B-tree operator family, which can be created with <literal>CREATE OPERATOR
+  FAMILY ... USING btree</literal> and named in the <literal>FAMILY</literal>
+  clause of <link linkend="sql-createopclass"><command>CREATE OPERATOR
+  CLASS ... USING bark</command></link>.  The class may contain only
+  operators with strategy numbers 1 through 5, support functions 1 through
+  6, and no <literal>STORAGE</literal> clause, as for B-tree:
+<programlisting>
+CREATE OPERATOR FAMILY my_int4_ops USING btree;
+CREATE OPERATOR CLASS my_int4_ops FOR TYPE int4 USING bark FAMILY my_int4_ops AS
+    OPERATOR 1 &lt;, OPERATOR 2 &lt;=, OPERATOR 3 =, OPERATOR 4 &gt;=, OPERATOR 5 &gt;,
+    FUNCTION 1 btint4cmp(int4, int4);
+</programlisting>
+  An operator family that belongs to BARK itself (as
+  <command>CREATE OPERATOR CLASS ... USING bark</command> creates when it
+  names no existing family) is for multikey operator classes, described in
+  <xref linkend="bark-multikey-funcs"/>.  A class there without support
+  function 7 is reported invalid by <function>amvalidate</function>, and
+  <command>CREATE INDEX</command> refuses to use it: BARK reads the strategy
+  numbers of a B-tree family's operators as B-tree's, but a family of its
+  own allows any number, so a scalar class there could be misread.  Put a
+  scalar operator class in a B-tree operator family, as above.
+ </para>
+
+ <para>
+  <command>CREATE ACCESS METHOD <replaceable>name</replaceable> TYPE INDEX
+  HANDLER barkhandler</command> makes another access method that runs BARK's
+  code, as an extension that names its own access method (DocumentDB names
+  its alternate index access method <literal>documentdb_bark</literal>, for
+  example) may need.  Its indexes, and the operator families created
+  <literal>USING</literal> it, behave as BARK's: a family of the new access
+  method is BARK's own, and the functions of <xref linkend="amcheck"/>,
+  <xref linkend="pageinspect"/> and <xref linkend="pgstattuple"/> accept its
+  indexes.  <xref linkend="app-pgamcheck"/> selects indexes by access method
+  and does not check them.
+ </para>
+
+</sect2>
+
+<sect2 id="bark-support-funcs">
+ <title>BARK Support Functions</title>
+
+ <para>
+  A BARK operator class for a scalar type uses B-tree's support functions
+  1 through 6, with the meanings and signatures given in
+  <xref linkend="btree-support-funcs"/> and
+  <xref linkend="xindex-btree-support-table"/>.  Since the operator class
+  is in a B-tree operator family, the functions it uses are the family's,
+  shared with the B-tree operator class of the same type:
+ </para>
+
+ <variablelist>
+  <varlistentry>
+   <term><function>order</function> (1)</term>
+   <listitem>
+    <para>
+     Required.  BARK orders its entries with it, positions and stops scans
+     with it, and uses the family's cross-type comparison functions for
+     comparisons with constants of other types.
+    </para>
+   </listitem>
+  </varlistentry>
+  <varlistentry>
+   <term><function>sortsupport</function> (2)</term>
+   <listitem>
+    <para>
+     Optional.  Used, as for B-tree, by the sort that
+     <command>CREATE INDEX</command> performs.
+    </para>
+   </listitem>
+  </varlistentry>
+  <varlistentry>
+   <term><function>in_range</function> (3)</term>
+   <listitem>
+    <para>
+     Optional.  BARK itself does not call it; it is used by window
+     functions, as for B-tree.
+    </para>
+   </listitem>
+  </varlistentry>
+  <varlistentry>
+   <term><function>equalimage</function> (4)</term>
+   <listitem>
+    <para>
+     Optional.  BARK stores the rows of equal keys in one entry (see
+     <xref linkend="bark-features-duplicates"/>) only when every key
+     column's operator class has an <function>equalimage</function>
+     function that returns true for the column's collation, the rule
+     B-tree applies to deduplication.  A column whose class uses GIN's
+     query interface (support functions 10 and 11 or 13, without 8) is
+     exempt, as GIN's keys are: keys that support function 1 finds equal
+     are one key, stored in the image of the first row that had it.
+    </para>
+   </listitem>
+  </varlistentry>
+  <varlistentry>
+   <term><function>options</function> (5)</term>
+   <listitem>
+    <para>
+     Optional, as for B-tree.
+    </para>
+   </listitem>
+  </varlistentry>
+  <varlistentry>
+   <term><function>skipsupport</function> (6)</term>
+   <listitem>
+    <para>
+     Optional.  A skip scan over the first index column uses it, when the
+     column's operator class has one, to go directly to the next possible
+     value of that column; without one, the scan skips past the current
+     value instead.
+    </para>
+   </listitem>
+  </varlistentry>
+ </variablelist>
+
+ <sect3 id="bark-multikey-funcs">
+  <title>Multikey Operator Classes</title>
+
+  <para>
+   A <firstterm>multikey</firstterm> operator class extracts several keys
+   from one column value, as a GIN operator class does, and stores one
+   index entry for each distinct key of each row; the keys are ordered,
+   so the index stays a B-tree over them.  The support functions described
+   here are the interface for extension authors.  An index with a multikey
+   column is built, maintained and scanned like any other BARK index;
+   <xref linkend="bark-multikey-scans"/> describes how a scan reads it.
+   The planner does not use such an index to provide a sort order on the
+   multikey column or on any column after it, except through an ordering
+   operator (<xref linkend="bark-multikey-scans"/>).
+  </para>
+
+  <para>
+   A multikey operator class must be in an operator family of BARK's own,
+   not a B-tree family, and it must have support function 7.  Its operators
+   may have any strategy number; BARK passes the number to support
+   functions 8 and 9 and gives it no other meaning.  Its
+   <literal>STORAGE</literal> type is the type of the keys, which may
+   differ from the input type.  All of its support functions are
+   registered under the class's input type (as GIN's are), including
+   support function 1, which compares two keys of the storage type; since
+   <command>CREATE OPERATOR CLASS</command> would otherwise register a
+   comparator under its own argument types, it must be written as
+   <literal>FUNCTION 1 (<replaceable>input type</replaceable>,
+   <replaceable>input type</replaceable>)
+   <replaceable>comparator</replaceable>(<replaceable>storage type</replaceable>,
+   <replaceable>storage type</replaceable>)</literal>.  Support functions 1,
+   2, 4, 5 and 6 have B-tree's meanings, over the storage type;
+   <function>amvalidate</function> reports a class with
+   <function>in_range</function> (3) invalid.
+  </para>
+
+  <para>
+   The additional support functions are:
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term><function>extractValue</function> (7)</term>
+    <listitem>
+     <para>
+      Required.  Returns the keys of a column value:
+<programlisting>
+internal extractValue(<replaceable>value</replaceable>, internal nkeys, internal nullFlags [, internal markers, internal nmarkers])
+</programlisting>
+      The function takes two to five arguments.  It returns a palloc'd
+      array of <type>Datum</type> keys and sets <literal>*nkeys</literal>
+      (an <type>int32</type>) to their number; it may set
+      <literal>*nullFlags</literal> to a palloc'd <type>bool</type> array
+      flagging NULL keys.  The keys may be returned in any order and may
+      repeat: BARK sorts them with support function 1 and removes
+      duplicates.  A NULL value (for which the function is not called), a
+      value with no keys, and a key flagged NULL all become one NULL key,
+      so every row has at least one entry.  The last two arguments return
+      <firstterm>marker</firstterm> keys: facts about the index rather than
+      about the row, which BARK stores once per index, as entries that
+      name no row, and never removes.  The function is called with all
+      five arguments, the output arguments zeroed first, so a function
+      declared with fewer simply does not set the rest.  It must be
+      immutable.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><function>extractQuery</function> (8)</term>
+    <listitem>
+     <para>
+      Turns an operator's argument into ranges of keys:
+<programlisting>
+void extractQuery(<replaceable>query</replaceable>, int2 strategy, internal boundaries, internal nboundaries, internal extra, internal recheck [, internal flags])
+</programlisting>
+      It returns, in <literal>*boundaries</literal> and
+      <literal>*nboundaries</literal>, an array of
+      <structname>BarkBoundary</structname>, each a lower and an upper
+      <structname>BarkSearchElement</structname> (a key of the storage
+      type and a B-tree strategy number, 1 through 5; a NULL pointer means
+      unbounded on that side, and a single key has
+      <literal>=</literal> on both sides); <literal>*extra</literal>, data
+      for support function 9; and <literal>*recheck</literal>, whether
+      support function 9 must be called on the entries found.  The
+      optional seventh argument is a
+      <structname>BarkQueryFlags</structname> that BARK zeroes before the
+      call: the function sets <structfield>backward</structfield> for an
+      ordering operator whose ranges are to be read in descending key
+      order, <structfield>searchnulls</structfield> when the query
+      must also read the rows whose only entry is the NULL key, and
+      <structfield>oneentry</structfield> when no row can match the ranges
+      through more than one of its entries, so that the scan need not keep
+      the rows it has returned.  BARK sets <structfield>index</structfield>
+      to the index being scanned (NULL when there is none), so the function
+      can test for a marker key with
+      <function>bark_index_has_marker</function>; it is called again at
+      every scan, so the answer may change after a plan was made.  For an
+      ordering operator, <structfield>orderrest</structfield> says that the
+      ranges do not hold every row: after them the scan reads the rest of
+      the column and returns the rows it has not returned yet with a NULL
+      order value, last.  These
+      types are declared in <filename>src/include/access/bark.h</filename>.
+      A function written for six arguments never sees the seventh.
+      Two ranges returned by one call must not overlap; BARK raises an
+      error if they do.  No ranges means that nothing matches.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><function>indexRecheck</function> (9)</term>
+    <listitem>
+     <para>
+      Required when support function 8 is present:
+<programlisting>
+int2 indexRecheck(<replaceable>key</replaceable>, int2 strategy, internal extra)
+</programlisting>
+      Tests one entry's key and returns 0 (true), 1 (maybe: the row is
+      returned and rechecked against the table row) or 2 (false).
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><function>extractQuery</function> (10), <function>consistent</function> (11),
+     <function>comparePartial</function> (12), <function>triConsistent</function> (13)</term>
+    <listitem>
+     <para>
+      Optional: GIN's support functions 3, 4, 5 and 6, with GIN's
+      signatures (see <xref linkend="gin-extensibility"/>), for operator
+      classes ported from GIN.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><function>fetch</function> (14)</term>
+    <listitem>
+     <para>
+      Optional:
+<programlisting>
+<replaceable>input type</replaceable> fetch(<replaceable>key</replaceable>)
+</programlisting>
+      Reserved: <function>amvalidate</function> accepts it, but BARK does
+      not call it.  An index-only scan never returns the multikey column,
+      only the other columns: the entries hold keys, not values, and a key
+      does not determine its row's value (a row with several keys has an
+      entry per key, and the single NULL key stands for a NULL value, an
+      empty value and a NULL element alike).  To have an index-only scan
+      return the value, name the column again as an
+      <literal>INCLUDE</literal> column, which holds it whole, as in
+      <literal>CREATE INDEX ON docs USING bark (tags my_int4_array_ops)
+      INCLUDE (tags)</literal>.  An index whose multikey
+      column uses GIN's query interface has no index-only scans at all:
+      its scans compute row identifiers, not entries.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><function>translate_cmptype</function> (15)</term>
+    <listitem>
+     <para>
+      Optional, and required for a unique index on the column:
+<programlisting>
+int2 translate_cmptype(int4 cmptype)
+</programlisting>
+      Registered under <literal>("any", "any")</literal>, as GiST's support
+      function 12 is.  BARK passes it only
+      <literal>COMPARE_OVERLAP</literal>, and it returns the strategy
+      number of the class's overlap operator: true when two values share a
+      key that is not NULL.  The operator must be registered under the
+      class's input type, and support function 8 must accept its strategy.
+      <literal>INSERT ... ON CONFLICT</literal> finds a conflicting row by
+      scanning with it.
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+
+  <para>
+   Support functions 7 through 9 follow the interface of DocumentDB's
+   <literal>pg_extended_btree</literal> access method (its support
+   functions 101 through 103), so an operator class written for it can be
+   ported by renumbering them.  Scans use support functions 8 and 9,
+   unique indexes and <literal>INSERT ... ON CONFLICT</literal> use 15, and
+   support function 14 is validated by <function>amvalidate</function> but
+   not used.  A class with support functions 10 and 11 or 13 (GIN's
+   <function>extractQuery</function>, <function>consistent</function> and
+   <function>triConsistent</function>, with GIN's signatures, and 12,
+   <function>comparePartial</function>, for partial match) and without 8
+   uses GIN's query interface, so an operator class written for GIN ports
+   to BARK by adding support function 1 (the key comparison) and a storage
+   type; core's GIN array support functions work unchanged.  Such a column
+   is read by bitmap scans and, when it is the index's first column, by
+   index scans, which compute the scan's whole result before returning its
+   first row (so a <literal>LIMIT</literal> does not make them cheaper),
+   and return rows in heap order, forward or backward; they need an MVCC
+   snapshot.  An index with columns before such a column has bitmap scans
+   only, since an index scan of it would not return rows in the order of
+   those columns.  As in GIN, a scan
+   merges the row lists of the query's keys, and when
+   <function>triConsistent</function> shows that a row must have one of
+   some keys (as for <literal>@&gt;</literal>), it tests only the rows of
+   the rarest such keys.  Unlike GIN, it still reads every index entry of
+   each key, so <literal>@&gt;</literal> with one rare and one very common
+   element takes several times as long as on a GIN index.  A bitmap scan
+   of a key that any of its index keys satisfies alone (a partial match,
+   an <literal>OR</literal>) adds each index entry's rows straight to the
+   bitmap, whose size <xref linkend="guc-work-mem"/> bounds, as in GIN.
+  </para>
+
+  <para>
+   An index may have at most one multikey column, in any key position;
+   the other key columns use ordinary operator classes, and every entry of
+   a row carries the same values for them.  An <literal>INCLUDE</literal>
+   column is never multikey.  An exclusion constraint cannot have a
+   multikey column.
+  </para>
+
+  <para>
+   A unique index with a multikey column is unique over its keys: two rows
+   conflict when they share a key under equal values of the other key
+   columns, while one row may repeat a key.  So
+   <literal>CREATE UNIQUE INDEX ON docs USING bark (tenant, tags
+   my_int4_array_ops)</literal> says that no two rows of one tenant share a
+   tag.  A key with a NULL in any column never conflicts: a NULL value, an
+   empty array and a NULL element all give the NULL key, so any number of
+   rows may hold an empty array, and a row whose other key column is NULL
+   is not checked.  <literal>NULLS NOT DISTINCT</literal> is refused on
+   such an index.  An insert checks and inserts a row's keys one at a time,
+   in ascending order; when a key conflicts, the error detail names the
+   shared key, and the keys inserted before it are left to
+   <command>VACUUM</command> as entries of the failed row.  An
+   <command>UPDATE</command> that keeps some of a row's keys does not
+   conflict with itself.  Such an index needs support function 15 to name
+   the class's overlap operator.  <literal>INSERT ... ON CONFLICT</literal>
+   uses it to find a conflicting row: when a new row shares keys with
+   several, <literal>DO UPDATE</literal> updates the one holding the
+   smallest shared key.  The planner does not treat such an index as proof
+   that at most one row matches, a foreign key cannot reference its
+   multikey column (a B-tree unique index on the same columns is used
+   instead, if there is one), <command>REFRESH MATERIALIZED VIEW
+   CONCURRENTLY</command> does not use it, and it cannot be a replica
+   identity, since each of those needs equality on every column.
+  </para>
+
+  <para>
+   The test module <filename>src/test/modules/bark_multikey</filename>
+   provides C functions for a multikey operator class over
+   <type>integer[]</type> whose keys are the array's elements.  With that
+   module's extension installed, such a class is declared and used like
+   this:
+<programlisting>
+CREATE OPERATOR FAMILY my_int4_array_ops USING bark;
+CREATE OPERATOR CLASS my_int4_array_ops
+FOR TYPE int4[] USING bark FAMILY my_int4_array_ops AS
+    OPERATOR 1 &amp;&amp; (anyarray, anyarray),
+    OPERATOR 2 @&gt; (anyarray, anyarray),
+    OPERATOR 3 &lt;@ (anyarray, anyarray),
+    OPERATOR 4 = (anyarray, anyarray),
+    FUNCTION 1 (int4[], int4[]) btint4cmp(int4, int4),
+    FUNCTION 2 btint4sortsupport(internal),
+    FUNCTION 4 btequalimage(oid),
+    FUNCTION 6 btint4skipsupport(internal),
+    FUNCTION 7 bark_multikey_extract_value(int4[], internal, internal),
+    FUNCTION 8 bark_multikey_extract_query(int4[], int2, internal, internal,
+                                           internal, internal, internal),
+    FUNCTION 9 bark_multikey_recheck(int4, int2, internal),
+    STORAGE int4;
+
+CREATE TABLE tagged (id int, tags int4[]);
+INSERT INTO tagged VALUES (1, '{1,2,3}'), (2, '{2}'), (3, '{}'), (4, NULL);
+CREATE INDEX tagged_tags_idx ON tagged USING bark (tags my_int4_array_ops);
+</programlisting>
+   The index holds six (key, row) pairs: one for each element of the
+   first two rows, and the NULL key for each of the other two.  Rows with
+   equal keys share entries (see <xref linkend="bark-features-duplicates"/>),
+   so these six are stored in four entries.
+  </para>
+ </sect3>
+
+ <sect3 id="bark-multikey-scans">
+  <title>Scanning a Multikey Index</title>
+
+  <para>
+   A scan calls support function 8 for the first condition on the
+   multikey column and reads the ranges of keys it returns.  When every
+   column before the multikey one has an equality condition (or an
+   <literal>IN</literal> list), the scan descends to each range in turn and
+   reads only the entries inside it, as it does for the elements of an
+   <literal>IN</literal> list; otherwise it reads the entries the other
+   conditions allow and keeps those inside a range.  For an entry inside a
+   range whose function 8 asked for a recheck, support function 9 decides
+   whether the row is returned, dropped, or returned to be rechecked
+   against the table row.  A condition <literal>col = ANY
+   (<replaceable>array</replaceable>)</literal> combines the ranges of each
+   array element; ranges of different elements that overlap are merged,
+   and their rows are rechecked rather than passed to support function 9.
+   Further conditions on the multikey column do not narrow the ranges,
+   since a row may satisfy two conditions through two different keys; the
+   rows the scan returns are rechecked against all of them.
+  </para>
+
+  <para>
+   The NULL key stands for a NULL value, a value with no keys and a key
+   flagged NULL alike, so a scan reads the NULL entries only for
+   <literal>IS NULL</literal>, for <literal>IS NOT NULL</literal> (which
+   also reads every key), or when support function 8 set
+   <structfield>searchnulls</structfield>, and it returns their rows to be
+   rechecked.  With the test module's class, for example,
+   <literal>tags &lt;@ '{1,2}'</literal>, <literal>tags @&gt; '{}'</literal>
+   and <literal>tags = '{}'</literal> must find the empty array, which has
+   only the NULL key.
+  </para>
+
+  <para>
+   A row with several keys can be inside the ranges several times.  An
+   index scan or index-only scan returns it at its first entry and skips
+   the rest, keeping the rows it has returned in a set in memory; the set
+   is emptied whenever the columns before the multikey one change value,
+   since a row's entries all have the same values there.  The set is not
+   needed, and not built, when the index has never held a row with more
+   than one entry, when the condition is a single key, or when support
+   function 8 set <structfield>oneentry</structfield> for it (not for
+   <literal>= ANY</literal>); a bitmap scan never needs it.  The set may grow past <xref linkend="guc-work-mem"/>
+   (times <xref linkend="guc-hash-mem-multiplier"/>) rather than return a
+   row twice; the planner does not choose an index scan whose estimated
+   rows per value of the columns before the multikey one, at about 16
+   bytes each, exceed that budget, and takes a bitmap scan or a
+   sequential scan instead.  Its cost estimate counts the index's entries
+   per row (as of the last <command>CREATE INDEX</command> or
+   <command>VACUUM</command>) and one descent per key or range that the
+   operator class makes of the condition.  A merge join's restore to a mark takes the rows returned
+   after the mark out of the set, so they are returned again.
+  </para>
+
+  <para>
+   Because of the set, a scan of a multikey index cannot change
+   direction, and such an index reports
+   <literal>pg_index_has_property(index, 'backward_scan')</literal> false.
+   A cursor declared <literal>SCROLL</literal> over it reads through a
+   <literal>Materialize</literal> node, which can go back; a cursor
+   declared without <literal>SCROLL</literal> can then only fetch forward,
+   as over a GIN index.  The planner never chooses a parallel index scan
+   of a multikey index; a parallel bitmap heap scan works as usual.
+   Since the index orders a multikey column's keys rather than its values,
+   <function>pg_index_column_has_property</function> reports
+   <literal>orderable</literal>, <literal>asc</literal>,
+   <literal>desc</literal>, <literal>nulls_first</literal> and
+   <literal>nulls_last</literal> false for that column and for every key
+   column after it, and <literal>returnable</literal> false for the
+   multikey column; <literal>distance_orderable</literal> is true for a
+   leading column with an ordering operator such as
+   <literal>&lt;~&gt;</literal>.
+   An ordering operator of the class, on a leading multikey column, orders
+   rows as MongoDB sorts arrays: the scan walks the column's keys in the
+   direction the class's support function 8 asks for, ascending or
+   descending, and returns each row once, at its first key, so an ascending
+   order sees a row at its smallest element and a descending one at its
+   largest.  The operator must return the class's storage type, and its
+   NULL result (a row with no key) comes last.  A <literal>WHERE</literal>
+   condition on the column does not change that order: the scan reads the
+   whole column and each row is rechecked against the condition, so with
+   such a condition the planner usually prefers a bitmap scan and a sort,
+   while a <literal>LIMIT</literal> without one favors the ordered scan.  An
+   ordering operator on an ordinary leading column (<literal>ORDER BY
+   tenant &lt;~&gt; 3</literal>) also returns each row once.  So does an
+   ordering operator on the ordinary column after the multikey one, when
+   the multikey column has a single condition with one key and every column
+   before it an equality (<literal>WHERE tags &amp;&amp; '{42}' ORDER BY
+   created &lt;~&gt; 5000</literal>): a row has at most one entry for that
+   key, and the scan reads that key's entries in <literal>created</literal>
+   order (see <xref linkend="bark-features-knn"/>).  A bitmap
+   scan has none of these limits.
+  </para>
+ </sect3>
+
+</sect2>
+
+<sect2 id="bark-features">
+ <title>Features Beyond B-Tree</title>
+
+ <sect3 id="bark-features-oversized">
+  <title>Keys of Any Size</title>
+
+  <para>
+   An index entry that is too large to be stored on a page (larger than
+   about a third of a page after TOAST compression, the limit at which
+   B-tree raises an error) is stored by BARK as an
+   <literal>OVERSIZED</literal> entry: the complete index tuple is written
+   to a chain of overflow pages, and the leaf page holds a small entry that
+   points to the chain.  Comparisons, and so searches, scans and the
+   uniqueness check, read the full value from the chain, and index-only
+   scans return it, so an index on such a column behaves as it would if the
+   values were small.  <command>VACUUM</command> frees the chain of an
+   entry it removes:
+<programlisting>
+CREATE TABLE docs (id int, body text);
+CREATE INDEX docs_body_idx ON docs USING bark (body);
+</programlisting>
+   The cost is extra page reads: each comparison with an oversized entry
+   reads its overflow chain (and decompresses the value, if it is
+   compressed), so lookups and builds over such keys are several times
+   slower than over small keys, and every row with an oversized key has a
+   chain of its own, even when it repeats another row's key.  For a
+   <type>text</type> first column under the <literal>C</literal> or
+   <literal>POSIX</literal> collation, the leaf entry also keeps the value's
+   first 32 bytes, so two oversized entries that differ there are ordered
+   without reading their chains.  The planner's cost estimate charges a
+   scan for the chains, from the index's average entry size.
+  </para>
+ </sect3>
+
+ <sect3 id="bark-features-duplicates">
+  <title>Sorted Duplicates</title>
+
+  <para>
+   Like B-tree with deduplication (see <xref linkend="btree-deduplication"/>),
+   BARK can store the rows of one key in one leaf entry that holds the key
+   once and the heap TIDs of the rows in ascending order.  Such an entry
+   has one of two forms, chosen for each entry by size:
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     A <literal>LIST</literal> holds the heap TIDs in order, either as an
+     array, six bytes each, or, when that is smaller, as the first TID
+     followed by the differences between consecutive TIDs in a variable
+     number of bytes each, as GIN codes its posting lists.  Rows of the key
+     that are close together in the table then take one or two bytes each.
+     Removing rows during <command>VACUUM</command> never makes the coded
+     form larger, so a coded list keeps that form when it shrinks.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     A <literal>POSTING</literal> entry holds them as a compressed bitmap.
+     When many rows of the key are close together in the table, it takes a
+     fraction of a byte per row.  It is sized so that removing any of its
+     rows during <command>VACUUM</command> never makes it larger, and for
+     scattered rows that size is larger than a list's, so an entry is made a
+     <literal>POSTING</literal> entry only when it is smaller than either
+     form of list.
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <para>
+   A key with one row is a <literal>SINGLE</literal> entry, B-tree's form.
+   An entry of either kind holds at most about a third of a page; a key
+   with more rows than that has several entries, in heap TID order.
+   <command>CREATE INDEX</command> forms entries of up to about a tenth of a
+   page, so that later inserts have room to grow them, and an insert adds
+   its row to the entry of its key that its heap TID falls in or follows,
+   when there is room.  Before a full leaf page is split, BARK first merges
+   adjacent entries of each key on it into fewer, larger entries, as
+   B-tree runs a deduplication pass, and splits only if that does not make
+   room.
+  </para>
+
+  <para>
+   Rows are combined into one entry only in an index that is not unique,
+   has no <literal>INCLUDE</literal> columns, and whose key columns' operator
+   classes all report, through their <function>equalimage</function>
+   support function, that equal values have identical stored forms: the
+   rule B-tree applies to deduplication.  An index-only scan returns the
+   stored key for every row of the entry, so an index on
+   <type>numeric</type> (where <literal>1.0 = 1.00</literal>), or on text with a
+   nondeterministic collation, keeps one entry per row.  The
+   <structfield>allequalimage</structfield> column of
+   <function>bark_metap</function> (<xref linkend="pageinspect"/>) shows
+   the result of that test.  A column whose operator class uses GIN's
+   query interface follows GIN's rule instead, since no scan returns its
+   stored keys: equal keys are combined whatever their images, the entry
+   keeping the first row's, and the other key columns must still pass the
+   test.  There is no storage parameter that turns this off.
+  </para>
+
+  <para>
+   For example, in the first table below each value's rows are spread over
+   the whole table, and in the second each value's rows are together:
+<programlisting>
+CREATE TABLE spread (kind int, at int);
+INSERT INTO spread SELECT g % 100, g FROM generate_series(1, 1000000) g;
+CREATE INDEX spread_kind_idx ON spread USING bark (kind);
+
+CREATE TABLE together (kind int, at int);
+INSERT INTO together SELECT g / 10000, g FROM generate_series(1, 1000000) g;
+CREATE INDEX together_kind_idx ON together USING bark (kind);
+</programlisting>
+   The first index is built from <literal>LIST</literal> entries and takes
+   766 pages; the second is built from <literal>POSTING</literal> entries
+   and takes 28.  A B-tree index on either column takes 852 pages.
+   <function>pgstatbarkindex</function> (<xref linkend="pgstattuple"/>)
+   counts an index's entries of each form.
+  </para>
+ </sect3>
+
+ <sect3 id="bark-features-prefix">
+  <title>Leaf Prefix Compression</title>
+
+  <para>
+   With the storage parameter <literal>prefix_compression</literal> on, a
+   leaf page of an index whose first column has a variable-length type may
+   store a prefix: leading bytes of the first column that its entries
+   share, stored once on the page.  Each entry then stores the first
+   column as the number of prefix bytes it shares followed by the rest of
+   the value.  A page is given a prefix (of at most 126 bytes) only when it
+   is written whole, by <command>CREATE INDEX</command> or by a page split,
+   and only when the keys share at least 4 leading bytes on average (during
+   <command>CREATE INDEX</command>, judged from the keys of the page
+   before); the prefix never changes afterward, and an entry inserted later
+   that shares less of it is still stored correctly.  Comparisons see the full value,
+   so any collation works.  On keys such as URLs or file paths this makes
+   the leaf level much smaller; on keys with little in common it changes
+   nothing.  Changing the parameter affects only pages written afterward.
+   For example, these 200,000 URLs share their first 46 bytes:
+<programlisting>
+CREATE TABLE urls (url text COLLATE "C");
+INSERT INTO urls SELECT 'https://www.example.com/catalog/products/item-' || g
+  FROM generate_series(1, 200000) g;
+CREATE INDEX urls_url_idx ON urls USING bark (url) WITH (prefix_compression = on);
+</programlisting>
+   The index takes 559 pages, against 1877 without the parameter and 1895
+   for a B-tree index.
+  </para>
+ </sect3>
+
+ <sect3 id="bark-features-knn">
+  <title>Nearest-Neighbor Ordering</title>
+
+  <para>
+   BARK answers <literal>ORDER BY <replaceable>column</replaceable> &lt;~&gt;
+   <replaceable>constant</replaceable></literal> for a
+   <type>smallint</type>, <type>integer</type> or <type>bigint</type>
+   column that is the index's first column, or that follows columns the
+   query's conditions fix to one value each (see below).  The operator
+   <literal>&lt;~&gt;</literal> returns the absolute difference of its
+   operands as <type>double precision</type>.  The scan descends to the
+   constant and reads outward in both directions, returning rows in order
+   of increasing distance, so a query with a <literal>LIMIT</literal>
+   reads only the pages around the constant:
+<programlisting>
+SELECT id, id &lt;~&gt; 5000 AS distance FROM orders ORDER BY id &lt;~&gt; 5000 LIMIT 3;
+  id  | distance
+------+----------
+ 5000 |        0
+ 5001 |        1
+ 4999 |        1
+(3 rows)
+</programlisting>
+   Rows with a NULL key come last.  A NULL constant makes every distance
+   NULL, so the scan then returns every row, as a sort would.  Only one
+   such ordering operator is used
+   per scan.  A nearest-neighbor scan is never parallel, and it can be
+   combined with other index conditions, which then filter the rows it
+   reads.
+  </para>
+
+  <para>
+   A later column can be ordered too, when every column before it is fixed
+   to one value by the query: an ordinary column by an equality, and a
+   multikey column (<xref linkend="bark-multikey-scans"/>) by a single
+   condition with a constant that its support function 8 turns into one
+   key.  The index keeps the entries of one such prefix together and in
+   the order of the next column, so the scan descends to the prefix and the
+   constant and reads outward inside that run of entries only:
+<programlisting>
+CREATE INDEX ON events USING bark (tenant, tags bark_int4_array_ops, created);
+SELECT id FROM events
+ WHERE tenant = 7 AND tags &amp;&amp; '{42}'
+ ORDER BY created &lt;~&gt; 5000 LIMIT 10;
+</programlisting>
+   This is the form RUM's <literal>ORDER BY ts &lt;=&gt; x</literal> takes
+   after a term condition.  An <literal>IN</literal> list, a range, a
+   parameter in the multikey condition, a condition that yields more than
+   one key, or a second condition on the multikey column fixes nothing, and
+   the planner sorts instead.  A parameter in an equality on an ordinary
+   column does fix it; if the parameter is NULL the scan returns no row, as
+   the condition matches none.  <function>pg_index_column_has_property</function>
+   reports <literal>distance_orderable</literal> false for such a later
+   column, since whether it can be ordered depends on the query.
+  </para>
+ </sect3>
+
+ <sect3 id="bark-features-bloat">
+  <title>Bloat Under Churn</title>
+
+  <para>
+   Rows inserted after a <command>VACUUM</command> reuse the space it freed
+   in the table, so their heap TIDs fall inside the TID ranges of existing
+   entries of their keys.  BARK adds such a row to the entry whose range it
+   falls in, or, when that entry is full, divides the entry in two around
+   it, and when the page is full it merges the page's entries of each key
+   before splitting the page.  So in an index that combines rows into
+   <literal>LIST</literal> and <literal>POSTING</literal> entries, a cycle
+   of deletes, <command>VACUUM</command> and inserts of keys with many rows
+   each leaves the index much less bloated than the same cycle leaves a
+   B-tree index; for keys with one row each, the two grow alike.
+   Bottom-up deletion (see <xref linkend="bark-implementation"/>) limits
+   the growth caused by <command>UPDATE</command>s, as it does for
+   B-tree.
+  </para>
+ </sect3>
+
+</sect2>
+
+<sect2 id="bark-storage-params">
+ <title>Storage Parameters</title>
+
+ <para>
+  BARK indexes accept these storage parameters, set with
+  <literal>WITH</literal> in <link linkend="sql-createindex"><command>CREATE
+  INDEX</command></link> or changed with <link
+  linkend="sql-alterindex"><command>ALTER INDEX ... SET</command></link>:
+ </para>
+
+ <variablelist>
+  <varlistentry>
+   <term><literal>fillfactor</literal> (<type>integer</type>)</term>
+   <listitem>
+    <para>
+     The percentage to which <command>CREATE INDEX</command> fills leaf
+     pages, and to which a split of the rightmost leaf page leaves its left
+     half, so that ascending inserts fill pages as the build does.  Other
+     leaf splits divide a page's contents about evenly, except that a page
+     holding a single key that no page to its right holds is left 96% full,
+     since no other key can be inserted into it.  Internal pages are filled
+     to 70% by <command>CREATE INDEX</command> and by a split of the
+     rightmost internal page of a level, and divided evenly otherwise,
+     whatever the parameter's value.  The default is 90; any value from 10 to 100 can be
+     selected.  It has the meaning it has for B-tree (see
+     <xref linkend="index-reloption-fillfactor"/>), and a change affects
+     only pages written afterward.
+    </para>
+   </listitem>
+  </varlistentry>
+  <varlistentry>
+   <term><literal>prefix_compression</literal> (<type>boolean</type>)</term>
+   <listitem>
+    <para>
+     Whether leaf pages store a prefix shared by their keys (see
+     <xref linkend="bark-features-prefix"/>).  It applies only when the
+     index's first column has a variable-length type.  The default is
+     <literal>off</literal>.  A change affects only pages written
+     afterward; <command>REINDEX</command> rewrites every page.
+    </para>
+   </listitem>
+  </varlistentry>
+ </variablelist>
+
+ <para>
+  B-tree's <literal>deduplicate_items</literal> parameter does not exist
+  for BARK: whether rows of a key share an entry is decided by the rule in
+  <xref linkend="bark-features-duplicates"/>.
+ </para>
+
+</sect2>
+
+<sect2 id="bark-implementation">
+ <title>Implementation</title>
+
+ <para>
+  This section summarizes how BARK works, for advanced users.  See
+  <filename>src/backend/access/bark/README</filename> in the source
+  distribution for the full description.
+ </para>
+
+ <sect3 id="bark-structure">
+  <title>Structure</title>
+
+  <para>
+   A BARK index has B-tree's structure (see <xref linkend="btree-structure"/>):
+   block 0 is a metapage, which records the format version and the root;
+   every other page is a leaf page, an internal page, an overflow page
+   holding part of an oversized entry, or a deleted page awaiting reuse.
+   The pages of each level are linked to their left and right siblings,
+   and each page has a high key, an upper bound on the keys it may hold.
+   Searches use the Lehman and Yao algorithm, as B-tree's do: a search that
+   finds a page split since it read the page's parent moves right along
+   the sibling links, so readers hold only one page lock at a time and
+   never block on a split.  A split of a page is completed by inserting a
+   downlink to the new page into the parent; if a split is interrupted by
+   an error or a crash, the next insert that reaches the page completes
+   it.  BARK pages carry a page type identifier distinct from B-tree's, so
+   tools can tell them apart.
+  </para>
+
+  <para>
+   Separator keys are truncated, as in B-tree: a high key or downlink keeps
+   only the leading key columns needed to separate the two pages it lies
+   between, and never <literal>INCLUDE</literal> columns.  Within the
+   entries of one key, leaf entries are ordered by heap TID, and a
+   separator between two entries of one key carries a heap TID.  An insert
+   therefore descends directly to the one leaf page where its entry
+   belongs, as in B-tree since <productname>PostgreSQL</productname> 12.
+   An index built by a development version of BARK from before entries
+   were ordered by heap TID is refused with a hint to rebuild it with
+   <command>REINDEX</command>.
+  </para>
+
+  <para>
+   Inserts of ascending keys into a large index go directly to the
+   rightmost leaf page, without a descent, while the keys keep arriving in
+   order, as in B-tree.  In a unique index, an insert first checks for a
+   live row with an equal key, waiting for a transaction that is inserting
+   or deleting one to finish; <literal>INSERT ... ON CONFLICT</literal>
+   waits only for the conflicting insertion itself to be confirmed or
+   withdrawn.  <command>CREATE INDEX</command> sorts the table's rows and
+   writes the tree from the bottom up, and can use parallel workers for the
+   table scan and sort.
+  </para>
+
+  <para>
+   As in B-tree, <command>CREATE INDEX</command> and
+   <command>REINDEX</command> also index row versions that have been
+   deleted or updated but that a transaction older than the build may
+   still see (<quote>recently dead</quote> rows), so that such a
+   transaction gets the same answer from the new index as from the table.
+   These row versions are left out of a unique index's uniqueness check: a
+   deleted row and a live row with the same key do not make the build of a
+   unique index fail, while two live rows with the same key do.  Nothing in
+   the index records which entries came from such rows; the table decides
+   their visibility, as for every other entry.
+  </para>
+ </sect3>
+
+ <sect3 id="bark-deletion">
+  <title>Deletion and VACUUM</title>
+
+  <para>
+   BARK performs bottom-up index deletion as B-tree does (see
+   <xref linkend="btree-deletion"/>): when an <command>UPDATE</command>
+   that did not change the index's columns would split a leaf page, BARK
+   first asks the table which of the page's row versions are dead to
+   every transaction and removes their entries, and splits only if that
+   does not make room.  Unlike B-tree, BARK does not mark entries dead
+   when a scan finds their rows dead, and so has no simple deletion of
+   such entries before a split: the entries of dead rows are removed only
+   by bottom-up deletion and by <command>VACUUM</command>.
+  </para>
+
+  <para>
+   <command>VACUUM</command> reads the index once in physical order, as for
+   B-tree, removing the entries of dead rows (and the rows' heap TIDs from
+   <literal>LIST</literal> and <literal>POSTING</literal> entries, which it
+   rewrites in place) and freeing the overflow chains of the oversized
+   entries it removes.  Leaf pages split during the pass are revisited
+   when their new pages lie behind the pass, using B-tree's vacuum cycle
+   IDs.  It deletes an emptied leaf page that has siblings on both sides
+   and is not the last child of its parent, passing its key range to its
+   right sibling; an empty leaf at either end of the leaf level, or the
+   last child of its parent, stays in place, and internal pages are never
+   deleted.  A
+   deleted page keeps its sibling links, so a scan that was moving to it
+   moves on, and it is reused only once no transaction can still hold a
+   link to it.  <command>VACUUM</command> can process BARK indexes in
+   parallel workers.
+  </para>
+ </sect3>
+
+ <sect3 id="bark-wal">
+  <title>WAL and Hot Standby</title>
+
+  <para>
+   BARK has its own WAL resource manager, <literal>bark</literal>, with a
+   record type for each change: leaf inserts, additions to
+   <literal>LIST</literal> and <literal>POSTING</literal> entries, page
+   splits, new roots, overflow pages, merges, bottom-up deletion,
+   <command>VACUUM</command>, page deletion and page reuse.  It can be
+   named in <xref linkend="guc-wal-consistency-checking"/>.  BARK indexes
+   are crash-safe and are replicated to standby servers.  On a hot standby,
+   replay of bottom-up deletion and of the reuse of a deleted page cancels
+   the queries that could still need what is removed, and replay of
+   <command>VACUUM</command>'s changes waits for scans that hold a pin on
+   the page, as for B-tree (see <xref linkend="hot-standby-conflict"/>).
+  </para>
+ </sect3>
+
+</sect2>
+
+<sect2 id="bark-tools">
+ <title>Tools</title>
+
+ <para>
+  These contributed modules and programs know BARK indexes:
+ </para>
+
+ <itemizedlist>
+  <listitem>
+   <para>
+    <xref linkend="pageinspect"/> has <function>bark_metap</function>,
+    <function>bark_page_stats</function>,
+    <function>bark_multi_page_stats</function> and
+    <function>bark_page_items</function>, the counterparts of its B-tree
+    functions, which show the metapage, a page's summary and a page's
+    entries with their forms (<literal>SINGLE</literal>,
+    <literal>LIST</literal>, <literal>POSTING</literal>,
+    <literal>OVERSIZED</literal>, <literal>PIVOT</literal>,
+    <literal>PREFIX</literal>); see <xref linkend="pageinspect-bark-funcs"/>.
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    <xref linkend="pgstattuple"/> has <function>pgstatbarkindex</function>,
+    which reports what <function>pgstatindex</function> reports for a
+    B-tree index, plus the number of overflow pages and of leaf entries of
+    each form.
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    <xref linkend="amcheck"/> has
+    <function>bark_index_check(index regclass, heapallindexed
+    boolean)</function>, which checks the structure of each page and the
+    links between pages and, with <literal>heapallindexed</literal>, that
+    every row of the table that the index should hold has an entry; and
+    <function>bark_index_parent_check(index regclass, heapallindexed
+    boolean)</function>, which also checks each level of the tree against
+    the level below.  For an index with a multikey column,
+    <literal>heapallindexed</literal> forms each row's keys with the
+    operator class's key extraction procedure, as <command>CREATE
+    INDEX</command> does, and checks that each has an entry; it is not
+    supported when that column stores one image for keys that compare
+    equal (a GIN-interface class without an equalimage procedure).
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    <xref linkend="app-pgamcheck"/> checks BARK indexes along with B-tree
+    indexes, using <function>bark_index_check</function>, or
+    <function>bark_index_parent_check</function> with
+    <option>--parent-check</option>, when the database's
+    <application>amcheck</application> is version 1.7 or later.
+   </para>
+  </listitem>
+ </itemizedlist>
+
+ <para>
+  For example:
+<programlisting>
+SELECT bark_index_check('orders_customer_idx', true);
+SELECT single_entries, list_entries, posting_entries, oversized_entries
+  FROM pgstatbarkindex('orders_customer_idx');
+</programlisting>
+ </para>
+
+</sect2>
+
+<sect2 id="bark-limitations">
+ <title>Limitations and Differences from B-Tree</title>
+
+ <para>
+  At present, a BARK index differs from a B-tree index in these ways:
+ </para>
+
+ <itemizedlist>
+  <listitem>
+   <para>
+    A <literal>PRIMARY KEY</literal> or <literal>UNIQUE</literal> constraint
+    cannot use a BARK index.  Such constraints always create a B-tree
+    index, and <literal>ALTER TABLE ... ADD CONSTRAINT ... PRIMARY KEY USING
+    INDEX</literal> (or <literal>UNIQUE USING INDEX</literal>) refuses a BARK
+    index.  A unique BARK index made with <command>CREATE UNIQUE
+    INDEX</command> enforces uniqueness, and it can be the target of a
+    foreign key, an <literal>INSERT ... ON CONFLICT</literal> arbiter and a
+    replica identity (not when it has a multikey column, except as an
+    arbiter).
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    Since only a constraint can be deferrable, a BARK index cannot
+    enforce a deferrable uniqueness constraint.  An exclusion constraint
+    (<literal>EXCLUDE USING bark</literal>) works, deferrable or not.
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    <literal>IS NULL</literal> and <literal>IS NOT NULL</literal> filter
+    entries but do not bound the scan (see <xref linkend="bark-behavior"/>).
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    A skip scan, which reads an index on <literal>(a, b)</literal> for a
+    condition on <literal>b</literal> alone by skipping from one value of
+    <literal>a</literal> to the next, runs forward only, and only over the
+    first column.  A backward scan with such a condition reads every entry
+    in its range, and B-tree also skips over several leading columns.
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    Scans do not mark the entries of dead rows, so later scans keep
+    reading them until bottom-up deletion or <command>VACUUM</command>
+    removes them (see <xref linkend="bark-deletion"/>).
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    <command>CLUSTER</command> and <command>REPACK</command> using a BARK
+    index read the table through the index, rather than sorting it as
+    they can with a B-tree index.
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    A scan of an index with a multikey column cannot change direction
+    (a scrollable cursor is materialized), nor be a parallel index scan,
+    nor order by an operator on the multikey column (see
+    <xref linkend="bark-multikey-scans"/>).
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    The indexes of the system catalogs and of TOAST tables remain B-tree
+    indexes.
+   </para>
+  </listitem>
+ </itemizedlist>
+
+</sect2>
+
+</sect1>
