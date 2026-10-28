@@ -2248,7 +2248,15 @@ describeOneTableDetails(const char *schemaname,
 			appendPQExpBufferStr(&buf, "false AS indnullsnotdistinct,\n");
 
 		appendPQExpBuffer(&buf, "  a.amname, c2.relname, "
-						  "pg_catalog.pg_get_expr(i.indpred, i.indrelid, true)\n"
+						  "pg_catalog.pg_get_expr(i.indpred, i.indrelid, true),\n");
+
+		if (pset.sversion >= 200000)
+			appendPQExpBufferStr(&buf,
+								 "  (SELECT amname FROM pg_catalog.pg_am WHERE oid = i.indimplam)\n");
+		else
+			appendPQExpBufferStr(&buf, "  NULL\n");
+
+		appendPQExpBuffer(&buf,
 						  "FROM pg_catalog.pg_index i, pg_catalog.pg_class c, pg_catalog.pg_class c2, pg_catalog.pg_am a\n"
 						  "WHERE i.indexrelid = c.oid AND c.oid = '%s' AND c.relam = a.oid\n"
 						  "AND i.indrelid = c2.oid;",
@@ -2275,6 +2283,7 @@ describeOneTableDetails(const char *schemaname,
 			char	   *indamname = PQgetvalue(result, 0, 8);
 			char	   *indtable = PQgetvalue(result, 0, 9);
 			char	   *indpred = PQgetvalue(result, 0, 10);
+			char	   *indimplam = PQgetvalue(result, 0, 11);
 
 			if (strcmp(indisprimary, "t") == 0)
 				printfPQExpBuffer(&tmpbuf, _("primary key, "));
@@ -2292,6 +2301,10 @@ describeOneTableDetails(const char *schemaname,
 			/*- translator: the first %s is an index AM name (eg. btree) */
 			appendPQExpBuffer(&tmpbuf, _("%s, for table \"%s.%s\""),
 							  indamname, schemaname, indtable);
+
+			if (strlen(indimplam))
+				/*- translator: %s is an index AM name */
+				appendPQExpBuffer(&tmpbuf, _(", implemented by %s"), indimplam);
 
 			if (strlen(indpred))
 				appendPQExpBuffer(&tmpbuf, _(", predicate (%s)"), indpred);
