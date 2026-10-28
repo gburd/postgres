@@ -5,17 +5,25 @@
  *
  * bark_insert descends to the target leaf (bark_search), inserts the new
  * SINGLE-shape entry in key order, and -- when the page overflows -- splits
- * it: a new right page takes the upper half, the left page's high key becomes
- * the split key, the right link is published before the parent downlink, and
- * the downlink is inserted into the parent (growing a new root if the split
- * reached the top).  Page changes are made through the buffer pool and
- * WAL-logged with generic WAL (the same facility bloom uses), so no
- * BARK-specific WAL record is needed.
+ * it: a new right page takes the items above a split point chosen by
+ * bark_findsplitloc (barksplitloc.c), the left page gets a new high key (on a
+ * leaf, the right page's first key without the attributes not needed to tell
+ * it from the left page's last key), the right link is published before the
+ * parent downlink, and a copy of the high key is inserted into the parent as
+ * the right page's downlink (growing a new root if the split reached the
+ * top).  Adding an entry to a page, and replacing a leaf entry with a larger
+ * one, are logged with BARK's own WAL records, as nbtree logs them; splits
+ * and new roots still use generic WAL (see "WAL" in the README).
  *
- * This commit keeps every entry SINGLE and does not enforce uniqueness,
- * deduplicate, or recover an interrupted split; those arrive in later commits.
- * Modeled on nbtinsert.c (_bt_doinsert / _bt_insertonpg / _bt_split /
- * _bt_insert_parent / _bt_newroot).
+ * Locks follow nbtree's protocol: a split keeps the left page write-locked
+ * until the parent is write-locked and the new downlink written, the parent's
+ * downlink to the left page is found by its block number (bark_getstackbuf),
+ * and locks are always taken child before parent.  A split interrupted by an
+ * error or crash is finished by the next writer whose descent reaches its
+ * left page (bark_finish_split, called from bark_search's move-right step).
+ * Modeled on nbtinsert.c (_bt_doinsert /
+ * _bt_insertonpg / _bt_split / _bt_insert_parent / _bt_getstackbuf /
+ * _bt_finish_split / _bt_newlevel).
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
@@ -28,17 +36,48 @@
 #include "postgres.h"
 
 #include "access/bark.h"
+#include "access/barkxlog.h"
 #include "access/genam.h"
 #include "access/generic_xlog.h"
 #include "access/itup.h"
+#include "access/nbtree.h"
 #include "access/tableam.h"
+#include "access/xloginsert.h"
 #include "miscadmin.h"
+#include "nodes/execnodes.h"
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
 #include "utils/injection_point.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
+
+/*
+ * Materialize the page-resident SINGLE/OVERSIZED leaf entry for `full` (a full
+ * in-memory key tuple carrying its heap locator).  When `oversized`, writes the
+ * full tuple to a fresh overflow chain and returns a small OVERSIZED entry
+ * referencing it; otherwise returns a plain copy that is placed inline exactly
+ * as before this capability.  Always returns a palloc'd tuple the caller
+ * places and then pfrees.
+ */
+static IndexTuple
+bark_leaf_page_entry(Relation index, Relation heaprel, IndexTuple full,
+					 bool oversized, Size fulllen)
+{
+	BlockNumber firstblk;
+
+	if (!oversized)
+		return CopyIndexTuple(full);
+
+	firstblk = bark_write_overflow_chain(index, heaprel, full, fulllen);
+	{
+		IndexTuple	entry = bark_form_oversized_entry(&full->t_tid, fulllen,
+													  firstblk, true /* leaf */ , 0);
+
+		bark_set_oversized_prefix(entry, index, full);
+		return entry;
+	}
+}
 
 /* Find the offset at which to insert key on a leaf page (first key > key). */
 static OffsetNumber
@@ -68,33 +107,134 @@ bark_leaf_insert_off(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 }
 
 /*
- * A pivot (downlink) tuple: a key truncated to its key attributes, carrying
- * natts + a child block.  Non-key INCLUDE attributes (and any lower-key
- * suffix) are physically removed with index_truncate_tuple so they do not
- * bloat internal pages or risk overflowing a pivot; pivots only route by key.
+ * Produce a clean key-only tuple (SINGLE shape, no appended body) from any
+ * leaf entry.  A LIST or POSTING entry's key attributes sit at the front, just
+ * like a SINGLE entry, but it carries extra body bytes and alt-TID status in
+ * t_tid; a pivot formed from it must drop both.  index_truncate_tuple's
+ * "easy case" (leavenatts == natts, i.e. a key-only index) would otherwise
+ * copy the body verbatim, so reform the key attributes explicitly here.  For a
+ * SINGLE or already-pivot source there is nothing extra to strip and we hand
+ * the source back unchanged.
  */
 static IndexTuple
-bark_make_downlink(Relation index, IndexTuple key, BlockNumber child,
-				   int nkeyatts)
+bark_strip_to_key(Relation index, IndexTuple src, bool *allocated)
 {
-	IndexTuple	pivot = index_truncate_tuple(RelationGetDescr(index), key,
-											 nkeyatts);
+	BarkEntryShape shape = BarkEntryGetShape(src);
 
-	BarkPivotSetNAtts(pivot, (uint16) nkeyatts);
-	BarkPivotSetDownLink(pivot, child);
+	*allocated = false;
+	if (shape == BARK_SHAPE_OVERSIZED)
+	{
+		/* The key attributes are out of line; fetch the full tuple. */
+		*allocated = true;
+		return bark_fetch_oversized(index, src);
+	}
+	if (shape == BARK_SHAPE_LIST || shape == BARK_SHAPE_POSTING)
+	{
+		TupleDesc	tupdesc = RelationGetDescr(index);
+		Datum		values[INDEX_MAX_KEYS];
+		bool		isnull[INDEX_MAX_KEYS];
+		IndexTuple	key;
+
+		index_deform_tuple(src, tupdesc, values, isnull);
+		key = index_form_tuple(tupdesc, values, isnull);
+		*allocated = true;
+		return key;
+	}
+	return src;
+}
+
+/*
+ * Build a high key from the leaf entry `key`, keeping its first `keepnatts`
+ * key attributes.  Non-key INCLUDE attributes and the key attributes after
+ * the first keepnatts are physically removed: pivots only route by key.
+ *
+ * When the truncated key still exceeds the item ceiling (an oversized key),
+ * the pivot is an OVERSIZED pivot: its full key is written to a fresh overflow
+ * chain the pivot owns, and the pivot is the small OVERSIZED entry referencing
+ * it.  bark_compare_itups fetches that chain, so an oversized pivot routes on
+ * the full key exactly as a leaf entry does.  The caller must not hold an open
+ * generic-WAL state, since writing the chain starts its own WAL records.
+ * heaprel is the index's heap, for bark_get_free_page.
+ */
+static IndexTuple
+bark_make_pivot(Relation index, Relation heaprel, IndexTuple key,
+				int keepnatts)
+{
+	bool		allocated;
+	IndexTuple	src = bark_strip_to_key(index, key, &allocated);
+	TupleDesc	tupdesc = RelationGetDescr(index);
+	Datum		values[INDEX_MAX_KEYS];
+	bool		isnull[INDEX_MAX_KEYS];
+	Size		fulllen;
+	IndexTuple	full;
+	IndexTuple	pivot;
+
+	/*
+	 * Form the truncated key with bark_form_full_tuple (no 8191 cap) so an
+	 * oversized key does not error here; a normal key comes out identical to
+	 * index_truncate_tuple's result.
+	 */
+	if (keepnatts < tupdesc->natts)
+	{
+		TupleDesc	truncdesc = CreateTupleDescTruncatedCopy(tupdesc, keepnatts);
+
+		index_deform_tuple(src, truncdesc, values, isnull);
+		full = bark_form_full_tuple(truncdesc, values, isnull, &fulllen);
+		FreeTupleDesc(truncdesc);
+	}
+	else
+	{
+		index_deform_tuple(src, tupdesc, values, isnull);
+		full = bark_form_full_tuple(tupdesc, values, isnull, &fulllen);
+	}
+	if (allocated)
+		pfree(src);
+
+	if (bark_len_is_oversized(fulllen))
+	{
+		ItemPointerData locator;
+		BlockNumber firstblk = bark_write_overflow_chain(index, heaprel, full,
+														 fulllen);
+
+		ItemPointerSetBlockNumber(&locator, BARK_P_NONE);
+		ItemPointerSetOffsetNumber(&locator, InvalidOffsetNumber);
+		pivot = bark_form_oversized_entry(&locator, fulllen, firstblk,
+										  false /* pivot */ , (uint16) keepnatts);
+		bark_set_oversized_prefix(pivot, index, full);
+		pfree(full);
+		return pivot;
+	}
+
+	pivot = full;
+	BarkPivotSetNAtts(pivot, (uint16) keepnatts);
+	BarkPivotSetDownLink(pivot, BARK_P_NONE);
 	return pivot;
 }
 
-/* A high-key tuple: a key truncated to its key attributes, no downlink. */
-static IndexTuple
-bark_make_hikey(Relation index, IndexTuple key, int nkeyatts)
+/*
+ * Form the high key for the left half of a leaf split, whose last item is
+ * `lastleft`; `firstright` is the first item of the right half.  As nbtree's
+ * _bt_truncate does, keep only as many of firstright's leading key attributes
+ * as it takes to tell it from lastleft (bark_keep_natts); the attributes
+ * dropped compare as minus infinity, so the high key sorts after lastleft and
+ * no later than firstright.  Two items equal on every key attribute keep them
+ * all, since BARK has no heap-TID tiebreaker to add.  The README section
+ * "Suffix truncation" explains why the result separates the two pages.
+ *
+ * CREATE INDEX forms its leaf high keys here too (barksort.c).  Its items are
+ * never OVERSIZED, and a truncated key is no larger than the item it comes
+ * from, so the build never reaches the overflow-chain write in
+ * bark_make_pivot, the one place keyinfo->heaprel is used here.
+ */
+IndexTuple
+bark_truncate_pivot(Relation index, BarkKeyInfo *keyinfo, IndexTuple lastleft,
+					IndexTuple firstright)
 {
-	IndexTuple	hikey = index_truncate_tuple(RelationGetDescr(index), key,
-											 nkeyatts);
+	int			nkeyatts = IndexRelationGetNumberOfKeyAttributes(index);
+	int			keepnatts = bark_keep_natts(index, keyinfo, lastleft, firstright);
 
-	BarkPivotSetNAtts(hikey, (uint16) nkeyatts);
-	BarkPivotSetDownLink(hikey, BARK_P_NONE);
-	return hikey;
+	return bark_make_pivot(index, keyinfo->heaprel, firstright,
+						   Min(keepnatts, nkeyatts));
 }
 
 /*
@@ -110,126 +250,228 @@ bark_page_insert_at(Page page, IndexTuple itup, OffsetNumber off)
 }
 
 /*
- * Clear the BARK_INCOMPLETE_SPLIT flag on block `clearblk` as part of the
- * caller's generic-WAL record `gstate`.  Called when the downlink that makes
- * that page's right sibling reachable is being written, so the split becomes
- * complete atomically with the downlink insert.  Returns the locked buffer so
- * the caller can release it after GenericXLogFinish, or InvalidBuffer when
- * clearblk is BARK_P_NONE (an ordinary insert, not split recovery).
+ * Add `itup` at offset `off` on the write-locked page `buf`, and WAL-log it,
+ * as _bt_insertonpg does for an insert that needs no split.  When `cbuf` is
+ * valid, `itup` is the downlink to the right half of a split of the child
+ * `cbuf`, which the caller has kept write-locked since the split; its
+ * BARK_INCOMPLETE_SPLIT flag is cleared in the same record (INSERT_UPPER),
+ * so the split completes in the step that makes its right half reachable
+ * from the parent.  Otherwise this is a leaf insert (INSERT_LEAF).  The
+ * caller has checked that the entry fits.
+ *
+ * The entry is MAXALIGN-sized, as every SINGLE, OVERSIZED and pivot entry
+ * is: PageAddItem copies only the entry's own bytes, and alignment padding
+ * taken from the free space could differ between primary and standby.
  */
-static Buffer
-bark_clear_incomplete_split(Relation index, GenericXLogState *gstate,
-							BlockNumber clearblk)
+static void
+bark_insert_entry(Relation index, Buffer buf, IndexTuple itup,
+				  OffsetNumber off, Buffer cbuf)
 {
-	Buffer		cbuf;
-	Page		cpage;
+	Page		page = BufferGetPage(buf);
+	Size		itemsz = IndexTupleSize(itup);
+	XLogRecPtr	recptr;
 
-	if (clearblk == BARK_P_NONE)
-		return InvalidBuffer;
+	Assert(itemsz == MAXALIGN(itemsz));
 
-	cbuf = ReadBuffer(index, clearblk);
-	LockBuffer(cbuf, BUFFER_LOCK_EXCLUSIVE);
-	cpage = GenericXLogRegisterBuffer(gstate, cbuf, 0);
-	Assert((BarkPageGetOpaque(cpage)->bark_flags & BARK_INCOMPLETE_SPLIT) != 0);
-	BarkPageGetOpaque(cpage)->bark_flags &= ~BARK_INCOMPLETE_SPLIT;
-	return cbuf;
-}
+	/* No ereport(ERROR) until changes are logged */
+	START_CRIT_SECTION();
 
-static void bark_insert_parent(Relation index, BarkKeyInfo *keyinfo,
-							   BarkStack stack, IndexTuple downlink,
-							   BlockNumber leftblk, BlockNumber rightblk);
-static void bark_split(Relation index, BarkKeyInfo *keyinfo, BarkStack stack,
-					   Buffer buf, OffsetNumber newoff, IndexTuple newitup,
-					   BlockNumber clearblk);
+	if (PageAddItem(page, itup, itemsz, off, false, false) == InvalidOffsetNumber)
+		elog(PANIC, "failed to add entry to block %u in BARK index \"%s\"",
+			 BufferGetBlockNumber(buf), RelationGetRelationName(index));
 
-/* Compare a downlink's key against a parent page's high key. */
-static int
-bark_compare_off_parent(Relation index, BarkKeyInfo *keyinfo,
-						IndexTuple downlink, Page page)
-{
-	ItemId		iid = PageGetItemId(page, BARK_P_HIKEY);
-	IndexTuple	hikey = (IndexTuple) PageGetItem(page, iid);
+	MarkBufferDirty(buf);
 
-	return bark_compare_itups(keyinfo, index, downlink, hikey);
-}
-
-/* First offset on a parent page whose key is > the downlink's key. */
-static OffsetNumber
-bark_parent_insert_off(Relation index, BarkKeyInfo *keyinfo,
-					   IndexTuple downlink, Page page)
-{
-	BarkPageOpaque opaque = BarkPageGetOpaque(page);
-	OffsetNumber low = BarkPageFirstDataKey(opaque);
-	OffsetNumber high = PageGetMaxOffsetNumber(page);
-
-	if (high < low)
-		return low;
-	high = OffsetNumberNext(high);
-	while (low < high)
+	if (BufferIsValid(cbuf))
 	{
-		OffsetNumber mid = low + ((high - low) / 2);
-		ItemId		iid = PageGetItemId(page, mid);
-		IndexTuple	mitup = (IndexTuple) PageGetItem(page, iid);
+		BarkPageOpaque copaque = BarkPageGetOpaque(BufferGetPage(cbuf));
 
-		if (bark_compare_itups(keyinfo, index, downlink, mitup) >= 0)
-			low = OffsetNumberNext(mid);
-		else
-			high = mid;
+		Assert((copaque->bark_flags & BARK_INCOMPLETE_SPLIT) != 0);
+		copaque->bark_flags &= ~BARK_INCOMPLETE_SPLIT;
+		MarkBufferDirty(cbuf);
 	}
-	return low;
+
+	if (RelationNeedsWAL(index))
+	{
+		xl_bark_insert xlrec;
+		uint8		xlinfo = XLOG_BARK_INSERT_LEAF;
+
+		xlrec.offnum = off;
+
+		XLogBeginInsert();
+		XLogRegisterData(&xlrec, SizeOfBarkInsert);
+		XLogRegisterBuffer(0, buf, REGBUF_STANDARD);
+		XLogRegisterBufData(0, itup, itemsz);
+		if (BufferIsValid(cbuf))
+		{
+			xlinfo = XLOG_BARK_INSERT_UPPER;
+			XLogRegisterBuffer(1, cbuf, REGBUF_STANDARD);
+		}
+
+		recptr = XLogInsert(RM_BARK_ID, xlinfo);
+	}
+	else
+		recptr = XLogGetFakeLSN(index);
+
+	PageSetLSN(page, recptr);
+	if (BufferIsValid(cbuf))
+		PageSetLSN(BufferGetPage(cbuf), recptr);
+
+	END_CRIT_SECTION();
 }
 
 /*
- * Create the first leaf of an empty index, holding `itup`, and point the meta
- * page at it as the (leaf) root.  Called when bark_search finds no root.
+ * Replace the leaf entry at `off` on the write-locked page `buf` with `itup`,
+ * and WAL-log it (OVERWRITE).  PageIndexTupleOverwrite keeps the entry at its
+ * offset and moves only the entries stored below it on the page, by the
+ * change in size; redo makes the same call.  The caller has checked that the
+ * new entry fits in the free space plus the old entry's.
  */
 static void
-bark_insert_first_leaf(Relation index, IndexTuple itup)
+bark_overwrite_entry(Relation index, Buffer buf, OffsetNumber off,
+					 IndexTuple itup)
 {
-	Buffer		metabuf = ReadBuffer(index, BARK_METAPAGE);
+	Page		page = BufferGetPage(buf);
+	Size		itemsz = IndexTupleSize(itup);
+	XLogRecPtr	recptr;
+
+	/* No ereport(ERROR) until changes are logged */
+	START_CRIT_SECTION();
+
+	if (!PageIndexTupleOverwrite(page, off, itup, itemsz))
+		elog(PANIC, "failed to replace entry at offset %u of block %u in BARK index \"%s\"",
+			 off, BufferGetBlockNumber(buf), RelationGetRelationName(index));
+
+	MarkBufferDirty(buf);
+
+	if (RelationNeedsWAL(index))
+	{
+		xl_bark_overwrite xlrec;
+
+		xlrec.offnum = off;
+
+		XLogBeginInsert();
+		XLogRegisterData(&xlrec, SizeOfBarkOverwrite);
+		XLogRegisterBuffer(0, buf, REGBUF_STANDARD);
+		XLogRegisterBufData(0, itup, itemsz);
+
+		recptr = XLogInsert(RM_BARK_ID, XLOG_BARK_OVERWRITE);
+	}
+	else
+		recptr = XLogGetFakeLSN(index);
+
+	PageSetLSN(page, recptr);
+
+	END_CRIT_SECTION();
+}
+
+/*
+ * Add heap TID `tid` to the LIST or POSTING entry at `off` on the
+ * exclusive-locked leaf `buf`, replacing it with `ext`, the result of
+ * bark_entry_add_tid on it, and log just the TID (XLOG_BARK_ADD_TID): replay
+ * re-forms `ext` from the entry and the TID.  The caller has checked that
+ * `ext` fits.
+ */
+static void
+bark_add_tid_entry(Relation index, Buffer buf, OffsetNumber off,
+				   IndexTuple ext, ItemPointer tid)
+{
+	Page		page = BufferGetPage(buf);
+	XLogRecPtr	recptr;
+
+	/* No ereport(ERROR) until changes are logged */
+	START_CRIT_SECTION();
+
+	if (!PageIndexTupleOverwrite(page, off, ext, IndexTupleSize(ext)))
+		elog(PANIC, "failed to replace entry at offset %u of block %u in BARK index \"%s\"",
+			 off, BufferGetBlockNumber(buf), RelationGetRelationName(index));
+
+	MarkBufferDirty(buf);
+
+	if (RelationNeedsWAL(index))
+	{
+		xl_bark_add_tid xlrec;
+
+		xlrec.offnum = off;
+		xlrec.tid = *tid;
+
+		XLogBeginInsert();
+		XLogRegisterData(&xlrec, SizeOfBarkAddTid);
+		XLogRegisterBuffer(0, buf, REGBUF_STANDARD);
+
+		recptr = XLogInsert(RM_BARK_ID, XLOG_BARK_ADD_TID);
+	}
+	else
+		recptr = XLogGetFakeLSN(index);
+
+	PageSetLSN(page, recptr);
+
+	END_CRIT_SECTION();
+}
+
+/*
+ * Clear the BARK_INCOMPLETE_SPLIT flag on the left half of a split, `cbuf`,
+ * as part of the caller's generic-WAL record `gstate`, which also writes the
+ * downlink to cbuf's right sibling.  The split thus becomes complete in the
+ * same atomic step that makes the right sibling reachable from the parent.
+ * The caller has held cbuf's exclusive lock since the split itself, so nobody
+ * else can have seen the flag, let alone finished the split.
+ */
+static void
+bark_clear_incomplete_split(GenericXLogState *gstate, Buffer cbuf)
+{
+	Page		cpage = GenericXLogRegisterBuffer(gstate, cbuf, 0);
+
+	Assert((BarkPageGetOpaque(cpage)->bark_flags & BARK_INCOMPLETE_SPLIT) != 0);
+	BarkPageGetOpaque(cpage)->bark_flags &= ~BARK_INCOMPLETE_SPLIT;
+}
+
+static void bark_insert_parent(Relation index, Relation heaprel,
+							   BarkKeyInfo *keyinfo, BarkStack stack,
+							   Buffer buf, IndexTuple downlink);
+static void bark_split(Relation index, Relation heaprel, BarkKeyInfo *keyinfo,
+					   BarkStack stack, Buffer buf, OffsetNumber newoff,
+					   IndexTuple newitup, Buffer cbuf);
+
+/*
+ * Give an empty index, one whose meta page names no root, its first page: an
+ * empty leaf that is also the root.  Called when an insert's descent finds no
+ * root.  The caller then descends again and inserts through the normal path,
+ * with its uniqueness, serializable-conflict and free-space checks, as nbtree
+ * does after _bt_getroot creates the root of an empty index.
+ *
+ * Two backends can both see the index empty.  Creation is serialized on the
+ * meta page's exclusive lock and the root re-checked under it, so only one
+ * creates a root; the other finds it and simply returns.  Neither inserts
+ * here, so the loser of the race cannot slip a row past the checks.
+ *
+ * Only the state bark_buildempty writes has no root, and an unlogged index is
+ * reset to it after a crash; CREATE INDEX writes a root leaf even for an empty
+ * table.
+ */
+static void
+bark_create_root_leaf(Relation index, Relation heaprel)
+{
+	Buffer		metabuf;
 	Buffer		leafbuf;
 	GenericXLogState *gstate;
 	Page		leafpage;
 	Page		metapage;
 	BlockNumber leafblk;
 
-	/*
-	 * Serialize first-leaf creation on the meta page's exclusive lock so two
-	 * backends inserting into a brand-new empty index cannot both create a
-	 * root.  A second waiter re-checks bark_root after acquiring the lock.
-	 */
+	/* A test may stop here, after the descent found no root. */
+	INJECTION_POINT("bark-create-root-leaf", NULL);
+
+	metabuf = ReadBuffer(index, BARK_METAPAGE);
 	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
 	if (BarkPageGetMeta(BufferGetPage(metabuf))->bark_root != BARK_P_NONE)
 	{
-		/* Someone else created the root; fall back to the normal path. */
+		/* Someone else created the root first. */
 		UnlockReleaseBuffer(metabuf);
-		{
-			BarkKeyInfo *keyinfo = bark_build_keyinfo(index);
-			Buffer		buf;
-			BarkStack	stack;
-			Page		page;
-			OffsetNumber off;
-
-			buf = bark_search(index, keyinfo, itup, true, true, &stack);
-			page = BufferGetPage(buf);
-			off = bark_leaf_insert_off(index, keyinfo, itup, page);
-			{
-				GenericXLogState *g = GenericXLogStart(index);
-				Page		p = GenericXLogRegisterBuffer(g, buf, 0);
-
-				bark_page_insert_at(p, itup, off);
-				GenericXLogFinish(g);
-			}
-			UnlockReleaseBuffer(buf);
-			if (stack)
-				bark_freestack(stack);
-			pfree(keyinfo);
-		}
 		return;
 	}
 
-	leafbuf = ReadBuffer(index, P_NEW);
-	LockBuffer(leafbuf, BUFFER_LOCK_EXCLUSIVE);
+	leafbuf = bark_get_free_page(index, heaprel);
 	leafblk = BufferGetBlockNumber(leafbuf);
 
 	gstate = GenericXLogStart(index);
@@ -243,10 +485,10 @@ bark_insert_first_leaf(Relation index, IndexTuple itup)
 		lo->bark_prev = BARK_P_NONE;
 		lo->bark_next = BARK_P_NONE;
 		lo->bark_level = 0;
+		lo->bark_cycleid = 0;
 		lo->bark_flags = BARK_LEAF | BARK_ROOT;
 		lo->bark_page_id = BARK_PAGE_ID;
 	}
-	bark_page_insert_at(leafpage, itup, BARK_P_HIKEY);
 
 	{
 		BarkMetaPageData *meta = BarkPageGetMeta(metapage);
@@ -262,18 +504,27 @@ bark_insert_first_leaf(Relation index, IndexTuple itup)
 
 /*
  * Split `buf` (a full page) to make room for `newitup` at insert offset
- * `newoff`.  Allocates a right sibling, moves the upper half of the items to
- * it, sets the left page's high key to the right page's first key, chains the
- * right links, and inserts the right page's downlink into the parent via the
- * stack.  All modified pages are logged with one generic WAL record each as
- * they are finished; the right link is published before the parent downlink
+ * `newoff`.  Allocates a right sibling, moves the items from the split point
+ * bark_findsplitloc chooses onward to it, gives the left page a new high key,
+ * chains the right links, and inserts the right page's downlink, a copy of
+ * that high key, into the parent via the stack.  The split itself is one
+ * generic WAL record; the right link is published before the parent downlink
  * so a concurrent descender can always move right to find a key.
+ *
+ * `buf` is write-locked on entry and stays locked until bark_insert_parent
+ * has write-locked the parent and written the downlink, so the left page's
+ * BARK_INCOMPLETE_SPLIT flag is never visible to another backend while this
+ * one is still completing the split (see bark_insert_parent).  `cbuf` is the
+ * write-locked left half of a child split when `buf` is an internal page
+ * receiving that child's downlink (InvalidBuffer for a leaf); its flag is
+ * cleared in the split's WAL record and it is released once that is logged.
+ * `heaprel` is the index's heap relation, for bark_get_free_page.
  */
 static void
-bark_split(Relation index, BarkKeyInfo *keyinfo, BarkStack stack, Buffer buf,
-		   OffsetNumber newoff, IndexTuple newitup, BlockNumber clearblk)
+bark_split(Relation index, Relation heaprel, BarkKeyInfo *keyinfo,
+		   BarkStack stack, Buffer buf, OffsetNumber newoff,
+		   IndexTuple newitup, Buffer cbuf)
 {
-	int			nkeyatts = IndexRelationGetNumberOfKeyAttributes(index);
 	Page		origpage = BufferGetPage(buf);
 	BarkPageOpaque origopaque = BarkPageGetOpaque(origpage);
 	bool		isleaf = BarkPageIsLeaf(origopaque);
@@ -294,8 +545,9 @@ bark_split(Relation index, BarkKeyInfo *keyinfo, BarkStack stack, Buffer buf,
 	BlockNumber rightblk;
 	GenericXLogState *gstate;
 	Page		leftpage;
-	IndexTuple	splitkey;
+	IndexTuple	lhikey;
 	IndexTuple	downlink;
+	BTCycleId	cycleid;
 
 	/* Preserve the original high key (if any) for the new right page. */
 	if (!origrightmost)
@@ -316,15 +568,42 @@ bark_split(Relation index, BarkKeyInfo *keyinfo, BarkStack stack, Buffer buf,
 		items[n++] = CopyIndexTuple(newitup);
 	Assert(n == ntotal);
 
-	/* Split roughly in half; the right page gets items[splitidx..]. */
-	splitidx = n / 2;
-	if (splitidx < 1)
-		splitidx = 1;
+	/* The right page gets items[splitidx..]; the new item is at newoff. */
+	splitidx = bark_findsplitloc(index, keyinfo, items, n,
+								 newoff - firstdata, isleaf, orighikey);
 
-	/* Allocate the right sibling. */
-	rbuf = ReadBuffer(index, P_NEW);
-	LockBuffer(rbuf, BUFFER_LOCK_EXCLUSIVE);
+	/*
+	 * Form the left page's high key BEFORE opening the generic-WAL state: an
+	 * oversized key makes an OVERSIZED high key, which writes its own
+	 * overflow chain under its own WAL records, and generic WAL states cannot
+	 * nest.  A leaf's high key is the right page's first key, truncated
+	 * against the left page's last key.  An internal page's items are pivots
+	 * already, so its high key is a copy of the right page's first item with
+	 * the attributes that item has, as in nbtree.
+	 */
+	if (isleaf)
+		lhikey = bark_truncate_pivot(index, keyinfo, items[splitidx - 1],
+									 items[splitidx]);
+	else
+	{
+		lhikey = CopyIndexTuple(items[splitidx]);
+		BarkEntrySetDownLink(lhikey, BARK_P_NONE);
+	}
+
+	/*
+	 * Allocate the right sibling (reusing a reclaimed page if the FSM has
+	 * one).
+	 */
+	rbuf = bark_get_free_page(index, heaprel);
 	rightblk = BufferGetBlockNumber(rbuf);
+
+	/*
+	 * The right page's downlink is the same tuple as the left page's high
+	 * key, so the parent separates the two pages exactly as the high key
+	 * does.  An OVERSIZED high key and its downlink share one overflow chain.
+	 */
+	downlink = CopyIndexTuple(lhikey);
+	BarkEntrySetDownLink(downlink, rightblk);
 
 	gstate = GenericXLogStart(index);
 	leftpage = GenericXLogRegisterBuffer(gstate, buf, GENERIC_XLOG_FULL_IMAGE);
@@ -352,9 +631,7 @@ bark_split(Relation index, BarkKeyInfo *keyinfo, BarkStack stack, Buffer buf,
 			BARK_INCOMPLETE_SPLIT;
 		lo->bark_page_id = BARK_PAGE_ID;
 	}
-	splitkey = items[splitidx]; /* first key on the right page */
 	{
-		IndexTuple	lhikey = bark_make_hikey(index, splitkey, nkeyatts);
 		OffsetNumber o = BARK_P_HIKEY;
 
 		bark_page_insert_at(leftpage, lhikey, o++);
@@ -363,7 +640,7 @@ bark_split(Relation index, BarkKeyInfo *keyinfo, BarkStack stack, Buffer buf,
 			bark_page_insert_at(leftpage, items[i], o++);
 	}
 
-	/* --- Build the right page: original high key, upper half. --- */
+	/* --- Build the right page: original high key, items[splitidx..]. --- */
 	PageInit(rightpage, BLCKSZ, sizeof(BarkPageOpaqueData));
 	{
 		BarkPageOpaque ro = BarkPageGetOpaque(rightpage);
@@ -384,15 +661,30 @@ bark_split(Relation index, BarkKeyInfo *keyinfo, BarkStack stack, Buffer buf,
 	}
 
 	/*
+	 * Stamp both halves of a leaf split with the cycle ID of the VACUUM now
+	 * scanning this index (zero if none), as _bt_split does.  The entries
+	 * just moved to the right page may land on a block VACUUM has already
+	 * passed; the stamp is how barkbulkdelete notices and goes back for them.
+	 * It must be read while both pages are exclusive-locked, so a VACUUM that
+	 * starts right after cannot process either page before the split is
+	 * complete.
+	 */
+	if (isleaf)
+	{
+		cycleid = _bt_vacuum_cycleid(index);
+		BarkPageGetOpaque(leftpage)->bark_cycleid = cycleid;
+		BarkPageGetOpaque(rightpage)->bark_cycleid = cycleid;
+	}
+
+	/*
 	 * If the original page had a right sibling, that sibling's bark_prev must
 	 * now point at the new right page.  Register and fix it in the same WAL
-	 * record.  If this split is finishing a child's incomplete split
-	 * (clearblk set), the child's downlink is being written here, so clear
+	 * record.  If this split is of an internal page receiving a child's
+	 * downlink (cbuf valid), that downlink is being written here, so clear
 	 * the child's BARK_INCOMPLETE_SPLIT flag atomically in the same record.
 	 */
 	{
 		Buffer		sbuf = InvalidBuffer;
-		Buffer		cbuf;
 
 		if (!origrightmost)
 		{
@@ -403,15 +695,21 @@ bark_split(Relation index, BarkKeyInfo *keyinfo, BarkStack stack, Buffer buf,
 			spage = GenericXLogRegisterBuffer(gstate, sbuf, 0);
 			BarkPageGetOpaque(spage)->bark_prev = rightblk;
 		}
-		cbuf = bark_clear_incomplete_split(index, gstate, clearblk);
+		if (BufferIsValid(cbuf))
+			bark_clear_incomplete_split(gstate, cbuf);
 		GenericXLogFinish(gstate);
-		if (cbuf != InvalidBuffer)
+		if (BufferIsValid(cbuf))
 			UnlockReleaseBuffer(cbuf);
 		if (sbuf != InvalidBuffer)
 			UnlockReleaseBuffer(sbuf);
 	}
 
-	/* The left (original) and right buffers are now consistent on disk. */
+	/*
+	 * The left (original) and right pages are now consistent on disk.  The
+	 * right page can be released at once: it is reachable only through the
+	 * left page's right link until its downlink exists.  The left page stays
+	 * locked across the parent step.
+	 */
 	UnlockReleaseBuffer(rbuf);
 
 	/*
@@ -422,14 +720,12 @@ bark_split(Relation index, BarkKeyInfo *keyinfo, BarkStack stack, Buffer buf,
 	 */
 	PredicateLockPageSplit(index, origblk, rightblk);
 
-	/* Form the downlink for the right page and insert it into the parent. */
-	downlink = bark_make_downlink(index, splitkey, rightblk, nkeyatts);
-	UnlockReleaseBuffer(buf);	/* release leaf before touching parent */
-
 	/*
 	 * The split is now durable but its downlink is not yet in the parent --
 	 * the window a crash would leave as an incomplete split.  A test may stop
-	 * here (via the injection point) to exercise bark_finish_split recovery.
+	 * here (via the injection point) to exercise bark_finish_split recovery
+	 * (an error releases the left page with its flag still set), or to check
+	 * that a concurrent inserter waits on the still-locked left page.
 	 */
 #ifdef USE_INJECTION_POINTS
 	if (isleaf)
@@ -438,7 +734,7 @@ bark_split(Relation index, BarkKeyInfo *keyinfo, BarkStack stack, Buffer buf,
 		INJECTION_POINT("bark-leave-internal-split-incomplete", NULL);
 #endif
 
-	bark_insert_parent(index, keyinfo, stack, downlink, origblk, rightblk);
+	bark_insert_parent(index, heaprel, keyinfo, stack, buf, downlink);
 	pfree(downlink);
 
 	/* Clean up. */
@@ -450,28 +746,25 @@ bark_split(Relation index, BarkKeyInfo *keyinfo, BarkStack stack, Buffer buf,
 }
 
 /*
- * Create a new root one level above `leftblk`/`rightblk` after a split
- * propagated to the top, and point the meta page at it.  The new root has two
- * entries: the left page's low key (as a minus-infinity downlink) and the
- * split key downlink to the right page.
+ * Create a new root one level above the split of the old root, and point the
+ * meta page at it.  The new root has two entries: a minus-infinity downlink
+ * to the left half `lbuf` and `downlink`, which already points at the right
+ * half.  `metabuf` and `lbuf` are write-locked on entry; the caller checked,
+ * under the meta page lock, that `lbuf` is still the root.  All locks are
+ * released here.
  */
 static void
-bark_new_root(Relation index, IndexTuple downlink, BlockNumber leftblk,
-			  BlockNumber rightblk, uint32 childlevel)
+bark_new_root(Relation index, Relation heaprel, Buffer metabuf, Buffer lbuf,
+			  IndexTuple downlink)
 {
-	int			nkeyatts = IndexRelationGetNumberOfKeyAttributes(index);
-	Buffer		rootbuf = ReadBuffer(index, P_NEW);
-	Buffer		metabuf;
+	BlockNumber leftblk = BufferGetBlockNumber(lbuf);
+	uint32		childlevel = BarkPageGetOpaque(BufferGetPage(lbuf))->bark_level;
+	Buffer		rootbuf = bark_get_free_page(index, heaprel);
+	BlockNumber rootblk = BufferGetBlockNumber(rootbuf);
 	GenericXLogState *gstate;
 	Page		rootpage;
 	Page		metapage;
-	BlockNumber rootblk;
 	IndexTuple	leftdown;
-
-	LockBuffer(rootbuf, BUFFER_LOCK_EXCLUSIVE);
-	rootblk = BufferGetBlockNumber(rootbuf);
-	metabuf = ReadBuffer(index, BARK_METAPAGE);
-	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
 
 	gstate = GenericXLogStart(index);
 	rootpage = GenericXLogRegisterBuffer(gstate, rootbuf, GENERIC_XLOG_FULL_IMAGE);
@@ -484,6 +777,7 @@ bark_new_root(Relation index, IndexTuple downlink, BlockNumber leftblk,
 		ro->bark_prev = BARK_P_NONE;
 		ro->bark_next = BARK_P_NONE;
 		ro->bark_level = childlevel + 1;
+		ro->bark_cycleid = 0;
 		ro->bark_flags = BARK_ROOT;
 		ro->bark_page_id = BARK_PAGE_ID;
 	}
@@ -491,19 +785,17 @@ bark_new_root(Relation index, IndexTuple downlink, BlockNumber leftblk,
 	/*
 	 * First downlink is minus-infinity (zero key attributes): it routes every
 	 * key below the split key to the left child.  Second is the split-key
-	 * downlink to the right child.
+	 * downlink to the right child -- the caller's `downlink`, which already
+	 * points at the right half, reused as-is (re-forming it would re-fetch
+	 * and re-write an oversized key's overflow chain, and would do so inside
+	 * this open generic-WAL state).
 	 */
 	leftdown = index_truncate_tuple(RelationGetDescr(index), downlink, 0);
 	BarkPivotSetNAtts(leftdown, 0);
 	BarkPivotSetDownLink(leftdown, leftblk);
 	bark_page_insert_at(rootpage, leftdown, BARK_P_HIKEY);
 	pfree(leftdown);
-	{
-		IndexTuple	rightdown = bark_make_downlink(index, downlink, rightblk, nkeyatts);
-
-		bark_page_insert_at(rootpage, rightdown, BARK_P_FIRSTKEY);
-		pfree(rightdown);
-	}
+	bark_page_insert_at(rootpage, downlink, BARK_P_FIRSTKEY);
 
 	/* Point the meta page at the new root. */
 	{
@@ -513,132 +805,277 @@ bark_new_root(Relation index, IndexTuple downlink, BlockNumber leftblk,
 		meta->bark_level = childlevel + 1;
 	}
 
-	/*
-	 * The left child's downlink now exists (as the minus-infinity entry), so
-	 * clear its incomplete-split flag in the same record.  ponytail: locks
-	 * the child under the root while BARK is single-writer; revisit for
-	 * concurrency (P-series).
-	 */
-	{
-		Buffer		cbuf = bark_clear_incomplete_split(index, gstate, leftblk);
+	/* Both halves are now reachable: the split completes in this record. */
+	bark_clear_incomplete_split(gstate, lbuf);
+	GenericXLogFinish(gstate);
 
-		GenericXLogFinish(gstate);
-		if (cbuf != InvalidBuffer)
-			UnlockReleaseBuffer(cbuf);
-	}
+	UnlockReleaseBuffer(lbuf);
 	UnlockReleaseBuffer(metabuf);
 	UnlockReleaseBuffer(rootbuf);
 }
 
 /*
- * Insert `downlink` (pointing at the just-created right page) into the parent
- * recorded on the stack.  If the stack is empty the split was at the root, so
- * a new root is created.  If the parent itself overflows this recurses as a
- * split one level up.
+ * Return the block number of the leftmost page at tree level `level`, walking
+ * down from the current root.  Used when a split's stack is empty (the page
+ * was the root when we descended) but another backend has since added a level
+ * above it.  Modeled on nbtree's _bt_get_endpoint.  Returns BARK_P_NONE when
+ * the tree has no such level, which the caller reports as a missing parent.
  */
-static void
-bark_insert_parent(Relation index, BarkKeyInfo *keyinfo, BarkStack stack,
-				   IndexTuple downlink, BlockNumber leftblk,
-				   BlockNumber rightblk)
+static BlockNumber
+bark_get_leftmost_at_level(Relation index, uint32 level)
 {
-	Buffer		pbuf;
-	Page		ppage;
-	BarkPageOpaque popaque;
-	OffsetNumber off;
-	Size		itemsz = MAXALIGN(IndexTupleSize(downlink));
+	Buffer		metabuf = ReadBuffer(index, BARK_METAPAGE);
+	BlockNumber blkno;
 
-	if (stack == NULL)
+	LockBuffer(metabuf, BUFFER_LOCK_SHARE);
+	blkno = BarkPageGetMeta(BufferGetPage(metabuf))->bark_root;
+	UnlockReleaseBuffer(metabuf);
+
+	for (;;)
 	{
-		/* Split reached the root: grow a new level. */
-		uint32		childlevel;
-		Buffer		lb = ReadBuffer(index, leftblk);
+		Buffer		buf = ReadBuffer(index, blkno);
+		Page		page;
+		BarkPageOpaque opaque;
+		uint32		curlevel;
 
-		LockBuffer(lb, BUFFER_LOCK_SHARE);
-		childlevel = BarkPageGetOpaque(BufferGetPage(lb))->bark_level;
-		UnlockReleaseBuffer(lb);
-		bark_new_root(index, downlink, leftblk, rightblk, childlevel);
-		return;
-	}
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buf);
+		opaque = BarkPageGetOpaque(page);
+		curlevel = opaque->bark_level;
 
-	pbuf = ReadBuffer(index, stack->bark_blkno);
-	LockBuffer(pbuf, BUFFER_LOCK_EXCLUSIVE);
-	ppage = BufferGetPage(pbuf);
-	popaque = BarkPageGetOpaque(ppage);
+		if ((opaque->bark_flags & (BARK_DELETED | BARK_HALF_DEAD)) != 0)
+		{
+			/* A page being removed from the tree: step right past it. */
+			if (BarkPageRightmost(opaque))
+				elog(ERROR, "fell off the end of BARK index \"%s\"",
+					 RelationGetRelationName(index));
+			blkno = opaque->bark_next;
+		}
+		else if (curlevel == level)
+		{
+			UnlockReleaseBuffer(buf);
+			return blkno;
+		}
+		else if (curlevel < level)
+		{
+			UnlockReleaseBuffer(buf);
+			return BARK_P_NONE;
+		}
+		else
+		{
+			IndexTuple	itup = (IndexTuple)
+				PageGetItem(page, PageGetItemId(page, BarkPageFirstDataKey(opaque)));
 
-	/*
-	 * Find where the new downlink's key belongs on the parent.  The parent
-	 * may itself have split since we descended; move right until the key is
-	 * not past the high key.
-	 */
-	while (!BarkPageRightmost(popaque) &&
-		   bark_compare_off_parent(index, keyinfo, downlink, ppage) > 0)
-	{
-		BlockNumber right = popaque->bark_next;
-
-		UnlockReleaseBuffer(pbuf);
-		pbuf = ReadBuffer(index, right);
-		LockBuffer(pbuf, BUFFER_LOCK_EXCLUSIVE);
-		ppage = BufferGetPage(pbuf);
-		popaque = BarkPageGetOpaque(ppage);
-	}
-
-	off = bark_parent_insert_off(index, keyinfo, downlink, ppage);
-
-	if (PageGetFreeSpace(ppage) >= itemsz)
-	{
-		/*
-		 * Fits: insert the downlink and log the parent.  The downlink is now
-		 * durably reachable, so clear the left child's incomplete-split flag
-		 * in the same WAL record.
-		 *
-		 * ponytail: locks the child (leftblk) while holding the parent, i.e.
-		 * down the tree -- safe while BARK has no concurrent inserters;
-		 * revisit the lock order when concurrency lands (P-series).
-		 */
-		GenericXLogState *gstate = GenericXLogStart(index);
-		Page		p = GenericXLogRegisterBuffer(gstate, pbuf, 0);
-		Buffer		cbuf;
-
-		bark_page_insert_at(p, downlink, off);
-		cbuf = bark_clear_incomplete_split(index, gstate, leftblk);
-		GenericXLogFinish(gstate);
-		if (cbuf != InvalidBuffer)
-			UnlockReleaseBuffer(cbuf);
-		UnlockReleaseBuffer(pbuf);
-	}
-	else
-	{
-		/*
-		 * Parent is full: split it, carrying the stack one level up.  The
-		 * parent split writes this downlink, so it clears leftblk's flag.
-		 */
-		bark_split(index, keyinfo, stack->bark_parent, pbuf, off, downlink,
-				   leftblk);
+			blkno = BarkEntryGetDownLink(itup);
+		}
+		UnlockReleaseBuffer(buf);
 	}
 }
 
 /*
- * Finish a split that was interrupted (by a crash) after the right sibling was
- * published but before its downlink reached the parent: the left page `lbuf`
- * carries BARK_INCOMPLETE_SPLIT.  Reconstruct the missing downlink from the
- * left page's high key -- which equals the right sibling's first key, i.e. the
- * split key -- pointing at the right sibling, and insert it into the parent.
- * bark_insert_parent clears the flag atomically with that insert.
+ * Walk back up the tree one step and return the parent page that holds the
+ * downlink to `child`, write-locked.  A port of nbtree's _bt_getstackbuf.
  *
- * `lbuf` is write-locked on entry and released here.  `stack` is the parent
- * path to `lbuf` from the current descent.
+ * The search starts at the page and offset recorded in `stack` during the
+ * descent.  Inserts into the parent level can move the downlink right (even
+ * onto a right sibling, if the parent split), so scan forward from the
+ * recorded offset, then backward, then follow right links.  A parent page that
+ * is itself incompletely split is finished first, using the parent's own stack
+ * entry, so the parent level is complete before anything is added to it.
+ *
+ * Matching on the downlink's block number, not on a key, is what makes this
+ * exact: duplicate keys can give several downlinks the same key, but only
+ * one points at `child`.  On success stack->bark_blkno and bark_offset are
+ * updated to where the downlink is now, and the caller inserts the new
+ * downlink at bark_offset + 1.  Returns InvalidBuffer if no page on the level
+ * holds a downlink to `child`.
+ */
+static Buffer
+bark_getstackbuf(Relation index, BarkKeyInfo *keyinfo, BarkStack stack,
+				 BlockNumber child)
+{
+	BlockNumber blkno = stack->bark_blkno;
+	OffsetNumber start = stack->bark_offset;
+
+	for (;;)
+	{
+		Buffer		buf = ReadBuffer(index, blkno);
+		Page		page;
+		BarkPageOpaque opaque;
+
+		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+		page = BufferGetPage(buf);
+		opaque = BarkPageGetOpaque(page);
+
+		if ((opaque->bark_flags & BARK_INCOMPLETE_SPLIT) != 0)
+		{
+			bark_finish_split(index, keyinfo, buf, stack->bark_parent);
+			continue;
+		}
+
+		if ((opaque->bark_flags & (BARK_DELETED | BARK_HALF_DEAD)) == 0)
+		{
+			OffsetNumber minoff = BarkPageFirstDataKey(opaque);
+			OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
+			OffsetNumber off;
+
+			/*
+			 * InvalidOffsetNumber means search the whole page; also clamp a
+			 * start that a concurrent split has left past the end, or that
+			 * now points at a high key the page did not have before.
+			 */
+			if (start < minoff)
+				start = minoff;
+			if (start > maxoff)
+				start = OffsetNumberNext(maxoff);
+
+			for (off = start; off <= maxoff; off = OffsetNumberNext(off))
+			{
+				IndexTuple	itup = (IndexTuple)
+					PageGetItem(page, PageGetItemId(page, off));
+
+				if (BarkEntryGetDownLink(itup) == child)
+				{
+					stack->bark_blkno = blkno;
+					stack->bark_offset = off;
+					return buf;
+				}
+			}
+			for (off = OffsetNumberPrev(start); off >= minoff;
+				 off = OffsetNumberPrev(off))
+			{
+				IndexTuple	itup = (IndexTuple)
+					PageGetItem(page, PageGetItemId(page, off));
+
+				if (BarkEntryGetDownLink(itup) == child)
+				{
+					stack->bark_blkno = blkno;
+					stack->bark_offset = off;
+					return buf;
+				}
+			}
+		}
+
+		/* The downlink moved right at least one page. */
+		if (BarkPageRightmost(opaque))
+		{
+			UnlockReleaseBuffer(buf);
+			return InvalidBuffer;
+		}
+		blkno = opaque->bark_next;
+		start = InvalidOffsetNumber;
+		UnlockReleaseBuffer(buf);
+	}
+}
+
+/*
+ * Insert `downlink`, which points at the new right half of the split of
+ * `buf`, into the parent of `buf`, completing the split.  `stack` is the
+ * parent path from the descent; NULL when `buf` was the root then.
+ *
+ * `buf` is write-locked on entry, with BARK_INCOMPLETE_SPLIT set, and is
+ * released here.  It stays locked until the parent is write-locked and the
+ * downlink is written, and its flag is cleared in that same WAL record.  So
+ * the flag is only ever seen by another backend on a page that is not being
+ * completed by anyone -- one whose split was interrupted by an error or crash
+ * -- and the backend that sees it (holding the page's lock) can safely finish
+ * the split itself.  Locks are always taken child before parent, as in
+ * nbtree, so the coupling cannot deadlock with another split.
+ *
+ * If the parent is full it is split in turn (bark_split with `buf` as the
+ * child whose flag that split clears), and the same protocol repeats one
+ * level up.
  */
 static void
+bark_insert_parent(Relation index, Relation heaprel, BarkKeyInfo *keyinfo,
+				   BarkStack stack, Buffer buf, IndexTuple downlink)
+{
+	BlockNumber leftblk = BufferGetBlockNumber(buf);
+	BarkStackData fakestack;
+	Buffer		pbuf;
+	Page		ppage;
+	OffsetNumber off;
+
+	if (stack == NULL)
+	{
+		/*
+		 * The page was the root when we descended.  If it still is, grow a
+		 * new level.  Only a split of the root, made while holding the root's
+		 * lock, changes bark_root, so the answer cannot change while we hold
+		 * `buf`.  If another backend already added a level, its root is our
+		 * parent level: find it from its leftmost page, and let
+		 * bark_getstackbuf move right to the downlink.
+		 */
+		Buffer		metabuf = ReadBuffer(index, BARK_METAPAGE);
+		uint32		level = BarkPageGetOpaque(BufferGetPage(buf))->bark_level;
+
+		LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
+		if (BarkPageGetMeta(BufferGetPage(metabuf))->bark_root == leftblk)
+		{
+			bark_new_root(index, heaprel, metabuf, buf, downlink);
+			return;
+		}
+		UnlockReleaseBuffer(metabuf);
+
+		elog(DEBUG2, "concurrent ROOT page split in BARK index \"%s\"",
+			 RelationGetRelationName(index));
+		fakestack.bark_blkno = bark_get_leftmost_at_level(index, level + 1);
+		fakestack.bark_offset = InvalidOffsetNumber;
+		fakestack.bark_parent = NULL;
+		stack = &fakestack;
+	}
+
+	if (stack->bark_blkno == BARK_P_NONE)
+		pbuf = InvalidBuffer;
+	else
+		pbuf = bark_getstackbuf(index, keyinfo, stack, leftblk);
+	if (pbuf == InvalidBuffer)
+		ereport(ERROR,
+				(errcode(ERRCODE_INDEX_CORRUPTED),
+				 errmsg_internal("failed to re-find parent downlink for block %u in BARK index \"%s\"",
+								 leftblk, RelationGetRelationName(index))));
+
+	/* The new downlink goes immediately after the one to its left sibling. */
+	off = OffsetNumberNext(stack->bark_offset);
+	ppage = BufferGetPage(pbuf);
+
+	if (PageGetFreeSpace(ppage) >= MAXALIGN(IndexTupleSize(downlink)))
+	{
+		bark_insert_entry(index, pbuf, downlink, off, buf);
+		UnlockReleaseBuffer(buf);
+		UnlockReleaseBuffer(pbuf);
+	}
+	else
+		bark_split(index, heaprel, keyinfo, stack->bark_parent, pbuf, off,
+				   downlink, buf);
+}
+
+/*
+ * Finish a split that was interrupted (by an error or crash) after the right
+ * sibling was published but before its downlink reached the parent: the left
+ * page `lbuf` carries BARK_INCOMPLETE_SPLIT.  The missing downlink is a copy
+ * of the left page's high key pointing at the right sibling, exactly the
+ * tuple the interrupted split would have inserted; insert it into the parent.
+ * bark_insert_parent clears the flag atomically with that insert.
+ *
+ * `lbuf` is write-locked on entry and released by bark_insert_parent, which
+ * keeps it locked until the parent is locked, exactly as for a split this
+ * backend made itself.  Since the flag was seen under that lock, no other
+ * backend is completing this split.  `stack` is the parent path to `lbuf`, or
+ * NULL when `lbuf` was reached from the top of the tree; bark_insert_parent
+ * then decides from the meta page whether this was a root split.
+ *
+ * The descents that call this pass no heap relation of their own; a page the
+ * parent insert allocates is taken with keyinfo->heaprel, which the insert
+ * that started the descent set.
+ */
+void
 bark_finish_split(Relation index, BarkKeyInfo *keyinfo, Buffer lbuf,
 				  BarkStack stack)
 {
-	int			nkeyatts = IndexRelationGetNumberOfKeyAttributes(index);
 	Page		lpage = BufferGetPage(lbuf);
 	BarkPageOpaque lopaque = BarkPageGetOpaque(lpage);
-	BlockNumber lblk = BufferGetBlockNumber(lbuf);
-	BlockNumber rblk = lopaque->bark_next;
-	ItemId		hiid = PageGetItemId(lpage, BARK_P_HIKEY);
-	IndexTuple	hikey = (IndexTuple) PageGetItem(lpage, hiid);
+	IndexTuple	hikey;
 	IndexTuple	downlink;
 
 	Assert((lopaque->bark_flags & BARK_INCOMPLETE_SPLIT) != 0);
@@ -646,10 +1083,14 @@ bark_finish_split(Relation index, BarkKeyInfo *keyinfo, Buffer lbuf,
 
 	INJECTION_POINT("bark-finish-incomplete-split", NULL);
 
-	/* The high key is the split key; make a downlink to the right sibling. */
-	downlink = bark_make_downlink(index, hikey, rblk, nkeyatts);
-	UnlockReleaseBuffer(lbuf);
-	bark_insert_parent(index, keyinfo, stack, downlink, lblk, rblk);
+	/*
+	 * Copy the high key, which keeps its own attribute count and, if it is
+	 * OVERSIZED, its overflow chain, and point the copy at the right sibling.
+	 */
+	hikey = (IndexTuple) PageGetItem(lpage, PageGetItemId(lpage, BARK_P_HIKEY));
+	downlink = CopyIndexTuple(hikey);
+	BarkEntrySetDownLink(downlink, lopaque->bark_next);
+	bark_insert_parent(index, keyinfo->heaprel, keyinfo, stack, lbuf, downlink);
 	pfree(downlink);
 }
 
@@ -664,31 +1105,57 @@ bark_finish_split(Relation index, BarkKeyInfo *keyinfo, Buffer lbuf,
  *  - UNIQUE_CHECK_EXISTING skips the entry that is itup itself (the tuple is
  *    already in the heap; we are only verifying that it is unique).
  *  - A conflict with an in-progress transaction returns that xact's id so the
- *    caller can wait for it and retry; *is_unique is left false.
+ *    caller can wait for it and retry; *is_unique is left false.  When that
+ *    transaction is itself a speculative inserter (an INSERT ... ON CONFLICT
+ *    that has inserted its heap tuple but not yet confirmed or killed it),
+ *    *speculativeToken is set to its token so the caller can wait on the
+ *    speculative insertion (which resolves the moment the inserter confirms or
+ *    kills, not when its whole xact ends) rather than on the xact.
  *  - UNIQUE_CHECK_PARTIAL never errors: on any conflict it sets *is_unique to
  *    false and returns, letting a deferred constraint recheck decide later.
  *  - Otherwise a live conflict raises ERRCODE_UNIQUE_VIOLATION.
  *
  * Returns InvalidTransactionId when no wait is needed (unique, or already
- * errored).  The caller holds the write lock on `buf` throughout and still
- * holds it on return.
+ * errored); *speculativeToken is set to zero unless a speculative conflict was
+ * found.  The caller holds the write lock on `buf` throughout and still holds
+ * it on return.
  *
- * ponytail: no speculative-insertion (INSERT ... ON CONFLICT) handling and no
- * killing of known-dead index entries yet; both are optimizations layered on
- * the correct check here.
+ * This does not opportunistically kill known-dead index entries during the
+ * check; that is an orthogonal optimization layered on the correct check here.
  */
 static TransactionId
 bark_check_unique(Relation index, BarkKeyInfo *keyinfo, IndexTuple itup,
 				  Buffer buf, Relation heapRel, IndexUniqueCheck checkUnique,
-				  bool *is_unique)
+				  bool *is_unique, uint32 *speculativeToken)
 {
 	SnapshotData SnapshotDirty;
 	Buffer		curbuf = buf;
 	bool		ownbuf = false; /* do we need to release curbuf? */
 
 	*is_unique = true;
+	*speculativeToken = 0;
 	InitDirtySnapshot(SnapshotDirty);
 
+	/*
+	 * The scan below only moves right from the insert leaf (where the insert
+	 * descent, nextkey=true, lands -- the leaf holding the position just past
+	 * the last key equal to itup's).  This finds every conflicting entry
+	 * because of how BARK inserts: a new entry for a key always goes at the
+	 * END of that key's run, so any existing live entry for the same key sits
+	 * at or after the first equal entry on the insert leaf and is reachable
+	 * by scanning right.  Dead, not-yet-vacuumed duplicates may extend the
+	 * run left across earlier leaves, but the single live survivor cannot be
+	 * left of the insert leaf's first equal entry.  Suffix truncation does
+	 * not change this: a pivot inside a run of equal keys keeps every key
+	 * attribute (see bark_truncate_pivot), so the descent still reaches the
+	 * end of the run.
+	 *
+	 * This correctness argument relies on the insert descent using
+	 * nextkey=true.  If the insert positioning ever changes so the live entry
+	 * could land strictly left of the descent leaf, this check would have to
+	 * first walk left to the first leaf of the equal-key run (or descend the
+	 * check with nextkey=false).
+	 */
 	for (;;)
 	{
 		Page		page = BufferGetPage(curbuf);
@@ -727,7 +1194,15 @@ bark_check_unique(Relation index, BarkKeyInfo *keyinfo, IndexTuple itup,
 			if (bark_compare_itups(keyinfo, index, itup, curitup) != 0)
 				goto done;
 
-			htid = curitup->t_tid;
+			/*
+			 * Read the entry's heap locator by shape: a unique index only
+			 * ever holds SINGLE or OVERSIZED entries (it never coalesces),
+			 * each with exactly one locator.  An OVERSIZED entry keeps the
+			 * locator in its ref, not in t_tid (which holds the overflow
+			 * block), so read it the uniform way rather than from t_tid
+			 * directly.
+			 */
+			bark_entry_get_tids(curitup, &htid, 1);
 
 			/* The tuple we are checking is itself, not a conflict. */
 			if (checkUnique == UNIQUE_CHECK_EXISTING &&
@@ -750,7 +1225,9 @@ bark_check_unique(Relation index, BarkKeyInfo *keyinfo, IndexTuple itup,
 				/*
 				 * If the conflicting tuple is still being inserted or
 				 * deleted, return the responsible xact so the caller can wait
-				 * and retry.
+				 * and retry. A speculative inserter also reports its token
+				 * here, so the caller can wait on the speculative insertion
+				 * rather than on the whole transaction.
 				 */
 				xwait = TransactionIdIsValid(SnapshotDirty.xmin) ?
 					SnapshotDirty.xmin : SnapshotDirty.xmax;
@@ -758,6 +1235,7 @@ bark_check_unique(Relation index, BarkKeyInfo *keyinfo, IndexTuple itup,
 				{
 					if (ownbuf)
 						UnlockReleaseBuffer(curbuf);
+					*speculativeToken = SnapshotDirty.speculativeToken;
 					return xwait;
 				}
 
@@ -813,39 +1291,229 @@ done:
 	return InvalidTransactionId;
 }
 
+/*
+ * Try to coalesce `newtid` into an existing leaf entry on `buf` that has the
+ * same key as `key` (a SINGLE-shape key tuple), forming or extending a LIST or
+ * POSTING entry rather than adding another SINGLE.  Returns true and performs
+ * the replacement (WAL-logged) when it coalesced; returns false (page
+ * unchanged) when there is no equal entry, or when the merged entry would not
+ * fit on this page -- in which case the caller inserts a plain SINGLE and the
+ * duplicates stay as separate entries until a later insert can merge them.
+ *
+ * The merged set is encoded as whichever shape is smaller: a LIST (sorted
+ * locator array) for a modest number of duplicates, or a POSTING (sbm
+ * serialization) once the set is large/clustered enough that the sbm envelope
+ * beats the flat array.  bark_form_posting returns NULL when LIST would still
+ * win, so the shape is chosen by actual encoded size, not a fixed count.
+ *
+ * Only called for non-unique indexes: a unique index never legitimately holds
+ * two live tuples with the same key, so it never forms a LIST or POSTING.
+ * `off` is the leaf insert position (one past the last entry <= key), so the
+ * candidate equal entry, if any, is at off-1.
+ *
+ * The per-entry size ceiling is BarkMaxItemSize (~1/3 page).  A single key
+ * with more duplicates than a POSTING entry can hold within that ceiling keeps
+ * the overflow as separate entries; splitting one key's posting set across
+ * entries is a space optimization, not a correctness matter.
+ *
+ * The common append case (the new locator sorts after every existing member,
+ * as monotonic/append-ish heap TIDs do) is handled by an O(1)-amortized fast
+ * path: a LIST entry is extended by appending the one new locator to its body
+ * and bumping its count, without re-reading the set, re-sorting, or probing the
+ * POSTING encoding.  Only when the appended LIST would exceed the item ceiling,
+ * when the new locator lands in the middle of the set, or when the entry is a
+ * SINGLE/POSTING does it fall to the general path below, which re-reads the
+ * full set, inserts in sorted order, and re-encodes as whichever of LIST /
+ * POSTING is smaller.  Correctness is identical either way: members stay sorted
+ * and distinct, and the LIST -> POSTING promotion still happens at the ceiling.
+ *
+ * The POSTING append case is still O(members) per insert (the sbm
+ * serialization has no in-place append, so it is deserialized, added to, and
+ * re-serialized); an incremental sbm_add into an embedded, growable body would
+ * make it O(1) amortized too.  POSTING is only chosen for a large, clustered
+ * set whose per-key members are in any case capped by the item ceiling, so
+ * this is bounded, not the O(N^2) the LIST phase used to be.
+ */
+static bool
+bark_coalesce_list(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
+				   ItemPointer newtid, Buffer buf, OffsetNumber off)
+{
+	Page		page = BufferGetPage(buf);
+	BarkPageOpaque opaque = BarkPageGetOpaque(page);
+	OffsetNumber firstdata = BarkPageFirstDataKey(opaque);
+	OffsetNumber eqoff;
+	ItemId		iid;
+	IndexTuple	cur;
+	ItemPointer tids;
+	int			maxtids;
+	int			nold;
+	int			nnew;
+	int			ins;
+	IndexTuple	newentry;
+	IndexTuple	posting;
+	Size		newsz;
+
+	/* No entry precedes the insert point: nothing to coalesce with. */
+	if (off <= firstdata)
+		return false;
+	eqoff = OffsetNumberPrev(off);
+	iid = PageGetItemId(page, eqoff);
+	cur = (IndexTuple) PageGetItem(page, iid);
+
+	/* Only coalesce with a leaf-data entry whose key equals the new key. */
+	if (!BarkEntryIsLeafData(cur) ||
+		bark_compare_itups(keyinfo, index, key, cur) != 0)
+		return false;
+
+	/*
+	 * Fast path: add the one new locator to the existing LIST or POSTING
+	 * entry (bark_entry_add_tid).  A LIST takes it when it sorts after every
+	 * member (the common monotonic/append-ish TID case): the body is extended
+	 * by one locator, no re-read, no re-sort, no POSTING probe, so building
+	 * one key's set by repeated single inserts is O(1) amortized. A POSTING
+	 * takes it anywhere: sbm dedups and keeps order, so the set is
+	 * deserialized once, added to and re-serialized once, O(serialized size)
+	 * rather than O(members).  A POSTING never shrinks back to a LIST on
+	 * insert.  Either way only the TID is logged.  When the grown entry would
+	 * exceed the item ceiling or the page, fall through to the general path
+	 * (LIST -> POSTING promotion, or a separate entry, or a split).
+	 */
+	if (BarkEntryGetShape(cur) == BARK_SHAPE_LIST ||
+		BarkEntryGetShape(cur) == BARK_SHAPE_POSTING)
+	{
+		Size		room = PageGetFreeSpace(page) + MAXALIGN(ItemIdGetLength(iid));
+		IndexTuple	ext = bark_entry_add_tid(cur, newtid,
+											 Min((Size) BarkMaxItemSize, room));
+
+		if (ext != NULL)
+		{
+			bark_add_tid_entry(index, buf, eqoff, ext, newtid);
+			pfree(ext);
+			return true;
+		}
+	}
+
+	/*
+	 * Gather the existing locators plus the new one, in ascending order.  A
+	 * POSTING entry can already hold many thousands of TIDs, so the buffer is
+	 * palloc'd to the current count plus one rather than a fixed stack array.
+	 */
+	nold = bark_entry_count_tids(cur);
+	maxtids = nold + 1;
+	tids = (ItemPointer) palloc(maxtids * sizeof(ItemPointerData));
+	nold = bark_entry_get_tids(cur, tids, maxtids);
+
+	/* Insert newtid keeping the array sorted and distinct. */
+	for (ins = 0; ins < nold; ins++)
+	{
+		int			c = ItemPointerCompare(newtid, &tids[ins]);
+
+		if (c == 0)
+		{
+			pfree(tids);
+			return true;		/* already present (should not happen): done */
+		}
+		if (c < 0)
+			break;
+	}
+	memmove(&tids[ins + 1], &tids[ins],
+			(nold - ins) * sizeof(ItemPointerData));
+	tids[ins] = *newtid;
+	nnew = nold + 1;
+
+	/*
+	 * Encode the merged set as whichever shape is smaller.  bark_form_posting
+	 * returns NULL when the LIST form would be no larger, so a small set
+	 * stays a LIST and a large/clustered one is promoted to POSTING -- the
+	 * LIST -> POSTING promotion happens automatically at the size crossover.
+	 */
+	posting = bark_form_posting(RelationGetDescr(index), key, tids, nnew);
+	if (posting != NULL)
+		newentry = posting;
+	else if (nnew <= BARK_LIST_MAX_COUNT)
+		newentry = bark_form_list(RelationGetDescr(index), key, tids, nnew);
+	else
+	{
+		pfree(tids);
+		return false;			/* too many for a LIST and POSTING did not win */
+	}
+	pfree(tids);
+
+	newsz = MAXALIGN(IndexTupleSize(newentry));
+	if (newsz > BarkMaxItemSize)
+	{
+		pfree(newentry);
+		return false;			/* too big for one entry: keep separate */
+	}
+
+	/*
+	 * The merged entry replaces the old one at the same offset.  The free
+	 * space plus the old entry's must cover it.  PageGetFreeSpace keeps back
+	 * room for a line pointer that an overwrite does not need, so this is a
+	 * little stricter than PageIndexTupleOverwrite's own test.
+	 */
+	if (PageGetFreeSpace(page) + MAXALIGN(ItemIdGetLength(iid)) < newsz)
+	{
+		pfree(newentry);
+		return false;			/* no room to grow here: caller splits */
+	}
+
+	bark_overwrite_entry(index, buf, eqoff, newentry);
+	pfree(newentry);
+	return true;
+}
+
 bool
 bark_insert(Relation index, Datum *values, bool *isnull, ItemPointer ht_ctid,
 			Relation heapRel, IndexUniqueCheck checkUnique,
 			bool indexUnchanged, IndexInfo *indexInfo)
 {
 	BarkKeyInfo *keyinfo = bark_build_keyinfo(index);
-	IndexTuple	itup = index_form_tuple(RelationGetDescr(index), values, isnull);
+	Size		fulllen;
+	IndexTuple	itup = bark_form_full_tuple(RelationGetDescr(index), values,
+											isnull, &fulllen);
+	bool		oversized = bark_len_is_oversized(fulllen);
 	Buffer		buf;
 	BarkStack	stack;
 	Page		page;
 	OffsetNumber off;
-	Size		itemsz = MAXALIGN(IndexTupleSize(itup));
+	Size		itemsz;
 	bool		result = false; /* significant only for UNIQUE_CHECK_PARTIAL */
 
 	itup->t_tid = *ht_ctid;		/* SINGLE shape: locator in t_tid */
+	keyinfo->heaprel = heapRel; /* for pages a split allocates */
+
+	/*
+	 * `itup` is the full in-memory key tuple at any size; bark_compare_itups
+	 * compares it directly (index_getattr does not care about the 8191-byte
+	 * cap).  Only when the entry is actually placed on a page is an oversized
+	 * key written to an overflow chain and replaced by a small OVERSIZED
+	 * entry (done at the leaf-insert / coalesce / split sites below).  itemsz
+	 * is the page footprint: tiny for an oversized key, the tuple size
+	 * otherwise.
+	 */
+	itemsz = oversized
+		? MAXALIGN(sizeof(IndexTupleData) + MAXALIGN(sizeof(BarkOverflowRef)))
+		: MAXALIGN(IndexTupleSize(itup));
 
 retry:
 	buf = bark_search(index, keyinfo, itup, true, true, &stack);
 
 	if (buf == InvalidBuffer)
 	{
-		/* Empty index: create the first leaf and point the meta page at it. */
-		bark_insert_first_leaf(index, itup);
-		pfree(itup);
-		pfree(keyinfo);
-		return true;			/* nothing to conflict with: unique */
+		/* Empty index: give it a root leaf, then insert as usual. */
+		bark_create_root_leaf(index, heapRel);
+		goto retry;
 	}
 
 	/*
-	 * If this leaf has an unfinished split (a crash left its right sibling
-	 * without a parent downlink), complete it before inserting, then descend
-	 * again: the parent now has the missing downlink and the key may belong
-	 * on the right sibling.
+	 * bark_search finishes any incomplete split it meets on the way down, so
+	 * the leaf it returns should never carry the flag.  The test is cheap and
+	 * keeps the insert safe if it ever does: complete the split, then descend
+	 * again, since the key may belong on the right sibling.  The flag is
+	 * tested under the exclusive lock bark_search returned, and a backend in
+	 * the middle of its own split holds that lock until the split is
+	 * complete, so a set flag here would mean an abandoned split.
 	 */
 	if ((BarkPageGetOpaque(BufferGetPage(buf))->bark_flags &
 		 BARK_INCOMPLETE_SPLIT) != 0)
@@ -873,12 +1541,19 @@ retry:
 	 * the new key has any NULL attribute (SQL treats NULLs as distinct, so a
 	 * NULL key never conflicts).  If a conflicting tuple is still in
 	 * progress, bark_check_unique returns its xact id: wait for that
-	 * transaction to finish, then re-descend and check again.
+	 * transaction to finish, then re-descend and check again.  If the
+	 * conflict is with a speculative insertion (INSERT ... ON CONFLICT), it
+	 * also returns the speculative token, and we wait on the speculative
+	 * insertion -- which wakes us the moment the speculative inserter
+	 * confirms or kills its tuple, so a losing speculative insert of the same
+	 * key does not block to end of xact.  This matches nbtree's _bt_doinsert
+	 * speculative-wait path exactly.
 	 */
 	if (checkUnique != UNIQUE_CHECK_NO)
 	{
 		bool		nulls_present = false;
 		TransactionId xwait;
+		uint32		speculativeToken;
 		bool		is_unique;
 
 		for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index); i++)
@@ -893,15 +1568,18 @@ retry:
 		if (!nulls_present)
 		{
 			xwait = bark_check_unique(index, keyinfo, itup, buf, heapRel,
-									  checkUnique, &is_unique);
+									  checkUnique, &is_unique, &speculativeToken);
 			if (TransactionIdIsValid(xwait))
 			{
 				/* Conflict with an in-progress xact: wait and retry. */
 				UnlockReleaseBuffer(buf);
 				if (stack)
 					bark_freestack(stack);
-				XactLockTableWait(xwait, index, &itup->t_tid,
-								  XLTW_InsertIndex);
+				if (speculativeToken)
+					SpeculativeInsertionWait(xwait, speculativeToken);
+				else
+					XactLockTableWait(xwait, index, &itup->t_tid,
+									  XLTW_InsertIndex);
 				goto retry;
 			}
 			result = is_unique;
@@ -927,20 +1605,52 @@ retry:
 		}
 	}
 
-	if (PageGetFreeSpace(page) >= itemsz)
+	/*
+	 * Non-unique index: coalesce the new locator into an existing equal-key
+	 * entry, forming or extending a LIST instead of adding another SINGLE. A
+	 * unique index never does this -- it would mean two live tuples with the
+	 * same key, which the uniqueness check above already rejected.  An
+	 * oversized key never coalesces: a LIST/POSTING of oversized keys could
+	 * not fit the item ceiling, and each oversized row keeps its own
+	 * OVERSIZED entry + overflow chain (duplicate oversized keys are not
+	 * deduplicated; a shared overflow chain for identical oversized values
+	 * would be a space optimization, not a correctness matter).  Nor do keys
+	 * whose equal values can have different stored images, or indexes with
+	 * INCLUDE columns: a shared entry would return one row's bytes for all of
+	 * them (see bark_allequalimage).
+	 */
+	if (!indexInfo->ii_Unique && !oversized && bark_allequalimage(index) &&
+		bark_coalesce_list(index, keyinfo, itup, &itup->t_tid, buf, off))
 	{
-		GenericXLogState *gstate = GenericXLogStart(index);
-		Page		p = GenericXLogRegisterBuffer(gstate, buf, 0);
-
-		bark_page_insert_at(p, itup, off);
-		GenericXLogFinish(gstate);
 		UnlockReleaseBuffer(buf);
+		if (stack)
+			bark_freestack(stack);
+		pfree(itup);
+		pfree(keyinfo);
+		return result;
 	}
-	else
+
 	{
-		/* Leaf split: no child below, so no incomplete-split flag to clear. */
-		bark_split(index, keyinfo, stack, buf, off, itup, BARK_P_NONE);
-		buf = InvalidBuffer;	/* bark_split released it */
+		/* The entry actually placed on the page (OVERSIZED when oversized). */
+		IndexTuple	entry = bark_leaf_page_entry(index, heapRel, itup,
+												 oversized, fulllen);
+
+		if (PageGetFreeSpace(page) >= itemsz)
+		{
+			bark_insert_entry(index, buf, entry, off, InvalidBuffer);
+			UnlockReleaseBuffer(buf);
+		}
+		else
+		{
+			/*
+			 * Leaf split: no child below, so no incomplete-split flag to
+			 * clear.
+			 */
+			bark_split(index, heapRel, keyinfo, stack, buf, off, entry,
+					   InvalidBuffer);
+			buf = InvalidBuffer;	/* bark_split released it */
+		}
+		pfree(entry);
 	}
 
 	if (stack)
