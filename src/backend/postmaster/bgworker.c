@@ -35,6 +35,7 @@
 #include "tcop/tcopprot.h"
 #include "utils/ascii.h"
 #include "utils/backend_runtime.h"
+#include "utils/injection_point.h"
 #include "utils/memutils.h"
 #include "utils/ps_status.h"
 #include "utils/timeout.h"
@@ -887,6 +888,8 @@ BackgroundWorkerMain(const void *startup_data, size_t startup_data_len)
 	 */
 	BaseInit();
 
+	INJECTION_POINT("bgworker-before-startup-complete", worker);
+
 	/*
 	 * Look up the entry point function, loading its library if necessary.
 	 */
@@ -1213,9 +1216,11 @@ RegisterDynamicBackgroundWorker(BackgroundWorker *worker,
  * Get the PID of a dynamically-registered background worker.
  *
  * If the worker is determined to be running, the return value will be
- * BGWH_STARTED and *pidp will get the PID of the worker process.  If the
- * postmaster has not yet attempted to start the worker, the return value will
- * be BGWH_NOT_YET_STARTED.  Otherwise, the return value is BGWH_STOPPED.
+ * BGWH_STARTED and *pidp will get the worker's signal PID.  If the postmaster
+ * has not yet attempted to start the worker, or a logical worker has not yet
+ * reached its common startup-complete boundary, the return value will be
+ * BGWH_NOT_YET_STARTED.  Otherwise, the return value is BGWH_STOPPED.
+ * BGWH_STARTED does not imply completion of worker-specific initialization.
  *
  * BGWH_STOPPED can indicate either that the worker is temporarily stopped
  * (because it is configured for automatic restart and exited non-zero),

@@ -3011,7 +3011,9 @@ StartDataPtrType
 StartLOPtrType
 StartLOsPtrType
 StartReplicationCmd
+StartupGate
 StartupStatusEnum
+StartupTest
 StatApproxReadStreamPrivate
 StatEntry
 StatExtEntry

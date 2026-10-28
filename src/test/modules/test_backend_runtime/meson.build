@@ -84,6 +84,7 @@ tests += {
       't/020_parallel_attach.pl',
       't/021_session_guc_owners.pl',
       't/022_guc_prefix.pl',
+      't/023_bgworker_startup_publication.pl',
     ],
   },
 }

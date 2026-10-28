@@ -15,16 +15,20 @@
 #include "fmgr.h"
 #include "miscadmin.h"
 #include "port/atomics.h"
+#include "portability/instr_time.h"
 #include "postmaster/bgworker.h"
 #include "postmaster/interrupt.h"
 #include "postmaster/pg_xtc_carrier.h"	/* xtc_pg_carrier_total_steals */
 #include "storage/condition_variable.h"
+#include "storage/dsm.h"
+#include "storage/ipc.h"
 #include "storage/latch.h"
 #include "storage/lwlock.h"
 #include "storage/pmsignal.h"
 #include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/guc.h"
+#include "utils/injection_point.h"
 #include "utils/wait_event.h"
 
 PG_MODULE_MAGIC_EXT(
@@ -33,6 +37,7 @@ PG_MODULE_MAGIC_EXT(
 					PG_MODULE_MAGIC_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE
 );
 
+PG_FUNCTION_INFO_V1(test_backend_runtime_bgworker_startup_publication);
 PG_FUNCTION_INFO_V1(test_backend_runtime_model_snapshot);
 PG_FUNCTION_INFO_V1(test_backend_runtime_request_autovacuum_worker);
 PG_FUNCTION_INFO_V1(test_backend_runtime_rejects_process_bgworker);
@@ -736,4 +741,329 @@ test_backend_runtime_crash_bgworker_main(Datum main_arg)
 	elog(LOG, "test_backend_runtime crash bgworker run %u", run_count);
 
 	proc_exit(17);
+}
+
+#ifdef USE_INJECTION_POINTS
+#define STARTUP_POINT "bgworker-before-startup-complete"
+#define STARTUP_WORKER "test_backend_runtime startup target"
+
+typedef struct StartupGate
+{
+	pg_atomic_uint32 entered;
+	pg_atomic_uint32 release;
+	pg_atomic_uint32 main_entered;
+	pg_atomic_uint32 carrier;
+	bool		clean_exit;
+} StartupGate;
+
+typedef struct StartupTest
+{
+	BackgroundWorkerHandle *handles[2];
+	dsm_segment *seg;
+	bool		attached;
+	bool		cleaned;
+} StartupTest;
+
+PGDLLEXPORT void test_backend_runtime_bgworker_startup_gate(
+	const char *name, const void *private_data, void *arg);
+PGDLLEXPORT void test_backend_runtime_startup_worker_main(Datum main_arg);
+
+/* All test waits yield the carrier and have a wall-clock deadline. */
+static bool
+startup_pause(instr_time start, int seconds)
+{
+	instr_time	now;
+
+	ResetLatch(MyLatch);
+	PgCurrentBackendApplyInterrupts();
+	CHECK_FOR_INTERRUPTS();
+	INSTR_TIME_SET_CURRENT(now);
+	INSTR_TIME_SUBTRACT(now, start);
+	if (INSTR_TIME_GET_DOUBLE(now) >= seconds)
+		return false;
+	(void) WaitLatch(MyLatch,
+					 WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+					 10L, WAIT_EVENT_BGWORKER_STARTUP);
+	return true;
+}
+
+/* Wait for an acknowledgment, terminal startup status, or shutdown. */
+static bool
+startup_wait(BackgroundWorkerHandle *handle, pg_atomic_uint32 *flag, bool stop)
+{
+	instr_time	start;
+
+	INSTR_TIME_SET_CURRENT(start);
+	for (;;)
+	{
+		pid_t		pid;
+		BgwHandleStatus status = GetBackgroundWorkerPid(handle, &pid);
+
+		if (flag != NULL)
+		{
+			if (pg_atomic_read_u32(flag))
+				return true;
+			if (status == BGWH_STOPPED)
+				return false;
+		}
+		else if (stop ? status == BGWH_STOPPED : status != BGWH_NOT_YET_STARTED)
+			return true;
+		if (!startup_pause(start, 5))
+			return false;
+	}
+}
+
+static const char *
+startup_status(BgwHandleStatus status)
+{
+	switch (status)
+	{
+		case BGWH_STARTED:
+			return "STARTED";
+		case BGWH_NOT_YET_STARTED:
+			return "NOT_YET_STARTED";
+		case BGWH_STOPPED:
+			return "STOPPED";
+		case BGWH_POSTMASTER_DIED:
+			return "POSTMASTER_DIED";
+	}
+	return "unknown";
+}
+
+/* The sentinel has no DSM argument and must never enter the target gate. */
+static BackgroundWorkerHandle *
+startup_register(dsm_handle handle, bool missing_entry)
+{
+	BackgroundWorker worker = {0};
+	BackgroundWorkerHandle *result;
+
+	worker.bgw_flags = BGWORKER_SHMEM_ACCESS;
+	worker.bgw_backend_model = BgWorkerBackendThreadPerSession;
+	worker.bgw_start_time = BgWorkerStart_RecoveryFinished;
+	worker.bgw_restart_time = BGW_NEVER_RESTART;
+	strlcpy(worker.bgw_library_name, "test_backend_runtime_threaded", MAXPGPATH);
+	strlcpy(worker.bgw_function_name,
+			missing_entry ? "test_backend_runtime_missing_startup_main" :
+			"test_backend_runtime_startup_worker_main", BGW_MAXLEN);
+	strlcpy(worker.bgw_name, handle == DSM_HANDLE_INVALID ?
+			"test_backend_runtime startup sentinel" : STARTUP_WORKER, BGW_MAXLEN);
+	strlcpy(worker.bgw_type, worker.bgw_name, BGW_MAXLEN);
+	worker.bgw_main_arg = UInt32GetDatum(handle);
+	worker.bgw_notify_pid = PgCurrentBackendSignalPid();
+	if (!RegisterDynamicBackgroundWorker(&worker, &result))
+		elog(ERROR, "could not register startup test worker");
+	return result;
+}
+
+/* Filter before attaching: unrelated workers share this injection point. */
+void
+test_backend_runtime_bgworker_startup_gate(const char *name,
+										 const void *private_data, void *arg)
+{
+	BackgroundWorker *worker = arg;
+	dsm_handle	handle;
+	dsm_segment *seg;
+	StartupGate *gate;
+	instr_time	start;
+	uint32		carrier;
+	bool		clean_exit;
+
+	memcpy(&handle, private_data, sizeof(handle));
+	if (strcmp(worker->bgw_library_name, "test_backend_runtime_threaded") != 0 ||
+		strcmp(worker->bgw_name, STARTUP_WORKER) != 0 ||
+		DatumGetUInt32(worker->bgw_main_arg) != handle)
+		return;
+	seg = dsm_attach(handle);
+	if (seg == NULL)
+		elog(ERROR, "startup gate DSM segment disappeared");
+	gate = dsm_segment_address(seg);
+	carrier = PgRuntimeIsThreadBacked(CurrentPgRuntime) ? 2 : 1;
+#ifdef USE_XTC_CARRIER
+	if (xtc_pg_in_backend_fiber())
+		carrier = 3;
+#endif
+	pg_atomic_write_u32(&gate->carrier, carrier);
+	BackgroundWorkerUnblockSignals();
+	INSTR_TIME_SET_CURRENT(start);
+	pg_atomic_write_u32(&gate->entered, 1);
+	while (!pg_atomic_read_u32(&gate->release))
+	{
+		if (ShutdownRequestPending)
+			proc_exit(0);
+		if (!startup_pause(start, 30))
+			elog(ERROR, "startup gate timed out");
+	}
+	clean_exit = gate->clean_exit;
+	dsm_detach(seg);
+	if (clean_exit)
+		proc_exit(0);
+}
+
+/* Also runs on FATAL, before the creator's DSM mapping can be reclaimed. */
+static void
+startup_cleanup(int code, Datum arg)
+{
+	StartupTest *test = (StartupTest *) DatumGetPointer(arg);
+	StartupGate *gate = dsm_segment_address(test->seg);
+	bool		all_stopped = true;
+
+	HOLD_INTERRUPTS();
+	pg_atomic_write_u32(&gate->release, 1);
+	if (test->attached)
+		InjectionPointDetach(STARTUP_POINT);
+	for (int i = 0; i < 2; i++)
+		if (test->handles[i] != NULL)
+			TerminateBackgroundWorker(test->handles[i]);
+	for (int i = 0; i < 2; i++)
+		if (test->handles[i] != NULL &&
+			!startup_wait(test->handles[i], NULL, true))
+			all_stopped = false;
+	if (all_stopped)
+	{
+		dsm_detach(test->seg);
+		for (int i = 0; i < 2; i++)
+			if (test->handles[i] != NULL)
+				pfree(test->handles[i]);
+		test->cleaned = true;
+	}
+	else
+	{
+		/* Keep late attach and live mappings safe until TAP stops the node. */
+		dsm_pin_segment(test->seg);
+		dsm_pin_mapping(test->seg);
+		elog(WARNING, "startup test cleanup timed out; DSM retained until shutdown");
+	}
+	RESUME_INTERRUPTS();
+}
+
+/* Remain alive until terminated so STARTED cannot race a normal worker exit. */
+void
+test_backend_runtime_startup_worker_main(Datum main_arg)
+{
+	dsm_handle	handle = DatumGetUInt32(main_arg);
+	instr_time	start;
+
+	BackgroundWorkerUnblockSignals();
+	if (handle != DSM_HANDLE_INVALID)
+	{
+		dsm_segment *seg = dsm_attach(handle);
+		StartupGate *gate;
+
+		if (seg == NULL)
+			elog(ERROR, "startup worker DSM segment disappeared");
+		gate = dsm_segment_address(seg);
+		pg_atomic_write_u32(&gate->main_entered, 1);
+		dsm_detach(seg);
+	}
+	INSTR_TIME_SET_CURRENT(start);
+	while (!ShutdownRequestPending && startup_pause(start, 30))
+		;
+}
+#endif
+
+/* Return observations only after releasing the gate and reaping our workers. */
+Datum
+test_backend_runtime_bgworker_startup_publication(PG_FUNCTION_ARGS)
+{
+#ifdef USE_INJECTION_POINTS
+	char	   *test_case = text_to_cstring(PG_GETARG_TEXT_PP(0));
+	bool		normal = strcmp(test_case, "normal") == 0;
+	bool		missing = strcmp(test_case, "missing") == 0;
+	bool		clean = strcmp(test_case, "clean") == 0;
+	bool		terminate = strcmp(test_case, "terminate") == 0;
+	bool		driver_hold = strcmp(test_case, "driver_hold") == 0;
+	StartupTest *test = palloc0_object(StartupTest);
+	dsm_segment *seg;
+	dsm_handle	handle;
+	StartupGate *gate;
+	BgwHandleStatus held;
+	BgwHandleStatus started;
+	BgwHandleStatus stopped;
+	pid_t		pid = 0;
+	bool		held_pid;
+	bool		started_pid;
+	uint32		main_entered;
+	uint32		carrier;
+
+	if (!normal && !missing && !clean && !terminate && !driver_hold)
+		elog(ERROR, "unknown startup publication test case: %s", test_case);
+	seg = dsm_create(sizeof(StartupGate), 0);
+	test->seg = seg;
+	handle = dsm_segment_handle(seg);
+	gate = dsm_segment_address(seg);
+	pg_atomic_init_u32(&gate->entered, 0);
+	pg_atomic_init_u32(&gate->release, 0);
+	pg_atomic_init_u32(&gate->main_entered, 0);
+	pg_atomic_init_u32(&gate->carrier, 0);
+	gate->clean_exit = clean;
+
+	PG_ENSURE_ERROR_CLEANUP(startup_cleanup, PointerGetDatum(test));
+	{
+		InjectionPointAttach(STARTUP_POINT, "test_backend_runtime_threaded",
+							 "test_backend_runtime_bgworker_startup_gate",
+							 &handle, sizeof(handle));
+		test->attached = true;
+		test->handles[0] = startup_register(handle, missing);
+		if (!startup_wait(test->handles[0], &gate->entered, false))
+			elog(ERROR, "startup target did not enter gate");
+
+		/* Gate entry alone does not prove the launch-time reporter has run. */
+		test->handles[1] = startup_register(DSM_HANDLE_INVALID, false);
+		if (!startup_wait(test->handles[1], NULL, false) ||
+			WaitForBackgroundWorkerStartup(test->handles[1], &pid) != BGWH_STARTED)
+			elog(ERROR, "startup sentinel did not start");
+		if (driver_hold)
+		{
+			instr_time	start;
+
+			INSTR_TIME_SET_CURRENT(start);
+			elog(NOTICE, "startup driver ready: %d", PgCurrentBackendSignalPid());
+			while (startup_pause(start, 10))
+				;
+			elog(ERROR, "startup driver hold timed out");
+		}
+		pid = 0;
+		held = GetBackgroundWorkerPid(test->handles[0], &pid);
+		held_pid = pid > 0;
+		carrier = pg_atomic_read_u32(&gate->carrier);
+
+		if (terminate)
+			TerminateBackgroundWorker(test->handles[0]);
+		else
+			pg_atomic_write_u32(&gate->release, 1);
+
+		if (!startup_wait(test->handles[0], NULL, !normal))
+			elog(ERROR, "startup target did not finish startup");
+		pid = 0;
+		started = WaitForBackgroundWorkerStartup(test->handles[0], &pid);
+		started_pid = pid > 0;
+		if (normal)
+		{
+			if (!startup_wait(test->handles[0], &gate->main_entered, false))
+				elog(ERROR, "startup target did not enter main");
+			TerminateBackgroundWorker(test->handles[0]);
+		}
+		if (!startup_wait(test->handles[0], NULL, true))
+			elog(ERROR, "startup target did not stop");
+		stopped = WaitForBackgroundWorkerShutdown(test->handles[0]);
+		main_entered = pg_atomic_read_u32(&gate->main_entered);
+
+	}
+	PG_END_ENSURE_ERROR_CLEANUP(startup_cleanup, PointerGetDatum(test));
+	startup_cleanup(0, PointerGetDatum(test));
+	if (!test->cleaned)
+		elog(ERROR, "startup test workers did not stop during cleanup");
+	pfree(test);
+
+	PG_RETURN_TEXT_P(cstring_to_text(psprintf(
+		"held=%s;held_pid=%d;startup=%s;startup_pid=%d;main=%u;stopped=%s;carrier=%s",
+		startup_status(held), held_pid, startup_status(started), started_pid,
+		main_entered, startup_status(stopped),
+		carrier == 1 ? "process" : carrier == 3 ? "fiber" : "thread")));
+#else
+	ereport(ERROR,
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+			 errmsg("startup publication test requires injection points")));
+	PG_RETURN_NULL();
+#endif
 }
