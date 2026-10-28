@@ -2247,8 +2247,8 @@ describeOneTableDetails(const char *schemaname,
 		else
 			appendPQExpBufferStr(&buf, "false AS indnullsnotdistinct,\n");
 
-		appendPQExpBuffer(&buf, "  a.amname, c2.relname, "
-						  "pg_catalog.pg_get_expr(i.indpred, i.indrelid, true),\n");
+		appendPQExpBufferStr(&buf, "  a.amname, c2.relname, "
+							 "pg_catalog.pg_get_expr(i.indpred, i.indrelid, true),\n");
 
 		if (pset.sversion >= 200000)
 			appendPQExpBufferStr(&buf,

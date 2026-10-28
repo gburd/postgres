@@ -1255,8 +1255,6 @@ FROM pg_amop as a1
 WHERE NOT ((a1.amoppurpose = 's' AND a1.amopsortfamily = 0) OR
            (a1.amoppurpose = 'o' AND a1.amopsortfamily <> 0));
 
--- amopmethod must match owning opfamily's opfmethod
-
 -- amopmethod must match owning opfamily's opfmethod, except that a
 -- btree-compatible access method may add its own ORDER BY (KNN) operators to
 -- a btree operator family it shares (the ambtreeopfamilies capability): such
