@@ -37,14 +37,15 @@
  * What a descent searches for: an index tuple (insert, and the internal
  * lookups of VACUUM and split completion), or a scan's bound, whose
  * arguments may be of another type in the column's opfamily.  An index tuple
- * may come with a heap TID, scantid, which orders it within a run of equal
- * keys (bark_compare_itups_tid); NULL compares the key only, as every scan
- * does.
+ * may come with a heap TID, scantid, and a version tag, scantag, which order
+ * it within a run of equal keys (bark_compare_itups_tid); NULL compares the
+ * key only, as every scan does.
  */
 typedef struct BarkSearchKey
 {
 	IndexTuple	key;
 	ItemPointer scantid;
+	IndexVersionTag scantag;	/* with scantid: the version tag */
 	const		BarkScanBound *bound;
 }			BarkSearchKey;
 
@@ -170,7 +171,7 @@ bark_compare_key(Relation index, BarkKeyInfo *keyinfo,
 	if (key->bound != NULL)
 		return bark_compare_bound(index, keyinfo, key->bound, itup);
 	return bark_compare_itups_tid(keyinfo, index, key->key, key->scantid,
-								  itup);
+								  key->scantag, itup);
 }
 
 /*
@@ -337,6 +338,7 @@ bark_get_amcache(Relation index)
 		cache->extracted = -1;
 		cache->multikey = false;
 		cache->tidstride = 0;
+		cache->versioned = -1;
 		cache->nmarkers = 0;
 		cache->markerlen = 0;
 		cache->nl1 = cache->maxl1 = 0;
@@ -470,7 +472,7 @@ bark_l1_remember(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno,
 				 IndexTuple lowkey)
 {
 	BarkAmCache *cache = bark_get_amcache(index);
-	BarkSearchKey skey = {lowkey, NULL, NULL};
+	BarkSearchKey skey = {.key = lowkey};
 	Size		keysz = MAXALIGN(IndexTupleSize(lowkey));
 	int			pos;
 	BarkL1Slot *slots;
@@ -857,7 +859,7 @@ BarkStack
 bark_find_upper_path(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 					 uint32 level)
 {
-	BarkSearchKey skey = {key, NULL, NULL};
+	BarkSearchKey skey = {.key = key};
 	BarkStack	path = NULL;
 	Buffer		buf;
 
@@ -915,9 +917,10 @@ bark_find_upper_path(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 
 Buffer
 bark_search(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
-			ItemPointer scantid, bool forwrite, bool nextkey, BarkStack *stack)
+			ItemPointer scantid, IndexVersionTag scantag, bool forwrite,
+			bool nextkey, BarkStack *stack)
 {
-	BarkSearchKey skey = {key, scantid, NULL};
+	BarkSearchKey skey = {.key = key, .scantid = scantid, .scantag = scantag};
 
 	/* A heap TID equal to a pivot's belongs right of it (bark_moveright). */
 	Assert(scantid == NULL || nextkey);
@@ -934,7 +937,7 @@ Buffer
 bark_search_bound(Relation index, BarkKeyInfo *keyinfo,
 				  const BarkScanBound * bound, bool nextkey)
 {
-	BarkSearchKey skey = {NULL, NULL, bound};
+	BarkSearchKey skey = {.bound = bound};
 
 	return bark_descend(index, keyinfo, &skey, false, nextkey, NULL);
 }
@@ -950,7 +953,7 @@ OffsetNumber
 bark_binsrch_bound(Relation index, BarkKeyInfo *keyinfo,
 				   const BarkScanBound * bound, Page page)
 {
-	BarkSearchKey skey = {NULL, NULL, bound};
+	BarkSearchKey skey = {.bound = bound};
 
 	Assert(BarkPageIsLeaf(BarkPageGetOpaque(page)));
 	return bark_binsrch(index, keyinfo, &skey, page, false);

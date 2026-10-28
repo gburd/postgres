@@ -39,6 +39,7 @@ tests += {
       'bark_locator',
       'bark_wideblock',
       'bark_multikey_hot',
+      'bark_multikey_exclude',
     ],
     'regress_args': ['--load-extension=amcheck'],
   },
@@ -47,6 +48,7 @@ tests += {
       'bark_multikey_concurrent',
       'bark_multikey_unique_concurrent',
       'bark_multikey_hot_epq',
+      'bark_multikey_exclude_concurrent',
     ],
   },
   'tap': {
