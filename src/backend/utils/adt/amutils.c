@@ -87,6 +87,9 @@ static const struct am_propname am_propnames[] =
 	{
 		"can_var_locator", AMPROP_CAN_VAR_LOCATOR
 	},
+	{
+		"can_version", AMPROP_CAN_VERSION
+	},
 };
 
 static IndexAMProperty
@@ -411,6 +414,9 @@ indexam_property(FunctionCallInfo fcinfo,
 
 		case AMPROP_CAN_VAR_LOCATOR:
 			PG_RETURN_BOOL(routine->amcanvarlocator);
+
+		case AMPROP_CAN_VERSION:
+			PG_RETURN_BOOL(routine->amcanversion);
 
 		default:
 			PG_RETURN_NULL();
