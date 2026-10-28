@@ -154,6 +154,16 @@ static relopt_bool boolRelOpts[] =
 		},
 		true
 	},
+	{
+		{
+			"prefix_compression",
+			"Stores leaf keys of this bark index against a per-page prefix",
+			RELOPT_KIND_BARK,
+			ShareUpdateExclusiveLock	/* since it applies only to pages
+										 * written later */
+		},
+		false
+	},
 	/* list terminator */
 	{{NULL}}
 };

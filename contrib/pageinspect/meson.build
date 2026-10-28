@@ -1,6 +1,7 @@
 # Copyright (c) 2022-2026, PostgreSQL Global Development Group
 
 pageinspect_sources = files(
+  'barkfuncs.c',
   'brinfuncs.c',
   'btreefuncs.c',
   'fsmfuncs.c',
@@ -38,6 +39,7 @@ install_data(
   'pageinspect--1.10--1.11.sql',
   'pageinspect--1.11--1.12.sql',
   'pageinspect--1.12--1.13.sql',
+  'pageinspect--1.13--1.14.sql',
   'pageinspect.control',
   kwargs: contrib_data_args,
 )
@@ -50,6 +52,7 @@ tests += {
     'sql': [
       'page',
       'btree',
+      'bark',
       'brin',
       'gin',
       'gist',

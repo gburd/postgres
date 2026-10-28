@@ -1,0 +1,66 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1_nothing s2_insert s2_wakeup s1_select
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+step s1_nothing: 
+	INSERT INTO bark_nnd VALUES (NULL, 's1') ON CONFLICT (a) DO NOTHING;
+ <waiting ...>
+step s2_insert: INSERT INTO bark_nnd VALUES (NULL, 's2');
+step s2_wakeup: 
+	SELECT injection_points_detach('check-exclusion-or-unique-constraint-no-conflict');
+	SELECT injection_points_wakeup('check-exclusion-or-unique-constraint-no-conflict');
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+injection_points_wakeup
+-----------------------
+                       
+(1 row)
+
+step s1_nothing: <... completed>
+step s1_select: SELECT a, v FROM bark_nnd ORDER BY v;
+a|v 
+-+--
+ |s2
+(1 row)
+
+
+starting permutation: s1_update s2_insert s2_wakeup s1_select
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+step s1_update: 
+	INSERT INTO bark_nnd VALUES (NULL, 's1') ON CONFLICT (a)
+		DO UPDATE SET v = 's1 updated ' || bark_nnd.v;
+ <waiting ...>
+step s2_insert: INSERT INTO bark_nnd VALUES (NULL, 's2');
+step s2_wakeup: 
+	SELECT injection_points_detach('check-exclusion-or-unique-constraint-no-conflict');
+	SELECT injection_points_wakeup('check-exclusion-or-unique-constraint-no-conflict');
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+injection_points_wakeup
+-----------------------
+                       
+(1 row)
+
+step s1_update: <... completed>
+step s1_select: SELECT a, v FROM bark_nnd ORDER BY v;
+a|v            
+-+-------------
+ |s1 updated s2
+(1 row)
+

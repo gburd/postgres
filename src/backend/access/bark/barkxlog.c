@@ -4,8 +4,7 @@
  *	  WAL replay logic for BARK indexes.
  *
  * See "WAL" in src/backend/access/bark/README for the records and the locks
- * their redo takes.  Changes that have no record here (splits, new roots,
- * overflow chains) are logged with generic WAL and replayed by generic_redo.
+ * their redo takes.
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
@@ -24,8 +23,76 @@
 #include "storage/standby.h"
 
 /*
+ * Re-add the entries of a page built by the primary, as nbtree's
+ * _bt_restore_page.  `page` is freshly initialized, and `from` is a copy of
+ * the primary's page from pd_upper to pd_special.  The primary added the
+ * entries in offset order to an empty page, so they lie back to back, each
+ * padded to MAXALIGN, the highest offset first.  Adding them again in offset
+ * order puts each at the same place with the same line pointer, so the page
+ * matches the primary's byte for byte.
+ */
+static void
+bark_restore_page(Page page, const char *from, Size len)
+{
+	const char *end = from + len;
+	const char *items[MaxIndexTuplesPerPage];
+	Size		itemsizes[MaxIndexTuplesPerPage];
+	int			nitems = 0;
+
+	/*
+	 * Find where each entry starts, scanning forward.  The data is MAXALIGNed
+	 * as a whole and so is each entry, but reading t_info into a local copy
+	 * keeps that from mattering.
+	 */
+	while (from < end)
+	{
+		IndexTupleData itupdata;
+
+		memcpy(&itupdata, from, sizeof(IndexTupleData));
+		items[nitems] = from;
+		itemsizes[nitems] = IndexTupleSize(&itupdata);
+		from += MAXALIGN(itemsizes[nitems]);
+		nitems++;
+	}
+
+	for (int i = nitems - 1; i >= 0; i--)
+	{
+		if (PageAddItem(page, items[i], itemsizes[i], nitems - i,
+						false, false) == InvalidOffsetNumber)
+			elog(PANIC, "failed to restore BARK page during replay");
+	}
+}
+
+/*
+ * Set the meta page's root and level from a NEWROOT or CREATE_ROOT record.
+ */
+static void
+bark_xlog_restore_meta(XLogReaderState *record, uint8 block_id)
+{
+	XLogRecPtr	lsn = record->EndRecPtr;
+	Buffer		metabuf;
+
+	if (XLogReadBufferForRedo(record, block_id, &metabuf) == BLK_NEEDS_REDO)
+	{
+		Page		metapage = BufferGetPage(metabuf);
+		xl_bark_metadata *md = (xl_bark_metadata *)
+			XLogRecGetBlockData(record, block_id, NULL);
+		BarkMetaPageData *meta = BarkPageGetMeta(metapage);
+
+		meta->bark_root = md->root;
+		meta->bark_level = md->level;
+
+		PageSetLSN(metapage, lsn);
+		MarkBufferDirty(metabuf);
+	}
+	if (BufferIsValid(metabuf))
+		UnlockReleaseBuffer(metabuf);
+}
+
+/*
  * Clear BARK_INCOMPLETE_SPLIT on the left half of a split whose downlink an
- * INSERT_UPPER record added, as nbtree's _bt_clear_incomplete_split.
+ * INSERT_UPPER, SPLIT or NEWROOT record added, as nbtree's
+ * _bt_clear_incomplete_split.
  */
 static void
 bark_xlog_clear_incomplete_split(XLogReaderState *record, uint8 block_id)
@@ -86,6 +153,198 @@ bark_xlog_insert(bool isleaf, XLogReaderState *record)
 }
 
 /*
+ * Replay a page split (bark_split).  The right half is rebuilt from the
+ * record alone.  The left half, the original block, is rebuilt as
+ * btree_xlog_split does, from the page as it was before the split and the
+ * entries the record carries for it, by the function the primary used
+ * (bark_split_build_left); or, when the primary logged it whole, from the
+ * record alone, as the right half.
+ *
+ * As btree_xlog_split does, the child whose split an internal page's new
+ * downlink finishes is updated first, without coupling its lock to the
+ * others, and the two halves and the right sibling are then held locked
+ * together, so a standby reader moving right sees the split whole or not at
+ * all.
+ */
+static void
+bark_xlog_split(XLogReaderState *record)
+{
+	XLogRecPtr	lsn = record->EndRecPtr;
+	xl_bark_split *xlrec = (xl_bark_split *) XLogRecGetData(record);
+	bool		isleaf = (xlrec->flags & XLH_BARK_SPLIT_LEAF) != 0;
+	uint16		leafflag = isleaf ? BARK_LEAF : 0;
+	uint16		lprefix = (xlrec->flags & XLH_BARK_SPLIT_LPREFIX) ? BARK_PREFIX : 0;
+	uint16		rprefix = (xlrec->flags & XLH_BARK_SPLIT_RPREFIX) ? BARK_PREFIX : 0;
+	BlockNumber leftblk;
+	BlockNumber rightblk;
+	Buffer		lbuf;
+	Buffer		rbuf;
+	Buffer		sbuf = InvalidBuffer;
+	Page		page;
+	char	   *datapos;
+	Size		datalen;
+
+	XLogRecGetBlockTag(record, 0, NULL, NULL, &leftblk);
+	XLogRecGetBlockTag(record, 1, NULL, NULL, &rightblk);
+
+	if (!isleaf)
+		bark_xlog_clear_incomplete_split(record, 3);
+
+	/* The new right page */
+	rbuf = XLogInitBufferForRedo(record, 1);
+	page = BufferGetPage(rbuf);
+	BarkPageInit(page, leftblk, xlrec->rightnext, xlrec->level,
+				 leafflag | rprefix, xlrec->cycleid);
+	datapos = XLogRecGetBlockData(record, 1, &datalen);
+	bark_restore_page(page, datapos, datalen);
+	PageSetLSN(page, lsn);
+	MarkBufferDirty(rbuf);
+
+	/* The left page, the original block */
+	if (xlrec->flags & XLH_BARK_SPLIT_LWHOLE)
+	{
+		lbuf = XLogInitBufferForRedo(record, 0);
+		page = BufferGetPage(lbuf);
+		BarkPageInit(page, xlrec->leftprev, rightblk, xlrec->level,
+					 leafflag | lprefix | BARK_INCOMPLETE_SPLIT, xlrec->cycleid);
+		datapos = XLogRecGetBlockData(record, 0, &datalen);
+		bark_restore_page(page, datapos, datalen);
+		PageSetLSN(page, lsn);
+		MarkBufferDirty(lbuf);
+	}
+	else if (XLogReadBufferForRedo(record, 0, &lbuf) == BLK_NEEDS_REDO)
+	{
+		Page		origpage = BufferGetPage(lbuf);
+		Page		leftpage = PageGetTempPage(origpage);
+		IndexTuple	hikey;
+		IndexTuple	newitem = NULL;
+		IndexTuple	replaceitem = NULL;
+
+		/* The new high key, then the new entry and the replacement, if any */
+		datapos = XLogRecGetBlockData(record, 0, &datalen);
+		hikey = (IndexTuple) datapos;
+		datapos += MAXALIGN(IndexTupleSize(hikey));
+		if (xlrec->flags & XLH_BARK_SPLIT_NEWLEFT)
+		{
+			newitem = (IndexTuple) datapos;
+			datapos += MAXALIGN(IndexTupleSize(newitem));
+		}
+		if (xlrec->flags & XLH_BARK_SPLIT_REPLACE)
+		{
+			replaceitem = (IndexTuple) datapos;
+			datapos += MAXALIGN(IndexTupleSize(replaceitem));
+		}
+		Assert(datapos == XLogRecGetBlockData(record, 0, NULL) + datalen);
+		Assert(BarkPageHasPrefix(BarkPageGetOpaque(origpage)) == (lprefix != 0));
+
+		BarkPageInit(leftpage, xlrec->leftprev, rightblk, xlrec->level,
+					 leafflag | BARK_INCOMPLETE_SPLIT, xlrec->cycleid);
+		if (!bark_split_build_left(leftpage, origpage, hikey,
+								   xlrec->firstrightoff,
+								   newitem, xlrec->newitemoff,
+								   replaceitem, xlrec->replaceoff))
+			elog(PANIC, "failed to rebuild left half of BARK split during replay");
+		PageRestoreTempPage(leftpage, origpage);
+		PageSetLSN(origpage, lsn);
+		MarkBufferDirty(lbuf);
+	}
+
+	/* The original right sibling's left link */
+	if (xlrec->rightnext != BARK_P_NONE &&
+		XLogReadBufferForRedo(record, 2, &sbuf) == BLK_NEEDS_REDO)
+	{
+		page = BufferGetPage(sbuf);
+		BarkPageGetOpaque(page)->bark_prev = rightblk;
+		PageSetLSN(page, lsn);
+		MarkBufferDirty(sbuf);
+	}
+
+	if (BufferIsValid(sbuf))
+		UnlockReleaseBuffer(sbuf);
+	UnlockReleaseBuffer(rbuf);
+	if (BufferIsValid(lbuf))
+		UnlockReleaseBuffer(lbuf);
+}
+
+/*
+ * Replay the growth of a new level (bark_new_root): the new root, the old
+ * root's split finished, and the meta page pointed at the new root.
+ */
+static void
+bark_xlog_newroot(XLogReaderState *record)
+{
+	XLogRecPtr	lsn = record->EndRecPtr;
+	xl_bark_newroot *xlrec = (xl_bark_newroot *) XLogRecGetData(record);
+	Buffer		rootbuf;
+	Page		page;
+	char	   *datapos;
+	Size		datalen;
+
+	bark_xlog_clear_incomplete_split(record, 1);
+
+	rootbuf = XLogInitBufferForRedo(record, 0);
+	page = BufferGetPage(rootbuf);
+	BarkPageInit(page, BARK_P_NONE, BARK_P_NONE, xlrec->level, BARK_ROOT, 0);
+	datapos = XLogRecGetBlockData(record, 0, &datalen);
+	bark_restore_page(page, datapos, datalen);
+	PageSetLSN(page, lsn);
+	MarkBufferDirty(rootbuf);
+
+	bark_xlog_restore_meta(record, 2);
+
+	UnlockReleaseBuffer(rootbuf);
+}
+
+/*
+ * Replay the writing of overflow pages (bark_write_overflow_chain): each page
+ * is rebuilt from its link and its slice of the tuple.
+ */
+static void
+bark_xlog_overflow(XLogReaderState *record)
+{
+	XLogRecPtr	lsn = record->EndRecPtr;
+
+	for (uint8 block_id = 0; block_id <= XLogRecMaxBlockId(record); block_id++)
+	{
+		Buffer		buf = XLogInitBufferForRedo(record, block_id);
+		Size		datalen;
+		char	   *data = XLogRecGetBlockData(record, block_id, &datalen);
+		xl_bark_overflow_page link;
+
+		Assert(datalen >= sizeof(xl_bark_overflow_page));
+		memcpy(&link, data, sizeof(xl_bark_overflow_page));
+		bark_init_overflow_page(BufferGetPage(buf),
+								data + sizeof(xl_bark_overflow_page),
+								datalen - sizeof(xl_bark_overflow_page),
+								link.next);
+		PageSetLSN(BufferGetPage(buf), lsn);
+		MarkBufferDirty(buf);
+		UnlockReleaseBuffer(buf);
+	}
+}
+
+/*
+ * Replay the creation of an empty index's root leaf (bark_create_root_leaf).
+ */
+static void
+bark_xlog_create_root(XLogReaderState *record)
+{
+	XLogRecPtr	lsn = record->EndRecPtr;
+	Buffer		leafbuf;
+	Page		page;
+
+	leafbuf = XLogInitBufferForRedo(record, 0);
+	page = BufferGetPage(leafbuf);
+	BarkPageInit(page, BARK_P_NONE, BARK_P_NONE, 0, BARK_LEAF | BARK_ROOT, 0);
+	PageSetLSN(page, lsn);
+	MarkBufferDirty(leafbuf);
+
+	bark_xlog_restore_meta(record, 1);
+
+	UnlockReleaseBuffer(leafbuf);
+}
+
+/*
  * Replay the replacement of one leaf entry (bark_overwrite_entry).
  */
 static void
@@ -112,6 +371,41 @@ bark_xlog_overwrite(XLogReaderState *record)
 }
 
 /*
+ * Apply the block data of a VACUUM, DELETE or MERGE record to its leaf, in
+ * the order the primary made the changes: rewrites, then deletions, or for a
+ * MERGE (`deletefirst`) deletions, then rewrites.
+ */
+static void
+bark_redo_delitems(XLogReaderState *record, Page page, uint16 ndeleted,
+				   uint16 nupdated, bool deletefirst)
+{
+	char	   *ptr = XLogRecGetBlockData(record, 0, NULL);
+	OffsetNumber *deleted = (OffsetNumber *) ptr;
+	OffsetNumber *updatedoffsets = deleted + ndeleted;
+	char	   *itup = (char *) (updatedoffsets + nupdated);
+
+	/*
+	 * The entries follow the offsets, each padded to MAXALIGN.  They are only
+	 * copied, so they need no alignment beyond the two bytes that reading
+	 * t_info takes.
+	 */
+	if (deletefirst && ndeleted > 0)
+		PageIndexMultiDelete(page, deleted, ndeleted);
+
+	for (int i = 0; i < nupdated; i++)
+	{
+		Size		itemsz = IndexTupleSize((IndexTuple) itup);
+
+		if (!PageIndexTupleOverwrite(page, updatedoffsets[i], itup, itemsz))
+			elog(PANIC, "failed to rewrite BARK leaf entry during replay");
+		itup += MAXALIGN(itemsz);
+	}
+
+	if (!deletefirst && ndeleted > 0)
+		PageIndexMultiDelete(page, deleted, ndeleted);
+}
+
+/*
  * Replay VACUUM's changes to one leaf, in the order bark_delitems_vacuum made
  * them: rewrites, then deletions, then the cycle-ID clear.
  */
@@ -134,32 +428,74 @@ bark_xlog_vacuum(XLogReaderState *record)
 
 		/* A record that only clears the cycle ID carries no block data */
 		if (xlrec->ndeleted > 0 || xlrec->nupdated > 0)
-		{
-			char	   *ptr = XLogRecGetBlockData(record, 0, NULL);
-			OffsetNumber *deleted = (OffsetNumber *) ptr;
-			OffsetNumber *updatedoffsets = deleted + xlrec->ndeleted;
-			char	   *itup = (char *) (updatedoffsets + xlrec->nupdated);
-
-			/*
-			 * The entries follow the offsets, each padded to MAXALIGN.  They
-			 * are only copied, so they need no alignment beyond the two bytes
-			 * that reading t_info takes.
-			 */
-			for (int i = 0; i < xlrec->nupdated; i++)
-			{
-				Size		itemsz = IndexTupleSize((IndexTuple) itup);
-
-				if (!PageIndexTupleOverwrite(page, updatedoffsets[i], itup,
-											 itemsz))
-					elog(PANIC, "failed to rewrite BARK leaf entry during vacuum replay");
-				itup += MAXALIGN(itemsz);
-			}
-
-			if (xlrec->ndeleted > 0)
-				PageIndexMultiDelete(page, deleted, xlrec->ndeleted);
-		}
+			bark_redo_delitems(record, page, xlrec->ndeleted, xlrec->nupdated,
+							   false);
 
 		BarkPageGetOpaque(page)->bark_cycleid = 0;
+
+		PageSetLSN(page, lsn);
+		MarkBufferDirty(buffer);
+	}
+	if (BufferIsValid(buffer))
+		UnlockReleaseBuffer(buffer);
+}
+
+/*
+ * Replay bottom-up deletion on one leaf (bark_delitems_delete), as
+ * btree_xlog_delete does: first cancel the standby queries whose snapshots
+ * could still see the heap tuples whose entries go, then make the changes
+ * under an exclusive lock.  No cleanup lock is needed, for the reason the
+ * primary needs none (see "Bottom-up deletion" in the README).
+ */
+static void
+bark_xlog_delete(XLogReaderState *record)
+{
+	XLogRecPtr	lsn = record->EndRecPtr;
+	xl_bark_delete *xlrec = (xl_bark_delete *) XLogRecGetData(record);
+	Buffer		buffer;
+
+	if (InHotStandby)
+	{
+		RelFileLocator rlocator;
+
+		XLogRecGetBlockTag(record, 0, &rlocator, NULL, NULL);
+		ResolveRecoveryConflictWithSnapshot(xlrec->snapshotConflictHorizon,
+											xlrec->isCatalogRel, rlocator);
+	}
+
+	if (XLogReadBufferForRedo(record, 0, &buffer) == BLK_NEEDS_REDO)
+	{
+		Page		page = BufferGetPage(buffer);
+
+		bark_redo_delitems(record, page, xlrec->ndeleted, xlrec->nupdated,
+						   false);
+
+		PageSetLSN(page, lsn);
+		MarkBufferDirty(buffer);
+	}
+	if (BufferIsValid(buffer))
+		UnlockReleaseBuffer(buffer);
+}
+
+/*
+ * Replay the merge of a leaf's equal-key entries (bark_merge_page):
+ * deletions, then rewrites.  Every heap TID stays on the page, so there is no
+ * recovery conflict to resolve and no cleanup lock to take; an exclusive
+ * lock keeps standby scans out while the entries move, as on the primary.
+ */
+static void
+bark_xlog_merge(XLogReaderState *record)
+{
+	XLogRecPtr	lsn = record->EndRecPtr;
+	xl_bark_merge *xlrec = (xl_bark_merge *) XLogRecGetData(record);
+	Buffer		buffer;
+
+	if (XLogReadBufferForRedo(record, 0, &buffer) == BLK_NEEDS_REDO)
+	{
+		Page		page = BufferGetPage(buffer);
+
+		bark_redo_delitems(record, page, xlrec->ndeleted, xlrec->nupdated,
+						   true);
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
@@ -226,6 +562,7 @@ bark_xlog_unlink_page(XLogReaderState *record)
 	{
 		IndexTuple	downlink;
 
+		/* Changed in place: internal items are stored as they are read. */
 		page = BufferGetPage(parentbuf);
 		downlink = (IndexTuple) PageGetItem(page,
 											PageGetItemId(page, xlrec->poffset));
@@ -285,9 +622,10 @@ bark_xlog_reuse_page(XLogReaderState *record)
 
 /*
  * Replay the addition of one heap TID to a LIST or POSTING entry
- * (bark_add_tid_entry): re-form the entry as the primary did and overwrite
- * it.  The primary checked that the result fits the page, and the page
- * replayed here is the same, so a failure means the two disagree.
+ * (bark_add_tid_entry): re-form the entry as the primary did, code it for
+ * the page's prefix if it has one, and overwrite it.  The primary checked
+ * that the result fits the page, and the page replayed here is the same, so
+ * a failure means the two disagree.
  */
 static void
 bark_xlog_add_tid(XLogReaderState *record)
@@ -299,17 +637,67 @@ bark_xlog_add_tid(XLogReaderState *record)
 	if (XLogReadBufferForRedo(record, 0, &buffer) == BLK_NEEDS_REDO)
 	{
 		Page		page = BufferGetPage(buffer);
+		BarkItemBuf ibuf;
 		IndexTuple	entry;
 		IndexTuple	ext;
+		IndexTuple	coded;
 
-		entry = (IndexTuple) PageGetItem(page,
-										 PageGetItemId(page, xlrec->offnum));
+		entry = BarkPageGetItem(page, xlrec->offnum, &ibuf);
 		ext = bark_entry_add_tid(entry, &xlrec->tid, BarkMaxItemSize);
-		if (ext == NULL ||
-			!PageIndexTupleOverwrite(page, xlrec->offnum, ext,
-									 IndexTupleSize(ext)))
+		if (ext == NULL)
 			elog(PANIC, "failed to add a TID to a BARK entry during replay");
+		coded = bark_prefix_encode(page, ext);
+		if (!PageIndexTupleOverwrite(page, xlrec->offnum, coded,
+									 IndexTupleSize(coded)))
+			elog(PANIC, "failed to add a TID to a BARK entry during replay");
+		if (coded != ext)
+			pfree(coded);
 		pfree(ext);
+
+		PageSetLSN(page, lsn);
+		MarkBufferDirty(buffer);
+	}
+	if (BufferIsValid(buffer))
+		UnlockReleaseBuffer(buffer);
+}
+
+/*
+ * Replay the division of a LIST or POSTING entry around a new heap TID
+ * (bark_swap_tid_entry): divide the entry as the primary did, and put the two
+ * parts, coded for the page, at the entry's offset and the next one.
+ */
+static void
+bark_xlog_insert_swap(XLogReaderState *record)
+{
+	XLogRecPtr	lsn = record->EndRecPtr;
+	xl_bark_insert_swap *xlrec = (xl_bark_insert_swap *) XLogRecGetData(record);
+	Buffer		buffer;
+
+	if (XLogReadBufferForRedo(record, 0, &buffer) == BLK_NEEDS_REDO)
+	{
+		Page		page = BufferGetPage(buffer);
+		BarkItemBuf ibuf;
+		IndexTuple	left;
+		IndexTuple	right;
+		IndexTuple	lcoded;
+		IndexTuple	rcoded;
+
+		bark_entry_swap_tid(BarkPageGetItem(page, xlrec->offnum, &ibuf),
+							&xlrec->tid, &left, &right);
+		lcoded = bark_prefix_encode(page, left);
+		rcoded = bark_prefix_encode(page, right);
+		if (!PageIndexTupleOverwrite(page, xlrec->offnum, lcoded,
+									 IndexTupleSize(lcoded)) ||
+			PageAddItem(page, rcoded, IndexTupleSize(rcoded),
+						OffsetNumberNext(xlrec->offnum), false, false) ==
+			InvalidOffsetNumber)
+			elog(PANIC, "failed to divide a BARK entry during replay");
+		if (lcoded != left)
+			pfree(lcoded);
+		if (rcoded != right)
+			pfree(rcoded);
+		pfree(left);
+		pfree(right);
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
@@ -327,6 +715,12 @@ bark_redo(XLogReaderState *record)
 	{
 		case XLOG_BARK_VACUUM:
 			bark_xlog_vacuum(record);
+			break;
+		case XLOG_BARK_DELETE:
+			bark_xlog_delete(record);
+			break;
+		case XLOG_BARK_MERGE:
+			bark_xlog_merge(record);
 			break;
 		case XLOG_BARK_UNLINK_PAGE:
 			bark_xlog_unlink_page(record);
@@ -348,6 +742,21 @@ bark_redo(XLogReaderState *record)
 			break;
 		case XLOG_BARK_ADD_TID:
 			bark_xlog_add_tid(record);
+			break;
+		case XLOG_BARK_INSERT_SWAP:
+			bark_xlog_insert_swap(record);
+			break;
+		case XLOG_BARK_SPLIT:
+			bark_xlog_split(record);
+			break;
+		case XLOG_BARK_NEWROOT:
+			bark_xlog_newroot(record);
+			break;
+		case XLOG_BARK_CREATE_ROOT:
+			bark_xlog_create_root(record);
+			break;
+		case XLOG_BARK_OVERFLOW:
+			bark_xlog_overflow(record);
 			break;
 		default:
 			elog(PANIC, "bark_redo: unknown op code %u", info);
