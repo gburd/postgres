@@ -7806,7 +7806,8 @@ getIndexes(Archive *fout, TableInfo tblinfo[], int numTables)
 				i_tablespace,
 				i_indreloptions,
 				i_indstatcols,
-				i_indstatvals;
+				i_indstatvals,
+				i_indimplam;
 
 	/*
 	 * We want to perform just one query against pg_index.  However, we
@@ -7895,6 +7896,14 @@ getIndexes(Archive *fout, TableInfo tblinfo[], int numTables)
 		appendPQExpBufferStr(query,
 							 "false AS indnullsnotdistinct, ");
 
+	if (fout->remoteVersion >= 200000)
+		appendPQExpBufferStr(query,
+							 "(SELECT amname FROM pg_catalog.pg_am a "
+							 "WHERE a.oid = i.indimplam) AS indimplam, ");
+	else
+		appendPQExpBufferStr(query,
+							 "NULL AS indimplam, ");
+
 	if (fout->remoteVersion >= 180000)
 		appendPQExpBufferStr(query,
 							 "c.conperiod ");
@@ -7981,6 +7990,7 @@ getIndexes(Archive *fout, TableInfo tblinfo[], int numTables)
 	i_indreloptions = PQfnumber(res, "indreloptions");
 	i_indstatcols = PQfnumber(res, "indstatcols");
 	i_indstatvals = PQfnumber(res, "indstatvals");
+	i_indimplam = PQfnumber(res, "indimplam");
 
 	indxinfo = pg_malloc_array(IndxInfo, ntups);
 
@@ -8048,6 +8058,8 @@ getIndexes(Archive *fout, TableInfo tblinfo[], int numTables)
 			indxinfo[j].indreloptions = pg_strdup(PQgetvalue(res, j, i_indreloptions));
 			indxinfo[j].indstatcols = pg_strdup(PQgetvalue(res, j, i_indstatcols));
 			indxinfo[j].indstatvals = pg_strdup(PQgetvalue(res, j, i_indstatvals));
+			indxinfo[j].indimplam = PQgetisnull(res, j, i_indimplam) ? NULL :
+				pg_strdup(PQgetvalue(res, j, i_indimplam));
 			indxinfo[j].indkeys = parseIntArray(PQgetvalue(res, j, i_indkey),
 												indxinfo[j].indnattrs);
 			indxinfo[j].indisclustered = (PQgetvalue(res, j, i_indisclustered)[0] == 't');
@@ -18227,6 +18239,35 @@ appendIndexStatTargets(PQExpBuffer q, const IndxInfo *indxinfo)
 }
 
 /*
+ * Emit the SET that makes the following CREATE INDEX or ADD CONSTRAINT
+ * implement the index with the same index AM as the dumped one.
+ *
+ * A table AM's own choice (its index_implementation callback) takes
+ * precedence over the setting on restore, so restoring onto the same table
+ * AM reproduces the original choice either way.  In binary-upgrade mode the
+ * server ignores the table AM and the dump states the implementation of
+ * every index, since pg_upgrade keeps the index files.
+ */
+static void
+appendIndexImplementationSet(Archive *fout, PQExpBuffer q,
+							 const IndxInfo *indxinfo)
+{
+	if (indxinfo->indimplam)
+		appendPQExpBuffer(q, "SET default_btree_implementation = %s;\n",
+						  fmtId(indxinfo->indimplam));
+	else if (fout->dopt->binary_upgrade && fout->remoteVersion >= 200000)
+		appendPQExpBufferStr(q, "SET default_btree_implementation = '';\n");
+}
+
+static void
+appendIndexImplementationReset(Archive *fout, PQExpBuffer q,
+							   const IndxInfo *indxinfo)
+{
+	if (indxinfo->indimplam)
+		appendPQExpBufferStr(q, "SET default_btree_implementation = '';\n");
+}
+
+/*
  * dumpIndex
  *	  write out to fout a user-defined index
  */
@@ -18265,7 +18306,9 @@ dumpIndex(Archive *fout, const IndxInfo *indxinfo)
 											 indxinfo->dobj.catId.oid);
 
 		/* Plain secondary index */
+		appendIndexImplementationSet(fout, q, indxinfo);
 		appendPQExpBuffer(q, "%s;\n", indxinfo->indexdef);
+		appendIndexImplementationReset(fout, q, indxinfo);
 
 		/*
 		 * Append ALTER TABLE commands as needed to set properties that we
@@ -18782,6 +18825,7 @@ dumpConstraint(Archive *fout, const ConstraintInfo *coninfo)
 			binary_upgrade_set_pg_class_oids(fout, q,
 											 indxinfo->dobj.catId.oid);
 
+		appendIndexImplementationSet(fout, q, indxinfo);
 		appendPQExpBuffer(q, "ALTER %sTABLE ONLY %s\n", foreign,
 						  fmtQualifiedDumpable(tbinfo));
 		appendPQExpBuffer(q, "    ADD CONSTRAINT %s ",
@@ -18857,6 +18901,7 @@ dumpConstraint(Archive *fout, const ConstraintInfo *coninfo)
 
 			appendPQExpBufferStr(q, ";\n");
 		}
+		appendIndexImplementationReset(fout, q, indxinfo);
 
 		/*
 		 * Append ALTER TABLE commands as needed to set properties that we
