@@ -29,6 +29,7 @@ install_data(
   'amcheck--1.3--1.4.sql',
   'amcheck--1.4--1.5.sql',
   'amcheck--1.5--1.6.sql',
+  'amcheck--1.6--1.7.sql',
   kwargs: contrib_data_args,
 )
 

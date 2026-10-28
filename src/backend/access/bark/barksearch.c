@@ -36,11 +36,15 @@
 /*
  * What a descent searches for: an index tuple (insert, and the internal
  * lookups of VACUUM and split completion), or a scan's bound, whose
- * arguments may be of another type in the column's opfamily.
+ * arguments may be of another type in the column's opfamily.  An index tuple
+ * may come with a heap TID, scantid, which orders it within a run of equal
+ * keys (bark_compare_itups_tid); NULL compares the key only, as every scan
+ * does.
  */
 typedef struct BarkSearchKey
 {
 	IndexTuple	key;
+	ItemPointer scantid;
 	const		BarkScanBound *bound;
 }			BarkSearchKey;
 
@@ -49,7 +53,7 @@ typedef struct BarkSearchKey
  * before or after the tuple in index order (never 0, see below).  Truncated
  * pivot attributes are minus infinity, as in bark_compare_itups.
  */
-static int
+int
 bark_compare_bound(Relation index, BarkKeyInfo *keyinfo,
 				   const BarkScanBound * bound, IndexTuple itup)
 {
@@ -57,16 +61,26 @@ bark_compare_bound(Relation index, BarkKeyInfo *keyinfo,
 	IndexTuple	full = NULL;
 	int			natts;
 	int			ncmp;
+	bool		notid = false;
 	int			result = 0;
 
+	/* natts, and whether the tuple is a pivot whose heap TID was truncated. */
 	if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED)
 	{
-		natts = BarkOverflowIsLeaf(itup) ? keyinfo->nkeys :
-			BarkOverflowGetRef(itup)->natts;
+		if (BarkOverflowIsLeaf(itup))
+			natts = keyinfo->nkeys;
+		else
+		{
+			natts = BarkOverflowGetRef(itup)->natts;
+			notid = bark_pivot_heap_tid(itup) == NULL;
+		}
 		itup = full = bark_fetch_oversized(index, itup);
 	}
 	else if (BarkEntryGetShape(itup) == BARK_SHAPE_PIVOT)
+	{
 		natts = BarkPivotGetNAtts(itup);
+		notid = BarkPivotGetHeapTID(itup) == NULL;
+	}
 	else
 		natts = keyinfo->nkeys;
 
@@ -107,13 +121,27 @@ bark_compare_bound(Relation index, BarkKeyInfo *keyinfo,
 	 * the first page that can hold an equal key, and one for an upper bound
 	 * moves on to the last such page, past a high key equal to the bound. A
 	 * bound is never equal to a tuple, so nextkey does not matter.
+	 *
+	 * One exception, as in nbtree's _bt_compare: a forward scan's lower bound
+	 * sorts after a pivot that has exactly the bound's columns and no heap
+	 * TID.  Suffix truncation kept one column more than lastleft and
+	 * firstright share, so lastleft is strictly less than the pivot on those
+	 * columns, and so is every entry left of the pivot (an insert equal to
+	 * the pivot on them goes right of it).  No entry there can be at or after
+	 * the bound, and a descent that went left would only read a page with no
+	 * match and step right.  A pivot with more columns than the bound, or
+	 * with a heap TID, may have entries equal to the bound on its left.  A
+	 * backward scan's lower bound (a strict <) wants the entries left of the
+	 * pivot, so it keeps sorting before it, as nbtree's does.  Leaf entries
+	 * are never truncated, and an upper bound sorts after the pivot anyway.
 	 */
 	if (result == 0)
 	{
-		if (natts < bound->nkeys)
+		if (natts < bound->nkeys || bound->upper ||
+			(notid && natts == bound->nkeys && !bound->backward))
 			result = 1;
 		else
-			result = bound->upper ? 1 : -1;
+			result = -1;
 	}
 
 	if (full)
@@ -121,17 +149,20 @@ bark_compare_bound(Relation index, BarkKeyInfo *keyinfo,
 	return result;
 }
 
-/* Compare the search key with the index tuple at offset `off` on `page`. */
-static int
-bark_compare_off(Relation index, BarkKeyInfo *keyinfo,
-				 const BarkSearchKey * key, Page page, OffsetNumber off)
+/*
+ * Compare the search key with index tuple itup.  The caller reads the tuple
+ * (a high key with PageGetItem, a data item with BarkPageGetItem into a
+ * workspace it keeps for the whole page), so that this is cheap enough to
+ * inline into the binary search, which calls it once per probe.
+ */
+static inline int
+bark_compare_key(Relation index, BarkKeyInfo *keyinfo,
+				 const BarkSearchKey * key, IndexTuple itup)
 {
-	ItemId		iid = PageGetItemId(page, off);
-	IndexTuple	itup = (IndexTuple) PageGetItem(page, iid);
-
 	if (key->bound != NULL)
 		return bark_compare_bound(index, keyinfo, key->bound, itup);
-	return bark_compare_itups(keyinfo, index, key->key, itup);
+	return bark_compare_itups_tid(keyinfo, index, key->key, key->scantid,
+								  itup);
 }
 
 /*
@@ -140,7 +171,9 @@ bark_compare_off(Relation index, BarkKeyInfo *keyinfo,
  * _bt_moveright.
  *
  * Move right past a page that split after our parent pointed at it (the key
- * is greater than its high key) and past a page that is being removed from
+ * is greater than its high key, or, with a heap TID, not less than it: a high
+ * key's heap TID is the lowest of the right page's first entry, so an equal
+ * TID belongs right) and past a page that is being removed from
  * the tree (BARK_DELETED or BARK_HALF_DEAD; such a page keeps its right link
  * so that descents and scans already on their way to it can step past it).
  *
@@ -190,8 +223,12 @@ bark_moveright(Relation index, BarkKeyInfo *keyinfo, const BarkSearchKey * key,
 			continue;
 		}
 
+		/* A page being removed may have no high key: test that first. */
 		if ((opaque->bark_flags & (BARK_DELETED | BARK_HALF_DEAD)) != 0 ||
-			bark_compare_off(index, keyinfo, key, page, BARK_P_HIKEY) > 0)
+			bark_compare_key(index, keyinfo, key,
+							 (IndexTuple) PageGetItem(page,
+													  PageGetItemId(page, BARK_P_HIKEY))) >=
+			(key->scantid != NULL ? 0 : 1))
 		{
 			BlockNumber right = opaque->bark_next;
 
@@ -220,17 +257,17 @@ bark_moveright(Relation index, BarkKeyInfo *keyinfo, const BarkSearchKey * key,
  * entry whose key is > the search key).
  *
  * `nextkey` selects which child a run of equal keys routes to on an internal
- * page.  With nextkey=true (the insert / true-key descent) we follow the last
- * downlink whose key is <= the search key -- the rightmost child that can hold
- * the key.  With nextkey=false (a lower-bound scan descent) we follow the last
- * downlink whose key is strictly < the search key -- the leftmost child that
- * can hold the key.  The distinction matters only when equal downlink keys
- * exist, which happens when a leaf splits in the middle of a run of equal
- * keys: a forward equality or lower-bound scan must then start at the FIRST
- * such leaf, or it silently skips the earlier duplicates.  (Inside a run, a
- * leaf's high key equals the next leaf's first key, since suffix truncation
- * removes nothing there, so an earlier leaf of the run still holds matching
- * keys; landing on the last leaf of the run loses them.)
+ * page.  With nextkey=true we follow the last downlink whose key is <= the
+ * search key -- the rightmost child that can hold the key.  With
+ * nextkey=false (a lower-bound scan descent, and a unique check's) we follow
+ * the last downlink whose key is strictly < the search key -- the leftmost
+ * child that can hold the key.  The distinction matters only when equal
+ * downlink keys exist, which happens when a leaf splits in the middle of a
+ * run of equal keys: a forward equality or lower-bound scan must then start
+ * at the FIRST such leaf, or it silently skips the earlier duplicates.  An
+ * insert's search key has a heap TID (scantid), which a downlink with every
+ * key attribute is never equal to unless their TIDs are equal, and then the
+ * entry belongs right of it: so an insert uses nextkey=true.
  */
 static OffsetNumber
 bark_binsrch(Relation index, BarkKeyInfo *keyinfo, const BarkSearchKey * key,
@@ -240,6 +277,7 @@ bark_binsrch(Relation index, BarkKeyInfo *keyinfo, const BarkSearchKey * key,
 	OffsetNumber low = BarkPageFirstDataKey(opaque);
 	OffsetNumber high = PageGetMaxOffsetNumber(page);
 	bool		isleaf = BarkPageIsLeaf(opaque);
+	BarkItemBuf ibuf;
 
 	if (high < low)
 		return low;				/* empty page */
@@ -253,7 +291,8 @@ bark_binsrch(Relation index, BarkKeyInfo *keyinfo, const BarkSearchKey * key,
 	while (low < high)
 	{
 		OffsetNumber mid = low + ((high - low) / 2);
-		int			cmp = bark_compare_off(index, keyinfo, key, page, mid);
+		int			cmp = bark_compare_key(index, keyinfo, key,
+										   BarkPageGetItem(page, mid, &ibuf));
 
 		if (nextkey ? (cmp >= 0) : (cmp > 0))
 			low = OffsetNumberNext(mid);	/* mid is before the boundary */
@@ -274,9 +313,33 @@ bark_binsrch(Relation index, BarkKeyInfo *keyinfo, const BarkSearchKey * key,
 }
 
 /*
+ * Return the index's BarkAmCache, creating it empty on first use.
+ */
+BarkAmCache *
+bark_get_amcache(Relation index)
+{
+	BarkAmCache *cache = (BarkAmCache *) index->rd_amcache;
+
+	if (cache == NULL)
+	{
+		cache = MemoryContextAlloc(index->rd_indexcxt, sizeof(BarkAmCache));
+		cache->root = BARK_P_NONE;
+		cache->level = 0;
+		cache->extracted = -1;
+		index->rd_amcache = cache;
+	}
+	return cache;
+}
+
+/*
  * Read the root block number, and the root's level when level_out is not
- * NULL, from the meta page.  Returns BARK_P_NONE when the index is empty (no
- * root yet).
+ * NULL, from the meta page, and refresh the root cache.  Returns BARK_P_NONE
+ * when the index is empty (no root yet).
+ *
+ * Every descent reaches the meta page here when the root cache is empty, so
+ * this is where an index in an on-disk format older than BARK_MIN_VERSION is
+ * refused.  The meta page is read under its lock before the error, which
+ * leaves the cache unset, so every later access is refused too.
  */
 BlockNumber
 bark_get_root(Relation index, uint32 *level_out)
@@ -284,14 +347,92 @@ bark_get_root(Relation index, uint32 *level_out)
 	Buffer		metabuf = ReadBuffer(index, BARK_METAPAGE);
 	BarkMetaPageData *meta;
 	BlockNumber root;
+	uint32		level;
 
 	LockBuffer(metabuf, BUFFER_LOCK_SHARE);
 	meta = BarkPageGetMeta(BufferGetPage(metabuf));
+	if (meta->bark_version < BARK_MIN_VERSION)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("index \"%s\" was built by an older BARK version",
+						RelationGetRelationName(index)),
+				 errhint("REINDEX the index.")));
 	root = meta->bark_root;
-	if (level_out)
-		*level_out = meta->bark_level;
+	level = meta->bark_level;
 	UnlockReleaseBuffer(metabuf);
+
+	if (root != BARK_P_NONE)
+	{
+		BarkAmCache *cache = bark_get_amcache(index);
+
+		cache->root = root;
+		cache->level = level;
+	}
+	if (level_out)
+		*level_out = level;
 	return root;
+}
+
+/*
+ * The root's level, for the planner: from the root cache when there is one,
+ * else from the meta page.  Zero for a single-page or empty index.
+ */
+uint32
+bark_get_root_level(Relation index)
+{
+	uint32		level;
+
+	BarkAmCache *cache = (BarkAmCache *) index->rd_amcache;
+
+	if (cache != NULL && cache->root != BARK_P_NONE)
+		return cache->level;
+	(void) bark_get_root(index, &level);
+	return level;
+}
+
+/*
+ * Return the root page locked in mode access, or InvalidBuffer when the
+ * index is empty.
+ *
+ * The cached root is used when, under the lock, it is still the root: the
+ * BARK_ROOT flag is set, the page is not being deleted, and it is at the
+ * cached level.  A root split clears the flag on the old root before the new
+ * root is made, so a page that passes is the root the meta page names, or
+ * the one it is about to name.  Otherwise the meta page is read, as it
+ * always was before the cache; the root it names may itself have split
+ * since, which the caller's move right handles.
+ */
+Buffer
+bark_get_root_buffer(Relation index, BufferLockMode access)
+{
+	BarkAmCache *cache = (BarkAmCache *) index->rd_amcache;
+	BlockNumber root;
+	Buffer		buf;
+
+	if (cache != NULL && cache->root != BARK_P_NONE)
+	{
+		Page		page;
+
+		buf = ReadBuffer(index, cache->root);
+		LockBuffer(buf, access);
+		page = BufferGetPage(buf);
+		if (!PageIsNew(page))
+		{
+			BarkPageOpaque opaque = BarkPageGetOpaque(page);
+
+			if (BarkPageIsRoot(opaque) && !BarkPageIgnore(opaque) &&
+				opaque->bark_level == cache->level)
+				return buf;
+		}
+		UnlockReleaseBuffer(buf);
+	}
+
+	root = bark_get_root(index, NULL);
+	if (root == BARK_P_NONE)
+		return InvalidBuffer;
+	buf = ReadBuffer(index, root);
+	LockBuffer(buf, access);
+	return buf;
 }
 
 /*
@@ -324,12 +465,9 @@ bark_descend(Relation index, BarkKeyInfo *keyinfo, const BarkSearchKey * key,
 	if (stack)
 		*stack = NULL;
 
-	blkno = bark_get_root(index, NULL);
-	if (blkno == BARK_P_NONE)
+	buf = bark_get_root_buffer(index, access);
+	if (!BufferIsValid(buf))
 		return InvalidBuffer;	/* empty index */
-
-	buf = ReadBuffer(index, blkno);
-	LockBuffer(buf, access);
 
 	for (;;)
 	{
@@ -338,6 +476,7 @@ bark_descend(Relation index, BarkKeyInfo *keyinfo, const BarkSearchKey * key,
 		OffsetNumber off;
 		IndexTuple	itup;
 		BarkStack	item;
+		BarkItemBuf ibuf;
 
 		/*
 		 * The page may have split since we read its downlink (or the meta
@@ -354,7 +493,7 @@ bark_descend(Relation index, BarkKeyInfo *keyinfo, const BarkSearchKey * key,
 
 		/* Internal page: find the downlink to follow and push the stack. */
 		off = bark_binsrch(index, keyinfo, key, page, nextkey);
-		itup = (IndexTuple) PageGetItem(page, PageGetItemId(page, off));
+		itup = BarkPageGetItem(page, off, &ibuf);
 
 		item = palloc(sizeof(BarkStackData));
 		item->bark_blkno = BufferGetBlockNumber(buf);
@@ -400,9 +539,12 @@ bark_descend(Relation index, BarkKeyInfo *keyinfo, const BarkSearchKey * key,
 
 Buffer
 bark_search(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
-			bool forwrite, bool nextkey, BarkStack *stack)
+			ItemPointer scantid, bool forwrite, bool nextkey, BarkStack *stack)
 {
-	BarkSearchKey skey = {key, NULL};
+	BarkSearchKey skey = {key, scantid, NULL};
+
+	/* A heap TID equal to a pivot's belongs right of it (bark_moveright). */
+	Assert(scantid == NULL || nextkey);
 
 	return bark_descend(index, keyinfo, &skey, forwrite, nextkey, stack);
 }
@@ -416,9 +558,26 @@ Buffer
 bark_search_bound(Relation index, BarkKeyInfo *keyinfo,
 				  const BarkScanBound * bound, bool nextkey)
 {
-	BarkSearchKey skey = {NULL, bound};
+	BarkSearchKey skey = {NULL, NULL, bound};
 
 	return bark_descend(index, keyinfo, &skey, false, nextkey, NULL);
+}
+
+/*
+ * On leaf `page`, the first offset whose entry sorts after `bound`, as
+ * nbtree's _bt_binsrch finds where _bt_first starts on the leaf.  A bound
+ * never equals an entry (see bark_compare_bound), so every entry before the
+ * offset sorts before the bound: a forward scan from a lower bound starts at
+ * the offset, and a backward scan from an upper bound starts just before it.
+ */
+OffsetNumber
+bark_binsrch_bound(Relation index, BarkKeyInfo *keyinfo,
+				   const BarkScanBound * bound, Page page)
+{
+	BarkSearchKey skey = {NULL, NULL, bound};
+
+	Assert(BarkPageIsLeaf(BarkPageGetOpaque(page)));
+	return bark_binsrch(index, keyinfo, &skey, page, false);
 }
 
 void
