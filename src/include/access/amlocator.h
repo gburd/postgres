@@ -63,9 +63,9 @@
  *   untagged.
  *
  * - The table AM hands out tags and alone defines what they mean.  Entries
- *   made by INSERT, COPY and every other insertion of a new row are
- *   untagged, which is valid because a new row has no history.  Tags come
- *   from the table AM: from an UPDATE that keeps the row's locator, and
+ *   made by INSERT, COPY and other insertions of a new row are untagged,
+ *   which is valid because a new row has no history.  Tags come from the
+ *   table AM: with each new row version table_tuple_update() makes, and
  *   from its own index build and validation scans (IndexInfo.ii_VersionTag).
  *
  * - An index AM with amcanversion stores each entry's tag, orders equal
