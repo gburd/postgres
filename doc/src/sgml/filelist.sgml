@@ -90,6 +90,7 @@
 <!ENTITY geqo       SYSTEM "geqo.sgml">
 <!ENTITY indextypes SYSTEM "indextypes.sgml">
 <!ENTITY btree      SYSTEM "btree.sgml">
+<!ENTITY bark       SYSTEM "bark.sgml">
 <!ENTITY gist       SYSTEM "gist.sgml">
 <!ENTITY spgist     SYSTEM "spgist.sgml">
 <!ENTITY gin        SYSTEM "gin.sgml">
