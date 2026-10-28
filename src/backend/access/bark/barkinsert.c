@@ -46,6 +46,7 @@
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
+#include "storage/proc.h"
 #include "utils/datum.h"
 #include "utils/injection_point.h"
 #include "utils/lsyscache.h"
@@ -2562,6 +2563,7 @@ typedef struct BarkInsertState
 								 * not equalimage: GIN's key rule */
 	int			extracted;		/* bark_index_extracted_column, or 0 */
 	MemoryContext rowcxt;		/* one row's keys and entries, reset per row */
+	bool		untag;			/* store entries untagged: conversion settled */
 } BarkInsertState;
 
 static BarkInsertState *
@@ -2586,6 +2588,19 @@ bark_insert_state(Relation index, IndexInfo *indexInfo)
 												  ALLOCSET_DEFAULT_SIZES);
 		indexInfo->ii_AmCache = state;
 		MemoryContextSwitchTo(oldcxt);
+
+		/*
+		 * A constraint added since the build begins the conversion.  Once
+		 * VACUUM's barrier has passed (BARK_META_SETTLED), every update moves
+		 * the rows it changes, and a new locator has no history, so the
+		 * statement stores its entries untagged, even those the table AM
+		 * tags; so does one after the conversion is over, whose relcache
+		 * entry may still say MKTAGS.  No tagged entry is added after the
+		 * barrier, which is what lets VACUUM's count of them reach zero.
+		 */
+		state->untag = state->keyinfo->mktags &&
+			(bark_note_conversion(index) &
+			 (BARK_META_MKTAGS | BARK_META_SETTLED)) != BARK_META_MKTAGS;
 	}
 	return state;
 }
@@ -2660,6 +2675,40 @@ bark_insert_key(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 	 * them (see bark_index_may_coalesce).
 	 */
 	coalesce = coalesce && !oversized && keyinfo->instag == InvalidIndexVersionTag;
+
+	/*
+	 * A tagged (key, TID, tag) already in the index is not stored again.  A
+	 * table AM may give several versions of a row one tag (heap_versioned
+	 * tags each with its transaction ID), so an update that keeps the locator
+	 * can insert an entry the row already has: A -> B -> A in one
+	 * transaction, or a key that two updates of a multikey column keep.  A
+	 * second copy would break the strict (key, TID, tag) order that searches
+	 * and splits rely on, and return the row twice.  The copy present is the
+	 * entry just before off, the first that sorts after (key, TID, tag); if a
+	 * scan marked it dead, the insert says the version is live, so the mark
+	 * goes.
+	 */
+	if (keyinfo->instag != InvalidIndexVersionTag &&
+		off > BarkPageFirstDataKey(BarkPageGetOpaque(page)))
+	{
+		BarkItemBuf ibuf;
+		IndexTuple	prev = BarkPageGetItem(page, OffsetNumberPrev(off), &ibuf);
+
+		if ((BarkEntryGetShape(prev) == BARK_SHAPE_SINGLE ||
+			 BarkEntryGetShape(prev) == BARK_SHAPE_OVERSIZED) &&
+			bark_compare_itups_tid(keyinfo, index, itup, &itup->t_tid,
+								   keyinfo->instag, prev) == 0)
+		{
+			if (ItemIdIsDead(PageGetItemId(page, OffsetNumberPrev(off))))
+			{
+				IndexTuple	same = CopyIndexTuple(prev);
+
+				bark_overwrite_entry(index, buf, OffsetNumberPrev(off), same);
+				pfree(same);
+			}
+			return BARK_PLACE_ONPAGE;
+		}
+	}
 
 	/*
 	 * A tagged entry never coalesces, but its (key, TID) may fall inside the
@@ -3534,6 +3583,28 @@ bark_insert_row_keys(Relation index, BarkInsertState *state, Datum *values,
 	return result;
 }
 
+/*
+ * The row this backend inserted last into an index with an extracted
+ * column, and the local ID of the transaction that did
+ * (bark_is_last_insert).  Every transaction has one, with an XID or not.
+ */
+static Oid	last_insert_index = InvalidOid;
+static ItemPointerData last_insert_tid;
+static LocalTransactionId last_insert_lxid = InvalidLocalTransactionId;
+
+/*
+ * Did this backend's running transaction insert the row at tid into index
+ * last?  A constraint check that runs right after the insert, as
+ * ExecInsertIndexTuples makes it, is about that row (see bark_mk_settle).
+ */
+bool
+bark_is_last_insert(Relation index, ItemPointer tid)
+{
+	return RelationGetRelid(index) == last_insert_index &&
+		ItemPointerEquals(tid, &last_insert_tid) &&
+		last_insert_lxid == MyProc->vxid.lxid;
+}
+
 bool
 bark_insert(Relation index, Datum *values, bool *isnull, ItemPointer ht_ctid,
 			Relation heapRel, IndexUniqueCheck checkUnique,
@@ -3548,10 +3619,17 @@ bark_insert(Relation index, Datum *values, bool *isnull, ItemPointer ht_ctid,
 
 	bark_check_tid_offset(index, ht_ctid, state->keyinfo->tidstride);
 	bark_check_can_tag(index, state->keyinfo, tag);
+	if (state->untag)
+		tag = InvalidIndexVersionTag;
 	if (state->extracted > 0)
+	{
+		last_insert_index = RelationGetRelid(index);
+		last_insert_tid = *ht_ctid;
+		last_insert_lxid = MyProc->vxid.lxid;
 		return bark_insert_row_keys(index, state, values, isnull, ht_ctid,
 									heapRel, checkUnique, indexUnchanged,
 									false, tag);
+	}
 
 	/*
 	 * A uniqueness check is skipped when the caller doesn't want it, and when

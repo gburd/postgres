@@ -1,0 +1,109 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1_insert s2_insert s2_bits s3_wakeup s1_done s3_check
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+step s1_insert: INSERT INTO tcr VALUES (3, ARRAY[5,6]); <waiting ...>
+step s2_insert: INSERT INTO tcr VALUES (4, ARRAY[7,8]);
+step s2_bits: SELECT flags & 30 AS mktags_converting_settled FROM bark_metap('tcr_doc');
+mktags_converting_settled
+-------------------------
+                       14
+(1 row)
+
+step s3_wakeup: SELECT injection_points_wakeup('bark-conversion-flags-before-lock');
+injection_points_wakeup
+-----------------------
+                       
+(1 row)
+
+step s1_insert: <... completed>
+step s1_done: 
+step s3_check: 
+	SELECT flags & 30 AS mktags_converting_settled FROM bark_metap('tcr_doc');
+	SELECT id, doc FROM tcr ORDER BY id;
+	SELECT bark_index_check('tcr_doc');
+
+mktags_converting_settled
+-------------------------
+                       14
+(1 row)
+
+id|doc    
+--+-------
+ 1|{1,2}  
+ 2|{20,21}
+ 3|{5,6}  
+ 4|{7,8}  
+(4 rows)
+
+bark_index_check
+----------------
+                
+(1 row)
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+
+starting permutation: s1_scan s2_vacuum s2_bits s3_wakeup s1_done s3_check
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+step s1_scan: 
+	SELECT locator FROM test_versioned_dirty_scan('tcr_doc',
+	  '&&(anyarray,anyarray)', ARRAY[1,2]);
+ <waiting ...>
+step s2_vacuum: VACUUM tcr;
+step s2_bits: SELECT flags & 30 AS mktags_converting_settled FROM bark_metap('tcr_doc');
+mktags_converting_settled
+-------------------------
+                        2
+(1 row)
+
+step s3_wakeup: SELECT injection_points_wakeup('bark-conversion-flags-before-lock');
+injection_points_wakeup
+-----------------------
+                       
+(1 row)
+
+step s1_scan: <... completed>
+locator
+-------
+(0,1)  
+(1 row)
+
+step s1_done: 
+step s3_check: 
+	SELECT flags & 30 AS mktags_converting_settled FROM bark_metap('tcr_doc');
+	SELECT id, doc FROM tcr ORDER BY id;
+	SELECT bark_index_check('tcr_doc');
+
+mktags_converting_settled
+-------------------------
+                        2
+(1 row)
+
+id|doc    
+--+-------
+ 1|{1,2}  
+ 2|{20,21}
+(2 rows)
+
+bark_index_check
+----------------
+                
+(1 row)
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+

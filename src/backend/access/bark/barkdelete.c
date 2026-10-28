@@ -227,14 +227,22 @@ bark_delitems_delete(Relation index, Buffer buf, bool merge,
 		pfree(updatedbuf);
 }
 
-/* qsort comparator: TM_IndexDelete by TID, then by id (stable order). */
+/*
+ * qsort_arg comparator: TM_IndexDelete by TID, then by the version tag of
+ * its status (in `arg`, the TM_IndexStatus array), then by id (stable
+ * order).
+ */
 static int
-bark_deltid_cmp(const void *a, const void *b)
+bark_deltid_cmp(const void *a, const void *b, void *arg)
 {
 	const TM_IndexDelete *da = (const TM_IndexDelete *) a;
 	const TM_IndexDelete *db = (const TM_IndexDelete *) b;
+	const TM_IndexStatus *status = (const TM_IndexStatus *) arg;
 	int			c = ItemPointerCompare(&da->tid, &db->tid);
 
+	if (c != 0)
+		return c;
+	c = bark_compare_tag(status[da->id].tag, status[db->id].tag);
 	if (c != 0)
 		return c;
 	return (da->id > db->id) - (da->id < db->id);
@@ -468,14 +476,16 @@ bark_delete_pass(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 	/*
 	 * The table AM requires each TID at most once (heapam's sort asserts that
 	 * no two are equal), but a row of an index with an extracted column has
-	 * an entry per key, and several of them may be on this leaf.  (An index
-	 * that stores version tags offers each entry, a TID once per tag: the
-	 * table AM's verdict is per entry; see TM_IndexStatus.)  Offer each TID
-	 * once: sort by TID, keep the first of each run, and remember the others
-	 * in dupof[] so that the answer for the one offered applies to all.  A
-	 * TID offered more than once is promising if any of its entries is, and
-	 * frees the space of all of them; it is known deletable if any of its
-	 * entries is marked, since the mark says the TID's row is dead.
+	 * an entry per key, and several of them may be on this leaf.  Offer each
+	 * TID once: sort by TID, keep the first of each run, and remember the
+	 * others in dupof[] so that the answer for the one offered applies to
+	 * all.  A TID offered more than once is promising if any of its entries
+	 * is, and frees the space of all of them; it is known deletable if any of
+	 * its entries is marked, since the mark says the TID's row is dead.  In
+	 * an index that stores version tags the table AM's verdict is per entry,
+	 * (TID, tag) (see TM_IndexStatus): a row's stale entries can be dead
+	 * while its current ones are live.  So only entries of one TID and one
+	 * tag share an answer; the TID goes to the table AM once per tag.
 	 */
 	dupof = palloc_array(int, ntids);
 	for (int i = 0; i < ntids; i++)
@@ -484,14 +494,16 @@ bark_delete_pass(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 	{
 		int			nkept = 0;
 
-		qsort(delstate.deltids, delstate.ndeltids, sizeof(TM_IndexDelete),
-			  bark_deltid_cmp);
+		qsort_arg(delstate.deltids, delstate.ndeltids, sizeof(TM_IndexDelete),
+				  bark_deltid_cmp, delstate.status);
 		for (int i = 0; i < delstate.ndeltids; i++)
 		{
 			TM_IndexDelete *d = &delstate.deltids[i];
 
 			if (nkept > 0 &&
-				ItemPointerEquals(&delstate.deltids[nkept - 1].tid, &d->tid))
+				ItemPointerEquals(&delstate.deltids[nkept - 1].tid, &d->tid) &&
+				delstate.status[delstate.deltids[nkept - 1].id].tag ==
+				delstate.status[d->id].tag)
 			{
 				TM_IndexStatus *keep = &delstate.status[delstate.deltids[nkept - 1].id];
 				TM_IndexStatus *dup = &delstate.status[d->id];
