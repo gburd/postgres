@@ -332,6 +332,34 @@ is( $node->safe_psql(
 	'0', 'LP_DEAD: simple deletion removed them');
 check_index('t5_k', 'LP_DEAD');
 
+# (5b) An insert of a (K, L, t) the index has, marked dead, stores no
+# second copy and clears the mark: the insert says that version is live.
+$node->safe_psql(
+	'postgres', q{
+	CREATE TABLE t5b (id int, k int) USING heap_versioned;
+	INSERT INTO t5b SELECT g, g FROM generate_series(1, 100) g;
+	SET test_versioned_tableam.build_tag_percent = 100;
+	CREATE INDEX t5b_k ON t5b USING bark (k);
+});
+run_of('t5b', 't5b_k', 50, 1000000, 1);
+$node->safe_psql('postgres', q{DELETE FROM t5b WHERE id = 50});
+$node->safe_psql('postgres',
+	q{SET enable_seqscan = off; SET enable_bitmapscan = off; SELECT * FROM t5b WHERE k = 50});
+my $twins = q{SELECT s.dead_items, (SELECT count(*) FROM bark_page_items('t5b_k', 1) i
+	 WHERE i.htid = '(0,50)' AND i.shape = 'SINGLE') FROM bark_page_stats('t5b_k', 1) s};
+is($node->safe_psql('postgres', $twins), '2|2', 'dead twin: both entries marked');
+# by TID: the row is deleted, so no query of t5b finds it
+$node->safe_psql('postgres', q{
+	SET test_versioned_tableam.stale_tags = live;
+	SELECT test_versioned_insert_entry('t5b_k', '(0,50)', 1000001)});
+is($node->safe_psql('postgres', $twins), '1|2', 'dead twin: no copy, the mark cleared');
+is( $node->safe_psql(
+		'postgres', q{
+		SELECT count(*) FROM bark_page_items('t5b_k', 1)
+		 WHERE htid = '(0,50)' AND tag = 1000001}),
+	'1', 'dead twin: one entry of the tag');
+check_index('t5b_k', 'dead twin');
+
 # (6) Before a leaf splits, its stale tagged entries go: a page full of
 # entries of live rows tagged with versions valid for none (the table AM's
 # index_delete_tuples says so), and inserts that would split it.
