@@ -200,9 +200,15 @@ bark_knn_readpage(IndexScanDesc scan, BarkKnnCursor *cur, Page page,
 			break;
 		}
 
+		/*
+		 * An entry marked LP_DEAD (bark_killitems) still bounds the distance
+		 * and the run; only its rows are not returned, as in bark_readpage.
+		 */
 		cur->bound = bark_knn_distance(scan, resolved);
 		ntids = bark_entry_count_tids(itup);
 		if (ntids == 0 || BarkEntryIsMarker(itup) ||
+			(scan->ignore_killed_tuples &&
+			 ItemIdIsDead(PageGetItemId(page, offnum))) ||
 			!bark_tuple_matches(scan, resolved, 0))
 		{
 			if (fetched)
@@ -235,7 +241,8 @@ bark_knn_readpage(IndexScanDesc scan, BarkKnnCursor *cur, Page page,
 		item->dist = cur->bound;
 		item->firstTid = cur->ntids;
 		item->ntids = bark_entry_get_tids(itup, cur->tids + cur->ntids,
-										  cur->maxTids - cur->ntids);
+										  cur->maxTids - cur->ntids,
+										  so->keyinfo->tidstride);
 		item->recheck = false;
 		if (so->mk != NULL)
 		{
