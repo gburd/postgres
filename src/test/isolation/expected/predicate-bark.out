@@ -1,0 +1,112 @@
+Parsed test spec with 2 sessions
+
+starting permutation: r1 w1 r2 w2 c1 c2
+step r1: select count(*) from bark_pred where id between 100 and 200;
+count
+-----
+  101
+(1 row)
+
+step w1: insert into bark_pred values (150);
+step r2: select count(*) from bark_pred where id between 120 and 180;
+count
+-----
+   61
+(1 row)
+
+step w2: insert into bark_pred values (175);
+step c1: commit;
+step c2: commit;
+ERROR:  could not serialize access due to read/write dependencies among transactions
+
+starting permutation: r1 r2 w1 w2 c1 c2
+step r1: select count(*) from bark_pred where id between 100 and 200;
+count
+-----
+  101
+(1 row)
+
+step r2: select count(*) from bark_pred where id between 120 and 180;
+count
+-----
+   61
+(1 row)
+
+step w1: insert into bark_pred values (150);
+step w2: insert into bark_pred values (175);
+step c1: commit;
+step c2: commit;
+ERROR:  could not serialize access due to read/write dependencies among transactions
+
+starting permutation: r2 r1 w2 w1 c2 c1
+step r2: select count(*) from bark_pred where id between 120 and 180;
+count
+-----
+   61
+(1 row)
+
+step r1: select count(*) from bark_pred where id between 100 and 200;
+count
+-----
+  101
+(1 row)
+
+step w2: insert into bark_pred values (175);
+step w1: insert into bark_pred values (150);
+step c2: commit;
+step c1: commit;
+ERROR:  could not serialize access due to read/write dependencies among transactions
+
+starting permutation: r1f w1f c1 r2f w2f c2
+step r1f: select count(*) from bark_pred where id between 100 and 200;
+count
+-----
+  101
+(1 row)
+
+step w1f: insert into bark_pred values (150);
+step c1: commit;
+step r2f: select count(*) from bark_pred where id between 18000 and 18100;
+count
+-----
+  101
+(1 row)
+
+step w2f: insert into bark_pred values (18050);
+step c2: commit;
+
+starting permutation: r1f r2f w1f w2f c1 c2
+step r1f: select count(*) from bark_pred where id between 100 and 200;
+count
+-----
+  101
+(1 row)
+
+step r2f: select count(*) from bark_pred where id between 18000 and 18100;
+count
+-----
+  101
+(1 row)
+
+step w1f: insert into bark_pred values (150);
+step w2f: insert into bark_pred values (18050);
+step c1: commit;
+step c2: commit;
+
+starting permutation: r2f r1f w2f w1f c2 c1
+step r2f: select count(*) from bark_pred where id between 18000 and 18100;
+count
+-----
+  101
+(1 row)
+
+step r1f: select count(*) from bark_pred where id between 100 and 200;
+count
+-----
+  101
+(1 row)
+
+step w2f: insert into bark_pred values (18050);
+step w1f: insert into bark_pred values (150);
+step c2: commit;
+step c1: commit;

@@ -3250,4 +3250,5 @@
   amoprighttype => 'point', amopstrategy => '7', amopopr => '@>(box,point)',
   amopmethod => 'brin' },
 
+
 ]
