@@ -810,6 +810,260 @@ DROP TABLE bark_xt;
 DROP FUNCTION bark_bnd_check(text);
 DROP TABLE bark_bnd, bark_bnd_q;
 
+-- IS NULL and IS NOT NULL position and stop the scan, as nbtree's do: IS
+-- NULL is an equality on NULL and IS NOT NULL a bound that excludes the
+-- NULLs' end of the index.  Every query is checked against a sequential scan
+-- in index order and in its reverse (a backward scan), as an index-only,
+-- plain and bitmap scan, on indexes with ASC and DESC, NULLS FIRST and LAST
+-- columns: the NULL test on column 1, after an equality, array or range
+-- prefix, before a range on a later column, and on column 2 alone (a skip
+-- scan).
+CREATE TABLE bark_nt (a int, b int, c int);
+INSERT INTO bark_nt
+  SELECT CASE WHEN g % 11 = 0 THEN NULL ELSE g % 7 END,
+         CASE WHEN g % 5 = 0 THEN NULL ELSE g % 13 END,
+         CASE WHEN g % 3 = 0 THEN NULL ELSE g END
+  FROM generate_series(1, 8000) g;
+VACUUM ANALYZE bark_nt;
+CREATE TABLE bark_nt_q (q text);
+INSERT INTO bark_nt_q VALUES
+  ('a IS NULL'), ('a IS NOT NULL'), ('a IS NULL AND b > 5'),
+  ('a IS NULL AND b <= 5'), ('a IS NULL AND b IS NULL'),
+  ('a IS NULL AND b IS NOT NULL'), ('a IS NOT NULL AND a < 3'),
+  ('a < 3 AND a IS NOT NULL'), ('a IS NOT NULL AND a >= 4'),
+  ('a >= 4 AND a IS NOT NULL'), ('a IS NOT NULL AND b IS NULL'),
+  ('a = 3 AND b IS NULL'), ('a = 3 AND b IS NOT NULL'),
+  ('a = 3 AND b IS NULL AND c > 3000'), ('a = 3 AND b IS NULL AND c <= 3000'),
+  ('a = 3 AND b IS NOT NULL AND b < 4'), ('a = 3 AND b IS NOT NULL AND b >= 9'),
+  ('a = 3 AND b IS NULL AND c IS NULL'), ('a = 3 AND b = 4 AND c IS NOT NULL'),
+  ('a = 3 AND b = 4 AND c IS NULL'), ('a IN (2, 5) AND b IS NULL'),
+  ('a IN (2, 5) AND b IS NULL AND c BETWEEN 1000 AND 6000'),
+  ('a IN (2, 5) AND b IS NOT NULL'),
+  ('a IN (2, 5) AND b IS NULL AND c IS NOT NULL'),
+  ('a IS NULL AND b IN (3, 9)'), ('a IS NULL AND b IN (3, 9) AND c > 4000'),
+  ('a = 1 AND b IN (3, 9) AND c IS NULL'), ('a BETWEEN 2 AND 4 AND b IS NULL'),
+  ('a > 4 AND b IS NOT NULL AND c > 7000'), ('b IS NULL'), ('b IS NOT NULL'),
+  ('b IS NULL AND c > 4000'), ('b IS NOT NULL AND c < 50'),
+  ('b IS NOT NULL AND b < 4'), ('b < 4 AND b IS NOT NULL'),
+  ('b IS NOT NULL AND b > 9'), ('c IS NULL'), ('a IS NULL AND a IS NOT NULL'),
+  ('a = 3 AND a IS NULL'), ('a IS NULL AND b IS NULL AND c IS NULL'),
+  ('(a, b) > (3, 4) AND a IS NOT NULL'), ('a IS NOT NULL AND (a, b) < (2, 5)'),
+  ('a IS NOT NULL AND a = ANY (''{1, 6}'')'), ('a IS NOT NULL AND a = 3'),
+  ('a > 2 AND a IS NULL'), ('(a, b) > (3, 4) AND a > 2 AND a IS NOT NULL'),
+  ('(a, b) > (2, 4) AND a = 3 AND b IS NULL');
+CREATE FUNCTION bark_nt_check(tbl text, ord text, rev text)
+RETURNS TABLE (q text, mode text, dir text) LANGUAGE plpgsql AS $$
+DECLARE
+  r record;
+  o record;
+  sel text;
+  want text;
+  got text;
+  plan text;
+  line text;
+BEGIN
+  FOR r IN SELECT bark_nt_q.q FROM bark_nt_q LOOP
+    FOR o IN SELECT * FROM (VALUES ('forward', ord), ('backward', rev)) v(d, ob) LOOP
+      sel := format('SELECT md5(string_agg(x::text, %L)) FROM (SELECT * FROM %I WHERE %s ORDER BY %s) x',
+                    ';', tbl, r.q, o.ob);
+      SET LOCAL enable_indexscan = off;
+      SET LOCAL enable_indexonlyscan = off;
+      SET LOCAL enable_bitmapscan = off;
+      EXECUTE sel INTO want;
+      SET LOCAL enable_seqscan = off;
+      SET LOCAL enable_sort = off;
+      FOREACH mode IN ARRAY ARRAY['index only', 'index', 'bitmap'] LOOP
+        EXECUTE format('SET LOCAL enable_indexonlyscan = %s', mode = 'index only');
+        EXECUTE format('SET LOCAL enable_indexscan = %s', mode <> 'bitmap');
+        EXECUTE format('SET LOCAL enable_bitmapscan = %s', mode = 'bitmap');
+        plan := '';
+        FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || sel LOOP
+          plan := plan || line;
+        END LOOP;
+        EXECUTE sel INTO got;
+        -- A contradiction (a IS NULL AND a IS NOT NULL) plans no scan.
+        IF got IS DISTINCT FROM want OR
+           (position('bark_nt_i' IN plan) = 0 AND plan !~ 'One-Time Filter: false') THEN
+          q := r.q;
+          dir := o.d;
+          RETURN NEXT;
+        END IF;
+      END LOOP;
+      RESET enable_seqscan;
+      RESET enable_sort;
+      RESET enable_indexscan;
+      RESET enable_indexonlyscan;
+      RESET enable_bitmapscan;
+    END LOOP;
+  END LOOP;
+END $$;
+CREATE INDEX bark_nt_i ON bark_nt USING bark (a, b, c);
+SELECT * FROM bark_nt_check('bark_nt', 'a, b, c', 'a DESC, b DESC, c DESC');
+DROP INDEX bark_nt_i;
+CREATE INDEX bark_nt_i ON bark_nt USING bark
+  (a DESC, b DESC NULLS LAST, c NULLS FIRST);
+SELECT * FROM bark_nt_check('bark_nt', 'a DESC, b DESC NULLS LAST, c NULLS FIRST',
+                            'a NULLS LAST, b NULLS FIRST, c DESC NULLS LAST');
+DROP INDEX bark_nt_i;
+CREATE INDEX bark_nt_i ON bark_nt USING bark (a NULLS FIRST, b DESC, c);
+SELECT * FROM bark_nt_check('bark_nt', 'a NULLS FIRST, b DESC, c',
+                            'a DESC NULLS LAST, b NULLS LAST, c DESC');
+SELECT count(*) AS nt_queries FROM bark_nt_q;
+-- An equality with a NULL parameter is no IS NULL: it matches nothing, as
+-- a prefix of the required keys too.
+PREPARE bark_nt_p(int) AS
+  SELECT count(*) FROM bark_nt WHERE a = $1 AND b IN (3, 9);
+SET plan_cache_mode = force_generic_plan;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+EXPLAIN (COSTS OFF) EXECUTE bark_nt_p(NULL);
+EXECUTE bark_nt_p(NULL);
+EXECUTE bark_nt_p(2);
+RESET plan_cache_mode;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+DEALLOCATE bark_nt_p;
+SELECT count(*) AS seq_eq_in FROM bark_nt WHERE a = 2 AND b IN (3, 9);
+-- Scroll cursors move both ways over the NULL tests' bounds, and must
+-- return what a sort of a sequential scan returns.
+CREATE FUNCTION bark_nt_scroll(q text, ord text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+  c refcursor := 'bark_nt_c';
+  v record;
+  got text := '';
+  cmds text[] := ARRAY['NEXT', 'NEXT', 'PRIOR', 'PRIOR', 'ABSOLUTE 40',
+                       'RELATIVE -15', 'LAST', 'PRIOR', 'FIRST', 'PRIOR',
+                       'NEXT', 'LAST', 'NEXT', 'PRIOR', 'ABSOLUTE 3'];
+  cmd text;
+BEGIN
+  OPEN c SCROLL FOR EXECUTE format('SELECT a, b, c FROM bark_nt WHERE %s ORDER BY %s', q, ord);
+  FOREACH cmd IN ARRAY cmds LOOP
+    EXECUTE format('FETCH %s FROM bark_nt_c', cmd) INTO v;
+    got := got || coalesce(v::text, 'none') || ';';
+  END LOOP;
+  CLOSE c;
+  RETURN md5(got);
+END $$;
+CREATE TABLE bark_nt_sq (q text);
+INSERT INTO bark_nt_sq VALUES ('a IS NULL'), ('a IS NOT NULL AND a < 2'),
+  ('a = 4 AND b IS NULL AND c > 2000'), ('a IN (1, 6) AND b IS NOT NULL AND b > 10'),
+  ('a IS NULL AND b IS NULL');
+CREATE TEMP TABLE bark_nt_sr AS
+  SELECT q, bark_nt_scroll(q, 'a NULLS FIRST, b DESC, c') AS idx FROM bark_nt_sq;
+SET enable_indexscan = off;
+SET enable_indexonlyscan = off;
+SET enable_bitmapscan = off;
+SELECT r.q FROM bark_nt_sr r
+WHERE r.idx IS DISTINCT FROM bark_nt_scroll(r.q, 'a NULLS FIRST, b DESC, c');
+RESET enable_indexscan;
+RESET enable_indexonlyscan;
+RESET enable_bitmapscan;
+DROP FUNCTION bark_nt_scroll(text, text);
+-- A parallel index scan returns what a serial one does.
+SET min_parallel_index_scan_size = 0;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET max_parallel_workers_per_gather = 4;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+EXPLAIN (COSTS OFF) SELECT count(*) FROM bark_nt WHERE a IS NOT NULL AND b IS NULL;
+SELECT count(*) AS par_isnull FROM bark_nt WHERE a IS NULL;
+SELECT count(*) AS par_notnull FROM bark_nt WHERE a IS NOT NULL AND b IS NULL;
+RESET min_parallel_index_scan_size;
+RESET parallel_setup_cost;
+RESET parallel_tuple_cost;
+RESET max_parallel_workers_per_gather;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SELECT count(*) FILTER (WHERE a IS NULL) AS seq_isnull,
+       count(*) FILTER (WHERE a IS NOT NULL AND b IS NULL) AS seq_notnull
+FROM bark_nt;
+DROP TABLE bark_nt, bark_nt_sq, bark_nt_sr;
+-- An OVERSIZED first column: the NULL tests read past the inline prefix.
+CREATE TABLE bark_nt_big (t text);
+INSERT INTO bark_nt_big
+  SELECT CASE WHEN g % 3 = 0 THEN NULL ELSE repeat('k', 3000) || lpad(g::text, 6, '0') END
+  FROM generate_series(1, 300) g;
+VACUUM ANALYZE bark_nt_big;
+CREATE INDEX bark_nt_i ON bark_nt_big USING bark (t);
+TRUNCATE bark_nt_q;
+INSERT INTO bark_nt_q VALUES ('t IS NULL'), ('t IS NOT NULL'),
+  ('t IS NOT NULL AND t > repeat(''k'', 3000) || ''000150'''),
+  ('t IS NOT NULL AND t < repeat(''k'', 3000) || ''000150''');
+SELECT * FROM bark_nt_check('bark_nt_big', 't', 't DESC');
+DROP TABLE bark_nt_big;
+DROP FUNCTION bark_nt_check(text, text, text);
+DROP TABLE bark_nt_q;
+-- The NULL tests read only the pages that can hold a match: index-only
+-- scans of a table loaded in key order, each page count (the scan's buffers
+-- less its heap fetches) far below the pages the same query read when the
+-- NULL tests only filtered.  The INCLUDE column keeps entries from
+-- coalescing, so the NULLs fill pages of their own.
+CREATE TABLE bark_ntp (id int, a int, b int, c int);
+INSERT INTO bark_ntp
+  SELECT g, g % 4, CASE WHEN g % 100 = 0 THEN NULL ELSE g END,
+         CASE WHEN g % 2 = 1 THEN NULL ELSE g END
+  FROM generate_series(1, 40000) g;
+VACUUM ANALYZE bark_ntp;
+CREATE FUNCTION bark_nt_pages(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE
+  warm refcursor;
+  line text;
+  n int := -1;
+  fetches int := 0;
+  ios bool := false;
+BEGIN
+  SET LOCAL enable_seqscan = off;
+  SET LOCAL enable_bitmapscan = off;
+  SET LOCAL debug_parallel_query = off;
+  OPEN warm FOR EXECUTE q;
+  MOVE warm;
+  FOR line IN EXECUTE 'EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+    IF line ~ 'Index Only Scan' THEN
+      ios := true;
+    END IF;
+    IF line ~ 'Heap Fetches' THEN
+      fetches := substring(line from 'Heap Fetches: ([0-9]+)')::int;
+    END IF;
+    IF line ~ 'Buffers: shared' AND n < 0 THEN
+      n := coalesce(substring(line from 'hit=([0-9]+)')::int, 0) +
+           coalesce(substring(line from 'read=([0-9]+)')::int, 0);
+    END IF;
+  END LOOP;
+  IF NOT ios THEN
+    RAISE EXCEPTION 'not an index-only scan: %', q;
+  END IF;
+  RETURN n - fetches;
+END $$;
+CREATE INDEX bark_ntp_b ON bark_ntp USING bark (b) INCLUDE (id);
+CREATE INDEX bark_ntp_c ON bark_ntp USING bark (c NULLS FIRST) INCLUDE (id);
+CREATE INDEX bark_ntp_ab ON bark_ntp USING bark (a, b DESC) INCLUDE (id);
+SELECT bark_nt_pages('SELECT b FROM bark_ntp WHERE b IS NULL') < 8 AS isnull_col1,
+       bark_nt_pages('SELECT b FROM bark_ntp WHERE b IS NULL ORDER BY b DESC') < 8 AS isnull_backward,
+       bark_nt_pages('SELECT c FROM bark_ntp WHERE c IS NOT NULL ORDER BY c NULLS FIRST LIMIT 10') < 8 AS notnull_nulls_first,
+       bark_nt_pages('SELECT c FROM bark_ntp WHERE c IS NULL ORDER BY c DESC NULLS LAST LIMIT 10') < 8 AS isnull_backward_nulls_first,
+       bark_nt_pages('SELECT a, b FROM bark_ntp WHERE a = 2 AND b IS NULL') < 8 AS isnull_after_eq,
+       bark_nt_pages('SELECT a, b FROM bark_ntp WHERE a IN (1, 3) AND b IS NULL') < 12 AS isnull_after_array;
+DROP INDEX bark_ntp_b, bark_ntp_c, bark_ntp_ab;
+-- IS NOT NULL on a NULLS LAST column stops at the first NULL: the half of
+-- the index before the NULLs.
+CREATE INDEX bark_ntp_c ON bark_ntp USING bark (c) INCLUDE (id);
+SELECT bark_nt_pages('SELECT c FROM bark_ntp WHERE c IS NOT NULL') <
+       0.6 * pg_relation_size('bark_ntp_c') / current_setting('block_size')::int
+       AS notnull_stops;
+DROP INDEX bark_ntp_c;
+CREATE INDEX bark_ntp_bc ON bark_ntp USING bark (b, c) INCLUDE (id);
+SELECT bark_nt_pages('SELECT b, c FROM bark_ntp WHERE b IS NULL AND c > 39000') < 8 AS isnull_then_range,
+       bark_nt_pages('SELECT b, c FROM bark_ntp WHERE b IS NULL AND c < 1000 ORDER BY b DESC, c DESC') < 8 AS isnull_then_range_backward;
+DROP INDEX bark_ntp_bc;
+-- A skip scan over column 1 descends to each group's NULLs.
+CREATE INDEX bark_ntp_ab ON bark_ntp USING bark (a, b) INCLUDE (id);
+SELECT bark_nt_pages('SELECT a, b FROM bark_ntp WHERE b IS NULL') <
+       0.3 * pg_relation_size('bark_ntp_ab') / current_setting('block_size')::int
+       AS isnull_skip;
+DROP FUNCTION bark_nt_pages(text);
+DROP TABLE bark_ntp;
+
 -- Row comparisons filter in value order (known bug 11 crashed the backend),
 -- on ASC and mixed-direction indexes, and in a KNN scan.  A KNN scan also
 -- filters by SAOP membership (it used to treat the array as a scalar).
@@ -913,6 +1167,23 @@ CREATE INDEX bark_knn_null_idx ON bark_knn_null USING bark (a);
 SELECT count(*) AS total,
        count(*) FILTER (WHERE a IS NULL) AS nulls
   FROM (SELECT a FROM bark_knn_null ORDER BY a <~> 300) s;
+
+-- A NULL constant makes every distance NULL, which sorts last and as equal,
+-- so the scan returns every row, as a Sort does.  A generic plan keeps the
+-- index scan with a parameter the executor sets to NULL.
+SET plan_cache_mode = force_generic_plan;
+PREPARE bark_knn_nullc(int) AS
+  SELECT count(*) AS total, count(DISTINCT a) AS keys,
+         count(*) FILTER (WHERE d IS NULL) AS nulldist
+    FROM (SELECT a, a <~> $1 AS d FROM bark_knn_null ORDER BY a <~> $1) s;
+EXPLAIN (COSTS OFF) EXECUTE bark_knn_nullc(NULL);
+EXECUTE bark_knn_nullc(NULL);
+PREPARE bark_knn_nullc_lim(int) AS
+  SELECT count(*) FROM (SELECT a FROM bark_knn_null ORDER BY a <~> $1 LIMIT 5) s;
+EXECUTE bark_knn_nullc_lim(NULL);
+DEALLOCATE bark_knn_nullc;
+DEALLOCATE bark_knn_nullc_lim;
+RESET plan_cache_mode;
 
 -- bigint keys use the int8 distance operator the same way.
 CREATE TABLE bark_knn8 (a bigint);
@@ -1255,6 +1526,25 @@ CREATE INDEX bark_cost_dup_idx ON bark_cost_dup USING bark (k);
 ANALYZE bark_cost_dup;
 EXPLAIN (COSTS OFF) SELECT count(*) FROM bark_cost_dup WHERE k = 3;
 DROP TABLE bark_cost_dup;
+
+-- IS NULL bounds the scan as an equality on NULL, and is costed so: with 1%
+-- NULLs scattered over the heap, BARK's index takes the bitmap scan that
+-- btree's takes (it was a sequential scan while IS NULL only filtered), and
+-- the index-only scan.
+CREATE TEMP TABLE bark_cost_nt (a int, b int, pad text);
+INSERT INTO bark_cost_nt
+  SELECT g, CASE WHEN g % 100 = 0 THEN NULL ELSE (g * 7919) % 30011 END,
+         repeat('x', 50)
+  FROM generate_series(1, 30000) g;
+VACUUM ANALYZE bark_cost_nt;
+CREATE INDEX bark_cost_nt_bt ON bark_cost_nt USING btree (b);
+EXPLAIN (COSTS OFF) SELECT * FROM bark_cost_nt WHERE b IS NULL;
+EXPLAIN (COSTS OFF) SELECT b FROM bark_cost_nt WHERE b IS NULL;
+DROP INDEX bark_cost_nt_bt;
+CREATE INDEX bark_cost_nt_bk ON bark_cost_nt USING bark (b);
+EXPLAIN (COSTS OFF) SELECT * FROM bark_cost_nt WHERE b IS NULL;
+EXPLAIN (COSTS OFF) SELECT b FROM bark_cost_nt WHERE b IS NULL;
+DROP TABLE bark_cost_nt;
 
 -- The index correlation comes from the leading column's statistics (or an
 -- expression index's own), as for btree.  On a table loaded in key order a
