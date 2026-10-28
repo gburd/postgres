@@ -3,13 +3,12 @@
  * bark.c
  *	  Implementation of the BARK index access method.
  *
- * This is the skeleton registration of the BARK index access method (see
- * BARK-Design.mediawiki).  It declares BARK's capabilities and passes
- * opclass validation so that CREATE INDEX ... USING bark is accepted and
- * validated, but every operation that would read or write index data errors
- * out: the storage format and the search/build machinery arrive in later
- * commits of the series.  Registering the AM first, on its own, keeps each
- * commit independently buildable and testable.
+ * The access method's handler (barkhandler), which declares BARK's
+ * capabilities and entry points, and the entry points that are not in a
+ * file of their own: barkbuild and barkbuildempty, VACUUM (barkbulkdelete,
+ * barkvacuumcleanup and the leaf page pass), the reloptions, the tree
+ * height, and the cost estimate.  The README in this directory maps the
+ * other files.
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
@@ -25,8 +24,9 @@
 
 #include "access/amapi.h"
 #include "access/bark.h"
+#include "access/gin.h"
 #include "access/barkxlog.h"
-#include "access/nbtree.h"
+#include "access/genam.h"
 #include "access/reloptions.h"
 #include "access/xloginsert.h"
 #include "commands/vacuum.h"
@@ -43,15 +43,6 @@
 #include "utils/lsyscache.h"
 #include "utils/selfuncs.h"
 #include "utils/spccache.h"
-
-/*
- * Every data-touching entry point routes through this: BARK accepts and
- * validates an index definition but cannot yet build, populate, or scan one.
- */
-#define BARK_NOT_IMPLEMENTED() \
-	ereport(ERROR, \
-			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED), \
-			 errmsg("BARK index access method is not yet implemented")))
 
 /*
  * Find the parent page that holds the downlink to `childblk` and the offset of
@@ -265,10 +256,14 @@ bark_delete_empty_leaf(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno,
 	}
 
 	page = BufferGetPage(buf);
-	opaque = BarkPageGetOpaque(page);
 
-	/* Re-check the target is still the empty interior leaf we expect. */
-	if (PageIsNew(page) || !BarkPageIsLeaf(opaque) || BarkPageIsDeleted(opaque) ||
+	/*
+	 * Re-check the target is still the empty interior leaf we expect.  A new
+	 * page has no special space, so test for one before reading the flags.
+	 */
+	if (PageIsNew(page) ||
+		!BarkPageIsLeaf((opaque = BarkPageGetOpaque(page))) ||
+		BarkPageIsDeleted(opaque) ||
 		(opaque->bark_flags & BARK_INCOMPLETE_SPLIT) != 0 ||
 		opaque->bark_prev != leftblk || opaque->bark_next != rightblk ||
 		PageGetMaxOffsetNumber(page) >= BarkPageFirstDataKey(opaque) ||
@@ -371,8 +366,7 @@ bark_delete_empty_leaf(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno,
 /*
  * Every build of an index (CREATE INDEX, REINDEX, CONCURRENTLY, and before
  * ambuildempty for an unlogged one) comes through here, so this is where an
- * index BARK cannot hold is refused.  Refusing UNIQUE and exclusion
- * constraints also covers ON CONFLICT, whose arbiters are such indexes.
+ * index BARK cannot hold is refused.
  */
 static IndexBuildResult *
 barkbuild(Relation heap, Relation index, IndexInfo *indexInfo)
@@ -496,7 +490,7 @@ bark_delitems_vacuum(Relation index, Buffer buf,
  * our cycle ID); otherwise it was processed already, in its turn in the scan.
  */
 static bool
-bark_vacuum_target(Page page, bool backtracking, BTCycleId cycleid)
+bark_vacuum_target(Page page, bool backtracking, BarkCycleId cycleid)
 {
 	BarkPageOpaque opaque;
 
@@ -520,7 +514,7 @@ typedef struct BarkVacState
 	IndexBulkDeleteResult *stats;
 	IndexBulkDeleteCallback callback;
 	void	   *callback_state;
-	BTCycleId	cycleid;
+	BarkCycleId cycleid;
 	BlockNumber *emptyleaves;	/* empty interior leaves to delete */
 	int			nempty;
 	int			emptyalloc;
@@ -559,7 +553,7 @@ bark_vacuum_page(BarkVacState *vstate, BlockNumber scanblkno)
 	IndexBulkDeleteResult *stats = vstate->stats;
 	IndexBulkDeleteCallback callback = vstate->callback;
 	void	   *callback_state = vstate->callback_state;
-	BTCycleId	cycleid = vstate->cycleid;
+	BarkCycleId cycleid = vstate->cycleid;
 	Relation	index = info->index;
 	BlockNumber blkno = scanblkno;
 
@@ -651,6 +645,9 @@ bark_vacuum_page(BarkVacState *vstate, BlockNumber scanblkno)
 			BarkItemBuf ibuf;
 			IndexTuple	itup = BarkPageGetItem(page, off, &ibuf);
 
+			/* A marker names no row; it is never removed. */
+			if (BarkEntryIsMarker(itup))
+				continue;
 			if (BarkEntryGetShape(itup) == BARK_SHAPE_SINGLE)
 			{
 				if (callback(&itup->t_tid, callback_state))
@@ -743,15 +740,24 @@ bark_vacuum_page(BarkVacState *vstate, BlockNumber scanblkno)
 		/*
 		 * Count the heap TIDs that remain, as btvacuumpage does: the planner
 		 * reads the count as the index's rows, in the same unit as the
-		 * heap's.  A scan that only counts takes each entry as one, which
-		 * undercounts LIST and POSTING entries, so barkvacuumcleanup marks
-		 * that count as an estimate.
+		 * heap's, and barkvacuumcleanup stores it as bark_nkeys.  Markers are
+		 * not counted.  A scan that only counts reads each entry's count of
+		 * TIDs for itself.
 		 */
 		if (callback != NULL)
 			stats->num_index_tuples += nlivetids;
 		else
-			stats->num_index_tuples += PageGetMaxOffsetNumber(page) -
-				BarkPageFirstDataKey(opaque) + 1;
+		{
+			for (OffsetNumber off = BarkPageFirstDataKey(opaque);
+				 off <= maxoff; off = OffsetNumberNext(off))
+			{
+				BarkItemBuf ibuf;
+				IndexTuple	itup = BarkPageGetItem(page, off, &ibuf);
+
+				if (!BarkEntryIsMarker(itup))
+					stats->num_index_tuples += bark_entry_count_tids(itup);
+			}
+		}
 
 		/*
 		 * An empty interior leaf (no data entries, both siblings, not
@@ -882,12 +888,11 @@ bark_pendingfsm_finalize(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
  * deletes and recycles.
  *
  * Leaf splits during the scan are detected with a vacuum cycle ID, as in
- * btbulkdelete.  The cycle IDs come from nbtree's registry (_bt_start_vacuum
- * and friends): it maps a relation's LockRelId to the cycle ID of the VACUUM
- * now scanning it and has nothing nbtree-specific in it, so BARK shares it
- * instead of keeping a copy.  It could move out of nbtree into a common
- * place.  The ENSURE block releases our registry entry if the scan fails.  A
- * scan without a callback deletes no entries, so it needs no cycle ID, as
+ * btbulkdelete.  The cycle IDs come from BARK's own registry (barkvacuum.c,
+ * bark_start_vacuum and friends), which maps an index's LockRelId to the
+ * cycle ID of the VACUUM now scanning it, as nbtree's btvacinfo does for
+ * nbtree indexes.  The ENSURE block clears this backend's registry slot if
+ * the scan fails.  A scan without a callback deletes no entries, so it needs no cycle ID, as
  * btvacuumscan's cleanup-only scan does not.
  *
  * Parallel VACUUM may run this in a worker; each index is still processed by
@@ -932,10 +937,10 @@ bark_vacuum_scan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	 */
 	GetOldestNonRemovableTransactionId(info->heaprel);
 
-	PG_ENSURE_ERROR_CLEANUP(_bt_end_vacuum_callback, PointerGetDatum(index));
+	PG_ENSURE_ERROR_CLEANUP(bark_end_vacuum_callback, (Datum) 0);
 	{
 		if (callback != NULL)
-			vstate.cycleid = _bt_start_vacuum(index);
+			vstate.cycleid = bark_start_vacuum(index);
 
 		/*
 		 * Pages added after the scan starts must be visited too, so recheck
@@ -963,9 +968,9 @@ bark_vacuum_scan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 			}
 		}
 	}
-	PG_END_ENSURE_ERROR_CLEANUP(_bt_end_vacuum_callback, PointerGetDatum(index));
+	PG_END_ENSURE_ERROR_CLEANUP(bark_end_vacuum_callback, (Datum) 0);
 	if (callback != NULL)
-		_bt_end_vacuum(index);
+		bark_end_vacuum();
 
 	stats->num_pages = npages;
 
@@ -1015,13 +1020,14 @@ barkbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 }
 
 /*
- * After a bulk delete there is nothing left to do: bark_vacuum_scan already
+ * After a bulk delete there is little left to do: bark_vacuum_scan already
  * counted the live heap TIDs, deleted the empty leaves and recycled the
  * deleted pages.  Without one (no dead tuples this cycle), scan the index to
  * do those things, so that pages deleted by an earlier VACUUM reach the FSM
- * once they are safe.  That scan counts entries, not TIDs, so its count is
- * only an estimate and VACUUM keeps the index's reltuples, as with
- * btvacuumcleanup.  Returning valid stats also lets VACUUM set the heap
+ * once they are safe.  That scan takes no cleanup locks, so concurrent
+ * splits can make it count an entry twice, and its count is only an
+ * estimate: VACUUM keeps the index's reltuples, as with btvacuumcleanup.
+ * Either way the count is stored as the meta page's bark_nkeys.  Returning valid stats also lets VACUUM set the heap
  * visibility map, which is what makes index-only scans worthwhile.  This is
  * btvacuumcleanup without its skip-the-scan heuristic.
  */
@@ -1044,11 +1050,20 @@ barkvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 	/*
 	 * Concurrent splits can make the scan count some entries twice, so
 	 * disbelieve a total above the heap's, when that one is exact, as
-	 * btvacuumcleanup does.
+	 * btvacuumcleanup does.  An index with an extracted column has a member
+	 * per key of a row, so its total is not bounded by the heap's.
 	 */
 	if (!info->estimated_count &&
+		bark_index_extracted_column(info->index) == 0 &&
 		stats->num_index_tuples > info->num_heap_tuples)
 		stats->num_index_tuples = info->num_heap_tuples;
+
+	/*
+	 * The members left are the K of the cost estimate of an index with an
+	 * extracted column ("Statistics" in BARK-Design.mediawiki), stored once
+	 * per VACUUM.
+	 */
+	bark_set_nkeys(info->index, (uint64) stats->num_index_tuples);
 
 	return stats;
 }
@@ -1092,6 +1107,228 @@ bark_cost_skips(IndexPath *path)
 }
 
 /*
+ * K, the entries per row of an index with an extracted column: the meta
+ * page's count of (key, TID) members over the heap's rows, as of the last
+ * CREATE INDEX or VACUUM, and 1 while the multikey flag is clear.  *multikey
+ * returns the flag, which decides whether a scan needs the seen set.  The
+ * meta page is read as gincostestimate reads GIN's; a hypothetical index has
+ * none and is taken to need the set.
+ */
+static double
+bark_cost_keys_per_row(IndexOptInfo *index, bool *multikey)
+{
+	Relation	indexRel;
+	Buffer		metabuf;
+	BarkMetaPageData *meta;
+	uint32		flags;
+	uint64		nkeys;
+
+	*multikey = true;
+	if (index->hypothetical)
+		return 1.0;
+
+	/* plancat.c has locked the index. */
+	indexRel = index_open(index->indexoid, NoLock);
+	metabuf = ReadBuffer(indexRel, BARK_METAPAGE);
+	LockBuffer(metabuf, BUFFER_LOCK_SHARE);
+	meta = BarkPageGetMeta(BufferGetPage(metabuf));
+	flags = meta->bark_flags;
+	nkeys = meta->bark_nkeys;
+	UnlockReleaseBuffer(metabuf);
+	index_close(indexRel, NoLock);
+
+	*multikey = (flags & BARK_META_MULTIKEY) != 0;
+	if (!*multikey || nkeys == 0 || index->rel->tuples <= 0)
+		return 1.0;
+	return Max((double) nkeys / index->rel->tuples, 1.0);
+}
+
+/*
+ * The number of boundaries procedure 8 makes of clause, a qual on the
+ * extracted column indexcol, run on its constant as gincost_pattern runs
+ * GIN's extractQuery: the scan descends once per boundary.  *noseen says
+ * whether the scan needs no seen set (its only boundary is a single key, or
+ * procedure 8 set BarkQueryFlags.oneentry, which the scan asks again at
+ * rescan), *recheck whether procedure 9 runs on every entry.  A qual whose
+ * argument is not a constant counts as one boundary.
+ */
+static double
+bark_cost_boundaries(IndexOptInfo *index, int indexcol, Expr *clause,
+					 bool *noseen, bool *recheck, bool *point)
+{
+	OpExpr	   *op = (OpExpr *) clause;
+	Node	   *arg;
+	Oid			procoid;
+	FmgrInfo	flinfo;
+	BarkBoundary *result = NULL;
+	int32		nresult = 0;
+	Pointer		extra = NULL;
+	BarkQueryFlags flags;
+	Datum		strategy;
+	Relation	indexRel = NULL;
+
+	*noseen = false;
+	*recheck = false;
+	*point = false;
+	if (!IsA(clause, OpExpr) || list_length(op->args) != 2)
+		return 1;
+	arg = (Node *) lsecond(op->args);
+	if (IsA(arg, RelabelType))
+		arg = (Node *) ((RelabelType *) arg)->arg;
+	if (!IsA(arg, Const) || ((Const *) arg)->constisnull)
+		return 1;
+	procoid = get_opfamily_proc(index->opfamily[indexcol],
+								index->opcintype[indexcol],
+								index->opcintype[indexcol],
+								BARK_EXTRACTQUERY_PROC);
+	if (!OidIsValid(procoid))
+	{
+		/*
+		 * GIN's interface: a bitmap scan, which needs no seen set, reading
+		 * each entry of extractQuery, plus the NULL entries for a search mode
+		 * that wants them and every key for ALL, as gincost_pattern counts.
+		 */
+		int32		nentries = 0;
+		bool	   *pmatch = NULL;
+		Pointer    *ginextra = NULL;
+		bool	   *nullFlags = NULL;
+		int32		searchMode = GIN_SEARCH_MODE_DEFAULT;
+
+		procoid = get_opfamily_proc(index->opfamily[indexcol],
+									index->opcintype[indexcol],
+									index->opcintype[indexcol],
+									BARK_GIN_EXTRACTQUERY_PROC);
+		if (!OidIsValid(procoid))
+			return 1;
+		*noseen = true;
+		fmgr_info(procoid, &flinfo);
+		set_fn_opclass_options(&flinfo, index->opclassoptions[indexcol]);
+		(void) FunctionCall7Coll(&flinfo, index->indexcollations[indexcol],
+								 ((Const *) arg)->constvalue,
+								 PointerGetDatum(&nentries),
+								 UInt16GetDatum(get_op_opfamily_strategy(op->opno,
+																		 index->opfamily[indexcol])),
+								 PointerGetDatum(&pmatch),
+								 PointerGetDatum(&ginextra),
+								 PointerGetDatum(&nullFlags),
+								 PointerGetDatum(&searchMode));
+		return Max(Max(nentries, 0) +
+				   (searchMode == GIN_SEARCH_MODE_DEFAULT ? 0 :
+					searchMode == GIN_SEARCH_MODE_INCLUDE_EMPTY ? 1 : 2), 1);
+	}
+
+	strategy = Int16GetDatum(get_op_opfamily_strategy(op->opno,
+													  index->opfamily[indexcol]));
+	fmgr_info(procoid, &flinfo);
+	set_fn_opclass_options(&flinfo, index->opclassoptions[indexcol]);
+	memset(&flags, 0, sizeof(flags));
+	if (!index->hypothetical)
+	{
+		/* plancat.c has locked the index. */
+		indexRel = index_open(index->indexoid, NoLock);
+		flags.index = indexRel;
+	}
+	if (get_func_nargs(procoid) >= 7)
+		FunctionCall7Coll(&flinfo, index->indexcollations[indexcol],
+						  ((Const *) arg)->constvalue, strategy,
+						  PointerGetDatum(&result), PointerGetDatum(&nresult),
+						  PointerGetDatum(&extra), PointerGetDatum(recheck),
+						  PointerGetDatum(&flags));
+	else
+		FunctionCall6Coll(&flinfo, index->indexcollations[indexcol],
+						  ((Const *) arg)->constvalue, strategy,
+						  PointerGetDatum(&result), PointerGetDatum(&nresult),
+						  PointerGetDatum(&extra), PointerGetDatum(recheck));
+	if (indexRel != NULL)
+		index_close(indexRel, NoLock);
+
+	if (flags.oneentry ||
+		(nresult == 1 && !flags.searchnulls &&
+		 result[0].lower != NULL && result[0].upper != NULL &&
+		 result[0].lower->strategy == BTEqualStrategyNumber &&
+		 result[0].upper->strategy == BTEqualStrategyNumber))
+		*noseen = true;
+
+	/*
+	 * One point, with both sides the same element or argument: a different
+	 * argument that compares equal is taken for a range, which only costs the
+	 * plan barkorderbyopcolumn would allow.
+	 */
+	*point = nresult == 1 && !flags.searchnulls &&
+		result[0].lower != NULL && result[0].upper != NULL &&
+		result[0].lower->strategy == BTEqualStrategyNumber &&
+		result[0].upper->strategy == BTEqualStrategyNumber &&
+		(result[0].lower == result[0].upper ||
+		 result[0].lower->argument == result[0].upper->argument);
+	return Max(nresult + (flags.searchnulls ? 1 : 0), 1);
+}
+
+/*
+ * barkorderbyopcolumn -- the column an ordering operator can be served on.
+ *
+ * The KNN scan walks outward from its constant in index order, so it orders
+ * a column only inside a run of entries equal on every column before it:
+ * the leading column, or the column after a prefix that the path's clauses
+ * fix to one value.  A btree column is fixed by an equality.  The extracted
+ * column is fixed by a single clause, with a constant, whose procedure 8
+ * boundaries are one point: a row's keys are distinct, so a row has at most
+ * one entry in the run and needs no seen set.  This is RUM's ORDER BY ts <=>
+ * x after a term qual.  An array, a range, several boundaries or a Param fix
+ * nothing.  The extracted column's own ordering (bark_mk_order_setup) walks
+ * its boundaries, not a run, so it is offered only when the column leads.
+ * The scan checks the prefix again (bark_knn_prefix) and refuses a scan
+ * whose keys do not fix it, rather than return rows out of order.
+ */
+static int
+barkorderbyopcolumn(IndexOptInfo *index, List *indexclauses)
+{
+	int			ncol = 0;
+
+	for (int col = 0; col < index->nkeycolumns - 1; col++)
+	{
+		bool		extracts = bark_opfamily_extracts(index->opfamily[col],
+													  index->opcintype[col]);
+		int			nclauses = 0;
+		bool		fixed = false;
+
+		foreach_node(IndexClause, iclause, indexclauses)
+		{
+			if (iclause->indexcol != col)
+				continue;
+			foreach_node(RestrictInfo, rinfo, iclause->indexquals)
+			{
+				Expr	   *clause = rinfo->clause;
+
+				nclauses++;
+				if (!IsA(clause, OpExpr))
+					continue;
+				if (extracts)
+				{
+					bool		noseen;
+					bool		recheck;
+					bool		point;
+
+					(void) bark_cost_boundaries(index, col, clause, &noseen,
+												&recheck, &point);
+					fixed = point;
+				}
+				else if (get_op_opfamily_strategy(((OpExpr *) clause)->opno,
+												  index->opfamily[col]) ==
+						 BTEqualStrategyNumber)
+					fixed = true;
+			}
+		}
+		if (!fixed || (extracts && nclauses > 1))
+			break;
+		ncol = col + 1;
+	}
+	if (ncol > 0 && bark_opfamily_extracts(index->opfamily[ncol],
+										   index->opcintype[ncol]))
+		return 0;
+	return ncol;
+}
+
+/*
  * barkcostestimate -- estimate the cost of a BARK index scan.
  *
  * This is btcostestimate, applied to the quals as a BARK scan uses them.
@@ -1113,7 +1350,9 @@ bark_cost_skips(IndexPath *path)
  *  - A skip scan descends once per column-1 value, and only column 2's
  *    plain quals bound it (bark_cost_skips).
  *  - An ordered-operator (KNN) scan walks outward from its constant and
- *    tests every qual as a filter.
+ *    tests every qual as a filter, except that the quals on the columns
+ *    before the ordered one, which fix them (barkorderbyopcolumn), bound it
+ *    as an equality prefix does.
  *
  * The number of entries read is counted in heap rows, as nbtree counts index
  * tuples after deduplication: LIST and POSTING entries make the index
@@ -1129,6 +1368,25 @@ bark_cost_skips(IndexPath *path)
  * expected charge for an index whose entries are uniformly large and zero
  * for one with none; a mixed index is charged the average, since the index
  * keeps no count of its oversized entries.
+ *
+ * An index with an extracted column has K entries per row
+ * (bark_cost_keys_per_row).  The column's first qual positions the scan at
+ * procedure 8's boundaries, one descent each, and ends the walk of the
+ * quals; its other quals filter.  The entries read are the rows times K,
+ * capped at the index's entries, each charged cpu_index_tuple_cost, plus
+ * cpu_operator_cost for the seen set when the scan needs it and again for
+ * procedure 9 when the boundaries ask for it.  A scan that needs the set and
+ * whose rows per group of the fixed columns, at about 16 bytes each, exceed
+ * get_hash_memory_limit() is marked disabled (disabled_nodes, which the
+ * bitmap path built from the same IndexPath does not inherit, where
+ * disable_cost in indexTotalCost would reach it through
+ * cost_bitmap_tree_node), so the planner takes a bitmap scan.  The rows
+ * per group are the scan's rows unless every fixed column has an equality,
+ * which overstates them for a scan across many groups.  The rows returned
+ * stay the qual's selectivity times reltuples, and the correlation is 0
+ * when the extracted column is first.  An ordered scan on the extracted
+ * column reads every entry, and fetches from the heap every row the other
+ * columns' quals pass, since the column's own quals are only rechecked.
  */
 static void
 barkcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
@@ -1152,6 +1410,14 @@ barkcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 	double		correlation = 0.0;
 	Cost		descentCost;
 	ListCell   *lc;
+	int			mkcol = -1;		/* extracted column, 0-based, or -1 */
+	bool		mkcounted = false;
+	bool		mknoseen = false;
+	bool		mkrecheck = false;
+	bool		multikey = false;
+	bool		mkgin = false;
+	double		mkdescents = 1;
+	double		keysperrow = 1.0;
 
 	examine_indexcol_variable(root, index, 0, &vardata);
 	if (HeapTupleIsValid(vardata.statsTuple))
@@ -1180,11 +1446,27 @@ barkcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 	}
 	ReleaseVariableStats(vardata);
 
+	for (int i = 0; i < index->nkeycolumns; i++)
+	{
+		if (bark_opfamily_extracts(index->opfamily[i], index->opcintype[i]))
+		{
+			mkcol = i;
+			break;
+		}
+	}
+	if (mkcol >= 0)
+		keysperrow = bark_cost_keys_per_row(index, &multikey);
+
+	/* A leading extracted column's statistics are of values, not keys. */
+	if (mkcol == 0)
+		correlation = 0.0;
+
 	foreach(lc, path->indexclauses)
 	{
 		IndexClause *iclause = lfirst_node(IndexClause, lc);
 
-		if (path->indexorderbys != NIL)
+		if (path->indexorderbys != NIL &&
+			iclause->indexcol >= linitial_int(path->indexorderbycols))
 			break;
 		if (iclause->indexcol != indexcol)
 		{
@@ -1227,6 +1509,34 @@ barkcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 			else
 				elog(ERROR, "unsupported indexqual type: %d",
 					 (int) nodeTag(clause));
+
+			/*
+			 * The extracted column's first qual positions the scan at its
+			 * boundaries, the last ones the scan uses; the others filter.
+			 */
+			if (indexcol == mkcol)
+			{
+				if (!mkcounted)
+				{
+					if (IsA(clause, ScalarArrayOpExpr))
+						mkdescents = Max(estimate_array_length(root,
+															   lsecond(((ScalarArrayOpExpr *) clause)->args)),
+										 1);
+					else
+					{
+						bool		point;
+
+						mkdescents = bark_cost_boundaries(index, mkcol, clause,
+														  &mknoseen, &mkrecheck,
+														  &point);
+					}
+					colelems = mkdescents;
+					mkcounted = true;
+					indexBoundQuals = lappend(indexBoundQuals, rinfo);
+				}
+				lastcol = true;
+				continue;
+			}
 
 			strategy = get_op_opfamily_strategy(clause_op,
 												index->opfamily[indexcol]);
@@ -1322,6 +1632,70 @@ barkcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 			costs.indexStartupCost += chain_pages * spc_random_page_cost;
 		}
 	}
+
+	/*
+	 * An index scan through GIN's interface computes its whole result before
+	 * its first row (bark_mk_gin_gettuple), so all of the index cost is
+	 * startup cost, and a LIMIT does not stop it early.
+	 */
+	if (mkcol >= 0 && mkcounted &&
+		!OidIsValid(get_opfamily_proc(index->opfamily[mkcol],
+									  index->opcintype[mkcol],
+									  index->opcintype[mkcol],
+									  BARK_EXTRACTQUERY_PROC)) &&
+		OidIsValid(get_opfamily_proc(index->opfamily[mkcol],
+									 index->opcintype[mkcol],
+									 index->opcintype[mkcol],
+									 BARK_GIN_EXTRACTQUERY_PROC)))
+		mkgin = true;
+
+	/* An extracted column: K entries per row, the seen set, procedure 9. */
+	if (mkcol >= 0)
+	{
+		double		rows = costs.numIndexTuples * costs.num_sa_scans;
+		double		entries = Min(rows * keysperrow, index->tuples * keysperrow);
+		double		grouprows = rows;
+		bool		useseen = multikey && !(mkcounted && mknoseen);
+
+		costs.indexTotalCost += Max(entries - rows, 0) * cpu_index_tuple_cost;
+		if (useseen)
+			costs.indexTotalCost += entries * cpu_operator_cost;
+		if (mkrecheck)
+			costs.indexTotalCost += entries * cpu_operator_cost;
+
+		if (mkcol > 0 && mkcounted)
+			grouprows = Min(rows, rows * mkdescents / costs.num_sa_scans);
+		if (useseen && grouprows * 16.0 > (double) get_hash_memory_limit())
+			path->path.disabled_nodes++;
+
+		/*
+		 * An ordered scan on the extracted column walks the whole ordering
+		 * range (rows above is every row), and the column's quals neither
+		 * position nor filter it: each row comes back for the executor's
+		 * recheck.  So the heap fetches, which cost_index takes from the
+		 * selectivity, are the rows the other columns' quals let through.
+		 */
+		if (list_member_int(path->indexorderbycols, mkcol))
+		{
+			List	   *otherquals = NIL;
+
+			foreach(lc, path->indexclauses)
+			{
+				IndexClause *iclause = lfirst_node(IndexClause, lc);
+
+				if (iclause->indexcol != mkcol)
+					otherquals = list_concat(otherquals, iclause->indexquals);
+			}
+			costs.indexSelectivity =
+				clauselist_selectivity(root,
+									   add_predicate_to_index_quals(index,
+																	otherquals),
+									   index->rel->relid, JOIN_INNER, NULL);
+		}
+	}
+
+	if (mkgin)
+		costs.indexStartupCost = costs.indexTotalCost;
 
 	*indexStartupCost = costs.indexStartupCost;
 	*indexTotalCost = costs.indexTotalCost;
@@ -1445,8 +1819,9 @@ barkhandler(PG_FUNCTION_ARGS)
 		.amcanreturn = bark_canreturn,
 		.amcostestimate = barkcostestimate,
 		.amgettreeheight = barkgettreeheight,
+		.amorderbyopcolumn = barkorderbyopcolumn,
 		.amoptions = barkoptions,
-		.amproperty = NULL,
+		.amproperty = bark_property,
 		.ambuildphasename = NULL,
 		.amvalidate = barkvalidate,
 		.amadjustmembers = barkadjustmembers,
