@@ -1536,7 +1536,10 @@ copy_table_data(Relation NewHeap, Relation OldHeap, Relation OldIndex,
 	 *
 	 * The underlying tuplesort.c code doesn't support AMs other than btree,
 	 * so we must always use a normal indexscan if a non-btree index is
-	 * specified -- or an unsorted seqscan if no index is given.
+	 * specified -- or an unsorted seqscan if no index is given.  A btree
+	 * index implemented by another AM's code (pg_index.indimplam) can still
+	 * be sorted on: the sort uses only the index's btree operator classes,
+	 * never its pages.
 	 */
 	if (OldIndex != NULL && OldIndex->rd_rel->relam == BTREE_AM_OID)
 		use_sort = plan_cluster_use_sort(RelationGetRelid(OldHeap),
