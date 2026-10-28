@@ -163,7 +163,7 @@ typedef struct BarkBuildState
 	bool		nullsnotdistinct;	/* unique index: NULLS NOT DISTINCT */
 	bool		allequalimage;	/* bark_allequalimage(index), for the meta
 								 * page */
-	bool		coalesce;		/* non-unique and bark_index_may_coalesce */
+	bool		coalesce;		/* bark_index_coalesces */
 	bool		has_oversized;	/* saw a key too large to sort/load inline */
 	Size		sizebound;		/* row-independent part of the size bound */
 	bool		sizevaries;		/* any variable-width attribute? */
@@ -493,6 +493,7 @@ bark_build_callback(Relation index, ItemPointer tid, Datum *values,
 	BarkBuildState *bs = (BarkBuildState *) state;
 	Tuplesortstate *sortstate = bs->sortstate;
 
+	bark_check_tid_offset(index, tid, bs->keyinfo->tidstride);
 	if (bs->extracted > 0)
 	{
 		bark_build_row_keys(bs, tid, values, isnull, tupleIsAlive);
@@ -811,7 +812,7 @@ bark_buildadd(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *st,
 		BarkEntryGetShape(itup) == BARK_SHAPE_POSTING)
 		hikeysz = BarkEntryGetBodyOffset(itup);
 	if (st->level == 0)
-		hikeysz = MAXALIGN(hikeysz) + MAXALIGN(sizeof(ItemPointerData));
+		hikeysz = MAXALIGN(hikeysz) + BarkPivotSuffixReserve;
 
 	ndata = st->nextoff - BarkPageFirstDataKey(BarkPageGetOpaque(page));
 	if (ndata >= 1 &&
@@ -894,6 +895,7 @@ bark_finish(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *leaf)
 	meta->bark_allequalimage = bs->allequalimage;
 	meta->bark_flags = bs->multikey ? BARK_META_MULTIKEY : 0;
 	meta->bark_nkeys = (uint64) bs->indtuples;
+	meta->bark_tid_stride = bs->keyinfo->tidstride;
 	((PageHeader) metabuf)->pd_lower =
 		((char *) meta + sizeof(BarkMetaPageData)) - (char *) metabuf;
 
@@ -906,9 +908,9 @@ bark_finish(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *leaf)
  */
 static IndexTuple
 bark_build_posting(TupleDesc tupdesc, IndexTuple key, ItemPointer tids,
-				   int ntids)
+				   int ntids, uint16 stride)
 {
-	IndexTuple	entry = bark_form_posting(tupdesc, key, tids, ntids);
+	IndexTuple	entry = bark_form_posting(tupdesc, key, tids, ntids, stride);
 
 	if (entry != NULL && IndexTupleSize(entry) > BARK_BUILD_MAX_ENTRY_SIZE)
 	{
@@ -959,18 +961,21 @@ bark_build_form_entry(BarkBuildState *bs, IndexTuple key, ItemPointer tids,
 	}
 
 	n = Min(ntids, nlist);
-	entry = bark_build_posting(tupdesc, key, tids, n);
+	entry = bark_build_posting(tupdesc, key, tids, n,
+							   bs->keyinfo->tidstride);
 	if (entry == NULL)
 	{
 		*nused = n;
-		return bark_form_list_best(tupdesc, key, tids, n);
+		return bark_form_list_best(tupdesc, key, tids, n,
+								   bs->keyinfo->tidstride);
 	}
 
 	if (ntids > n)
 	{
 		int			lo = n;		/* fits */
 		int			hi = Min(ntids, BARK_BUILD_MAX_ENTRY_TIDS);
-		IndexTuple	probe = bark_build_posting(tupdesc, key, tids, hi);
+		IndexTuple	probe = bark_build_posting(tupdesc, key, tids, hi,
+											   bs->keyinfo->tidstride);
 
 		if (probe != NULL)
 		{
@@ -983,7 +988,8 @@ bark_build_form_entry(BarkBuildState *bs, IndexTuple key, ItemPointer tids,
 		{
 			int			mid = lo + (hi - lo + 1) / 2;
 
-			probe = bark_build_posting(tupdesc, key, tids, mid);
+			probe = bark_build_posting(tupdesc, key, tids, mid,
+									   bs->keyinfo->tidstride);
 			if (probe != NULL)
 			{
 				pfree(entry);
@@ -1345,7 +1351,7 @@ bark_parallel_scan_and_sort(Relation heap, Relation index,
 	memset(&bs, 0, sizeof(bs));
 	bs.heap = heap;
 	bs.index = index;
-	bs.keyinfo = bark_build_keyinfo(index);
+	bs.keyinfo = bark_build_keyinfo_stride(index, bark_heap_tid_stride(heap));
 	bs.keyinfo->heaprel = heap;
 	bs.nkeyatts = IndexRelationGetNumberOfKeyAttributes(index);
 	bs.isunique = false;		/* leader enforces uniqueness during load */
@@ -1735,36 +1741,22 @@ bark_build(Relation heap, Relation index, IndexInfo *indexInfo)
 			 RelationGetRelationName(index));
 
 	/*
-	 * A POSTING entry maps a TID to block * MaxHeapTuplesPerPage + offset - 1
-	 * (bark_tid_to_key), which is reversible only for offsets up to
-	 * MaxHeapTuplesPerPage; GIN refuses such a table for the same bound.  A
-	 * coded LIST packs the offset into BARK_TID_OFFSET_BITS (11) bits, a
-	 * looser bound of 2047, so the POSTING bound is the one that binds.
+	 * The index's TID mappings are laid out for the table's largest locator
+	 * offset, its TID stride, which bark_load records in the meta page
+	 * (bark_index_tid_stride).  A table whose offsets exceed heap's is
+	 * indexed like any other.
 	 */
-	{
-		const LocatorDesc *locdesc = RelationGetLocatorDesc(heap);
-
-		if (locdesc->max_offset > MaxHeapTuplesPerPage)
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("access method \"%s\" cannot index table \"%s\"",
-							"bark", RelationGetRelationName(heap)),
-					 errdetail("The table's \"%s\" locator uses offsets up to %u, but \"%s\" can store offsets only up to %u.",
-							   locdesc->name, (unsigned int) locdesc->max_offset,
-							   "bark", (unsigned int) MaxHeapTuplesPerPage)));
-	}
-
 	memset(&bs, 0, sizeof(bs));
 	bs.heap = heap;
 	bs.index = index;
-	bs.keyinfo = bark_build_keyinfo(index);
+	bs.keyinfo = bark_build_keyinfo_stride(index, bark_heap_tid_stride(heap));
 	bs.keyinfo->heaprel = heap;
 	bs.nkeyatts = IndexRelationGetNumberOfKeyAttributes(index);
 	bs.nblocks = 1;				/* block 0 is reserved for the meta page */
 	bs.isunique = indexInfo->ii_Unique;
 	bs.nullsnotdistinct = indexInfo->ii_NullsNotDistinct;
 	bs.allequalimage = bark_allequalimage(index);
-	bs.coalesce = !bs.isunique && bark_index_may_coalesce(index);
+	bs.coalesce = bark_index_coalesces(index);
 	bs.indexInfo = indexInfo;	/* for the oversized second-pass insert */
 	bs.prefix = bark_prefix_enabled(index);
 	bs.prefixnext = true;
@@ -1869,6 +1861,13 @@ bark_buildempty(Relation index)
 	BulkWriteBuffer metabuf;
 	BarkMetaPageData *meta;
 	BarkPageOpaque opaque;
+	Relation	heap;
+	uint16		stride;
+
+	/* index_build, the only caller, holds a lock on the table. */
+	heap = table_open(index->rd_index->indrelid, NoLock);
+	stride = bark_heap_tid_stride(heap);
+	table_close(heap, NoLock);
 
 	bulk = smgr_bulk_start_rel(index, INIT_FORKNUM);
 	metabuf = smgr_bulk_get_buf(bulk);
@@ -1888,6 +1887,7 @@ bark_buildempty(Relation index)
 	meta->bark_root = BARK_P_NONE;
 	meta->bark_level = 0;
 	meta->bark_allequalimage = bark_allequalimage(index);
+	meta->bark_tid_stride = stride;
 	((PageHeader) metabuf)->pd_lower =
 		((char *) meta + sizeof(BarkMetaPageData)) - (char *) metabuf;
 
