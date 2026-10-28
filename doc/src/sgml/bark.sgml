@@ -1212,12 +1212,19 @@ CREATE INDEX orders_customer_idx ON orders (customer);
    <xref linkend="tableam-versioned-locators"/>) can store a version tag
    with each entry.  A BARK index does so when it was built for such a
    table (<command>CREATE INDEX</command>, <command>REINDEX</command>, or
-   the rebuild of <command>ALTER TABLE ... SET ACCESS METHOD</command>) and
-   has no multikey column; it reports this through
-   <function>amindexcanversion</function>.  Every other BARK index stores no
+   the rebuild of <command>ALTER TABLE ... SET ACCESS METHOD</command>),
+   and, if it has a multikey column, when that column's operator class
+   does not use GIN's query interface and the index is neither unique nor
+   an exclusion constraint's; it reports this through
+   <function>amindexcanversion</function>.  An update that changes such an
+   index's multikey column can then keep the row's locator, and inserts the
+   new value's full key set, tagged.  Every other BARK index stores no
    tags, and the table moves a row whenever an update changes one of its
-   columns, as for any index that stores none.  An index built by a version
-   of BARK without version tags stores none until it is rebuilt.
+   columns, as for any index that stores none.  A multikey index that
+   stores tags and later becomes unique or an exclusion constraint's keeps
+   its tags but no longer lets an update keep a locator
+   (<function>amindexmaykeeplocator</function>).  An index built by a
+   version of BARK without version tags stores none until it is rebuilt.
   </para>
 
   <para>
