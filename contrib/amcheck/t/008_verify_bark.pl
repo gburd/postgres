@@ -24,6 +24,8 @@ my $blksz = int($node->safe_psql('postgres', 'SHOW block_size'));
 # Blocks per relation file (--with-segsize-blocks can make it small).
 my $segblks = int($node->safe_psql('postgres',
 	"SELECT setting FROM pg_settings WHERE name = 'segment_size'"));
+# The server runs on this machine, so its pages are in Perl's byte order.
+my $little_endian = pack('L', 1) eq pack('V', 1);
 
 $node->safe_psql(
 	'postgres', q(
@@ -160,8 +162,14 @@ sub g32 { unpack('L', substr(${ $_[0] }, $_[1], 4)) }
 sub s32 { substr(${ $_[0] }, $_[1], 4) = pack('L', $_[2]) }
 sub gi32 { unpack('l', substr(${ $_[0] }, $_[1], 4)) }
 sub si32 { substr(${ $_[0] }, $_[1], 4) = pack('l', $_[2]) }
-# Byte offset of item $off (ItemIdData lp_off: low 15 bits).
-sub item { g32($_[0], 24 + 4 * ($_[1] - 1)) & 0x7fff }
+# Byte offset of item $off: ItemIdData's lp_off, its first 15 bits, which
+# are the word's low bits on a little-endian machine and its high bits on a
+# big-endian one.
+sub item
+{
+	my $w = g32($_[0], 24 + 4 * ($_[1] - 1));
+	return $little_endian ? $w & 0x7fff : $w >> 17;
+}
 sub maxoff { (g16($_[0], 12) - 24) / 4 }
 # BarkPageOpaqueData: prev 0, next 4, level 8, cycleid 10, flags 12.
 sub opq { g16($_[0], 16) + $_[1] }

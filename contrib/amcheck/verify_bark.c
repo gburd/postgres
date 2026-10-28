@@ -17,6 +17,8 @@
  *	- sibling links are consistent (the right sibling's left link points back,
  *	  and levels match across a sibling link), and the right sibling's first
  *	  key is not less than the page's high key, (key, heap TID) on a leaf;
+ *	  a leaf whose left sibling's high key has a version tag has
+ *	  BARK_LOWBOUND_TAGGED;
  *	- every downlink points at a page one level down whose first key is not
  *	  less than the downlink, (key, heap TID) for a leaf child;
  *	- no page is still flagged with an unfinished split, which a clean index
@@ -54,6 +56,12 @@
  *	  each downlink equal to the high key of the child before it (the
  *	  separator a split or CREATE INDEX copies from it), and the parent's
  *	  high key equal to its last child's.  Every live page must be reached.
+ *	  Then each OVERSIZED entry's overflow chain, a leaf entry's or a
+ *	  pivot's, is followed to its end: no chain may loop, reach a page
+ *	  another chain reaches, or reach a page that is not an overflow page.
+ *	  An overflow page that no chain reaches is reported with a WARNING,
+ *	  not as corruption: a crash between writing a chain and inserting the
+ *	  entry that references it leaves such pages (bark_check_chains).
  *
  * bark_index_check holds only AccessShareLock, so the index can change
  * underneath.  Each cross-page check holds share locks on both pages, taken
@@ -83,6 +91,7 @@
 #include "lib/bloomfilter.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
+#include "utils/injection_point.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
@@ -109,12 +118,33 @@ typedef struct BarkCheckState
 	MemoryContext tmpcxt;		/* reset after every fingerprinted entry */
 }			BarkCheckState;
 
+/*
+ * The overflow chains, as bark_index_parent_check sees them, indexed by
+ * block: each overflow page's next link, the length in pages of the chain
+ * an OVERSIZED entry starts at the block, and BARK_CHAIN_* flags.
+ */
+typedef struct BarkChains
+{
+	BlockNumber npages;
+	bool		skippivots;		/* a test's broken mark pass */
+	BlockNumber *next;			/* an overflow page's bark_next, or
+								 * InvalidBlockNumber for any other page */
+	BlockNumber *nchunks;		/* 0 where no entry's chain starts */
+	uint8	   *flags;
+}			BarkChains;
+
+#define BARK_CHAIN_REACHED	0x01	/* an entry's chain reaches the page */
+#define BARK_CHAIN_LINKED	0x02	/* an orphaned page links to the page */
+#define BARK_CHAIN_COUNTED	0x04	/* counted in an orphaned chain */
+
 static void bark_check_common(FunctionCallInfo fcinfo, bool parentcheck);
 static void bark_check_structure(Relation rel, Relation heaprel,
 								 void *callback_state, bool readonly);
-static bool bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo);
+static bool bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo,
+							BarkChains * chains);
 static void bark_check_levels(Relation rel, BarkKeyInfo *keyinfo,
 							  BlockNumber npages, int64 nlive);
+static void bark_check_chains(Relation rel, BarkChains * chains);
 static Buffer bark_check_leftmost_leaf(Relation rel);
 static void bark_fingerprint_leaves(Relation rel, BarkCheckState * state);
 static void bark_probe_entry(Relation index, BarkCheckState * state,
@@ -129,8 +159,8 @@ static void bark_check_downlinks(Relation rel, BlockNumber blkno,
 
 /*
  * Compare the leaf entry `itup`, taken at its lowest heap TID (or its highest
- * when `high`), with the pivot or leaf entry `other`, in the tree's order of
- * (key, heap TID): bark_compare_itups_tid.
+ * when `high`) and its version tag, with the pivot or leaf entry `other`, in
+ * the tree's order of (key, heap TID, tag): bark_compare_itups_tid.
  */
 static int
 bark_check_compare_leaf(Relation rel, BarkKeyInfo *keyinfo, IndexTuple itup,
@@ -140,7 +170,8 @@ bark_check_compare_leaf(Relation rel, BarkKeyInfo *keyinfo, IndexTuple itup,
 	ItemPointerData hi;
 
 	bark_entry_tid_range(itup, &lo, &hi, keyinfo->tidstride);
-	return bark_compare_itups_tid(keyinfo, rel, itup, high ? &hi : &lo, other);
+	return bark_compare_itups_tid(keyinfo, rel, itup, high ? &hi : &lo,
+								  BarkEntryGetTag(itup), other);
 }
 
 /*
@@ -207,6 +238,7 @@ bark_check_structure(Relation rel, Relation heaprel, void *callback_state,
 	Buffer		metabuf = ReadBuffer(rel, BARK_METAPAGE);
 	uint32		version;
 	int64		nlive = 0;
+	BarkChains	chains = {0};
 
 	state->heaprel = heaprel;
 	LockBuffer(metabuf, BUFFER_LOCK_SHARE);
@@ -264,16 +296,40 @@ bark_check_structure(Relation rel, Relation heaprel, void *callback_state,
 	if (state->checkunique && state->snapshot == NULL)
 		state->snapshot = RegisterSnapshot(GetTransactionSnapshot());
 
+	/*
+	 * Under ShareLock no chain is being written or freed, so the per-page
+	 * pass also records the chains for bark_check_chains.
+	 */
+	if (readonly)
+	{
+		chains.npages = npages;
+		chains.next = palloc_extended(npages * sizeof(BlockNumber),
+									  MCXT_ALLOC_HUGE);
+		memset(chains.next, 0xFF, npages * sizeof(BlockNumber));
+		chains.nchunks = palloc_extended(npages * sizeof(BlockNumber),
+										 MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
+		chains.flags = palloc_extended(npages, MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
+		/* Tests skip the pivots' chains, to show the check finds them. */
+		chains.skippivots =
+			IS_INJECTION_POINT_ATTACHED("bark-check-chains-skip-pivots");
+	}
+
 	for (BlockNumber blkno = BARK_METAPAGE + 1; blkno < npages; blkno++)
 	{
 		CHECK_FOR_INTERRUPTS();
-		if (bark_check_page(rel, blkno, keyinfo))
+		if (bark_check_page(rel, blkno, keyinfo, readonly ? &chains : NULL))
 			nlive++;
 		bark_check_downlinks(rel, blkno, keyinfo);
 	}
 
 	if (readonly)
+	{
 		bark_check_levels(rel, keyinfo, npages, nlive);
+		bark_check_chains(rel, &chains);
+		pfree(chains.next);
+		pfree(chains.nchunks);
+		pfree(chains.flags);
+	}
 
 	if (state->checkunique)
 		bark_check_unique_runs(rel, keyinfo, state);
@@ -290,10 +346,13 @@ bark_check_structure(Relation rel, Relation heaprel, void *callback_state,
 /*
  * Check one page's invariants, plus the consistency of its right-sibling link.
  * Returns whether the page is part of the tree: an initialized page that is
- * not an overflow, deleted or half-dead page.
+ * not an overflow, deleted or half-dead page.  With `chains`, also record an
+ * overflow page's next link, or the first block of the chain of each
+ * OVERSIZED entry, high key and downlink on the page.
  */
 static bool
-bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo)
+bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo,
+				BarkChains * chains)
 {
 	Buffer		buf = ReadBuffer(rel, blkno);
 	Page		page;
@@ -315,8 +374,46 @@ bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo)
 	/* Overflow pages hold raw out-of-line bytes, not tree items; skip them. */
 	if (BarkPageIsOverflow(opaque))
 	{
+		if (chains != NULL)
+			chains->next[blkno] = opaque->bark_next;
 		UnlockReleaseBuffer(buf);
 		return false;
+	}
+
+	/*
+	 * Prefix coding stores an OVERSIZED entry as it is, so the stored items,
+	 * the high key too, give the chains.  Recorded before the page's own
+	 * checks, which read the chains, so that a first block past the end of
+	 * the index is reported as such and not by the read.  A deleted page has
+	 * no items.  An item that does not lie within the page is left to
+	 * bark_page_verify.
+	 */
+	for (OffsetNumber off = FirstOffsetNumber;
+		 chains != NULL && off <= PageGetMaxOffsetNumber(page);
+		 off = OffsetNumberNext(off))
+	{
+		ItemId		iid = PageGetItemId(page, off);
+		IndexTuple	itup;
+		BlockNumber first;
+
+		if (!ItemIdHasStorage(iid) ||
+			ItemIdGetOffset(iid) < SizeOfPageHeaderData ||
+			ItemIdGetOffset(iid) + Max(ItemIdGetLength(iid), sizeof(IndexTupleData)) >
+			((PageHeader) page)->pd_special)
+			continue;
+		itup = (IndexTuple) PageGetItem(page, iid);
+		if (BarkEntryGetShape(itup) != BARK_SHAPE_OVERSIZED ||
+			(chains->skippivots && !BarkOverflowIsLeaf(itup)))
+			continue;
+		first = BarkOverflowGetFirstBlock(itup);
+		if (first == BARK_METAPAGE || first >= chains->npages)
+			ereport(ERROR,
+					(errcode(ERRCODE_INDEX_CORRUPTED),
+					 errmsg("BARK index \"%s\" oversized entry on page %u at offset %u points at out-of-range overflow block %u",
+							RelationGetRelationName(rel), blkno, off, first)));
+		chains->nchunks[first] =
+			Max(chains->nchunks[first],
+				bark_overflow_nchunks(BarkOverflowGetRef(itup)->fulllen));
 	}
 
 	/*
@@ -384,6 +481,20 @@ bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo)
 							 errmsg("BARK index \"%s\" has a first key on page %u that is less than the high key of its left sibling %u",
 									RelationGetRelationName(rel), rightblk, blkno)));
 			}
+
+			/*
+			 * A leaf whose lower bound, the left sibling's high key, has a
+			 * version tag must say so: VACUUM untags in place on a leaf
+			 * without BARK_LOWBOUND_TAGGED.
+			 */
+			if (hikey != NULL && BarkPageIsLeaf(ropaque) &&
+				(ropaque->bark_flags & (BARK_DELETED | BARK_HALF_DEAD)) == 0 &&
+				bark_pivot_tag(hikey) != InvalidIndexVersionTag &&
+				(ropaque->bark_flags & BARK_LOWBOUND_TAGGED) == 0)
+				ereport(ERROR,
+						(errcode(ERRCODE_INDEX_CORRUPTED),
+						 errmsg("BARK index \"%s\" has a leaf %u whose lower bound, the high key of %u, has a version tag, but no BARK_LOWBOUND_TAGGED",
+								RelationGetRelationName(rel), rightblk, blkno)));
 		}
 		UnlockReleaseBuffer(rbuf);
 	}
@@ -520,7 +631,8 @@ bark_check_downlinks(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo)
 
 /*
  * Are two pivots the same separator: equal on the key attributes, with the
- * same number of them and the same heap TID (or none)?  A downlink is a copy
+ * same number of them and the same heap TID (or none) and version tag (or
+ * none)?  A downlink is a copy
  * of the high key of the child to its left, made by the split that created
  * the child or by CREATE INDEX, so the two never differ.
  */
@@ -535,6 +647,8 @@ bark_check_same_pivot(Relation rel, BarkKeyInfo *keyinfo, IndexTuple a,
 		return false;
 	if ((atid == NULL) != (btid == NULL) ||
 		(atid != NULL && !ItemPointerEquals(atid, btid)))
+		return false;
+	if (bark_pivot_tag(a) != bark_pivot_tag(b))
 		return false;
 	return bark_compare_itups(keyinfo, rel, a, b) == 0;
 }
@@ -780,6 +894,114 @@ bark_check_levels(Relation rel, BarkKeyInfo *keyinfo, BlockNumber npages,
 				(errcode(ERRCODE_INDEX_CORRUPTED),
 				 errmsg("BARK index \"%s\" has %" PRId64 " live pages, but only %" PRId64 " are reachable from its root",
 						RelationGetRelationName(rel), nlive, nreached)));
+}
+
+/* An overflow page that no entry's chain reaches. */
+static inline bool
+bark_chain_orphan(BarkChains * chains, BlockNumber blkno)
+{
+	return chains->next[blkno] != InvalidBlockNumber &&
+		(chains->flags[blkno] & BARK_CHAIN_REACHED) == 0;
+}
+
+/*
+ * The chain check, under ShareLock, after bark_check_page has recorded every
+ * overflow page's next link and the first block of every OVERSIZED entry's
+ * chain, leaf entries' and pivots'.
+ *
+ * Each chain is followed to its end (BARK_P_NONE), once: a high key and the
+ * downlinks copied from it share one chain (README), so a first block is
+ * followed however many entries name it.  bark_check_page has read each
+ * chain as far as its entry's length; following the links to the end also
+ * checks what VACUUM's bark_free_oversized follows.  A chain that reaches a
+ * page that is not an overflow page, or a page a chain has already reached
+ * (it loops, or two chains cross), or that is longer than its entry's
+ * length, is corrupt.
+ *
+ * An overflow page no chain reaches is not corruption.  A chain is written
+ * before the entry that references it, and freed after the entry is gone,
+ * each page under its own WAL record, so a crash between the two leaves the
+ * chain's pages, or the rest of them, referenced by no entry; so does an
+ * ERROR in between.  Such pages are reported with a WARNING, one per
+ * orphaned chain, by its first page (one no other orphaned page links to)
+ * and its number of pages; orphaned pages that only link to each other in a
+ * loop are reported last, from the lowest block.  A deleted overflow page,
+ * which VACUUM freed and which awaits recycling, is not an overflow page any
+ * more, so it is neither reached nor reported.  Nothing reclaims orphaned
+ * pages but REINDEX.
+ */
+static void
+bark_check_chains(Relation rel, BarkChains * chains)
+{
+	BlockNumber npages = chains->npages;
+
+	for (BlockNumber first = BARK_METAPAGE + 1; first < npages; first++)
+	{
+		BlockNumber n = 0;
+
+		if (chains->nchunks[first] == 0)
+			continue;
+		for (BlockNumber blkno = first; blkno != BARK_P_NONE;
+			 blkno = chains->next[blkno])
+		{
+			if (blkno >= npages || chains->next[blkno] == InvalidBlockNumber)
+				ereport(ERROR,
+						(errcode(ERRCODE_INDEX_CORRUPTED),
+						 errmsg("BARK index \"%s\" has an overflow chain from block %u that reaches block %u, which is not an overflow page",
+								RelationGetRelationName(rel), first, blkno)));
+			if (chains->flags[blkno] & BARK_CHAIN_REACHED)
+				ereport(ERROR,
+						(errcode(ERRCODE_INDEX_CORRUPTED),
+						 errmsg("BARK index \"%s\" has an overflow chain from block %u that reaches block %u, which an overflow chain already reached",
+								RelationGetRelationName(rel), first, blkno)));
+			chains->flags[blkno] |= BARK_CHAIN_REACHED;
+			n++;
+		}
+		if (n != chains->nchunks[first])
+			ereport(ERROR,
+					(errcode(ERRCODE_INDEX_CORRUPTED),
+					 errmsg("BARK index \"%s\" has an overflow chain of %u pages from block %u, where its entry's length takes %u",
+							RelationGetRelationName(rel), n, first,
+							chains->nchunks[first])));
+	}
+
+	/* An orphaned page another one links to does not start a chain. */
+	for (BlockNumber blkno = BARK_METAPAGE + 1; blkno < npages; blkno++)
+	{
+		BlockNumber next = chains->next[blkno];
+
+		if (bark_chain_orphan(chains, blkno) && next != BARK_P_NONE &&
+			next < npages && bark_chain_orphan(chains, next))
+			chains->flags[next] |= BARK_CHAIN_LINKED;
+	}
+
+	for (int pass = 0; pass < 2; pass++)
+	{
+		for (BlockNumber first = BARK_METAPAGE + 1; first < npages; first++)
+		{
+			BlockNumber n = 0;
+
+			if (!bark_chain_orphan(chains, first) ||
+				(chains->flags[first] & BARK_CHAIN_COUNTED) != 0 ||
+				(pass == 0 && (chains->flags[first] & BARK_CHAIN_LINKED) != 0))
+				continue;
+			for (BlockNumber blkno = first;
+				 blkno != BARK_P_NONE && blkno < npages &&
+				 bark_chain_orphan(chains, blkno) &&
+				 (chains->flags[blkno] & BARK_CHAIN_COUNTED) == 0;
+				 blkno = chains->next[blkno])
+			{
+				chains->flags[blkno] |= BARK_CHAIN_COUNTED;
+				n++;
+			}
+			ereport(WARNING,
+					(errmsg_plural("BARK index \"%s\" has an orphaned overflow chain of %u page at block %u",
+								   "BARK index \"%s\" has an orphaned overflow chain of %u pages at block %u",
+								   n, RelationGetRelationName(rel), n, first),
+					 errdetail("No entry references these pages.  A crash or error between writing an oversized entry's overflow chain and inserting the entry, or a crash while VACUUM frees a chain, leaves such pages."),
+					 errhint("REINDEX reclaims them.")));
+		}
+	}
 }
 
 /*

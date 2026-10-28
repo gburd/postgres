@@ -223,6 +223,10 @@ bark_xlog_split(XLogReaderState *record)
 	uint16		leafflag = isleaf ? BARK_LEAF : 0;
 	uint16		lprefix = (xlrec->flags & XLH_BARK_SPLIT_LPREFIX) ? BARK_PREFIX : 0;
 	uint16		rprefix = (xlrec->flags & XLH_BARK_SPLIT_RPREFIX) ? BARK_PREFIX : 0;
+	uint16		llowtag = (xlrec->flags & XLH_BARK_SPLIT_LLOWTAG) ?
+		BARK_LOWBOUND_TAGGED : 0;
+	uint16		rlowtag = (xlrec->flags & XLH_BARK_SPLIT_RLOWTAG) ?
+		BARK_LOWBOUND_TAGGED : 0;
 	BlockNumber leftblk;
 	BlockNumber rightblk;
 	Buffer		lbuf;
@@ -242,7 +246,7 @@ bark_xlog_split(XLogReaderState *record)
 	rbuf = XLogInitBufferForRedo(record, 1);
 	page = BufferGetPage(rbuf);
 	BarkPageInit(page, leftblk, xlrec->rightnext, xlrec->level,
-				 leafflag | rprefix, xlrec->cycleid);
+				 leafflag | rprefix | rlowtag, xlrec->cycleid);
 	datapos = XLogRecGetBlockData(record, 1, &datalen);
 	bark_restore_page(page, datapos, datalen);
 	PageSetLSN(page, lsn);
@@ -254,7 +258,8 @@ bark_xlog_split(XLogReaderState *record)
 		lbuf = XLogInitBufferForRedo(record, 0);
 		page = BufferGetPage(lbuf);
 		BarkPageInit(page, xlrec->leftprev, rightblk, xlrec->level,
-					 leafflag | lprefix | BARK_INCOMPLETE_SPLIT, xlrec->cycleid);
+					 leafflag | lprefix | llowtag | BARK_INCOMPLETE_SPLIT,
+					 xlrec->cycleid);
 		datapos = XLogRecGetBlockData(record, 0, &datalen);
 		bark_restore_page(page, datapos, datalen);
 		PageSetLSN(page, lsn);
@@ -286,7 +291,7 @@ bark_xlog_split(XLogReaderState *record)
 		Assert(BarkPageHasPrefix(BarkPageGetOpaque(origpage)) == (lprefix != 0));
 
 		BarkPageInit(leftpage, xlrec->leftprev, rightblk, xlrec->level,
-					 leafflag | BARK_INCOMPLETE_SPLIT, xlrec->cycleid);
+					 leafflag | llowtag | BARK_INCOMPLETE_SPLIT, xlrec->cycleid);
 		if (!bark_split_build_left(leftpage, origpage, hikey,
 								   xlrec->firstrightoff,
 								   newitem, xlrec->newitemoff,
@@ -439,7 +444,7 @@ bark_xlog_overwrite(XLogReaderState *record)
  * the order the primary made the changes: rewrites, then deletions, or for a
  * MERGE (`deletefirst`) deletions, then rewrites.
  */
-static void
+static char *
 bark_redo_delitems(XLogReaderState *record, Page page, uint16 ndeleted,
 				   uint16 nupdated, bool deletefirst)
 {
@@ -470,6 +475,8 @@ bark_redo_delitems(XLogReaderState *record, Page page, uint16 ndeleted,
 
 	/* The primary clears the hint too; bark_mask masks it either way. */
 	BarkPageGetOpaque(page)->bark_flags &= ~BARK_HAS_GARBAGE;
+
+	return itup;				/* the end of what was read */
 }
 
 /*
@@ -494,9 +501,24 @@ bark_xlog_vacuum(XLogReaderState *record)
 		Page		page = BufferGetPage(buffer);
 
 		/* A record that only clears the cycle ID carries no block data */
-		if (xlrec->ndeleted > 0 || xlrec->nupdated > 0)
-			bark_redo_delitems(record, page, xlrec->ndeleted, xlrec->nupdated,
-							   false);
+		if (xlrec->ndeleted > 0 || xlrec->nupdated > 0 ||
+			xlrec->nuntagged > 0)
+		{
+			char	   *ptr = bark_redo_delitems(record, page, xlrec->ndeleted,
+												 xlrec->nupdated, false);
+			OffsetNumber *from = (OffsetNumber *) ptr;
+			OffsetNumber *to = from + xlrec->nuntagged;
+			char	   *itup = (char *) (to + xlrec->nuntagged);
+
+			for (int i = 0; i < xlrec->nuntagged; i++)
+			{
+				Size		itemsz = IndexTupleSize((IndexTuple) itup);
+
+				if (!BarkPageMoveEntry(page, from[i], to[i], itup, itemsz))
+					elog(PANIC, "failed to untag BARK leaf entry during replay");
+				itup += MAXALIGN(itemsz);
+			}
+		}
 
 		BarkPageGetOpaque(page)->bark_cycleid = 0;
 
@@ -621,6 +643,8 @@ bark_xlog_unlink_page(XLogReaderState *record)
 	{
 		page = BufferGetPage(rightbuf);
 		BarkPageGetOpaque(page)->bark_prev = xlrec->leftsib;
+		if (xlrec->flags & XLH_BARK_UNLINK_LOWTAG)
+			BarkPageGetOpaque(page)->bark_flags |= BARK_LOWBOUND_TAGGED;
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(rightbuf);
@@ -662,6 +686,58 @@ bark_xlog_unlink_page(XLogReaderState *record)
 		UnlockReleaseBuffer(rightbuf);
 	if (BufferIsValid(parentbuf))
 		UnlockReleaseBuffer(parentbuf);
+}
+
+/*
+ * Replay the lowering of a leaf's lower bound (bark_lower_bound), the second
+ * form of an UNLINK_PAGE record (XLH_BARK_UNLINK_LOWER_SEP, no block 0): the
+ * left page's new high key (block 1), the right page's BARK_LOWBOUND_TAGGED
+ * cleared (block 2), the parent's new downlink at poffset (block 3), each
+ * when its block is in the record.  The blocks are locked in that order,
+ * left page, right page, parent, as bark_xlog_unlink_page does, and held
+ * until the record is applied.
+ */
+static void
+bark_xlog_lower_bound(XLogReaderState *record)
+{
+	XLogRecPtr	lsn = record->EndRecPtr;
+	xl_bark_unlink_page *xlrec = (xl_bark_unlink_page *) XLogRecGetData(record);
+	Buffer		bufs[4] = {InvalidBuffer, InvalidBuffer, InvalidBuffer,
+	InvalidBuffer};
+
+	Assert(!XLogRecHasBlockRef(record, 0));
+
+	for (uint8 block_id = 1; block_id <= 3; block_id++)
+	{
+		Page		page;
+		char	   *item;
+		Size		len;
+		bool		fits PG_USED_FOR_ASSERTS_ONLY = true;
+
+		if (!XLogRecHasBlockRef(record, block_id) ||
+			XLogReadBufferForRedo(record, block_id, &bufs[block_id]) != BLK_NEEDS_REDO)
+			continue;
+		page = BufferGetPage(bufs[block_id]);
+		item = XLogRecGetBlockData(record, block_id, &len);
+		/* Each new pivot is smaller than the one it replaces. */
+		if (block_id == 1)
+			fits = PageIndexTupleOverwrite(page, BARK_P_HIKEY, item, len);
+		else if (block_id == 2)
+			BarkPageGetOpaque(page)->bark_flags &= ~BARK_LOWBOUND_TAGGED;
+		else
+			fits = PageIndexTupleOverwrite(page, xlrec->poffset, item, len);
+		Assert(fits);
+		PageSetLSN(page, lsn);
+		MarkBufferDirty(bufs[block_id]);
+	}
+
+	for (uint8 block_id = 1; block_id <= 3; block_id++)
+	{
+		bark_verify_redo(record, block_id, bufs[block_id],
+						 InvalidOffsetNumber, InvalidOffsetNumber);
+		if (BufferIsValid(bufs[block_id]))
+			UnlockReleaseBuffer(bufs[block_id]);
+	}
 }
 
 /*
@@ -790,9 +866,16 @@ bark_xlog_insert_swap(XLogReaderState *record)
 		IndexTuple	lcoded;
 		IndexTuple	rcoded;
 
-		bark_entry_swap_tid(BarkPageGetItem(page, xlrec->offnum, &ibuf),
-							&xlrec->tid, &left, &right,
-							bark_xlog_tid_stride(record));
+		/* With a tag, divide the entry for a tagged entry of the TID. */
+		if (XLogRecGetDataLen(record) >= SizeOfBarkInsertSwap +
+			sizeof(uint16) + sizeof(IndexVersionTag))
+			bark_entry_divide(BarkPageGetItem(page, xlrec->offnum, &ibuf),
+							  &xlrec->tid, &left, &right,
+							  bark_xlog_tid_stride(record));
+		else
+			bark_entry_swap_tid(BarkPageGetItem(page, xlrec->offnum, &ibuf),
+								&xlrec->tid, &left, &right,
+								bark_xlog_tid_stride(record));
 		lcoded = bark_prefix_encode(page, left);
 		rcoded = bark_prefix_encode(page, right);
 		if (!BarkPageOverwriteEntry(page, xlrec->offnum, lcoded,
@@ -834,7 +917,11 @@ bark_redo(XLogReaderState *record)
 			bark_xlog_merge(record);
 			break;
 		case XLOG_BARK_UNLINK_PAGE:
-			bark_xlog_unlink_page(record);
+			if (((xl_bark_unlink_page *) XLogRecGetData(record))->flags &
+				XLH_BARK_UNLINK_LOWER_SEP)
+				bark_xlog_lower_bound(record);
+			else
+				bark_xlog_unlink_page(record);
 			break;
 		case XLOG_BARK_REUSE_PAGE:
 			bark_xlog_reuse_page(record);

@@ -243,6 +243,7 @@ bark_knn_readpage(IndexScanDesc scan, BarkKnnCursor *cur, Page page,
 		item->ntids = bark_entry_get_tids(itup, cur->tids + cur->ntids,
 										  cur->maxTids - cur->ntids,
 										  so->keyinfo->tidstride);
+		item->tag = BarkEntryGetTag(itup);
 		item->recheck = false;
 		if (so->mk != NULL)
 		{
@@ -462,6 +463,7 @@ bark_knn_emit(IndexScanDesc scan)
 
 	Assert(knn->emitIdx >= 0 && knn->emitIdx < item->ntids);
 	scan->xs_heaptid = cur->tids[item->firstTid + knn->emitIdx];
+	scan->xs_heaptag = item->tag;
 	scan->xs_recheck = item->recheck;
 	if (scan->xs_want_itup)
 	{
