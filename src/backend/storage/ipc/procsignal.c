@@ -996,79 +996,95 @@ procsignal_sigusr1_handler(SIGNAL_ARGS)
 /*
  * Send a query cancellation signal to backend.
  *
- * Note: This is called from a backend process before authentication.  We
- * cannot take LWLocks yet, but that's OK; we rely on atomic reads of the
- * fields in the ProcSignal slots.
+ * Called before authentication and InitProcess: use the slot spinlock, not
+ * LWLocks.  Release it before logging or dispatching to the backend registry.
  */
 void
 SendCancelRequest(int backendPID, const uint8 *cancel_key, int cancel_key_len)
 {
-	if (backendPID == 0)
+	bool		found_identity = false;
+
+	if (backendPID <= 0)
 	{
-		ereport(LOG, (errmsg("invalid cancel request with PID 0")));
+		ereport(LOG, (errmsg("invalid cancel request with PID %d", backendPID)));
+		return;
+	}
+	if (cancel_key_len <= 0 || cancel_key_len > MAX_CANCEL_KEY_LENGTH)
+	{
+		ereport(LOG, (errmsg("invalid length of cancel key in cancel request packet")));
 		return;
 	}
 
-	/*
-	 * See if we have a matching backend. Reading the pss_pid and
-	 * pss_cancel_key fields is racy, a backend might die and remove itself
-	 * from the array at any time.  The probability of the cancellation key
-	 * matching wrong process is miniscule, however, so we can live with that.
-	 * PIDs are reused too, so sending the signal based on PID is inherently
-	 * racy anyway, although OS's avoid reusing PIDs too soon.
-	 */
 	for (int i = 0; i < NumProcSignalSlots; i++)
 	{
 		ProcSignalSlot *slot = &ProcSignal->psh_slot[i];
-		bool		match;
+		uint32		slot_pid = pg_atomic_read_u32(&slot->pss_pid);
+		PgBackendId backend_id;
+		bool		use_backend_interrupt;
 
-		if (pg_atomic_read_u32(&slot->pss_pid) != backendPID)
+		/* Logical identities must only be read under the slot lock. */
+		if (slot_pid != (uint32) backendPID &&
+			slot_pid != (uint32) PostmasterPid)
 			continue;
 
-		/* Acquire the spinlock and re-check */
 		SpinLockAcquire(&slot->pss_mutex);
-		if (pg_atomic_read_u32(&slot->pss_pid) != backendPID)
+		if (!ProcSignalSlotMatchesTarget(slot, backendPID, false))
 		{
 			SpinLockRelease(&slot->pss_mutex);
 			continue;
+		}
+
+		found_identity = true;
+		if (slot->pss_cancel_key_len <= 0 ||
+			slot->pss_cancel_key_len != cancel_key_len ||
+			timingsafe_bcmp(slot->pss_cancel_key, cancel_key, cancel_key_len) != 0)
+		{
+			SpinLockRelease(&slot->pss_mutex);
+			/* An OS PID and a logical ID can have the same numeric value. */
+			continue;
+		}
+
+		backend_id = slot->pss_backendId;
+		slot_pid = pg_atomic_read_u32(&slot->pss_pid);
+		use_backend_interrupt = ProcSignalSlotUsesBackendInterrupts(slot, backendPID);
+		SpinLockRelease(&slot->pss_mutex);
+
+		if (use_backend_interrupt)
+		{
+			/* The registry is process-local; never kill a logical ID. */
+			if (getpid() == PostmasterPid &&
+				PgBackendSendInterruptById(backend_id,
+										 PG_BACKEND_INTERRUPT_QUERY_CANCEL, 0, 0))
+				ereport(DEBUG2,
+						(errmsg_internal("processing cancel request: sent query cancel to backend %d",
+										 backendPID)));
+			else
+				ereport(DEBUG2,
+						(errmsg_internal("could not deliver cancel request to logical backend %d",
+										 backendPID)));
 		}
 		else
 		{
-			match = slot->pss_cancel_key_len == cancel_key_len &&
-				timingsafe_bcmp(slot->pss_cancel_key, cancel_key, cancel_key_len) == 0;
+			ereport(DEBUG2,
+					(errmsg_internal("processing cancel request: sending SIGINT to process %d",
+									 (int) slot_pid)));
 
-			SpinLockRelease(&slot->pss_mutex);
-
-			if (match)
-			{
-				/* Found a match; signal that backend to cancel current op */
-				ereport(DEBUG2,
-						(errmsg_internal("processing cancel request: sending SIGINT to process %d",
-										 backendPID)));
-
-				/*
-				 * If we have setsid(), signal the backend's whole process
-				 * group
-				 */
+			/* If we have setsid(), signal the backend's whole process group. */
 #ifdef HAVE_SETSID
-				kill(-backendPID, SIGINT);
+			kill(-((pid_t) slot_pid), SIGINT);
 #else
-				kill(backendPID, SIGINT);
+			kill((pid_t) slot_pid, SIGINT);
 #endif
-			}
-			else
-			{
-				/* Right PID, wrong key: no way, Jose */
-				ereport(LOG,
-						(errmsg("wrong key in cancel request for process %d",
-								backendPID)));
-			}
-			return;
 		}
+		return;
 	}
 
-	/* No matching backend */
-	ereport(LOG,
-			(errmsg("PID %d in cancel request did not match any process",
-					backendPID)));
+	if (found_identity)
+		ereport(LOG,
+				(errmsg("wrong key in cancel request for process %d",
+						backendPID)));
+	else
+		ereport(LOG,
+				(errmsg("PID %d in cancel request did not match any process",
+						backendPID)));
 }
