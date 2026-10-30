@@ -208,7 +208,7 @@ static TupleTableSlot *ExecMergeNotMatched(ModifyTableContext *context,
  * same entries for the same value, so for HOT the two are the same.
  */
 static bool
-VarlenaImageEqual(Datum value1, Datum value2)
+VarlenaEqualDetoasted(Datum value1, Datum value2)
 {
 	varlena    *v1 = (varlena *) DatumGetPointer(value1);
 	varlena    *v2 = (varlena *) DatumGetPointer(value2);
@@ -253,7 +253,7 @@ DropRestoredAttrs(Relation relation, Bitmapset *attrs,
 			continue;
 		value1 = slot_getattr(old_tts, attrnum, &null1);
 		value2 = slot_getattr(new_tts, attrnum, &null2);
-		if (null1 || null2 || !VarlenaImageEqual(value1, value2))
+		if (null1 || null2 || !VarlenaEqualDetoasted(value1, value2))
 			continue;
 
 		if (!fetched)
@@ -349,7 +349,7 @@ IndexDatumsDiffer(Relation heapRel, Relation indexRel, IndexInfo *indexInfo,
 		if (attnum == 0 &&
 			(datumIsEqual(old_values[i], new_values[i], typbyval, typlen) ||
 			 (typlen == -1 &&
-			  VarlenaImageEqual(old_values[i], new_values[i]))))
+			  VarlenaEqualDetoasted(old_values[i], new_values[i]))))
 			continue;
 		if (cmp == NULL || index_can_return(indexRel, i + 1) ||
 			!cmp(indexRel, indexInfo, i + 1, typid, typlen, typbyval,
