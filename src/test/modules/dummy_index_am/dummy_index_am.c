@@ -248,7 +248,7 @@ dioptions(Datum reloptions, bool validate)
 
 /*
  * amcanreturn: with option_ternary_1 set to true, claim that every column
- * can be returned, so that amcomparedatums is not to be asked about it.
+ * can be returned, so that amcomparedatums is not asked about it.
  * (The index cannot actually be scanned.)
  */
 static bool

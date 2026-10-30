@@ -409,7 +409,10 @@ simple_table_tuple_update(Relation rel, ItemPointer otid,
 	Bitmapset  *modified_idx_attrs;
 
 	if (!table_tuple_fetch_row_version(rel, otid, SnapshotAny, oldslot))
+	{
+		ExecDropSingleTupleTableSlot(oldslot);
 		elog(ERROR, "tuple concurrently deleted");
+	}
 	modified_idx_attrs = table_slot_modified_idx_attrs(rel, oldslot, slot);
 	ExecDropSingleTupleTableSlot(oldslot);
 

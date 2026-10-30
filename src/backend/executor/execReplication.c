@@ -989,7 +989,6 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 	bool		skip_tuple = false;
 	Relation	rel = resultRelInfo->ri_RelationDesc;
 	ItemPointer tid = &(searchslot->tts_tid);
-	Bitmapset  *modified_idx_attrs;
 
 	/*
 	 * We support only non-system tables, with
@@ -1015,6 +1014,7 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 		TU_UpdateIndexes update_indexes;
 		List	   *conflictindexes;
 		bool		conflict = false;
+		Bitmapset  *modified_idx_attrs;
 
 		/* Compute stored generated columns */
 		if (rel->rd_att->constr &&
