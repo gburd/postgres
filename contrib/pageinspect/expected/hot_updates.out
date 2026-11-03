@@ -132,9 +132,10 @@ DROP TABLE hot_test;
 -- indexUnchanged hint can free its old entries with bottom-up deletion
 -- before it splits a page; one that doesn't splits.  Index d is never named
 -- in SET and always gets it.  Index a is named, with its own value;
--- same_size shows whether it gets the hint too.
-CREATE TABLE hint_test (id int, a int, d int, c int)
-    WITH (fillfactor = 100, autovacuum_enabled = off);
+-- same_size shows whether it gets the hint too.  The table is temporary, so
+-- that other sessions' snapshots cannot keep its old versions alive.
+CREATE TEMP TABLE hint_test (id int, a int, d int, c int)
+    WITH (fillfactor = 100);
 CREATE INDEX hint_test_a ON hint_test (a);
 CREATE INDEX hint_test_d ON hint_test (d);
 INSERT INTO hint_test SELECT g, g, g, 0 FROM generate_series(1, 3000) g;
