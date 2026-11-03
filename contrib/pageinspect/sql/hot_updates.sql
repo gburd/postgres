@@ -106,6 +106,27 @@ FROM current_tuple, LATERAL print_hot_chain('hot_test', current_tuple.ctid);
 
 DROP TABLE hot_test;
 
+-- ---------------------------------------------------------------------------
+-- The indexUnchanged hint on updates that cannot be HOT
+-- ---------------------------------------------------------------------------
+-- The pages are full, so most updates are not HOT and add an entry to both
+-- indexes.  Neither index's value changes.  An index that gets the
+-- indexUnchanged hint can free its old entries with bottom-up deletion
+-- before it splits a page; one that doesn't splits.  Index d is never named
+-- in SET and always gets it.  Index a is named, with its own value;
+-- same_size shows whether it gets the hint too.
+CREATE TABLE hint_test (id int, a int, d int, c int)
+    WITH (fillfactor = 100, autovacuum_enabled = off);
+CREATE INDEX hint_test_a ON hint_test (a);
+CREATE INDEX hint_test_d ON hint_test (d);
+INSERT INTO hint_test SELECT g, g, g, 0 FROM generate_series(1, 3000) g;
+UPDATE hint_test SET a = a, c = c + 1;
+UPDATE hint_test SET a = a, c = c + 1;
+UPDATE hint_test SET a = a, c = c + 1;
+SELECT pg_relation_size('hint_test_a') = pg_relation_size('hint_test_d')
+    AS same_size;
+DROP TABLE hint_test;
+
 DROP FUNCTION has_hot_chain(text, tid);
 DROP FUNCTION print_hot_chain(text, tid);
 DROP FUNCTION get_hot_count(text);

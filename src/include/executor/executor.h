@@ -778,6 +778,7 @@ typedef struct NewIndexDatums
 
 extern List *ExecInsertIndexTuples(ResultRelInfo *resultRelInfo, EState *estate,
 								   uint32 flags, TupleTableSlot *slot,
+								   const Bitmapset *modified_idx_attrs,
 								   List *arbiterIndexes,
 								   bool *specConflict);
 extern List *ExecCheckHotExclusion(ResultRelInfo *resultRelInfo,

@@ -10012,7 +10012,16 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
        delay is calculated as <varname>vacuum_cost_delay</varname> *
        <varname>accumulated_balance</varname> /
        <varname>vacuum_cost_limit</varname> with a maximum of
-       <varname>vacuum_cost_delay</varname> * 4.
+       <varname>vacuum_cost_delay</varname> * 4 for a non-parallel vacuum.
+       For <xref linkend="parallel-vacuum"/>, each process
+       uses a share of the limit, so the delay is calculated as
+       <varname>vacuum_cost_delay</varname> *
+       <varname>accumulated_balance</varname> *
+       <varname>active_processes</varname> /
+       <varname>vacuum_cost_limit</varname> with a maximum of
+       <varname>vacuum_cost_delay</varname> * 4 *
+       <varname>active_processes</varname>, and never more than one second
+       at once.
       </para>
      </note>
     </sect2>
@@ -10254,10 +10263,7 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
        </para>
 
        <para>
-        This parameter can only be set in the
-        <filename>postgresql.conf</filename> file or on the server command
-        line; but the setting can be overridden for individual tables by
-        changing the
+        The setting can be overridden for individual tables by changing the
         <link linkend="reloption-vacuum-max-eager-freeze-failure-rate">
         corresponding table storage parameter</link>.
         For more information on tuning vacuum's freezing behavior,

@@ -138,6 +138,13 @@ typedef struct UpdateContext
 	TU_UpdateIndexes updateIndexes; /* Which index updates are required? */
 
 	/*
+	 * The indexed attributes the update changed, for the indexUnchanged hint
+	 * when inserting the new version's index entries.  In the per-tuple
+	 * memory context.
+	 */
+	Bitmapset  *modifiedIdxAttrs;
+
+	/*
 	 * Lock mode to acquire on the latest tuple version before performing
 	 * EvalPlanQual on it
 	 */
@@ -577,7 +584,8 @@ IndexUnaffected(ResultRelInfo *resultRelInfo, int i, Bitmapset *mine,
  *
  * Return the set of indexed attributes whose values differ between old_tts
  * and new_tts, using the FirstLowInvalidHeapAttributeNumber convention.  The
- * result describes this one pair of tuples; the caller frees it.
+ * result describes this one pair of tuples, and is allocated in the caller's
+ * memory context.
  *
  * All indexed attributes are compared, not just those the UPDATE targets.
  * ExecGetAllUpdatedCols() names the columns an UPDATE targets, not the values
@@ -1935,7 +1943,7 @@ ExecInsert(ModifyTableContext *context,
 			/* insert index entries for tuple */
 			recheckIndexes = ExecInsertIndexTuples(resultRelInfo,
 												   estate, EIIT_NO_DUPE_ERROR,
-												   slot, arbiterIndexes,
+												   slot, NULL, arbiterIndexes,
 												   &specConflict);
 
 			/* adjust the tuple's state accordingly */
@@ -1974,7 +1982,7 @@ ExecInsert(ModifyTableContext *context,
 			/* insert index entries for tuple */
 			if (resultRelInfo->ri_NumIndices > 0)
 				recheckIndexes = ExecInsertIndexTuples(resultRelInfo, estate,
-													   0, slot, NIL,
+													   0, slot, NULL, NIL,
 													   NULL);
 		}
 	}
@@ -2914,9 +2922,7 @@ ExecUpdateAct(ModifyTableContext *context, ResultRelInfo *resultRelInfo,
 	Relation	resultRelationDesc = resultRelInfo->ri_RelationDesc;
 	bool		partition_constraint_failed;
 	TM_Result	result;
-
-	/* The set of modified indexed attributes that trigger new index entries */
-	Bitmapset  *modified_idx_attrs = NULL;
+	MemoryContext oldcxt;
 
 	updateCxt->crossPartUpdate = false;
 
@@ -3043,8 +3049,12 @@ lreplace:
 		context->mtstate->operation == CMD_UPDATE)
 		ExecInitUpdateUntouched(context->mtstate, resultRelInfo);
 
-	modified_idx_attrs = ExecUpdateModifiedIdxAttrs(resultRelInfo, oldSlot, slot,
-													estate);
+	/* kept until ExecUpdateEpilogue() has inserted the index entries */
+	oldcxt = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
+	updateCxt->modifiedIdxAttrs = ExecUpdateModifiedIdxAttrs(resultRelInfo,
+															 oldSlot, slot,
+															 estate);
+	MemoryContextSwitchTo(oldcxt);
 
 	/*
 	 * Call into the table AM to update the heap tuple.
@@ -3062,9 +3072,8 @@ lreplace:
 								estate->es_crosscheck_snapshot,
 								true /* wait for commit */ ,
 								&context->tmfd, &updateCxt->lockmode,
-								modified_idx_attrs,
+								updateCxt->modifiedIdxAttrs,
 								&updateCxt->updateIndexes);
-	bms_free(modified_idx_attrs);
 
 	return result;
 }
@@ -3091,8 +3100,9 @@ ExecUpdateEpilogue(ModifyTableContext *context, UpdateContext *updateCxt,
 		if (updateCxt->updateIndexes == TU_Summarizing)
 			flags |= EIIT_ONLY_SUMMARIZING;
 		recheckIndexes = ExecInsertIndexTuples(resultRelInfo, context->estate,
-											   flags, slot, NIL,
-											   NULL);
+											   flags, slot,
+											   updateCxt->modifiedIdxAttrs,
+											   NIL, NULL);
 	}
 
 	/*

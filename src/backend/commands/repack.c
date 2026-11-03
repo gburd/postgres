@@ -2898,7 +2898,7 @@ apply_concurrent_insert(Relation rel, TupleTableSlot *slot,
 						  chgcxt->cc_estate,
 						  0,
 						  slot,
-						  NIL, NULL);
+						  NULL, NIL, NULL);
 	pgstat_progress_incr_param(PROGRESS_REPACK_HEAP_TUPLES_INSERTED, 1);
 }
 
@@ -2933,7 +2933,6 @@ apply_concurrent_update(Relation rel, TupleTableSlot *spilled_tuple,
 							 false,
 							 &tmfd, &lockmode,
 							 modified_idx_attrs, &update_indexes);
-	bms_free(modified_idx_attrs);
 	if (res != TM_Ok)
 		ereport(ERROR,
 				errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
@@ -2950,6 +2949,7 @@ apply_concurrent_update(Relation rel, TupleTableSlot *spilled_tuple,
 							  chgcxt->cc_estate,
 							  flags,
 							  spilled_tuple,
+							  modified_idx_attrs,
 							  NIL, NULL);
 	}
 	if (update_indexes != TU_All)
@@ -2957,6 +2957,7 @@ apply_concurrent_update(Relation rel, TupleTableSlot *spilled_tuple,
 									 EIIT_IS_UPDATE, spilled_tuple, NIL, NULL);
 	bms_free(chgcxt->cc_rri->ri_HotExclusionCheck);
 	chgcxt->cc_rri->ri_HotExclusionCheck = NULL;
+	bms_free(modified_idx_attrs);
 
 	pgstat_progress_incr_param(PROGRESS_REPACK_HEAP_TUPLES_UPDATED, 1);
 }
@@ -3289,10 +3290,7 @@ initialize_change_context(ChangeContext *chgcxt,
 	 */
 	{
 		RangeTblEntry *rte;
-		TupleDesc	desc = RelationGetDescr(tgt_relation);
 		List	   *perminfos = NIL;
-		Bitmapset  *updatedCols = NULL;
-		RTEPermissionInfo *perminfo;
 
 		/*
 		 * For our use, the RTE only needs to have perminfoindex initialized,
@@ -3305,29 +3303,6 @@ initialize_change_context(ChangeContext *chgcxt,
 		rte->relkind = RelationGetForm(tgt_relation)->relkind;
 		/* Create the RTEPermissionInfo instance (and set ->perminfoindex). */
 		addRTEPermissionInfo(&perminfos, rte);
-
-		/*
-		 * Initialize updatedCols to show that all columns are updated.  This
-		 * is of course not necessarily true, and we cannot know this early;
-		 * but this is only used by ExecInsertIndexTuples to flag index
-		 * updates with no logical value changes, so if it's wrong, nothing
-		 * terribly bad happens. We may want to improve this someday though.
-		 *
-		 * Don't claim that dropped columns are changed though.
-		 */
-		for (int i = 0; i < desc->natts; i++)
-		{
-			CompactAttribute *attr = TupleDescCompactAttr(desc, i);
-
-			if (attr->attisdropped)
-				continue;
-			updatedCols = bms_add_member(updatedCols,
-										 i + 1 - FirstLowInvalidHeapAttributeNumber);
-		}
-
-		/* install updatedCols in the right place */
-		perminfo = getRTEPermissionInfo(perminfos, rte);
-		perminfo->updatedCols = updatedCols;
 
 		/* finally we can initialize the range table proper */
 		ExecInitRangeTable(chgcxt->cc_estate, list_make1(rte), perminfos,
@@ -3865,6 +3840,7 @@ start_repack_decoding_worker(Oid relid)
 	DecodingWorkerShared *shared;
 	shm_mq	   *mq;
 	BackgroundWorker bgw;
+	int			reported_phase = 0;
 
 	decoding_worker = palloc0_object(DecodingWorker);
 
@@ -3875,6 +3851,7 @@ start_repack_decoding_worker(Oid relid)
 
 	shared = (DecodingWorkerShared *) dsm_segment_address(decoding_worker->seg);
 	shared->initialized = false;
+	shared->setup_phase = 0;
 	shared->lsn_upto = InvalidXLogRecPtr;
 	shared->done = false;
 	SharedFileSetInit(&shared->sfs, decoding_worker->seg);
@@ -3940,15 +3917,25 @@ start_repack_decoding_worker(Oid relid)
 	 * for any reason, otherwise the worker might end up in a deadlock,
 	 * waiting for the caller's transaction to end. Therefore wait here until
 	 * the worker indicates that it has the logical decoding initialized.
+	 * While waiting, report the phase the worker asks us to report.
 	 */
 	ConditionVariablePrepareToSleep(&shared->cv);
 	for (;;)
 	{
 		bool		initialized;
+		int			setup_phase;
 
 		SpinLockAcquire(&shared->mutex);
 		initialized = shared->initialized;
+		setup_phase = shared->setup_phase;
 		SpinLockRelease(&shared->mutex);
+
+		/* Report each phase once. */
+		if (setup_phase != reported_phase)
+		{
+			pgstat_progress_update_param(PROGRESS_REPACK_PHASE, setup_phase);
+			reported_phase = setup_phase;
+		}
 
 		if (initialized)
 			break;
