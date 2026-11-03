@@ -440,6 +440,7 @@ typedef struct xl_bark_insert_swap
  * prototypes for functions in barkxlog.c
  */
 extern void bark_redo(XLogReaderState *record);
+extern void bark_xlog_cleanup(void);
 extern void bark_mask(char *pagedata, BlockNumber blkno);
 
 /*

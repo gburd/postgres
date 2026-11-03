@@ -20,6 +20,7 @@
 #include "access/barkxlog.h"
 #include "access/bufmask.h"
 #include "access/htup_details.h"
+#include "access/xlogrecovery.h"
 #include "access/xlogutils.h"
 #include "storage/standby.h"
 
@@ -898,6 +899,19 @@ bark_xlog_insert_swap(XLogReaderState *record)
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
+}
+
+/*
+ * The end of recovery.  Transactions that began during it, if hot standby
+ * allowed any, go on after promotion with snapshots that the LP_DEAD marks
+ * this server got from its primary did not account for: record where
+ * recovery ended, for bark_marks_trusted.
+ */
+void
+bark_xlog_cleanup(void)
+{
+	if (HotStandbyActive())
+		bark_end_of_recovery(ReadNextFullTransactionId());
 }
 
 void

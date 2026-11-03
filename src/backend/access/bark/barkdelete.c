@@ -325,7 +325,12 @@ bark_delete_pass(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 
 	Assert(BarkPageIsLeaf(opaque));
 
-	/* Simple deletion needs a marked entry; look before reading any entry. */
+	/*
+	 * Simple deletion needs a marked entry; look before reading any entry.
+	 * After a promotion it also needs the marks to be trustworthy
+	 * (bark_marks_trusted): until then it deletes nothing, as if no entry
+	 * were marked, and the insert goes on to split the page.
+	 */
 	if (!bottomup)
 	{
 		OffsetNumber off;
@@ -335,7 +340,7 @@ bark_delete_pass(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 			if (ItemIdIsDead(PageGetItemId(page, off)))
 				break;
 		}
-		if (off > maxoff)
+		if (off > maxoff || !bark_marks_trusted(heapRel))
 			return false;
 	}
 

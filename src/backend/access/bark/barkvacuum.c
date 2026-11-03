@@ -1,7 +1,8 @@
 /*-------------------------------------------------------------------------
  *
  * barkvacuum.c
- *	  BARK's registry of the vacuum cycle IDs of active VACUUMs.
+ *	  BARK's registry of the vacuum cycle IDs of active VACUUMs, and the
+ *	  horizon after which simple deletion trusts LP_DEAD marks again.
  *
  * A leaf split that happens while VACUUM is scanning an index stamps both
  * halves with that VACUUM's cycle ID, so that VACUUM can tell entries moved
@@ -29,12 +30,15 @@
 #include <time.h>
 
 #include "access/bark.h"
+#include "access/transam.h"
 #include "miscadmin.h"
+#include "port/atomics.h"
 #include "storage/lwlock.h"
 #include "storage/proc.h"
 #include "storage/shmem.h"
 #include "storage/subsystems.h"
 #include "utils/rel.h"
+#include "utils/snapmgr.h"
 
 typedef struct BarkOneVacInfo
 {
@@ -44,6 +48,8 @@ typedef struct BarkOneVacInfo
 
 typedef struct BarkVacInfo
 {
+	/* bark_end_of_recovery's FullTransactionId, or 0 (see bark_marks_trusted) */
+	pg_atomic_uint64 marks_horizon;
 	uint32		cycle_ctr;		/* how many cycle IDs have been given out */
 	BarkOneVacInfo vacuums[FLEXIBLE_ARRAY_MEMBER];	/* by ProcNumber */
 }			BarkVacInfo;
@@ -162,6 +168,56 @@ static void
 BarkShmemInit(void *arg)
 {
 	memset(barkvacinfo, 0, BarkVacInfoSize());
+	pg_atomic_init_u64(&barkvacinfo->marks_horizon, 0);
 	/* Start the counter somewhere that differs from run to run. */
 	barkvacinfo->cycle_ctr = (uint32) time(NULL);
+}
+
+/*
+ * Recovery that let transactions begin (hot standby) is ending, and the next
+ * XID is `next` (bark_xlog_cleanup, in the startup process).  See
+ * bark_marks_trusted.
+ */
+void
+bark_end_of_recovery(FullTransactionId next)
+{
+	pg_atomic_write_u64(&barkvacinfo->marks_horizon,
+						U64FromFullTransactionId(next));
+}
+
+/*
+ * May simple deletion take the LP_DEAD marks on heapRel's index pages as
+ * the table AM's word that their rows are dead to every snapshot?
+ *
+ * A mark is set by the horizon of the server that sets it.  A standby gets
+ * its primary's marks in page images, and the primary's horizon does not
+ * count the standby's snapshots, so a transaction that began during
+ * recovery does not skip marked entries (RelationGetIndexScan sets
+ * ignore_killed_tuples false).  Such a transaction goes on after promotion.
+ * If simple deletion then deleted a marked entry without asking the table
+ * AM, that transaction's index scans would miss a row its snapshot sees.
+ *
+ * Every snapshot taken during recovery has an xmin no newer than the next
+ * XID at its end, which bark_end_of_recovery recorded; one whose xmin is
+ * exactly that XID saw every deletion the old primary's marks stand for.
+ * So once the XID before it is removable by heapRel's horizon, no snapshot
+ * that could see a marked row is left, and the marks are trustworthy again,
+ * for good: the horizon is cleared.  Until then simple deletion leaves the
+ * page alone.  (A transaction prepared before the promotion holds the
+ * horizon back too, as it holds back pruning.)
+ */
+bool
+bark_marks_trusted(Relation heapRel)
+{
+	uint64		horizon = pg_atomic_read_u64(&barkvacinfo->marks_horizon);
+	FullTransactionId last;
+
+	if (horizon == 0)
+		return true;			/* no hot standby recovery ended here */
+	last = FullTransactionIdFromU64(horizon);
+	FullTransactionIdRetreat(&last);
+	if (!GlobalVisCheckRemovableFullXid(heapRel, last))
+		return false;
+	pg_atomic_write_u64(&barkvacinfo->marks_horizon, 0);
+	return true;
 }

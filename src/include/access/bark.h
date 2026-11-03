@@ -2099,6 +2099,8 @@ extern BarkCycleId bark_vacuum_cycleid(Relation rel);
 extern BarkCycleId bark_start_vacuum(Relation rel);
 extern void bark_end_vacuum(void);
 extern void bark_end_vacuum_callback(int code, Datum arg);
+extern void bark_end_of_recovery(FullTransactionId next);
+extern bool bark_marks_trusted(Relation heapRel);
 
 extern BarkAmCache *bark_get_amcache(Relation index);
 
