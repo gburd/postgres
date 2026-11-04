@@ -62,6 +62,15 @@ PG_GLOBAL_RUNTIME int ssl_max_protocol_version = PG_TLS_ANY;
 /* GUC variable: if false, discards hostname extensions in handshake */
 PG_GLOBAL_RUNTIME bool ssl_sni = false;
 
+/*
+ * GUC variable (developer): route the backend-fiber TLS server path through
+ * xtc_tls instead of driving OpenSSL directly.  Off by default; only consulted
+ * under multithreaded=on in a backend fiber with a built xtc TLS context (see
+ * be_tls_xtc_available() in be-secure-openssl.c).  Process mode and non-fiber
+ * threaded backends ignore it entirely.
+ */
+PG_GLOBAL_RUNTIME bool xtc_tls_use_fiber = false;
+
 /* ------------------------------------------------------------ */
 /*			 Procedures common to all secure sessions			*/
 /* ------------------------------------------------------------ */

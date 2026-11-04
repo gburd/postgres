@@ -4005,6 +4005,22 @@
   boot_val => 'false',
 },
 
+{ name => 'xtc_carrier_use_orc', type => 'bool', context => 'PGC_POSTMASTER', group => 'DEVELOPER_OPTIONS',
+  short_desc => 'Stands up a libxtc xtc_orc OTP supervisor per carrier loop.',
+  long_desc => 'F4 supervision-fusion knob for the multithreaded PostgreSQL development branch. When multithreaded=on, stands up one libxtc xtc_orc supervisor (xtc_sup_start, ONE_FOR_ONE) per carrier loop alongside the hand-rolled per-loop supervisor fiber. The hand-rolled supervisor remains the source of truth for backend-fiber crash DETECTION and Stage-1b escalation (SIGNAL DOWN -> genuine-crash flag + postmaster latch): libxtc xtc_orc exposes no per-child DOWN classification to an external caller (only aggregate counters), so an orc-owned backend child cannot surface the crash-vs-clean distinction the escalation policy requires. Off (the default) keeps the hand-rolled supervisor path byte-for-byte. Has no effect under multithreaded=off.',
+  flags => 'GUC_NOT_IN_SAMPLE',
+  variable => 'xtc_carrier_use_orc',
+  boot_val => 'false',
+},
+
+{ name => 'xtc_tls_use_fiber', type => 'bool', context => 'PGC_POSTMASTER', group => 'DEVELOPER_OPTIONS',
+  short_desc => 'Drives backend-fiber TLS through the xtc TLS stack instead of OpenSSL directly.',
+  long_desc => 'When multithreaded=on, a client backend running as an xtc carrier fiber terminates TLS through xtc_tls (a fiber-aware custom transport) instead of calling OpenSSL directly, provided the parallel xtc TLS server context built successfully. Off (the default), and on process-mode or non-fiber backends, the connection uses the OpenSSL path unchanged. Experimental developer knob for the multithreaded PostgreSQL development branch; has no effect under multithreaded=off.',
+  flags => 'GUC_NOT_IN_SAMPLE',
+  variable => 'xtc_tls_use_fiber',
+  boot_val => 'false',
+},
+
 { name => 'zero_damaged_pages', type => 'bool', context => 'PGC_SUSET', group => 'DEVELOPER_OPTIONS',
   short_desc => 'Continues processing past damaged page headers.',
   long_desc => 'Detection of a damaged page header normally causes PostgreSQL to report an error, aborting the current transaction. Setting "zero_damaged_pages" to true causes the system to instead report a warning, zero out the damaged page, and continue processing. This behavior will destroy data, namely all the rows on the damaged page.',

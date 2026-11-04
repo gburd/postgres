@@ -141,6 +141,7 @@ extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *ssl_passphrase_command;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool ssl_passphrase_command_supports_reload;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *ssl_dh_params_file;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool ssl_sni;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool xtc_tls_use_fiber;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *SSLCipherSuites;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *SSLCipherList;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *SSLECDHCurve;
