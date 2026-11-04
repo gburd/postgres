@@ -2807,16 +2807,37 @@ default_openssl_tls_init(SSL_CTX *context, bool isServerStart)
 /* ------------------------------------------------------------ */
 
 /*
- * True once the xtc TLS server context is built and usable (P2).  Governs the
+ * True once the xtc TLS server context is built and usable (P2) AND this
+ * connection is one we may drive through xtc_tls.  Governs the
  * be_tls_get_* / read / write / close dispatch when a fiber connection has been
  * opened on the xtc path.  Distinct from xtc_tls_open_enabled, which gates the
  * be_tls_open_server decision point (false until P3 wires the transport), so P2
  * can build+validate the ctx with NO connection using it.
+ *
+ * Gating (all required; any false -> the connection uses the OpenSSL path
+ * unchanged):
+ *   - USE_XTC_CARRIER: this whole function only exists in a threaded-capable
+ *     build (the #ifdef around it), so a non-threaded binary never reaches here.
+ *   - xtc_pg_in_backend_fiber(): only a backend running as an xtc carrier fiber
+ *     has a fiber-aware wait boundary (xtc_pg_wait_fd via WaitLatchOrSocket) for
+ *     the transport callbacks to park on.  A process-mode backend, the
+ *     postmaster, and a non-fiber threaded path all return false here, so they
+ *     are byte-for-byte on OpenSSL.  (be_tls_open_server also checks this at the
+ *     call site; repeating it keeps this predicate self-contained and correct if
+ *     a future caller forgets.)
+ *   - xtc_tls_use_fiber: the developer opt-in GUC (default off).  Until it is on
+ *     every connection -- even a threaded fiber with a built ctx -- stays on
+ *     OpenSSL, so the xtc path ships dark.
+ *   - xtc_tls_context != NULL: the parallel xtc server context built OK in
+ *     build_xtc_tls_context (a decline -- ssl passphrase, ctx-create failure --
+ *     leaves it NULL and falls back to OpenSSL).
  */
 static bool
 be_tls_xtc_available(void)
 {
-	return xtc_tls_context != NULL;
+	return xtc_pg_in_backend_fiber() &&
+		xtc_tls_use_fiber &&
+		xtc_tls_context != NULL;
 }
 
 /*
