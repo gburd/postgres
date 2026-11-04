@@ -51,6 +51,7 @@
 #include "xtc_exec.h"		/* xtc_exec_loop, xtc_exec_n_loops, xtc_exec_set_eager_rebalance */
 #include "xtc_loop.h"		/* xtc_loop_wake (v1.39: lost-wake-free cross-thread loop nudge) */
 #include "xtc_proc.h"
+#include "xtc_orc.h"		/* xtc_sup_* (F4: optional per-loop OTP supervisor) */
 /* Installed libxtc headers do not export configured version macros. */
 #ifndef XTC_PROC_OPTS_INIT
 #error "PostgreSQL requires libxtc 2.0 or later (sized public structs)"
@@ -160,6 +161,18 @@ static pthread_mutex_t g_xtc_start_lock = PTHREAD_MUTEX_INITIALIZER;
  */
 #define XTC_PG_MAX_WORKER_FIBER_LOOPS 16
 static xtc_pid_t g_xtc_sup_pid[XTC_PG_MAX_SUP_LOOPS];
+
+/*
+ * F4 supervision-fusion (optional, GUC-gated by xtc_carrier_use_orc): one
+ * libxtc xtc_orc OTP supervisor per carrier loop, standing up ALONGSIDE the
+ * hand-rolled g_xtc_sup_pid[] supervisor fibers -- it does NOT replace them.
+ * The handles are parallel to g_xtc_sup_pid[] (index i is loop i).  NULL when
+ * the GUC is off (the default) or the supervisor failed to start on that loop.
+ * See xtc_carrier_start_orc_supervisors() for why backend fibers are NOT
+ * registered as children of these supervisors (the escalation invariant).
+ */
+static xtc_supervisor_t *g_xtc_orc_sup[XTC_PG_MAX_SUP_LOOPS];
+static int	g_xtc_n_orc_sups = 0;
 
 /*
  * Set true (and the postmaster latch kicked) when the supervisor observes a
@@ -779,6 +792,88 @@ xtc_carrier_start_supervisors(void)
 }
 
 /*
+ * F4 supervision-fusion: stand up one libxtc xtc_orc OTP supervisor per carrier
+ * loop (GUC xtc_carrier_use_orc; default off).  Best-effort, exactly like
+ * xtc_carrier_start_supervisors(): a loop whose supervisor fails to start just
+ * gets a NULL handle.
+ *
+ * This runs ALONGSIDE the hand-rolled per-loop supervisor fibers
+ * (xtc_carrier_supervisor_proc); it does NOT replace them.  The hand-rolled
+ * supervisor + the XTC_SUP_SPAWN mailbox + the manual XTC_DOWN_KIND_* classifier
+ * remain the UNCHANGED source of truth for backend-fiber crash detection and
+ * Stage-1b escalation (SIGNAL DOWN -> g_xtc_genuine_crash + postmaster latch).
+ *
+ * WHY BACKEND FIBERS ARE NOT xtc_sup CHILDREN -- the durable design-doc
+ * correction.  The F4 design
+ * (plan_docs/MULTITHREADED_F4_SUPERVISION_FUSION_DESIGN.md, 2026-08-31) called
+ * for routing backend fibers through xtc_sup_add_child and mapping the
+ * SIGNAL-DOWN escalation "into the supervisor's DOWN handling".  That is NOT
+ * implementable with this libxtc and would SILENTLY LOSE the escalation:
+ *
+ *   - xtc_orc's public API (xtc_orc.h) exposes only AGGREGATE counters
+ *     (xtc_sup_n_alive / n_restarts); it has NO per-child DOWN callback and no
+ *     DOWN-forwarding hook.  The supervisor decodes each child's DOWN inside
+ *     its own private xtc_recv loop purely to drive the restart decision and
+ *     then DISCARDS the classification -- an external caller cannot learn
+ *     whether a specific child crashed (SIGNAL) or exited cleanly.
+ *   - A caller-side follow-up xtc_monitor() on the pid xtc_sup_add_child
+ *     returns is NOT a substitute: it races the supervisor's own monitor and
+ *     was measured 1000/1000 LOST (XTC_DOWN_KIND_NOPROC) on a same-loop
+ *     crashing child.
+ *
+ * Both facts are verified and filed in
+ * plan_docs/phase16_audits/LIBXTC_ORC_NO_PER_CHILD_DOWN.md (against libxtc
+ * v1.44.0; re-confirmed against the currently pinned build).  Because our
+ * crash policy is "a crashed backend may have corrupted the shared address
+ * space, so FAIL-STOP the whole process", the SIGNAL-vs-clean distinction is
+ * mandatory and must stay on a monitor we own -- our own
+ * xtc_proc_spawn_monitor() in xtc_carrier_supervisor_proc, which establishes
+ * the monitor atomically before the child runs.  Moving any spawn whose death
+ * must be classified onto xtc_sup_add_child would lose that.
+ *
+ * So today these supervisors legitimately own ZERO children: there is no
+ * carrier child whose death does NOT require PG classification AND whose spawn
+ * is not already postmaster-thread-affine (see
+ * plan_docs/phase16_audits/SUPERVISION_SCOPE_WHY_NO_CRASH_RESPAWN.md for the
+ * aux-worker thread-affinity constraint).  The supervisor therefore exists as
+ * the standing OTP-supervisor SCAFFOLD + bookkeeping surface: a real
+ * xtc_supervisor_t per loop, ready to adopt children the day libxtc gains an
+ * on_down / xtc_sup_forward_down hook (the two API shapes requested in the
+ * audit), at which point backend-crash classification can migrate onto it
+ * without losing escalation.  Until then it adds no children and changes no
+ * behaviour -- which is exactly why it is safe to stand up behind a default-off
+ * developer GUC.
+ */
+static void
+xtc_carrier_start_orc_supervisors(void)
+{
+	g_xtc_n_orc_sups = (g_xtc_n_loops < XTC_PG_MAX_SUP_LOOPS)
+		? g_xtc_n_loops : XTC_PG_MAX_SUP_LOOPS;
+
+	for (int i = 0; i < g_xtc_n_orc_sups; i++)
+	{
+		xtc_loop_t *loop = (g_xtc_exec != NULL && g_xtc_n_loops > 1)
+			? xtc_exec_loop(g_xtc_exec, i) : g_xtc_loop;
+		xtc_sup_opts_t opts = XTC_SUP_OPTS_DEFAULT;
+		xtc_supervisor_t *sup = NULL;
+
+		/*
+		 * ONE_FOR_ONE with the default restart intensity (max_restarts=3 /
+		 * period=5s).  No exec is handed in: each supervisor is single-loop and
+		 * owns only children placed on its own loop, so this mirrors the
+		 * one-supervisor-per-loop topology of the hand-rolled fibers rather than
+		 * a single exec-spanning supervisor.  No initial children (see the long
+		 * comment above), so the child-spec array is empty.
+		 */
+		opts.strategy = XTC_SUP_ONE_FOR_ONE;
+		if (xtc_sup_start(loop, &opts, NULL, 0, &sup) == XTC_OK)
+			g_xtc_orc_sup[i] = sup;
+		else
+			g_xtc_orc_sup[i] = NULL;
+	}
+}
+
+/*
  * Loop 0 of the carrier (the single/supervisor loop).  Returns NULL before
  * the scheduler is up.  Exposed for the xtc_xproc watchdog DEMO, which must
  * spawn its demo fiber on a real loop; keep it a plain accessor so the demo
@@ -1178,6 +1273,19 @@ xtc_pg_carrier_start(void)
 		xtc_carrier_start_supervisors();
 
 		/*
+		 * F4 supervision-fusion (optional, developer GUC xtc_carrier_use_orc;
+		 * default off): ALSO stand up one libxtc xtc_orc OTP supervisor per loop.
+		 * This is additive scaffolding -- the hand-rolled supervisors spawned
+		 * just above remain the escalation source of truth and the backend spawn
+		 * path is unchanged.  When the GUC is off (the default) this is skipped
+		 * entirely, so the path is byte-for-byte the pre-F4 behaviour.  See
+		 * xtc_carrier_start_orc_supervisors() for why these supervisors own no
+		 * backend children today.
+		 */
+		if (xtc_carrier_use_orc)
+			xtc_carrier_start_orc_supervisors();
+
+		/*
 		 * xtc_xproc cross-fork watchdog DEMONSTRATION (developer GUC
 		 * xtc_xproc_watchdog_demo; default off).  No-op unless the GUC is on;
 		 * when on, spawns one demo fiber that drives the xtc_xproc
@@ -1193,6 +1301,17 @@ xtc_pg_carrier_start(void)
 			 PgRuntimePooledProtocolRequested()
 			 ? "worker-fiber pool; client backends on pooled carriers"
 			 : "thread-per-session backend pool");
+
+		/*
+		 * F4: report the optional xtc_orc supervisor count only when the GUC is
+		 * on, so the common (GUC-off) startup log stays byte-for-byte unchanged.
+		 * These supervisors own no children today (see
+		 * xtc_carrier_start_orc_supervisors), so the line documents the scaffold's
+		 * presence, not a child count.
+		 */
+		if (xtc_carrier_use_orc)
+			elog(LOG, "xtc: xtc_orc supervisor scaffold up (%d supervisor%s, 0 children; escalation stays on the hand-rolled classifier)",
+				 g_xtc_n_orc_sups, g_xtc_n_orc_sups == 1 ? "" : "s");
 	}
 
 out:

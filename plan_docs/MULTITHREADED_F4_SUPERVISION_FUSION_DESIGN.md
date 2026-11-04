@@ -1,5 +1,37 @@
 # F4-SUP: dedup the hand-rolled carrier supervisor onto libxtc xtc_orc/xtc_svr
 
+> **SUPERSEDED / CORRECTION (2026-11-04).** Steps 2-4 below are NOT
+> implementable as written against the pinned libxtc (nor current libxtc HEAD):
+> `xtc_orc` exposes **no per-child DOWN classification** to an external caller.
+> `xtc_orc.h`'s public surface is only aggregate counters
+> (`xtc_sup_n_alive`/`n_restarts`); the supervisor decodes each child's DOWN in
+> its own private `xtc_recv` loop solely to drive the restart decision and then
+> discards it, and a caller-side follow-up `xtc_monitor()` on the
+> `xtc_sup_add_child` pid races the supervisor's own monitor (measured 1000/1000
+> lost / `NOPROC` on a same-loop crashing child).  This is verified and filed in
+> `plan_docs/phase16_audits/LIBXTC_ORC_NO_PER_CHILD_DOWN.md`.  Consequently,
+> routing backend fibers through `xtc_sup_add_child` would **silently lose** the
+> SIGNAL-DOWN -> `g_xtc_genuine_crash` + postmaster-latch escalation, which is
+> the mandatory fail-stop crash policy.
+>
+> **Implemented scope (2026-11-04):** the invariant-safe subset only -- a
+> developer GUC `xtc_carrier_use_orc` (default off) that, when on, stands up one
+> `xtc_sup` per carrier loop ALONGSIDE (not replacing) the hand-rolled
+> `xtc_carrier_supervisor_proc`.  The hand-rolled supervisor + the
+> `XTC_SUP_SPAWN` mailbox + the manual `XTC_DOWN_KIND_*` classifier remain the
+> UNCHANGED source of truth for backend-fiber crash detection and Stage-1b
+> escalation.  The `xtc_sup` supervisors own **zero** children today (there is
+> no carrier child whose death does not require PG classification and whose
+> spawn is not already postmaster-thread-affine -- see
+> `SUPERVISION_SCOPE_WHY_NO_CRASH_RESPAWN.md`); they exist as the standing OTP
+> scaffold ready to adopt children once libxtc gains an `on_down` /
+> `xtc_sup_forward_down` hook (the two API shapes the audit requested).  See
+> `xtc_carrier_start_orc_supervisors()` in
+> `src/backend/postmaster/pg_xtc_carrier.c` for the authoritative code comment.
+> Step 5 (`n_alive`/`n_restarts` into `pg_stat_xtc_carriers`) is intentionally
+> NOT wired: with zero children those counters are constant (1 / 0) and would be
+> noise.  NOT compiled or tested; EC2 validation pending.
+
 Status: DESIGN (2026-08-31). Ready to implement once Option A (sessions-as-fibers) is live
 (pooled_protocol_fiber_sessions flipped on after the libxtc task->state fix), because the
 supervisor's value scales with fibers being the normal backend carrier.  Two-review gated,
