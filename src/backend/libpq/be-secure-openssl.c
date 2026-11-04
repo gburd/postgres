@@ -171,6 +171,9 @@ static PG_GLOBAL_RUNTIME bool xtc_tls_ctx_has_ca = false;
 static PG_GLOBAL_RUNTIME List *xtc_tls_retired_contexts = NIL;
 static void build_xtc_tls_context(HostsLine *default_host, int ssl_ver_min,
 								  int ssl_ver_max, bool isServerStart);
+static xtc_tls_ctx_t *xtc_tls_sni_select_cb(xtc_tls_t *tls,
+											const char *server_name,
+											void *userdata);
 #endif
 static PG_GLOBAL_RUNTIME MemoryContext SSL_hosts_memcxt = NULL;
 static PG_GLOBAL_RUNTIME struct hosts
@@ -989,18 +992,31 @@ be_tls_open_server(Port *port)
 	 * TLS-bearing backend fibers are PINNED (they never migrate across
 	 * carriers, so OpenSSL's per-OS-thread error queue is never read from a
 	 * foreign thread).  A future gated unpin may migrate backend fibers.  When
-	 * that lands, a connection using server-side SNI (ssl_sni=on) must remain
-	 * pinned: xtc_tls_* cannot yet install a different context mid-handshake
-	 * from a ClientHello callback, so a migrated SNI connection could not be
-	 * served by the fiber-aware stack without silently losing per-host cert /
-	 * CA selection -- a correctness and potential security regression.
+	 * that lands, a connection using server-side SNI (ssl_sni=on) with a real
+	 * multi-host configuration must remain pinned.  The ClientHello
+	 * context-swap callback itself now EXISTS on the xtc stack
+	 * (xtc_tls_ctx_set_sni_cb, wired in build_xtc_tls_context) -- so that is no
+	 * longer the blocker.  The remaining gap is that build_xtc_tls_context
+	 * builds a SINGLE xtc context and therefore declines any per-host /
+	 * distinct-no_sni topology to OpenSSL (see its multi_context decline); a
+	 * migrated multi-host SNI connection on the current xtc path would silently
+	 * lose per-host cert / CA selection -- a correctness and potential security
+	 * regression.
+	 *
+	 * The fiber-aware xtc TLS path (this file's xtc branch) is precisely what
+	 * will eventually allow UNPINNING TLS backends: once per-host xtc contexts
+	 * are built and selected through the registered callback, xtc_tls keeps each
+	 * connection's TLS error state separate across a fiber suspension (unlike
+	 * OpenSSL's per-OS-thread error queue), so a migrated SNI connection can be
+	 * served correctly from any carrier.  Until then, keep the pin.
 	 *
 	 * ssl_sni defaults to off, so the common threaded-TLS path is unaffected.
 	 * This assertion is the tripwire: it fires the moment a future change both
 	 * enables ssl_sni AND unpins this fiber without honoring the invariant.
 	 * While fibers are pinned it can never fire (the condition is dead), and it
 	 * compiles to nothing in a non-assert build, so process mode and non-fiber
-	 * threaded mode are byte-for-byte unchanged.
+	 * threaded mode are byte-for-byte unchanged.  (xtc_carrier_migratable in
+	 * launch_backend.c is the actual gate and is deliberately left unchanged.)
 	 *
 	 * See plan_docs/MULTITHREADED_PLAN.md "ssl_sni no-migrate invariant" and the
 	 * carrier no-steal staging (the affine-section tripwire in pg_xtc_carrier.c).
@@ -2841,6 +2857,83 @@ be_tls_xtc_available(void)
 }
 
 /*
+ * xtc_tls_sni_select_cb
+ *
+ * SNI / ClientHello context-selection callback (P6), registered on the server
+ * context in build_xtc_tls_context.  xtc_tls calls it after parsing the
+ * ClientHello with the requested SNI host (server_name, NULL if the client
+ * sent none) and uses whatever SERVER context we return for the rest of the
+ * handshake -- the xtc_tls analogue of the OpenSSL sni_clienthello_cb +
+ * ssl_update_ssl dance in this file.
+ *
+ * Returning a context swaps it in; returning NULL keeps the current (default)
+ * one.  This builder creates exactly ONE xtc context (xtc_tls_context, from
+ * default_host) and declines any topology that needs more (per-host
+ * pg_hosts.conf SNI entries or a distinct no_sni context -> OpenSSL; see the
+ * multi_context decline).  So the only context this callback can resolve to is
+ * xtc_tls_context, and returning NULL (keep current) is always correct here:
+ * the one context already IS the whole configuration.  We mirror the OpenSSL
+ * callback's matching SHAPE -- walk SSL_hosts->sni for a case-insensitive
+ * hostname match (RFC 952 / RFC 921), else fall back to no_sni / default --
+ * so the selection point is explicit and ready for the fuller topology.
+ *
+ * FULLER MULTI-TENANT SELECTION (not done here): to actually present different
+ * certificates per SNI name on the xtc path, build_xtc_tls_context would create
+ * one xtc_tls_ctx_t per HostsLine (stored alongside HostsLine->ssl_ctx, e.g. a
+ * parallel ->xtc_ctx), retire each on reload through xtc_tls_retired_contexts,
+ * and this callback would return the matched host's xtc_tls_ctx_t (or the
+ * default/no_sni one).  Until then the multi_context decline keeps those
+ * configurations on OpenSSL, so no connection is ever served the wrong
+ * certificate.
+ *
+ * Runs on the carrier driving the handshake (must not block, must not call
+ * xtc_tls_* on this connection -- per xtc_tls.h).  We only read process-global
+ * host configuration and return a pointer, so both hold.
+ */
+static xtc_tls_ctx_t *
+xtc_tls_sni_select_cb(xtc_tls_t *tls, const char *server_name, void *userdata)
+{
+	/*
+	 * Single-context build: no per-host xtc context exists to swap to, so keep
+	 * the current (default) context regardless of the requested name.  The
+	 * matching walk below is intentionally side-effect free; it documents where
+	 * a per-host selection would resolve once those contexts exist.
+	 */
+	if (SSL_hosts == NULL)
+		return NULL;			/* nothing configured -> keep current */
+
+	if (server_name != NULL && SSL_hosts->sni != NIL)
+	{
+		size_t		namelen = strlen(server_name);
+
+		foreach_ptr(HostsLine, host, SSL_hosts->sni)
+		{
+			foreach_ptr(char, hostname, host->hostnames)
+			{
+				if (strlen(hostname) == namelen &&
+					pg_strncasecmp(hostname, server_name, namelen) == 0)
+				{
+					/*
+					 * Matched a per-host entry.  A fuller implementation would
+					 * return host's own xtc_tls_ctx_t here; this builder has
+					 * none (multi_context topologies are declined upstream), so
+					 * fall through to keep the current default context.
+					 */
+					return NULL;
+				}
+			}
+		}
+	}
+
+	/*
+	 * No per-host match (or no SNI name): the default context is already
+	 * installed, so keep it.  (no_sni-specific selection is likewise part of
+	 * the fuller topology and is declined upstream, never reaching here.)
+	 */
+	return NULL;
+}
+
+/*
  * P2: build the xtc TLS server context from the default-host config + the
  * protocol-version / cipher GUCs, parallel to SSL_context.  Non-fatal on
  * failure (leaves xtc_tls_context NULL -> fiber path falls back to OpenSSL).
@@ -2851,9 +2944,13 @@ be_tls_xtc_available(void)
  * defaults and set only what PG configures.
  *
  * P2 deliberately does NOT set: verify_peer_mode (client-cert verify is P5),
- * alpn_protos (P5), the SNI callback (P6).  Encrypted server keys
- * (ssl_passphrase_command set) are left to OpenSSL for now (P7 fallback): we
- * skip the xtc ctx so such a server keeps working on the fiber path via OpenSSL.
+ * alpn_protos (P5).  The SNI context-selection callback IS registered (P6
+ * below) but, because this builder creates a SINGLE context (from default_host),
+ * it can only select that one context -- a true multi-host / per-SNI-name cert
+ * topology is still declined to OpenSSL (see the multi_context decline).
+ * Encrypted server keys (ssl_passphrase_command set) are left to OpenSSL for
+ * now (P7 fallback): we skip the xtc ctx so such a server keeps working on the
+ * fiber path via OpenSSL.
  */
 static void
 build_xtc_tls_context(HostsLine *default_host, int ssl_ver_min,
@@ -2862,14 +2959,31 @@ build_xtc_tls_context(HostsLine *default_host, int ssl_ver_min,
 	xtc_tls_opts_t opts = XTC_TLS_OPTS_INIT;
 	xtc_tls_ctx_t *ctx = NULL;
 	int			rc;
+	bool		multi_context;
+
+	/*
+	 * This builder represents the whole TLS config with ONE xtc context, built
+	 * from default_host.  A configuration whose correct certificate selection
+	 * needs more than that single context -- any per-host pg_hosts.conf SNI
+	 * entries (SSL_hosts->sni) or a distinct no_sni context -- cannot be served
+	 * correctly by one ctx, so it stays on OpenSSL.  This is the honest form of
+	 * the former "ssl_sni on -> decline" pin: ssl_sni=on with an empty
+	 * pg_hosts.conf (default host only) is now allowed on the xtc path, because
+	 * the one context IS the whole config; ssl_sni=on with real per-host entries
+	 * still declines.  (A multi-host backend fiber stays PINNED regardless --
+	 * xtc_carrier_migratable pins ALL backends when ssl_sni is on -- so this is
+	 * about cert correctness, not migration.)
+	 */
+	multi_context = (SSL_hosts != NULL &&
+					 (SSL_hosts->sni != NIL || SSL_hosts->no_sni != NULL));
 
 	/*
 	 * Decline (retire any prior ctx + disable the xtc open path -> OpenSSL) when
 	 * the xtc stack cannot yet serve the connection correctly.  This is the
 	 * "defer-with-invariant" pin for features later phases own:
 	 *   - no default_host: nothing to build from.
-	 *   - ssl_sni on (P6): per-host ClientHello context selection isn't wired;
-	 *     the SNI no-migrate pin keeps these on OpenSSL.
+	 *   - multi_context (per-host SNI / distinct no_sni): fuller multi-tenant
+	 *     selection isn't wired (one xtc ctx here); see the SNI callback note.
 	 *   - client-cert auth (ssl_ca configured): un-pinned as of libxtc v1.38.0.
 	 *     The xtc path verifies client certs (verify_peer_mode + peer_cn/dn
 	 *     extraction below), and v1.38 added xtc_tls_get_verify_error(), so the
@@ -2880,7 +2994,7 @@ build_xtc_tls_context(HostsLine *default_host, int ssl_ver_min,
 	 *   - encrypted server key (ssl_passphrase_command, P7).
 	 */
 	if (default_host == NULL ||
-		ssl_sni ||
+		multi_context ||
 		(ssl_passphrase_command && ssl_passphrase_command[0] != '\0'))
 	{
 		if (xtc_tls_context != NULL)
@@ -2951,6 +3065,20 @@ build_xtc_tls_context(HostsLine *default_host, int ssl_ver_min,
 		xtc_tls_ctx_has_ca = false;
 		return;
 	}
+
+	/*
+	 * Register the SNI / ClientHello context-selection callback (P6).  On a
+	 * multi-tenant server this is where a different per-host context would be
+	 * swapped in for the requested SNI name; here we build only the one
+	 * default-host context, so xtc_tls_sni_select_cb mirrors the OpenSSL
+	 * sni_clienthello_cb matching shape but can only resolve to this ctx (it
+	 * returns NULL = keep current).  Registering it now keeps the wiring in
+	 * place and documents the selection point; a fuller topology (per-host xtc
+	 * ctx objects, retired with the same list) is the remaining multi-tenant
+	 * work -- see xtc_tls_sni_select_cb.  XTC_E_NOSYS (backend can't swap
+	 * mid-handshake) is non-fatal: the single ctx still serves correctly.
+	 */
+	(void) xtc_tls_ctx_set_sni_cb(ctx, xtc_tls_sni_select_cb, NULL);
 
 	/*
 	 * Publish the new ctx, then retire (never free -- see the retired-contexts
