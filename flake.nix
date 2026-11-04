@@ -9,12 +9,15 @@
     # Defaults to GitHub; for local development point it at a checkout with
     #   nix develop --override-input libxtc path:$HOME/ws/xtc
     libxtc = {
-      # v2.0.0: size-first public structs and 64-bit pid generations.
-      # Rebuild PG and its modules against the matching headers/library.
-      # This pin has no PG runtime validation and does not establish that the
-      # write wedge is fixed. Proc stacks are reclaimed into bounded caches;
-      # connection churn with PG's 8 MiB stacks still needs validation.
-      url = "github:gburd/libxtc?rev=95041727ab08dca6b1474aabca38e2738c66e6ed";
+      # DEV PIN (2026-11-04): fix/stale-readiness-dispatch @ 6dd001e0 -- carries
+      # the stale-readiness gen-token fix (the fd107 XTC_E_INVAL root cause) AND
+      # the OTP headers (xtc_svr/xtc_orc/xtc_reg/xtc_xproc) and the TLS
+      # transport/SNI hooks (xtc_tls_create_transport, xtc_tls_ctx_set_sni_cb)
+      # this branch's libxtc-fusion gap-closing work consumes.  THIS COMMIT IS
+      # UNRELEASED/UNPUSHED (local only): before any trusted validation, re-pin
+      # to the released v2.1.2 tag once the libxtc team cuts it, and confirm the
+      # tree matches.  No PG runtime validation has been done against this pin.
+      url = "github:gburd/libxtc?rev=6dd001e02cd52d64dcde0be6df43600b7e89b696";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.flake-utils.follows = "flake-utils";
     };
