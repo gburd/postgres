@@ -265,6 +265,23 @@ PgBackendAssignId(void)
 }
 
 #ifndef WIN32
+/*
+ * The threaded backend registry mutex serializes the PgBackendId -> PgBackend*
+ * index used by PgBackendSendInterruptById().  It is a RAW pthread mutex on
+ * purpose: unlike the GUC critical section (guc.c, moved to xtc_amutex because
+ * GUC code can park a fiber while holding it), nothing held under this mutex
+ * parks a fiber -- the only work done while locked is a list walk plus
+ * SendInterrupt(), which is non-parking (an atomic fetch_or on the pending mask
+ * plus a non-blocking xtc_proc_wake; see interrupt.c).  A lock never held across
+ * a fiber yield cannot block a carrier loop, so the fiber-aware xtc_amutex (and
+ * its load-bearing six-root save/restore park seam) is unnecessary here.
+ *
+ * INVARIANT: do not introduce any parking wait (xtc_proc_wait_fd, xtc_yield, an
+ * allocation that parks, a contended xtc_amutex) under this mutex.  If that ever
+ * becomes necessary, this lock must be converted to xtc_amutex exactly like
+ * ThreadedGUCLock() in guc.c, or a backend fiber that parks while holding it
+ * will block its whole carrier OS thread.
+ */
 static void
 ThreadedBackendRegistryLock(void)
 {
