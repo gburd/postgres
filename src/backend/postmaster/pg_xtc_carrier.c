@@ -42,6 +42,7 @@
 #include "storage/latch.h"
 #include "libpq/pqsignal.h"	/* BlockSig */
 #include "postmaster/pg_xtc_carrier.h"
+#include "postmaster/pg_xtc_xproc_demo.h"	/* xtc_xproc watchdog DEMO (GUC-gated) */
 #include "utils/backend_runtime.h"	/* PgCurrentWorkSnapshot, save/restore-lazy */
 
 /* xtc public API */
@@ -778,6 +779,18 @@ xtc_carrier_start_supervisors(void)
 }
 
 /*
+ * Loop 0 of the carrier (the single/supervisor loop).  Returns NULL before
+ * the scheduler is up.  Exposed for the xtc_xproc watchdog DEMO, which must
+ * spawn its demo fiber on a real loop; keep it a plain accessor so the demo
+ * stays self-contained and does not reach into these file-static roots.
+ */
+xtc_loop_t *
+xtc_pg_carrier_loop0(void)
+{
+	return g_xtc_loop;
+}
+
+/*
  * ---------------------------------------------------------------------------
  * Crash-safe affine-section depth reset at backend-fiber exit (Phase B).
  *
@@ -1163,6 +1176,16 @@ xtc_pg_carrier_start(void)
 		 * (AGENTS_XTC #7 Stage 1: observe abnormal backend fiber death).
 		 */
 		xtc_carrier_start_supervisors();
+
+		/*
+		 * xtc_xproc cross-fork watchdog DEMONSTRATION (developer GUC
+		 * xtc_xproc_watchdog_demo; default off).  No-op unless the GUC is on;
+		 * when on, spawns one demo fiber that drives the xtc_xproc
+		 * spawn/monitor/decode/restart/destroy dance against a throwaway child.
+		 * This is a DEMO of the in-tree restart-after-crash pattern only -- it
+		 * is NOT the PG backend crash policy, which stays fail-stop.
+		 */
+		xtc_xproc_watchdog_demo_kick();
 
 		elog(LOG, "xtc: carrier scheduler thread up (%d loop%s, %d supervisor%s, %s)",
 			 g_xtc_n_loops, g_xtc_n_loops == 1 ? "" : "s",

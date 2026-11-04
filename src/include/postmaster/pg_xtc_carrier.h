@@ -28,6 +28,11 @@ extern bool xtc_pg_in_backend_fiber(void);
 /* Start the single-loop xtc scheduler thread (idempotent). */
 extern int	xtc_pg_carrier_start(void);
 
+/* Carrier loop 0 (single/supervisor loop), or NULL before the scheduler is
+ * up.  Exposed for the xtc_xproc watchdog DEMO (pg_xtc_xproc_demo.c). */
+struct xtc_loop;
+extern struct xtc_loop *xtc_pg_carrier_loop0(void);
+
 /* Spawn `entry(entry_arg)` as an xtc fiber on the carrier loop. */
 extern int	xtc_pg_launch_backend_fiber(xtc_carrier_entry_fn entry,
 										void *entry_arg);

@@ -12,6 +12,7 @@ backend_sources += files(
   'launch_backend.c',
   'pgarch.c',
   'pg_xtc_carrier.c',
+  'pg_xtc_xproc_demo.c',
   'pmchild.c',
   'postmaster.c',
   'startup.c',

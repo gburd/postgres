@@ -91,6 +91,18 @@ PG_GLOBAL_RUNTIME bool xtc_force_process_fallback = false;
 bool		xtc_log_to_server = false;
 
 /*
+ * F4 supervision-fusion: when true (and multithreaded=on), stand up one libxtc
+ * xtc_orc OTP supervisor per carrier loop alongside the hand-rolled per-loop
+ * supervisor fiber.  The hand-rolled supervisor stays the source of truth for
+ * backend-fiber crash detection and Stage-1b escalation; see the long comment
+ * at xtc_carrier_start_orc_supervisors() in pg_xtc_carrier.c for why an
+ * orc-owned backend child cannot carry escalation with today's libxtc.
+ * Developer knob; default off.  Read once at carrier bringup; a plain
+ * postmaster-wide global, like xtc_log_to_server.
+ */
+bool		xtc_carrier_use_orc = false;
+
+/*
  * True in a backend that was started via fork()+exec() (arriving through
  * SubPostmasterMain) and therefore did NOT inherit the postmaster's address
  * space -- it must re-attach shared memory / re-derive backend-local state.
@@ -121,6 +133,15 @@ PG_GLOBAL_RUNTIME int pooled_protocol_idle_memory_compaction =
 	POOLED_PROTOCOL_IDLE_MEMORY_COMPACTION_TRIM;
 PG_GLOBAL_RUNTIME bool threaded_lazy_relcache_init_file = true;
 PG_GLOBAL_RUNTIME bool log_protocol_park_memory = false;
+
+/*
+ * Developer-only DEMONSTRATION knob (default off): when on in threaded mode,
+ * the carrier runs a self-contained xtc_xproc cross-fork watchdog demo at
+ * carrier start (pg_xtc_xproc_demo.c).  It is a demo of the restart-after-
+ * crash USAGE pattern only; the real PG backend crash policy stays fail-stop
+ * and this knob never touches it.  Off => zero production impact.
+ */
+PG_GLOBAL_RUNTIME bool xtc_xproc_watchdog_demo = false;
 
 /* configurable SLRU buffer sizes */
 PG_GLOBAL_RUNTIME int commit_timestamp_buffers = 0;
