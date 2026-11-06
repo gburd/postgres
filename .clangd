@@ -1,0 +1,43 @@
+Diagnostics:
+  MissingIncludes: None
+InlayHints:
+  Enabled: true
+  ParameterNames: true
+  DeducedTypes: true
+CompileFlags:
+  CompilationDatabase: build/       # Search build/ directory for compile_commands.json
+  Remove: [ -Werror ]
+  Add:
+  - -DDEBUG
+  - -DLOCAL
+  - -DPGDLLIMPORT=
+  - -DPIC
+  - -O2
+  - -Wall
+  - -Wcast-function-type
+  - -Wconversion
+  - -Wdeclaration-after-statement
+  - -Wendif-labels
+  - -Werror=vla
+  - -Wextra
+  - -Wfloat-equal
+  - -Wformat-security
+  - -Wimplicit-fallthrough=3
+  - -Wmissing-format-attribute
+  - -Wmissing-prototypes
+  - -Wno-format-truncation
+  - -Wno-sign-conversion
+  - -Wno-stringop-truncation
+  - -Wno-unused-const-variable
+  - -Wpointer-arith
+  - -Wshadow
+  - -Wshadow=compatible-local
+  - -fPIC
+  - -fexcess-precision=standard
+  - -fno-strict-aliasing
+  - -fvisibility=hidden
+  - -fwrapv
+  - -g
+  - -std=c11
+  - -I.
+  - -I../../../../src/include
