@@ -35,6 +35,11 @@ tests += {
       'pg_stash_advice_utf8',
     ],
   },
+  'pytest': {
+    'tests': [
+      'pyt/test_001_persist.py',
+    ],
+  },
   'tap': {
     'tests': [
       't/001_persist.pl',

@@ -29,6 +29,14 @@ tests += {
       't/004_logrotate.pl',
     ],
   },
+  'pytest': {
+    'tests': [
+      'pyt/test_001_start_stop.py',
+      'pyt/test_002_status.py',
+      'pyt/test_003_promote.py',
+      'pyt/test_004_logrotate.py',
+    ],
+  },
 }
 
 subdir('po', if_found: libintl)

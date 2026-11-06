@@ -26,6 +26,11 @@ tests += {
       't/010_pg_archivecleanup.pl',
     ],
   },
+  'pytest': {
+    'tests': [
+      'pyt/test_010_pg_archivecleanup.py',
+    ],
+  },
 }
 
 subdir('po', if_found: libintl)

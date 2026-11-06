@@ -36,6 +36,12 @@ tests += {
       't/001_initdb.pl',
     ],
   },
+  'pytest': {
+    'env': {'with_icu': icu.found() ? 'yes' : 'no'},
+    'tests': [
+      'pyt/test_001_initdb.py',
+    ],
+  },
 }
 
 subdir('po', if_found: libintl)
