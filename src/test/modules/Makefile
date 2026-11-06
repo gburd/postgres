@@ -5,6 +5,8 @@ top_builddir = ../../..
 include $(top_builddir)/src/Makefile.global
 
 SUBDIRS = \
+		  bark_multikey \
+		  bark_wildcard \
 		  brin \
 		  commit_ts \
 		  delay_execution \
@@ -33,6 +35,7 @@ SUBDIRS = \
 		  test_extensible \
 		  test_extensions \
 		  test_ginpostinglist \
+		  test_index_impl \
 		  test_int128 \
 		  test_integerset \
 		  test_json_parser \
@@ -50,10 +53,12 @@ SUBDIRS = \
 		  test_resowner \
 		  test_rls_hooks \
 		  test_saslprep \
+		  test_sbm \
 		  test_shmem \
 		  test_shm_mq \
 		  test_slru \
 		  test_tidstore \
+		  test_versioned_tableam \
 		  test_wait_lsn \
 		  unsafe_tests \
 		  worker_spi \
@@ -61,9 +66,9 @@ SUBDIRS = \
 
 
 ifeq ($(enable_injection_points),yes)
-SUBDIRS += injection_points gin hash nbtree typcache
+SUBDIRS += injection_points bark gin hash nbtree typcache
 else
-ALWAYS_SUBDIRS += injection_points gin hash nbtree typcache
+ALWAYS_SUBDIRS += injection_points bark gin hash nbtree typcache
 endif
 
 ifeq ($(with_ssl),openssl)

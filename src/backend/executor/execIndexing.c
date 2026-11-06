@@ -106,6 +106,7 @@
  */
 #include "postgres.h"
 
+#include "access/amapi.h"
 #include "access/genam.h"
 #include "access/relscan.h"
 #include "access/tableam.h"
@@ -114,11 +115,20 @@
 #include "executor/executor.h"
 #include "nodes/nodeFuncs.h"
 #include "storage/lmgr.h"
+#include "utils/datum.h"
 #include "utils/injection_point.h"
 #include "utils/lsyscache.h"
 #include "utils/multirangetypes.h"
 #include "utils/rangetypes.h"
 #include "utils/snapmgr.h"
+
+static List *InsertIndexTuples(ResultRelInfo *resultRelInfo, EState *estate,
+							   uint32 flags, TupleTableSlot *slot,
+							   IndexVersionTag version_tag,
+							   const Bitmapset *modified_idx_attrs,
+							   List *arbiterIndexes, bool *specConflict);
+static bool IndexNeedsEntry(Relation indexRelation,
+							const Bitmapset *modified_idx_attrs);
 
 /* waitMode argument to check_exclusion_or_unique_constraint() */
 typedef enum
@@ -140,6 +150,15 @@ static bool check_exclusion_or_unique_constraint(Relation heap, Relation index,
 static bool index_recheck_constraint(Relation index, const Oid *constr_procs,
 									 const Datum *existing_values, const bool *existing_isnull,
 									 const Datum *new_values);
+static bool FormIndexDatumForRow(ResultRelInfo *resultRelInfo, int i,
+								 bool reuse, TupleTableSlot *slot,
+								 EState *estate, Datum *values, bool *isnull);
+static bool check_exclusion_for_insert(Relation heapRelation,
+									   Relation indexRelation,
+									   IndexInfo *indexInfo,
+									   ItemPointer tupleid,
+									   const Datum *values, const bool *isnull,
+									   EState *estate, bool applyNoDupErr);
 static bool index_unchanged_by_update(ResultRelInfo *resultRelInfo,
 									  EState *estate, IndexInfo *indexInfo,
 									  Relation indexRelation);
@@ -270,6 +289,96 @@ ExecCloseIndices(ResultRelInfo *resultRelInfo)
 	 */
 }
 
+/*
+ * Does the i'th index get an entry for the row in slot, and with which
+ * datums?  If the index is partial and the row does not satisfy its
+ * predicate, return false.  Otherwise form the datums into values and
+ * isnull, and return true.
+ *
+ * With reuse, slot must hold the new row of the UPDATE that
+ * ExecUpdateModifiedIdxAttrs() decided last: what that found out about
+ * this index for the row, if anything, is used instead of evaluating the
+ * index's predicate and expressions again.
+ */
+static bool
+FormIndexDatumForRow(ResultRelInfo *resultRelInfo, int i, bool reuse,
+					 TupleTableSlot *slot, EState *estate,
+					 Datum *values, bool *isnull)
+{
+	IndexInfo  *indexInfo = resultRelInfo->ri_IndexRelationInfo[i];
+	ExprContext *econtext = GetPerTupleExprContext(estate);
+	NewIndexDatums *nid = NULL;
+
+	if (reuse && resultRelInfo->ri_NewIndexDatums != NULL)
+		nid = &resultRelInfo->ri_NewIndexDatums[i];
+
+	if (nid != NULL && nid->state == NEWIDX_OUTSIDE)
+	{
+		Assert(indexInfo->ii_Predicate != NIL);
+		return false;
+	}
+	if (nid != NULL && nid->state == NEWIDX_DATUMS)
+	{
+		memcpy(values, nid->values,
+			   sizeof(Datum) * indexInfo->ii_NumIndexAttrs);
+		memcpy(isnull, nid->isnull,
+			   sizeof(bool) * indexInfo->ii_NumIndexAttrs);
+#ifdef USE_ASSERT_CHECKING
+		{
+			Datum		check_values[INDEX_MAX_KEYS];
+			bool		check_isnull[INDEX_MAX_KEYS];
+			ListCell   *expr = list_head(indexInfo->ii_Expressions);
+
+			/* the saved datums must be what evaluating would give */
+			econtext->ecxt_scantuple = slot;
+			if (indexInfo->ii_Predicate != NIL)
+			{
+				if (indexInfo->ii_PredicateState == NULL)
+					indexInfo->ii_PredicateState =
+						ExecPrepareQual(indexInfo->ii_Predicate, estate);
+				Assert(ExecQual(indexInfo->ii_PredicateState, econtext));
+			}
+			FormIndexDatum(indexInfo, slot, estate,
+						   check_values, check_isnull);
+			for (int k = 0; k < indexInfo->ii_NumIndexAttrs; k++)
+			{
+				AttrNumber	attnum = indexInfo->ii_IndexAttrNumbers[k];
+				Oid			typid;
+				int16		typlen;
+				bool		typbyval;
+
+				if (attnum != 0)
+					typid = TupleDescAttr(RelationGetDescr(resultRelInfo->ri_RelationDesc),
+										  attnum - 1)->atttypid;
+				else
+				{
+					typid = exprType(lfirst(expr));
+					expr = lnext(indexInfo->ii_Expressions, expr);
+				}
+				get_typlenbyval(typid, &typlen, &typbyval);
+				Assert(check_isnull[k] == isnull[k]);
+				Assert(isnull[k] ||
+					   datumIsEqual(check_values[k], values[k],
+									typbyval, typlen));
+			}
+		}
+#endif
+		return true;
+	}
+
+	econtext->ecxt_scantuple = slot;
+	if (indexInfo->ii_Predicate != NIL)
+	{
+		if (indexInfo->ii_PredicateState == NULL)
+			indexInfo->ii_PredicateState =
+				ExecPrepareQual(indexInfo->ii_Predicate, estate);
+		if (!ExecQual(indexInfo->ii_PredicateState, econtext))
+			return false;
+	}
+	FormIndexDatum(indexInfo, slot, estate, values, isnull);
+	return true;
+}
+
 /* ----------------------------------------------------------------
  *		ExecInsertIndexTuples
  *
@@ -305,6 +414,9 @@ ExecCloseIndices(ResultRelInfo *resultRelInfo)
  *
  *		If 'arbiterIndexes' is nonempty, EIIT_NO_DUPE_ERROR applies only to
  *		those indexes.  NIL means EIIT_NO_DUPE_ERROR applies to all indexes.
+ *
+ *		The new entries are untagged.  ExecUpdateIndexTuples() inserts the
+ *		entries of an UPDATE, which a table AM may have tagged.
  * ----------------------------------------------------------------
  */
 List *
@@ -314,6 +426,142 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 					  TupleTableSlot *slot,
 					  List *arbiterIndexes,
 					  bool *specConflict)
+{
+	return InsertIndexTuples(resultRelInfo, estate, flags, slot,
+							 InvalidIndexVersionTag, NULL,
+							 arbiterIndexes, specConflict);
+}
+
+/* ----------------------------------------------------------------
+ *		ExecUpdateMayKeepLocator
+ *
+ *		May the table AM keep the row's locator for an UPDATE whose
+ *		modified indexed attributes are modified_idx_attrs?  Only if the
+ *		table's locator is versioned and every non-summarizing index that
+ *		needs a new entry because of the update can store a version tag.
+ *		The caller then passes TABLE_UPDATE_MAY_KEEP_LOCATOR to
+ *		table_tuple_update().  Always false for heap.
+ * ----------------------------------------------------------------
+ */
+bool
+ExecUpdateMayKeepLocator(ResultRelInfo *resultRelInfo,
+						 const Bitmapset *modified_idx_attrs)
+{
+	if (!table_locator_is_versioned(resultRelInfo->ri_RelationDesc))
+		return false;
+
+	for (int i = 0; i < resultRelInfo->ri_NumIndices; i++)
+	{
+		Relation	indexRelation = resultRelInfo->ri_IndexRelationDescs[i];
+		IndexInfo  *indexInfo = resultRelInfo->ri_IndexRelationInfo[i];
+
+		if (indexRelation == NULL || indexInfo->ii_Summarizing ||
+			!IndexNeedsEntry(indexRelation, modified_idx_attrs))
+			continue;
+
+		if (!index_may_keep_locator(indexRelation))
+			return false;
+
+		/*
+		 * shortcut: a not-ready index forces a move, as heap's HOT rule does;
+		 * relax to design 6.1 (keep the locator, let the table AM's validate
+		 * scan apply the validity rule to the collected (tid, tag) pairs)
+		 * once a versioned table AM implements and tests that.  An index that
+		 * is ready but not valid, such as one left behind by a failed CREATE
+		 * INDEX CONCURRENTLY, is maintained as usual and does not force one.
+		 */
+		if (!indexInfo->ii_ReadyForInserts)
+			return false;
+	}
+
+	return true;
+}
+
+/* ----------------------------------------------------------------
+ *		ExecUpdateIndexTuples
+ *
+ *		As ExecInsertIndexTuples() with EIIT_IS_UPDATE, for the new version
+ *		of an UPDATE, whose table_tuple_update() returned version_tag and
+ *		whose modified indexed attributes are modified_idx_attrs.  The new
+ *		entries of every index that can store tags (index_can_version())
+ *		carry version_tag; those of the others are untagged.
+ *
+ *		EIIT_ONLY_AFFECTED, for TU_Affected, says the table AM kept the
+ *		row's locator (see TABLE_UPDATE_MAY_KEEP_LOCATOR): the old entry of
+ *		every index the update did not affect still leads to the row, so
+ *		only the indexes whose attributes overlap modified_idx_attrs, and
+ *		the summarizing ones, get entries.
+ * ----------------------------------------------------------------
+ */
+List *
+ExecUpdateIndexTuples(ResultRelInfo *resultRelInfo, EState *estate,
+					  uint32 flags, TupleTableSlot *slot,
+					  IndexVersionTag version_tag,
+					  const Bitmapset *modified_idx_attrs,
+					  List *arbiterIndexes, bool *specConflict)
+{
+	Assert(flags & EIIT_IS_UPDATE);
+
+	/* An untagged entry would claim the version is older than the row's base */
+	if ((flags & EIIT_ONLY_AFFECTED) && version_tag == InvalidIndexVersionTag)
+		elog(ERROR, "table access method kept a row's locator without tagging its new version");
+
+	/*
+	 * ExecUpdateModifiedIdxAttrs() may have noted an exclusion constraint's
+	 * index whose attributes another index then kept in modified_idx_attrs.
+	 * Such an index gets an entry, and its constraint is checked with it, so
+	 * ExecCheckHotExclusion() is left only those that keep their entries.
+	 */
+	if (flags & EIIT_ONLY_AFFECTED)
+	{
+		int			i = -1;
+
+		while ((i = bms_next_member(resultRelInfo->ri_HotExclusionCheck, i)) >= 0)
+		{
+			if (IndexNeedsEntry(resultRelInfo->ri_IndexRelationDescs[i],
+								modified_idx_attrs))
+				resultRelInfo->ri_HotExclusionCheck =
+					bms_del_member(resultRelInfo->ri_HotExclusionCheck, i);
+		}
+	}
+
+	return InsertIndexTuples(resultRelInfo, estate, flags, slot,
+							 version_tag, modified_idx_attrs,
+							 arbiterIndexes, specConflict);
+}
+
+/*
+ * Does an update whose modified indexed attributes are modified_idx_attrs
+ * need a new entry in this index?  Yes if it changed an attribute the index
+ * reads.
+ *
+ * shortcut: copies the index's attributes per call; cache them in the
+ * ResultRelInfo if a versioned table AM's update path shows the cost.
+ */
+static bool
+IndexNeedsEntry(Relation indexRelation, const Bitmapset *modified_idx_attrs)
+{
+	Bitmapset  *attrs = RelationGetIndexedAttrs(indexRelation);
+	bool		result = bms_overlap(attrs, modified_idx_attrs);
+
+	bms_free(attrs);
+	return result;
+}
+
+/*
+ * Workhorse of ExecInsertIndexTuples() and ExecUpdateIndexTuples().  The new
+ * entries of an index that can store tags carry version_tag.  With EIIT_ONLY_AFFECTED, of the
+ * non-summarizing indexes only those that IndexNeedsEntry() get one.
+ */
+static List *
+InsertIndexTuples(ResultRelInfo *resultRelInfo,
+				  EState *estate,
+				  uint32 flags,
+				  TupleTableSlot *slot,
+				  IndexVersionTag version_tag,
+				  const Bitmapset *modified_idx_attrs,
+				  List *arbiterIndexes,
+				  bool *specConflict)
 {
 	ItemPointer tupleid = &slot->tts_tid;
 	List	   *result = NIL;
@@ -376,36 +624,27 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 		if ((flags & EIIT_ONLY_SUMMARIZING) && !indexInfo->ii_Summarizing)
 			continue;
 
-		/* Check for partial index */
-		if (indexInfo->ii_Predicate != NIL)
-		{
-			ExprState  *predicate;
-
-			/*
-			 * If predicate state not set up yet, create it (in the estate's
-			 * per-query context)
-			 */
-			predicate = indexInfo->ii_PredicateState;
-			if (predicate == NULL)
-			{
-				predicate = ExecPrepareQual(indexInfo->ii_Predicate, estate);
-				indexInfo->ii_PredicateState = predicate;
-			}
-
-			/* Skip this index-update if the predicate isn't satisfied */
-			if (!ExecQual(predicate, econtext))
-				continue;
-		}
+		/*
+		 * If the row kept its locator, an index the update did not affect
+		 * keeps its old entry, which still leads to the row.
+		 */
+		if ((flags & EIIT_ONLY_AFFECTED) && !indexInfo->ii_Summarizing &&
+			!IndexNeedsEntry(indexRelation, modified_idx_attrs))
+			continue;
 
 		/*
-		 * FormIndexDatum fills in its values and isnull parameters with the
-		 * appropriate values for the column(s) of the index.
+		 * Skip a partial index whose predicate the row does not satisfy, and
+		 * form the index's datums for the row.  For an UPDATE, these may be
+		 * known already.
 		 */
-		FormIndexDatum(indexInfo,
-					   slot,
-					   estate,
-					   values,
-					   isnull);
+		if (!FormIndexDatumForRow(resultRelInfo, i,
+								  (flags & EIIT_NEW_DATUMS) != 0,
+								  slot, estate, values, isnull))
+			continue;
+
+		/* Only an index that stores tags gets one; see amlocator.h. */
+		indexInfo->ii_VersionTag = index_can_version(indexRelation) ?
+			version_tag : InvalidIndexVersionTag;
 
 		/* Check whether to apply noDupErr to this index */
 		applyNoDupErr = (flags & EIIT_NO_DUPE_ERROR) &&
@@ -471,33 +710,10 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 		 * need to preserve the prior state of satisfiesConstraint.
 		 */
 		if (indexInfo->ii_ExclusionOps != NULL)
-		{
-			bool		violationOK;
-			CEOUC_WAIT_MODE waitMode;
-
-			if (applyNoDupErr)
-			{
-				violationOK = true;
-				waitMode = CEOUC_LIVELOCK_PREVENTING_WAIT;
-			}
-			else if (!indexRelation->rd_index->indimmediate)
-			{
-				violationOK = true;
-				waitMode = CEOUC_NOWAIT;
-			}
-			else
-			{
-				violationOK = false;
-				waitMode = CEOUC_WAIT;
-			}
-
 			satisfiesConstraint =
-				check_exclusion_or_unique_constraint(heapRelation,
-													 indexRelation, indexInfo,
-													 tupleid, values, isnull,
-													 estate, false,
-													 waitMode, violationOK, NULL);
-		}
+				check_exclusion_for_insert(heapRelation, indexRelation,
+										   indexInfo, tupleid, values, isnull,
+										   estate, applyNoDupErr);
 
 		if ((checkUnique == UNIQUE_CHECK_PARTIAL ||
 			 indexInfo->ii_ExclusionOps != NULL) &&
@@ -511,6 +727,147 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 			 */
 			result = lappend_oid(result, RelationGetRelid(indexRelation));
 			if (indexRelation->rd_index->indimmediate && specConflict)
+				*specConflict = true;
+		}
+	}
+
+	return result;
+}
+
+/*
+ * Check the exclusion constraint of indexRelation for a tuple whose entry has
+ * just been inserted, or whose entries are those an earlier version of the
+ * row had (a HOT update; see ExecCheckHotExclusion()).  Returns false if the
+ * constraint may be violated and the caller is to recheck it later.
+ *
+ * If the constraint is deferred, check now anyway, but don't throw error on
+ * violation or wait for a conclusive outcome from a concurrent insertion;
+ * the caller queues a recheck event.  Similarly, noDupErr callers
+ * (speculative inserters) will recheck later, and wait for a conclusive
+ * outcome then.
+ */
+static bool
+check_exclusion_for_insert(Relation heapRelation, Relation indexRelation,
+						   IndexInfo *indexInfo, ItemPointer tupleid,
+						   const Datum *values, const bool *isnull,
+						   EState *estate, bool applyNoDupErr)
+{
+	bool		violationOK;
+	CEOUC_WAIT_MODE waitMode;
+
+	if (applyNoDupErr)
+	{
+		violationOK = true;
+		waitMode = CEOUC_LIVELOCK_PREVENTING_WAIT;
+	}
+	else if (!indexRelation->rd_index->indimmediate)
+	{
+		violationOK = true;
+		waitMode = CEOUC_NOWAIT;
+	}
+	else
+	{
+		violationOK = false;
+		waitMode = CEOUC_WAIT;
+	}
+
+	return check_exclusion_or_unique_constraint(heapRelation, indexRelation,
+												indexInfo, tupleid,
+												values, isnull, estate, false,
+												waitMode, violationOK, NULL);
+}
+
+/* ----------------------------------------------------------------
+ *		ExecCheckHotExclusion
+ *
+ *		After an UPDATE that inserted no index entries (a HOT update), or
+ *		that kept the row's locator (TU_Affected), check the exclusion
+ *		constraints that ExecUpdateModifiedIdxAttrs() noted in
+ *		ri_HotExclusionCheck: those whose index keeps the old row's entries
+ *		although a value it is built from changed.  Only constraints checked
+ *		immediately are noted; see IndexDatumsDiffer().  After TU_Affected,
+ *		ExecUpdateIndexTuples() has dropped the noted indexes that got an
+ *		entry.
+ *
+ *		The check is the one ExecInsertIndexTuples() makes after inserting
+ *		an entry, with the new row's values, and it is right for the same
+ *		reasons.  The access method said the new values give the same
+ *		entries as the old, so every index scan that would find the entry
+ *		the new row would get finds the old row's entries, which lead to
+ *		the new row through the HOT chain; they were inserted before the
+ *		new row existed, earlier than the new entry would have been.  A
+ *		transaction that inserts a conflicting row concurrently either
+ *		inserted its entry before our check, and our check finds it and
+ *		waits for it, or checks after we updated the row, and finds the old
+ *		entries.  A scan with a non-MVCC snapshot, as the check uses,
+ *		returns every member of the HOT chain those lead to: the old
+ *		version, which our update deleted, and the new one, which it
+ *		inserted, both in progress.  So the inserter compares its value with
+ *		the new row's too, and waits for us if they conflict.
+ *
+ *		TU_Affected is the same argument with the row's locator in place
+ *		of the HOT chain.  The update changed no attribute of a noted
+ *		index, so its old entries are valid for the new version (see
+ *		"Versioned locators" in amlocator.h) and lead to it at the
+ *		unchanged locator.  Our check finds the row there as self, and a
+ *		concurrent inserter's check reaches it through the old entries and,
+ *		its snapshot being non-MVCC, sees the version our update made, in
+ *		progress, so it waits for us if the values conflict.
+ *
+ *		Like ExecInsertIndexTuples(), this returns the OIDs of indexes whose
+ *		constraint may be violated when EIIT_NO_DUPE_ERROR is given, and
+ *		honors arbiterIndexes.  specConflict is set as there.
+ * ----------------------------------------------------------------
+ */
+List *
+ExecCheckHotExclusion(ResultRelInfo *resultRelInfo, EState *estate,
+					  uint32 flags, TupleTableSlot *slot,
+					  List *arbiterIndexes, bool *specConflict)
+{
+	ItemPointer tupleid = &slot->tts_tid;
+	Relation	heapRelation = resultRelInfo->ri_RelationDesc;
+	ExprContext *econtext;
+	List	   *result = NIL;
+	int			i = -1;
+
+	if (bms_is_empty(resultRelInfo->ri_HotExclusionCheck))
+		return NIL;
+	Assert(ItemPointerIsValid(tupleid));
+
+	econtext = GetPerTupleExprContext(estate);
+	econtext->ecxt_scantuple = slot;
+
+	while ((i = bms_next_member(resultRelInfo->ri_HotExclusionCheck, i)) >= 0)
+	{
+		Relation	indexRelation = resultRelInfo->ri_IndexRelationDescs[i];
+		IndexInfo  *indexInfo = resultRelInfo->ri_IndexRelationInfo[i];
+		Datum		values[INDEX_MAX_KEYS];
+		bool		isnull[INDEX_MAX_KEYS];
+		bool		applyNoDupErr;
+
+		Assert(indexInfo->ii_ExclusionOps != NULL);
+		Assert(indexRelation->rd_index->indimmediate);
+
+		/*
+		 * ExecUpdateModifiedIdxAttrs() only notes an index the row is in, so
+		 * a partial index's predicate holds, and has the row's datums.
+		 */
+		if (!FormIndexDatumForRow(resultRelInfo, i, true, slot, estate,
+								  values, isnull))
+			elog(ERROR, "row outside the predicate of index \"%s\"",
+				 RelationGetRelationName(indexRelation));
+
+		applyNoDupErr = (flags & EIIT_NO_DUPE_ERROR) &&
+			(arbiterIndexes == NIL ||
+			 list_member_oid(arbiterIndexes,
+							 indexRelation->rd_index->indexrelid));
+
+		if (!check_exclusion_for_insert(heapRelation, indexRelation, indexInfo,
+										tupleid, values, isnull, estate,
+										applyNoDupErr))
+		{
+			result = lappend_oid(result, RelationGetRelid(indexRelation));
+			if (specConflict)
 				*specConflict = true;
 		}
 	}

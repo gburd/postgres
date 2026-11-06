@@ -2330,6 +2330,17 @@ SELECT currval(pg_get_serial_sequence('sometable', 'id'));
         clause of <literal>CREATE INDEX</literal>?
       </entry>
      </row>
+     <row>
+      <entry><literal>can_var_locator</literal></entry>
+      <entry>Can the access method store a variable sized row locator?
+      </entry>
+     </row>
+     <row>
+      <entry><literal>can_version</literal></entry>
+      <entry>Can the access method store a row version tag with each entry?
+       See <xref linkend="tableam-locator"/>.
+      </entry>
+     </row>
     </tbody>
    </tgroup>
   </table>

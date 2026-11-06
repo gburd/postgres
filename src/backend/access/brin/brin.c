@@ -259,6 +259,7 @@ brinhandler(PG_FUNCTION_ARGS)
 		.amsupport = BRIN_LAST_OPTIONAL_PROCNUM,
 		.amoptsprocnum = BRIN_PROCNUM_OPTIONS,
 		.amcanorder = false,
+		.ambtreeopfamilies = false,
 		.amcanorderbyop = false,
 		.amcanhash = false,
 		.amconsistentequality = false,
@@ -307,6 +308,7 @@ brinhandler(PG_FUNCTION_ARGS)
 		.amparallelrescan = NULL,
 		.amtranslatestrategy = NULL,
 		.amtranslatecmptype = NULL,
+		.amcomparedatums = NULL,
 	};
 
 	PG_RETURN_POINTER(&amroutine);

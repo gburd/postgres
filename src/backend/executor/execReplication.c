@@ -146,7 +146,7 @@ should_refetch_tuple(TM_Result res, TM_FailureData *tmfd)
 			break;
 		case TM_Updated:
 			/* XXX: Improve handling here */
-			if (ItemPointerIndicatesMovedPartitions(&tmfd->ctid))
+			if (tmfd->moved_partitions)
 				ereport(LOG,
 						(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
 						 errmsg("tuple to be locked was already moved to another partition due to concurrent update, retrying")));
@@ -989,6 +989,7 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 	bool		skip_tuple = false;
 	Relation	rel = resultRelInfo->ri_RelationDesc;
 	ItemPointer tid = &(searchslot->tts_tid);
+	Bitmapset  *modified_idx_attrs;
 
 	/*
 	 * We support only non-system tables, with
@@ -1004,7 +1005,7 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 		resultRelInfo->ri_TrigDesc->trig_update_before_row)
 	{
 		if (!ExecBRUpdateTriggers(estate, epqstate, resultRelInfo,
-								  tid, NULL, slot, NULL, NULL, false))
+								  tid, NULL, slot, NULL, NULL, false, true))
 			skip_tuple = true;	/* "do nothing" */
 	}
 
@@ -1012,6 +1013,7 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 	{
 		List	   *recheckIndexes = NIL;
 		TU_UpdateIndexes update_indexes;
+		IndexVersionTag version_tag;
 		List	   *conflictindexes;
 		bool		conflict = false;
 
@@ -1027,24 +1029,62 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 		if (rel->rd_rel->relispartition)
 			ExecPartitionCheck(resultRelInfo, slot, estate, true);
 
-		simple_table_tuple_update(rel, tid, slot, estate->es_snapshot,
-								  &update_indexes);
+		modified_idx_attrs = ExecUpdateModifiedIdxAttrs(resultRelInfo,
+														searchslot, slot,
+														estate);
+
+		/*
+		 * The conflict report and AFTER ROW triggers below read searchslot
+		 * after the update.  If the table's AM overwrites rows in place, copy
+		 * the old row out of the page first.
+		 */
+		if (RelationUpdatesInPlace(rel))
+			ExecMaterializeSlot(searchslot);
+
+		simple_table_tuple_update_ext(rel, tid, slot, estate->es_snapshot,
+									  modified_idx_attrs,
+									  ExecUpdateMayKeepLocator(resultRelInfo,
+															   modified_idx_attrs) ?
+									  TABLE_UPDATE_MAY_KEEP_LOCATOR : 0,
+									  &update_indexes, &version_tag);
 
 		conflictindexes = resultRelInfo->ri_onConflictArbiterIndexes;
 
 		if (resultRelInfo->ri_NumIndices > 0 && (update_indexes != TU_None))
 		{
-			uint32		flags = EIIT_IS_UPDATE;
+			uint32		flags = EIIT_IS_UPDATE | EIIT_NEW_DATUMS;
 
 			if (conflictindexes != NIL)
 				flags |= EIIT_NO_DUPE_ERROR;
 			if (update_indexes == TU_Summarizing)
 				flags |= EIIT_ONLY_SUMMARIZING;
-			recheckIndexes = ExecInsertIndexTuples(resultRelInfo,
-												   estate, flags,
-												   slot, conflictindexes,
+			else if (update_indexes == TU_Affected)
+				flags |= EIIT_ONLY_AFFECTED;
+			recheckIndexes = ExecUpdateIndexTuples(resultRelInfo,
+												   estate, flags, slot,
+												   version_tag,
+												   modified_idx_attrs,
+												   conflictindexes,
 												   &conflict);
 		}
+		bms_free(modified_idx_attrs);
+
+		/*
+		 * If no non-summarizing index got an entry, or the row kept its
+		 * locator (TU_Affected), check the exclusion constraints whose
+		 * entries the row kept although their values changed.
+		 */
+		if (update_indexes != TU_All)
+			recheckIndexes =
+				list_concat(recheckIndexes,
+							ExecCheckHotExclusion(resultRelInfo, estate,
+												  conflictindexes != NIL ?
+												  EIIT_IS_UPDATE | EIIT_NO_DUPE_ERROR :
+												  EIIT_IS_UPDATE,
+												  slot, conflictindexes,
+												  &conflict));
+		bms_free(resultRelInfo->ri_HotExclusionCheck);
+		resultRelInfo->ri_HotExclusionCheck = NULL;
 
 		/*
 		 * Refer to the comments above the call to CheckAndReportConflict() in
@@ -1058,7 +1098,7 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 		/* AFTER ROW UPDATE Triggers */
 		ExecARUpdateTriggers(estate, resultRelInfo,
 							 NULL, NULL,
-							 tid, NULL, slot,
+							 tid, NULL, searchslot, slot,
 							 recheckIndexes, NULL, false);
 
 		list_free(recheckIndexes);
@@ -1087,7 +1127,8 @@ ExecSimpleRelationDelete(ResultRelInfo *resultRelInfo,
 		resultRelInfo->ri_TrigDesc->trig_delete_before_row)
 	{
 		skip_tuple = !ExecBRDeleteTriggers(estate, epqstate, resultRelInfo,
-										   tid, NULL, NULL, NULL, NULL, false);
+										   tid, NULL, NULL, NULL, NULL, false,
+										   true);
 	}
 
 	if (!skip_tuple)

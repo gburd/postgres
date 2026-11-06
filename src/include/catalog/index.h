@@ -49,10 +49,26 @@ typedef struct ReindexParams
 #define REINDEXOPT_MISSING_OK 	0x04	/* skip missing relations */
 #define REINDEXOPT_CONCURRENTLY	0x08	/* concurrent mode */
 
-/* state info for validate_index bulkdelete callback */
+/*
+ * state info for validate_index bulkdelete callback
+ *
+ * tuplesort holds what the index contains, sorted, for the table AM's
+ * index_validate_scan.  If versioned is false, as for heap, it is the
+ * entries' TIDs, as int8 datums encoded with itemptr_encode().  If the
+ * table's locator is versioned and the index AM can store tags (see
+ * amlocator.h), versioned is true and it holds one tuple per entry, of
+ * tupdesc: column 1 the entry's TID, encoded as above, and column 2 its tag,
+ * both int8, sorted by TID then tag, to be read with
+ * tuplesort_gettupleslot().  An index of a versioned table whose AM cannot
+ * store tags is collected by TID, as for heap, since its entries are
+ * untagged.
+ */
 typedef struct ValidateIndexState
 {
 	Tuplesortstate *tuplesort;	/* for sorting the index TIDs */
+	bool		versioned;		/* (TID, tag) pairs rather than TIDs? */
+	TupleDesc	tupdesc;		/* if versioned, the pairs' descriptor */
+	struct TupleTableSlot *slot;	/* if versioned, for validate_index */
 	/* statistics (for debug purposes only): */
 	double		htups,
 				itups,

@@ -90,6 +90,7 @@ PG_LWLOCK(55, LogicalDecodingControl)
 PG_LWLOCK(56, DataChecksumsWorker)
 PG_LWLOCK(57, AioWorkerControl)
 PG_LWLOCK(58, DataChecksumTransition)
+PG_LWLOCK(59, BarkVacuum)
 
 /*
  * There also exist several built-in LWLock tranches.  As with the predefined
@@ -116,6 +117,7 @@ PG_LWLOCKTRANCHE(LOCK_MANAGER, LockManager)
 PG_LWLOCKTRANCHE(PREDICATE_LOCK_MANAGER, PredicateLockManager)
 PG_LWLOCKTRANCHE(PARALLEL_HASH_JOIN, ParallelHashJoin)
 PG_LWLOCKTRANCHE(PARALLEL_BTREE_SCAN, ParallelBtreeScan)
+PG_LWLOCKTRANCHE(PARALLEL_BARK_SCAN, ParallelBarkScan)
 PG_LWLOCKTRANCHE(PARALLEL_QUERY_DSA, ParallelQueryDSA)
 PG_LWLOCKTRANCHE(PER_SESSION_DSA, PerSessionDSA)
 PG_LWLOCKTRANCHE(PER_SESSION_RECORD_TYPE, PerSessionRecordType)

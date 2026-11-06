@@ -271,6 +271,11 @@ pgstat_relation(Relation rel, FunctionCallInfo fcinfo)
 		switch (rel->rd_rel->relam)
 		{
 			case BTREE_AM_OID:
+				if (!IndexIsNbtree(rel))
+				{
+					err = "btree index implemented by another access method";
+					break;
+				}
 				return pgstat_index(rel, BTREE_METAPAGE + 1,
 									pgstat_btree_page, fcinfo);
 			case HASH_AM_OID:

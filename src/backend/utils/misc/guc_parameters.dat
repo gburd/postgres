@@ -327,6 +327,15 @@
   assign_hook => 'assign_backtrace_functions',
 },
 
+{ name => 'bark_verify_pages', type => 'bool', context => 'PGC_SUSET', group => 'DEVELOPER_OPTIONS',
+  short_desc => 'Checks every BARK index page after each change to it.',
+  long_desc => 'Only in builds with assertions enabled.',
+  flags => 'GUC_NOT_IN_SAMPLE',
+  variable => 'bark_verify_pages',
+  boot_val => 'true',
+  ifdef => 'USE_ASSERT_CHECKING',
+},
+
 { name => 'bgwriter_delay', type => 'int', context => 'PGC_SIGHUP', group => 'RESOURCES_BGWRITER',
   short_desc => 'Background writer sleep time between rounds.',
   flags => 'GUC_UNIT_MS',
@@ -737,6 +746,15 @@
   variable => 'Debug_write_read_parse_plan_trees',
   boot_val => 'DEFAULT_DEBUG_WRITE_READ_PARSE_PLAN_TREES',
   ifdef => 'DEBUG_NODE_TESTS_ENABLED',
+},
+
+{ name => 'default_btree_implementation', type => 'string', context => 'PGC_USERSET', group => 'CLIENT_CONN_STATEMENT',
+  short_desc => 'Sets the index access method that implements new btree indexes.',
+  long_desc => 'An empty string means btree indexes are implemented by btree itself.',
+  flags => 'GUC_IS_NAME',
+  variable => 'default_btree_implementation',
+  boot_val => '""',
+  check_hook => 'check_default_btree_implementation',
 },
 
 { name => 'default_statistics_target', type => 'int', context => 'PGC_USERSET', group => 'QUERY_TUNING_OTHER',

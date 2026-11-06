@@ -30,6 +30,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#include "access/genam.h"
 #include "access/htup_details.h"
 #include "access/multixact.h"
 #include "access/parallel.h"
@@ -266,7 +267,9 @@ typedef struct opclasscacheent
 {
 	Oid			opclassoid;		/* lookup key: OID of opclass */
 	bool		valid;			/* set true after successful fill-in */
-	StrategyNumber numSupport;	/* max # of support procs (from pg_am) */
+	StrategyNumber numSupport;	/* # of support procs loaded, the most any
+								 * caller asked for */
+	StrategyNumber maxProcNum;	/* highest support proc number found */
 	Oid			opcfamily;		/* OID of opclass's family */
 	Oid			opcintype;		/* OID of opclass's declared input type */
 	RegProcedure *supportProcs; /* OIDs of support procedures */
@@ -1442,6 +1445,7 @@ RelationInitIndexAccessInfo(Relation relation)
 {
 	HeapTuple	tuple;
 	Form_pg_am	aform;
+	Oid			implam;
 	Datum		indcollDatum;
 	Datum		indclassDatum;
 	Datum		indoptionDatum;
@@ -1472,13 +1476,16 @@ RelationInitIndexAccessInfo(Relation relation)
 	ReleaseSysCache(tuple);
 
 	/*
-	 * Look up the index's access method, save the OID of its handler function
+	 * Look up the access method whose code implements the index, normally the
+	 * index's own (relam), and save the OID of its handler function.  System
+	 * catalog indexes, the only ones in the relcache init file, never have a
+	 * separate implementation.
 	 */
 	Assert(relation->rd_rel->relam != InvalidOid);
-	tuple = SearchSysCache1(AMOID, ObjectIdGetDatum(relation->rd_rel->relam));
+	implam = IndexRelationGetImplAm(relation);
+	tuple = SearchSysCache1(AMOID, ObjectIdGetDatum(implam));
 	if (!HeapTupleIsValid(tuple))
-		elog(ERROR, "cache lookup failed for access method %u",
-			 relation->rd_rel->relam);
+		elog(ERROR, "cache lookup failed for access method %u", implam);
 	aform = (Form_pg_am) GETSTRUCT(tuple);
 	relation->rd_amhandler = aform->amhandler;
 	ReleaseSysCache(tuple);
@@ -1589,6 +1596,7 @@ RelationInitIndexAccessInfo(Relation relation)
 	 */
 	relation->rd_indexprs = NIL;
 	relation->rd_indpred = NIL;
+	relation->rd_indattr = NULL;
 	relation->rd_exclops = NULL;
 	relation->rd_exclprocs = NULL;
 	relation->rd_exclstrats = NULL;
@@ -1649,7 +1657,15 @@ IndexSupportInitialize(oidvector *indclass,
  *
  * The information from pg_am about expected range of support function
  * numbers is passed in, rather than being looked up, mainly because the
- * caller will have it already.
+ * caller will have it already.  It need not be the same for every caller:
+ * an index implemented by another access method's code (pg_index.indimplam)
+ * takes it from the implementation, which may define more support
+ * procedures than the access method it implements, so indexes of one
+ * opclass can ask for different counts.  The entry keeps the procedures
+ * for the largest count asked for; a caller asking for more reloads them
+ * into a larger array, and one asking for fewer reads only its prefix.
+ * Support procedure numbers above the count asked for are an error for
+ * that caller.
  *
  * Note there is no provision for flushing the cache.  This is OK at the
  * moment because there is no way to ALTER any interesting properties of an
@@ -1697,9 +1713,14 @@ LookupOpclassInfo(Oid operatorClassOid,
 		opcentry->numSupport = numSupport;
 		opcentry->supportProcs = NULL;	/* filled below */
 	}
-	else
+	else if (numSupport > opcentry->numSupport)
 	{
-		Assert(numSupport == opcentry->numSupport);
+		/* Reload into a larger array; callers copy it, so free the old. */
+		opcentry->valid = false;
+		opcentry->numSupport = numSupport;
+		if (opcentry->supportProcs)
+			pfree(opcentry->supportProcs);
+		opcentry->supportProcs = NULL;
 	}
 
 	/*
@@ -1717,16 +1738,17 @@ LookupOpclassInfo(Oid operatorClassOid,
 #endif
 
 	if (opcentry->valid)
-		return opcentry;
+		goto done;
 
 	/*
 	 * Need to fill in new entry.  First allocate space, unless we already did
 	 * so in some previous attempt.
 	 */
-	if (opcentry->supportProcs == NULL && numSupport > 0)
+	if (opcentry->supportProcs == NULL && opcentry->numSupport > 0)
 		opcentry->supportProcs = (RegProcedure *)
 			MemoryContextAllocZero(CacheMemoryContext,
-								   numSupport * sizeof(RegProcedure));
+								   opcentry->numSupport * sizeof(RegProcedure));
+	opcentry->maxProcNum = 0;
 
 	/*
 	 * To avoid infinite recursion during startup, force heap scans if we're
@@ -1768,7 +1790,7 @@ LookupOpclassInfo(Oid operatorClassOid,
 	 * Scan pg_amproc to obtain support procs for the opclass.  We only fetch
 	 * the default ones (those with lefttype = righttype = opcintype).
 	 */
-	if (numSupport > 0)
+	if (opcentry->numSupport > 0)
 	{
 		ScanKeyInit(&skey[0],
 					Anum_pg_amproc_amprocfamily,
@@ -1791,12 +1813,14 @@ LookupOpclassInfo(Oid operatorClassOid,
 			Form_pg_amproc amprocform = (Form_pg_amproc) GETSTRUCT(htup);
 
 			if (amprocform->amprocnum <= 0 ||
-				(StrategyNumber) amprocform->amprocnum > numSupport)
+				(StrategyNumber) amprocform->amprocnum > opcentry->numSupport)
 				elog(ERROR, "invalid amproc number %d for opclass %u",
 					 amprocform->amprocnum, operatorClassOid);
 
 			opcentry->supportProcs[amprocform->amprocnum - 1] =
 				amprocform->amproc;
+			opcentry->maxProcNum = Max(opcentry->maxProcNum,
+									   (StrategyNumber) amprocform->amprocnum);
 		}
 
 		systable_endscan(scan);
@@ -1804,6 +1828,12 @@ LookupOpclassInfo(Oid operatorClassOid,
 	}
 
 	opcentry->valid = true;
+
+done:
+	/* As above, for a caller expecting fewer procs than were loaded. */
+	if (opcentry->maxProcNum > numSupport)
+		elog(ERROR, "invalid amproc number %d for opclass %u",
+			 opcentry->maxProcNum, operatorClassOid);
 	return opcentry;
 }
 
@@ -2188,6 +2218,32 @@ RelationIncrementReferenceCount(Relation rel)
 }
 
 /*
+ * RelationIdUpdatesInPlace
+ *		RelationUpdatesInPlace() for a relation known only by OID.
+ *
+ * NB: the caller must hold a lock on the relation.  The planner calls this for
+ * every row mark, so use the cached entry when there is one rather than
+ * opening and closing the relation.
+ */
+bool
+RelationIdUpdatesInPlace(Oid relationId)
+{
+	Relation	rel;
+	bool		result;
+
+	RelationIdCacheLookup(relationId, rel);
+	if (rel != NULL && rel->rd_isvalid)
+		return RelationUpdatesInPlace(rel);
+
+	rel = RelationIdGetRelation(relationId);
+	if (!RelationIsValid(rel))
+		elog(ERROR, "could not open relation with OID %u", relationId);
+	result = RelationUpdatesInPlace(rel);
+	RelationClose(rel);
+	return result;
+}
+
+/*
  * RelationDecrementReferenceCount
  *		Decrements relation reference count.
  */
@@ -2478,6 +2534,9 @@ RelationDestroyRelation(Relation relation, bool remember_tupdesc)
 	bms_free(relation->rd_idattr);
 	bms_free(relation->rd_hotblockingattr);
 	bms_free(relation->rd_summarizedattr);
+	bms_free(relation->rd_indexedattr);
+	bms_free(relation->rd_exprattr);
+	bms_free(relation->rd_cmpattr);
 	if (relation->rd_pubdesc)
 		pfree(relation->rd_pubdesc);
 	if (relation->rd_options)
@@ -5309,6 +5368,60 @@ RelationGetIndexPredicate(Relation relation)
 }
 
 /*
+ * RelationGetIndexedAttrs -- get the table attributes an index reads
+ *
+ * The result has a bit for each table attribute the index references: key
+ * and INCLUDE columns, and every attribute its expressions and predicate
+ * reference, offset by FirstLowInvalidHeapAttributeNumber.  It is the
+ * index's share of RelationGetIndexAttrBitmap(INDEX_ATTR_BITMAP_INDEXED),
+ * and like that it is taken from the stored trees, before constant folding
+ * could drop an attribute.
+ *
+ * The executor gives an index a new entry on UPDATE only if these overlap
+ * the modified indexed attributes, so a table AM with a versioned locator
+ * must use exactly this set when it decides whether an index entry is
+ * valid for a row version; see amlocator.h.
+ *
+ * The result is palloc'd in the caller's memory context.
+ */
+Bitmapset *
+RelationGetIndexedAttrs(Relation indexRel)
+{
+	Bitmapset  *attrs = NULL;
+	Form_pg_index indexStruct = indexRel->rd_index;
+	Datum		datum;
+	bool		isnull;
+	MemoryContext oldcxt;
+
+	if (indexRel->rd_indattr != NULL)
+		return bms_copy(indexRel->rd_indattr);
+
+	for (int i = 0; i < indexStruct->indnatts; i++)
+	{
+		AttrNumber	attrnum = indexStruct->indkey.values[i];
+
+		if (attrnum != 0)
+			attrs = bms_add_member(attrs,
+								   attrnum - FirstLowInvalidHeapAttributeNumber);
+	}
+
+	datum = heap_getattr(indexRel->rd_indextuple, Anum_pg_index_indexprs,
+						 GetPgIndexDescriptor(), &isnull);
+	if (!isnull)
+		pull_varattnos(stringToNode(TextDatumGetCString(datum)), 1, &attrs);
+	datum = heap_getattr(indexRel->rd_indextuple, Anum_pg_index_indpred,
+						 GetPgIndexDescriptor(), &isnull);
+	if (!isnull)
+		pull_varattnos(stringToNode(TextDatumGetCString(datum)), 1, &attrs);
+
+	oldcxt = MemoryContextSwitchTo(indexRel->rd_indexcxt);
+	indexRel->rd_indattr = bms_copy(attrs);
+	MemoryContextSwitchTo(oldcxt);
+
+	return attrs;
+}
+
+/*
  * RelationGetIndexAttrBitmap -- get a bitmap of index attribute numbers
  *
  * The result has a bit set for each attribute used anywhere in the index
@@ -5326,6 +5439,15 @@ RelationGetIndexPredicate(Relation relation)
  *									index (empty if FULL)
  *	INDEX_ATTR_BITMAP_HOT_BLOCKING	Columns that block updates from being HOT
  *	INDEX_ATTR_BITMAP_SUMMARIZED	Columns included in summarizing indexes
+ *	INDEX_ATTR_BITMAP_INDEXED		Columns referenced by any index
+ *	INDEX_ATTR_BITMAP_EXPRESSION	Columns that non-summarizing indexes
+ *									reference only through expressions or
+ *									as partial indexes
+ *	INDEX_ATTR_BITMAP_COMPARABLE	Columns that non-summarizing indexes
+ *									reference directly only if their
+ *									access method can compare entries
+ *									(amcomparedatums), less key and replica
+ *									identity columns
  *
  * Attribute numbers are offset by FirstLowInvalidHeapAttributeNumber so that
  * we can include system attributes (e.g., OID) in the bitmap representation.
@@ -5350,6 +5472,14 @@ RelationGetIndexAttrBitmap(Relation relation, IndexAttrBitmapKind attrKind)
 	Bitmapset  *idindexattrs;	/* columns in the replica identity */
 	Bitmapset  *hotblockingattrs;	/* columns with HOT blocking indexes */
 	Bitmapset  *summarizedattrs;	/* columns with summarizing indexes */
+	Bitmapset  *indexedattrs;	/* columns referenced by any index */
+	Bitmapset  *exprattrs;		/* columns of expression or partial
+								 * non-summarizing indexes */
+	Bitmapset  *cmpattrs;		/* plain columns of indexes whose AM can
+								 * compare entries (amcomparedatums) */
+	Bitmapset  *nocmpattrs;		/* plain columns of indexes whose AM cannot */
+	Bitmapset  *plainattrs;		/* columns of other non-summarizing indexes,
+								 * and plain columns of expression indexes */
 	List	   *indexoidlist;
 	List	   *newindexoidlist;
 	Oid			relpkindex;
@@ -5372,6 +5502,12 @@ RelationGetIndexAttrBitmap(Relation relation, IndexAttrBitmapKind attrKind)
 				return bms_copy(relation->rd_hotblockingattr);
 			case INDEX_ATTR_BITMAP_SUMMARIZED:
 				return bms_copy(relation->rd_summarizedattr);
+			case INDEX_ATTR_BITMAP_INDEXED:
+				return bms_copy(relation->rd_indexedattr);
+			case INDEX_ATTR_BITMAP_EXPRESSION:
+				return bms_copy(relation->rd_exprattr);
+			case INDEX_ATTR_BITMAP_COMPARABLE:
+				return bms_copy(relation->rd_cmpattr);
 			default:
 				elog(ERROR, "unknown attrKind %u", attrKind);
 		}
@@ -5416,6 +5552,10 @@ restart:
 	idindexattrs = NULL;
 	hotblockingattrs = NULL;
 	summarizedattrs = NULL;
+	exprattrs = NULL;
+	cmpattrs = NULL;
+	nocmpattrs = NULL;
+	plainattrs = NULL;
 	foreach(l, indexoidlist)
 	{
 		Oid			indexOid = lfirst_oid(l);
@@ -5499,6 +5639,24 @@ restart:
 			{
 				*attrs = bms_add_member(*attrs,
 										attrnum - FirstLowInvalidHeapAttributeNumber);
+				if (attrs == &hotblockingattrs)
+				{
+					if (indexPredicate != NULL)
+						exprattrs = bms_add_member(exprattrs,
+												   attrnum - FirstLowInvalidHeapAttributeNumber);
+					else
+						plainattrs = bms_add_member(plainattrs,
+													attrnum - FirstLowInvalidHeapAttributeNumber);
+					if (indexDesc->rd_indam->amcomparedatums != NULL &&
+						(!indexDesc->rd_index->indisexclusion ||
+						 indexDesc->rd_index->indimmediate) &&
+						!index_can_return(indexDesc, i + 1))
+						cmpattrs = bms_add_member(cmpattrs,
+												  attrnum - FirstLowInvalidHeapAttributeNumber);
+					else
+						nocmpattrs = bms_add_member(nocmpattrs,
+													attrnum - FirstLowInvalidHeapAttributeNumber);
+				}
 
 				if (isKey && i < indexDesc->rd_index->indnkeyatts)
 					uindexattrs = bms_add_member(uindexattrs,
@@ -5519,6 +5677,12 @@ restart:
 
 		/* Collect all attributes in the index predicate, too */
 		pull_varattnos(indexPredicate, 1, attrs);
+
+		if (attrs == &hotblockingattrs)
+		{
+			pull_varattnos(indexExpressions, 1, &exprattrs);
+			pull_varattnos(indexPredicate, 1, &exprattrs);
+		}
 
 		index_close(indexDesc, AccessShareLock);
 	}
@@ -5548,9 +5712,49 @@ restart:
 		bms_free(idindexattrs);
 		bms_free(hotblockingattrs);
 		bms_free(summarizedattrs);
+		bms_free(exprattrs);
+		bms_free(cmpattrs);
+		bms_free(nocmpattrs);
+		bms_free(plainattrs);
 
 		goto restart;
 	}
+
+	indexedattrs = bms_union(hotblockingattrs, summarizedattrs);
+
+	/*
+	 * Record what attributes non-summarizing indexes reference only through
+	 * expressions, or only as partial indexes.  A change to one of these
+	 * needs new index entries only if it changes the value of an index's
+	 * expressions or a row's membership in, or key within, a partial index.
+	 * An attribute a summarizing index references is left out, as that index
+	 * needs to see any change to it.
+	 */
+	exprattrs = bms_del_members(exprattrs, plainattrs);
+	exprattrs = bms_del_members(exprattrs, summarizedattrs);
+	bms_free(plainattrs);
+
+	/*
+	 * Record what attributes non-summarizing indexes also reference directly,
+	 * as key or included columns, only in indexes whose access method can
+	 * tell whether a new value gives the same entries (amcomparedatums).  A
+	 * change to one of these needs new index entries only if, for some index,
+	 * it does not.  Like those above, and for the same reason, these leave
+	 * out what summarizing indexes reference.  They also leave out the
+	 * columns of candidate keys and the replica identity, whose changes are
+	 * decided by value as before: the table AM takes its tuple lock strength
+	 * and what it logs for logical decoding from them.  The columns of
+	 * exclusion constraints are included if the constraint is checked
+	 * immediately: if an update keeps such an index's entries, the executor
+	 * checks the constraint itself.  A deferrable one's index counts as
+	 * unable to compare, so that the values in its entries stay those of
+	 * every version of the row they lead to, as unique_key_recheck() assumes.
+	 */
+	cmpattrs = bms_del_members(cmpattrs, nocmpattrs);
+	cmpattrs = bms_del_members(cmpattrs, summarizedattrs);
+	cmpattrs = bms_del_members(cmpattrs, uindexattrs);
+	cmpattrs = bms_del_members(cmpattrs, idindexattrs);
+	bms_free(nocmpattrs);
 
 	/* Don't leak the old values of these bitmaps, if any */
 	relation->rd_attrsvalid = false;
@@ -5564,6 +5768,12 @@ restart:
 	relation->rd_hotblockingattr = NULL;
 	bms_free(relation->rd_summarizedattr);
 	relation->rd_summarizedattr = NULL;
+	bms_free(relation->rd_indexedattr);
+	relation->rd_indexedattr = NULL;
+	bms_free(relation->rd_exprattr);
+	relation->rd_exprattr = NULL;
+	bms_free(relation->rd_cmpattr);
+	relation->rd_cmpattr = NULL;
 
 	/*
 	 * Now save copies of the bitmaps in the relcache entry.  We intentionally
@@ -5578,6 +5788,9 @@ restart:
 	relation->rd_idattr = bms_copy(idindexattrs);
 	relation->rd_hotblockingattr = bms_copy(hotblockingattrs);
 	relation->rd_summarizedattr = bms_copy(summarizedattrs);
+	relation->rd_indexedattr = bms_copy(indexedattrs);
+	relation->rd_exprattr = bms_copy(exprattrs);
+	relation->rd_cmpattr = bms_copy(cmpattrs);
 	relation->rd_attrsvalid = true;
 	MemoryContextSwitchTo(oldcxt);
 
@@ -5594,6 +5807,12 @@ restart:
 			return hotblockingattrs;
 		case INDEX_ATTR_BITMAP_SUMMARIZED:
 			return summarizedattrs;
+		case INDEX_ATTR_BITMAP_INDEXED:
+			return indexedattrs;
+		case INDEX_ATTR_BITMAP_EXPRESSION:
+			return exprattrs;
+		case INDEX_ATTR_BITMAP_COMPARABLE:
+			return cmpattrs;
 		default:
 			elog(ERROR, "unknown attrKind %u", attrKind);
 			return NULL;
@@ -6541,6 +6760,7 @@ load_relcache_init_file(bool shared)
 		rel->rd_partcheckcxt = NULL;
 		rel->rd_indexprs = NIL;
 		rel->rd_indpred = NIL;
+		rel->rd_indattr = NULL;
 		rel->rd_exclops = NULL;
 		rel->rd_exclprocs = NULL;
 		rel->rd_exclstrats = NULL;
@@ -6572,6 +6792,7 @@ load_relcache_init_file(bool shared)
 		rel->rd_firstRelfilelocatorSubid = InvalidSubTransactionId;
 		rel->rd_droppedSubid = InvalidSubTransactionId;
 		rel->rd_amcache = NULL;
+		rel->rd_locdesc = NULL;
 		rel->rd_toastchunkidtype = InvalidOid;
 		rel->pgstat_info = NULL;
 

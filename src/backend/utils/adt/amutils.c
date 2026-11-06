@@ -84,6 +84,12 @@ static const struct am_propname am_propnames[] =
 	{
 		"can_include", AMPROP_CAN_INCLUDE
 	},
+	{
+		"can_var_locator", AMPROP_CAN_VAR_LOCATOR
+	},
+	{
+		"can_version", AMPROP_CAN_VERSION
+	},
 };
 
 static IndexAMProperty
@@ -159,7 +165,11 @@ indexam_property(FunctionCallInfo fcinfo,
 	/* Try to convert property name to enum (no error if not known) */
 	prop = lookup_prop_name(propname);
 
-	/* If we have an index OID, look up the AM, and get # of columns too */
+	/*
+	 * If we have an index OID, look up the AM, and get # of columns too.  An
+	 * index's and its columns' properties are those of the code implementing
+	 * it, which may be another AM than the one it names (pg_index.indimplam).
+	 */
 	if (OidIsValid(index_oid))
 	{
 		HeapTuple	tuple;
@@ -178,6 +188,13 @@ indexam_property(FunctionCallInfo fcinfo,
 		}
 		amoid = rd_rel->relam;
 		natts = rd_rel->relnatts;
+		ReleaseSysCache(tuple);
+
+		tuple = SearchSysCache1(INDEXRELID, ObjectIdGetDatum(index_oid));
+		if (!HeapTupleIsValid(tuple))
+			PG_RETURN_NULL();
+		if (OidIsValid(((Form_pg_index) GETSTRUCT(tuple))->indimplam))
+			amoid = ((Form_pg_index) GETSTRUCT(tuple))->indimplam;
 		ReleaseSysCache(tuple);
 	}
 
@@ -394,6 +411,12 @@ indexam_property(FunctionCallInfo fcinfo,
 
 		case AMPROP_CAN_INCLUDE:
 			PG_RETURN_BOOL(routine->amcaninclude);
+
+		case AMPROP_CAN_VAR_LOCATOR:
+			PG_RETURN_BOOL(routine->amcanvarlocator);
+
+		case AMPROP_CAN_VERSION:
+			PG_RETURN_BOOL(routine->amcanversion);
 
 		default:
 			PG_RETURN_NULL();

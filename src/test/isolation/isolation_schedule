@@ -43,6 +43,8 @@ test: fk-fastpath-null-key
 test: subxid-overflow
 test: eval-plan-qual
 test: eval-plan-qual-trigger
+test: update-epq-indexes
+test: update-subattr-epq
 test: eval-plan-qual-partition-prune
 test: inplace-inval
 test: intra-grant-inplace
@@ -94,6 +96,8 @@ test: skip-locked-3
 test: skip-locked-4
 test: drop-index-concurrently-1
 test: multiple-cic
+test: cic-expression-hot
+test: hot-exclusion
 test: alter-domain-validate
 test: alter-table-1
 test: alter-table-2
@@ -112,6 +116,11 @@ test: horizons
 test: predicate-hash
 test: predicate-gist
 test: predicate-gin
+test: predicate-bark
+test: insert-conflict-bark
+test: bark-vacuum-posting
+test: scan-shift-bark
+test: knn-shift-bark
 test: partition-concurrent-attach
 test: partition-drop-index-locking
 test: partition-key-update-1

@@ -29,6 +29,7 @@
 #ifndef EXECNODES_H
 #define EXECNODES_H
 
+#include "access/amlocator.h"
 #include "access/htup.h"
 #include "executor/instrument_node.h"
 #include "fmgr.h"
@@ -232,8 +233,24 @@ typedef struct IndexInfo
 
 	/* Oid of index AM */
 	Oid			ii_Am;
+	/* Oid of the index AM implementing it, or InvalidOid for ii_Am itself */
+	Oid			ii_ImplAm;
 	/* private cache area for index AM */
 	void	   *ii_AmCache;
+
+	/*
+	 * The version tag of the row version being indexed, or
+	 * InvalidIndexVersionTag if none; see "Versioned locators" in
+	 * amlocator.h.  Whoever hands an entry to the index AM sets it first: the
+	 * executor before index_insert, and a table AM whose locator is versioned
+	 * before each callback of its index build and validation scans, and only
+	 * for an index that can store tags (index_can_version()), which reads it
+	 * in aminsert and in its build callback (which finds this IndexInfo
+	 * through its own callback state).  Passing it here rather than as an
+	 * argument leaves the signatures of aminsert and IndexBuildCallback,
+	 * which every index AM implements, unchanged.
+	 */
+	IndexVersionTag ii_VersionTag;
 
 	/* memory context holding this IndexInfo */
 	MemoryContext ii_Context;
@@ -501,6 +518,49 @@ typedef struct ResultRelInfo
 
 	/* array of key/attr info for indices */
 	IndexInfo **ri_IndexRelationInfo;
+
+	/*
+	 * For UPDATE, the table attributes each index references through
+	 * expressions or its predicate, and directly if the index is partial or
+	 * its access method has amcomparedatums, offset by
+	 * FirstLowInvalidHeapAttributeNumber.  Built on first use; NULL until
+	 * then.
+	 */
+	Bitmapset **ri_IndexExprAttrs;
+
+	/*
+	 * For UPDATE, per index, the table attributes (offset as above) that the
+	 * statement's SET expressions provably cannot change any part of that the
+	 * index reads, as long as the attribute is not null before or after.
+	 * Worked out when ri_UpdateCount, which counts updated rows up to then,
+	 * reaches 2; NULL if nothing was proven.  It holds for the whole
+	 * statement, across rescans: it depends only on the plan and on Params
+	 * whose values are fixed for the execution.
+	 */
+	Bitmapset **ri_IndexUntouchedAttrs;
+	int			ri_UpdateCount;
+
+	/*
+	 * For UPDATE, the indexes of exclusion constraints, as positions in the
+	 * index arrays, that ExecUpdateModifiedIdxAttrs() let the row being
+	 * updated keep its entries in although their values changed (their access
+	 * method said the entries were the same).  If the update is then HOT, no
+	 * index entry is inserted, so the constraint must be checked separately;
+	 * see ExecCheckHotExclusion().  Describes the row whose update was
+	 * decided last.
+	 */
+	Bitmapset  *ri_HotExclusionCheck;
+
+	/*
+	 * For UPDATE, per index (NULL until first needed), what
+	 * ExecUpdateModifiedIdxAttrs() learned of the new row while deciding the
+	 * row's update: whether it satisfies the index's predicate, and its index
+	 * datums.  Inserting the new row's index entries, and checking an
+	 * exclusion constraint after a HOT update, use these instead of
+	 * evaluating the index's expressions and predicate again.  The datums are
+	 * in the per-tuple memory context, so they are valid until the next row.
+	 */
+	struct NewIndexDatums *ri_NewIndexDatums;
 
 	/*
 	 * For UPDATE/DELETE/MERGE result relations, the attribute number of the

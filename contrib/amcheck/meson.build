@@ -1,6 +1,7 @@
 # Copyright (c) 2022-2026, PostgreSQL Global Development Group
 
 amcheck_sources = files(
+  'verify_bark.c',
   'verify_common.c',
   'verify_gin.c',
   'verify_heapam.c',
@@ -27,6 +28,9 @@ install_data(
   'amcheck--1.2--1.3.sql',
   'amcheck--1.3--1.4.sql',
   'amcheck--1.4--1.5.sql',
+  'amcheck--1.5--1.6.sql',
+  'amcheck--1.6--1.7.sql',
+  'amcheck--1.7--1.8.sql',
   kwargs: contrib_data_args,
 )
 
@@ -39,7 +43,22 @@ tests += {
       'check',
       'check_btree',
       'check_gin',
+      'check_bark',
+      'check_bark_unique',
+      'check_bark_vacuum',
+      'check_bark_knn',
+      'check_bark_oversized',
+      'check_bark_split',
+      'check_bark_build',
+      'check_bark_markpos',
+      'check_bark_skip',
+      'check_bark_prefix',
+      'check_bark_rowcmp',
+      'check_bark_tidorder',
+      'check_bark_opclass',
+      'check_bark_anyblock',
       'check_heap',
+      'check_subattr',
     ],
   },
   'tap': {
@@ -50,6 +69,13 @@ tests += {
       't/004_verify_nbtree_unique.pl',
       't/005_pitr.pl',
       't/006_verify_gin.pl',
+      't/007_subattr_proof.pl',
+      't/008_verify_bark.pl',
+      't/009_verify_bark_parent.pl',
+      't/010_verify_bark_chains.pl',
     ],
+    'env': {
+       'enable_injection_points': get_option('injection_points') ? 'yes' : 'no',
+    },
   },
 }

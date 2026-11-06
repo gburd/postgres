@@ -1,0 +1,70 @@
+# Copyright (c) 2026, PostgreSQL Global Development Group
+
+bark_multikey_sources = files(
+  'bark_multikey.c',
+  'bark_wideblock.c',
+)
+
+if host_system == 'windows'
+  bark_multikey_sources += rc_lib_gen.process(win32ver_rc, extra_args: [
+    '--NAME', 'bark_multikey',
+    '--FILEDESC', 'bark_multikey - test code for BARK multikey operator classes',])
+endif
+
+bark_multikey = shared_module('bark_multikey',
+  bark_multikey_sources,
+  kwargs: pg_test_mod_args,
+)
+test_install_libs += bark_multikey
+
+test_install_data += files(
+  'bark_multikey.control',
+  'bark_multikey--1.0.sql',
+)
+
+bark_multikey_specs = [
+  'bark_multikey_concurrent',
+  'bark_multikey_unique_concurrent',
+  'bark_multikey_hot_epq',
+  'bark_multikey_exclude_concurrent',
+]
+# This one stops a scan at an injection point.
+if get_option('injection_points')
+  bark_multikey_specs += 'bark_multikey_gin_concurrent'
+endif
+
+tests += {
+  'name': 'bark_multikey',
+  'sd': meson.current_source_dir(),
+  'bd': meson.current_build_dir(),
+  'regress': {
+    'sql': [
+      'bark_multikey',
+      'bark_multikey_scan',
+      'bark_multikey_unique',
+      'bark_multikey_gin',
+      'bark_multikey_ginmerge',
+      'bark_multikey_ginscan',
+      'bark_multikey_ginco',
+      'bark_multikey_ginbound',
+      'bark_multikey_sim',
+      'bark_locator',
+      'bark_wideblock',
+      'bark_multikey_hot',
+      'bark_multikey_exclude',
+    ],
+    'regress_args': ['--load-extension=amcheck'],
+  },
+  'isolation': {
+    'specs': bark_multikey_specs,
+  },
+  'tap': {
+    'env': {
+       'enable_injection_points': get_option('injection_points') ? 'yes' : 'no',
+    },
+    'tests': [
+      't/001_crash_and_standby.pl',
+      't/002_wideblock_recovery.pl',
+    ],
+  },
+}

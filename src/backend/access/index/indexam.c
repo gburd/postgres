@@ -427,6 +427,7 @@ index_rescan(IndexScanDesc scan,
 
 	scan->kill_prior_tuple = false; /* for safety */
 	scan->xs_heap_continue = false;
+	scan->xs_entry_verdict = INDEX_SCAN_ENTRY_UNKNOWN;
 
 	scan->indexRelation->rd_indam->amrescan(scan, keys, nkeys,
 											orderbys, norderbys);
@@ -501,6 +502,7 @@ index_restrpos(IndexScanDesc scan)
 
 	scan->kill_prior_tuple = false; /* for safety */
 	scan->xs_heap_continue = false;
+	scan->xs_entry_verdict = INDEX_SCAN_ENTRY_UNKNOWN;
 
 	scan->indexRelation->rd_indam->amrestrpos(scan);
 }
@@ -714,6 +716,48 @@ index_can_return(Relation indexRelation, int attno)
 		return false;
 
 	return indexRelation->rd_indam->amcanreturn(indexRelation, attno);
+}
+
+/* ----------------
+ *		index_can_version
+ *
+ *		Does the index store version tags?  Its access method must have
+ *		amcanversion, and, if it has amindexcanversion, say so for this
+ *		index; see "Versioned locators" in amlocator.h.  Every entry of any
+ *		other index is untagged, and the table AM resolves it by locator
+ *		alone.
+ * ----------------
+ */
+bool
+index_can_version(Relation indexRelation)
+{
+	/* Not RELATION_CHECKS: an index's own build and REINDEX ask too. */
+	Assert(RelationIsValid(indexRelation));
+	Assert(indexRelation->rd_indam);
+
+	if (!indexRelation->rd_indam->amcanversion)
+		return false;
+	return indexRelation->rd_indam->amindexcanversion == NULL ||
+		indexRelation->rd_indam->amindexcanversion(indexRelation);
+}
+
+/* ----------------
+ *		index_may_keep_locator
+ *
+ *		May an update that needs a new entry in the index keep the row's
+ *		locator?  Only if the index stores version tags and, if its access
+ *		method has amindexmaykeeplocator, that says so; see "Versioned
+ *		locators" in amlocator.h.  Unlike index_can_version(), the answer may
+ *		change during the life of the index.
+ * ----------------
+ */
+bool
+index_may_keep_locator(Relation indexRelation)
+{
+	if (!index_can_version(indexRelation))
+		return false;
+	return indexRelation->rd_indam->amindexmaykeeplocator == NULL ||
+		indexRelation->rd_indam->amindexmaykeeplocator(indexRelation);
 }
 
 /* ----------------

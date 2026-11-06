@@ -102,6 +102,30 @@ my_tableam_handler(PG_FUNCTION_ARGS)
  </para>
 
  <para>
+  Tuple update, delete, and lock callbacks report failure facts through
+  <structname>TM_FailureData</structname>, rather than exposing physical tuple
+  headers.  For <literal>TM_SelfModified</literal>,
+  <structfield>modified_by_same_command</structfield> compares the responsible
+  command with the callback's <parameter>cid</parameter> argument, and
+  <structfield>modified_by_current_transaction</structfield> includes current
+  subtransactions.  When locking a later version, the responsible command can
+  be the one that created that version.  For <literal>TM_Updated</literal>,
+  <structfield>moved_partitions</structfield> identifies an update that moved
+  the row to another partition.  These fields are false for other results.
+ </para>
+
+ <para>
+  Every callback call must initialize all fields of
+  <structname>TM_FailureData</structname>.  The failure facts describe the final
+  result, not an intermediate retry.  The <structfield>retargeted</structfield>
+  flag instead accumulates across retries within a single tuple lock call:
+  it records that the call followed a later row version, even if locking
+  ultimately failed.  On success, it requires the caller to recheck the row,
+  and the returned locator identifies the locked version.  Retargeting need
+  not change the locator for access methods that update rows in place.
+ </para>
+
+ <para>
   To implement an access method, an implementor will typically need to
   implement an <acronym>AM</acronym>-specific type of tuple table slot (see
   <ulink url="https://git.postgresql.org/gitweb/?p=postgresql.git;a=blob;f=src/include/executor/tuptable.h;hb=HEAD">
@@ -151,5 +175,377 @@ my_tableam_handler(PG_FUNCTION_ARGS)
   <filename>src/backend/access/heap/heapam_handler.c</filename> for details of
   its implementation.
  </para>
+
+ <para>
+  A table access method can choose the code that implements each new index
+  on its tables with the optional <function>index_implementation</function>
+  callback.  It is given the table and the index's access method, and
+  returns the OID of an index access method that implements indexes of that
+  access method (see <xref linkend="index-implementations"/>), or
+  <literal>InvalidOid</literal> for no preference, in which case
+  <xref linkend="guc-default-btree-implementation"/> applies.  This lets a
+  table access method use, for example, a <literal>btree</literal>
+  implementation that stores versioned entries for its tables, while the
+  indexes stay ordinary <literal>btree</literal> indexes to the planner and
+  to users.  The choice is recorded when the index is created and is not
+  revisited, so it survives rebuilds, dump and restore with the same table
+  access method, and changes to the table's access method; it is not
+  consulted for indexes on system catalogs or TOAST tables, nor while
+  <application>pg_upgrade</application> restores a dump, which states every
+  index's implementation itself.
+ </para>
+
+ <sect1 id="tableam-locator">
+  <title>Row Locators</title>
+
+  <para>
+   The value an index stores to identify a row, and hands back to the table
+   access method to fetch it, is the row's <firstterm>locator</firstterm>.
+   For <literal>heap</literal> it is the <acronym>TID</acronym>.  An access
+   method describes its locator with a <structname>LocatorDesc</structname>,
+   returned by the <function>relation_locator</function> callback for each
+   relation.  An access method that leaves the callback
+   <literal>NULL</literal> is treated as having a locator like
+   <literal>heap</literal>'s.  The fields are:
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term><structfield>width</structfield></term>
+    <listitem>
+     <para>
+      The locator's size in bytes; a negative value is the largest size of a
+      variable-width locator.  An index access method stores a locator as a
+      <acronym>TID</acronym> unless it sets
+      <structfield>amcanvarlocator</structfield> (reported by
+      <function>pg_indexam_has_property</function> as
+      <literal>can_var_locator</literal>), so it can be used only on a table
+      whose locator is fixed-width and no wider than 6 bytes; otherwise
+      <command>CREATE INDEX</command>, and any command that rebuilds the
+      table's indexes, fails.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><structfield>max_offset</structfield></term>
+    <listitem>
+     <para>
+      The largest item number any locator carries.  If it exceeds what a
+      bitmap can hold (<symbol>MaxHeapTuplesPerPage</symbol>), the planner
+      does not consider bitmap scans of the table, and
+      <acronym>GIN</acronym> indexes cannot be built on it.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><structfield>name</structfield></term>
+    <listitem>
+     <para>
+      A name for the locator, used in error messages.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><structfield>stable</structfield></term>
+    <listitem>
+     <para>
+      Whether a row keeps its locator for its whole life.  For
+      <literal>heap</literal> it does not: an update stores the new version
+      at a new <acronym>TID</acronym>.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><structfield>old_version_retained</structfield></term>
+    <listitem>
+     <para>
+      Whether the version of a row that an <command>UPDATE</command> replaced
+      can still be fetched by its locator.  If not, the executor copies the
+      old row, and the new row for user row triggers, before they are needed,
+      and the access method must keep a deleted row fetchable by its locator
+      until the deleting transaction ends.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><structfield>versioned</structfield></term>
+    <listitem>
+     <para>
+      Whether an index entry names a row version as a locator and a 4-byte
+      <firstterm>version tag</firstterm>, rather than by the locator alone.
+      For <literal>heap</literal> it does not: an update that changes an
+      indexed column gives the new version a new <acronym>TID</acronym>, and
+      no entry carries a tag.  An access method that updates rows in place
+      can say it does, and so keep a row's locator across an update of
+      indexed columns; see <xref linkend="tableam-versioned-locators"/>.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><structfield>bitmap_and_inexact</structfield>, <structfield>bitmap_or_inexact</structfield></term>
+    <listitem>
+     <para>
+      Optional per-block callbacks that let the access method tell a
+      <literal>BitmapAnd</literal> or <literal>BitmapOr</literal> that a
+      block's item numbers cannot be combined exactly; the block is then
+      combined conservatively and rechecked.
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+
+  <para>
+   When the executor locks, updates or deletes a row it has already locked
+   in the same command, it passes <symbol>TUPLE_LOCK_FLAG_LOCKED_VERSION</symbol>,
+   <symbol>TABLE_UPDATE_LOCKED_VERSION</symbol> or
+   <symbol>TABLE_DELETE_LOCKED_VERSION</symbol>.  An access method whose
+   locator names a row rather than a version uses these to tell which
+   version the caller means; see <filename>src/include/access/tableam.h</filename>.
+  </para>
+
+  <para>
+   <filename>src/include/access/amlocator.h</filename> describes each field
+   in detail.  Core code also relies on these properties of every locator:
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     The locator is the row's <structfield>ctid</structfield>.  It identifies
+     the target row of <command>UPDATE</command>, <command>DELETE</command>,
+     <command>MERGE</command>, <literal>SELECT FOR UPDATE</literal> and
+     <literal>WHERE CURRENT OF</literal>, and is what <acronym>TID</acronym>
+     scans look up.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     An item number of zero or greater than <symbol>MaxOffsetNumber</symbol>,
+     and the block number <symbol>InvalidBlockNumber</symbol>, are reserved
+     for other uses and must not appear in a locator.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Locators are ordered by block number, then item number, and rows that
+     are close in that order should be close in storage.
+     <acronym>B-tree</acronym> indexes order duplicate keys by locator,
+     <command>ANALYZE</command> sorts its sample by it, <acronym>TID</acronym>
+     range scans return rows in that order, and <acronym>BRIN</acronym>
+     indexes summarize ranges of block numbers.
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <sect2 id="tableam-versioned-locators">
+   <title>Versioned Locators</title>
+
+   <para>
+    An index entry for a table whose locator is
+    <structfield>versioned</structfield> carries a
+    <firstterm>version tag</firstterm>, of type
+    <type>IndexVersionTag</type> (a 4-byte unsigned integer).  The contract
+    between the table access method, index access methods and core code is:
+   </para>
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      Tag 0 (<symbol>InvalidIndexVersionTag</symbol>) means
+      <quote>untagged</quote>: the entry was made by an access method that
+      does not tag, or for a row version older than the oldest one the table
+      access method keeps history for.  It does not mean <quote>the current
+      version</quote>.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      The table access method hands out tags and alone defines what they
+      mean.  Only it can tell whether an entry (key, locator, tag) is valid
+      for the version of the row a snapshot sees, and when old tags may be
+      forgotten.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      An index for which <function>index_can_version()</function> is true
+      (its access method sets <structfield>amcanversion</structfield>, and
+      its <function>amindexcanversion</function>, if any, says so) stores,
+      orders and returns tags, but never interprets them (see
+      <xref linkend="index-api"/>).  Other indexes store no tags.
+     </para>
+    </listitem>
+   </itemizedlist>
+
+   <para>
+    When the executor updates a row of such a table, it works out which
+    indexed attributes the update changes.  If every non-summarizing index
+    whose attributes (as computed by
+    <function>RelationGetIndexedAttrs</function>: key and included columns,
+    and the columns its expressions and predicate reference) overlap them
+    can store tags and is ready for inserts, it passes
+    <symbol>TABLE_UPDATE_MAY_KEEP_LOCATOR</symbol> to
+    <function>tuple_update</function>.  The access method may then keep the
+    row's locator.  It reports the outcome in
+    <literal>*update_indexes</literal>, and in
+    <literal>*version_tag</literal> the tag of the new version, which every
+    entry the executor makes for that version carries:
+   </para>
+
+   <variablelist>
+    <varlistentry>
+     <term><literal>TU_Affected</literal></term>
+     <listitem>
+      <para>
+       The row kept its locator, and the indexed attributes the executor
+       passed as <literal>modified_idx_attrs</literal> changed.  Every
+       non-summarizing index whose attributes overlap them, and every
+       summarizing index, gets an entry carrying
+       <literal>*version_tag</literal>, which must not be 0; every other
+       index keeps its entries.  Only an access method whose locator is
+       versioned, given <symbol>TABLE_UPDATE_MAY_KEEP_LOCATOR</symbol>, may
+       report this.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
+     <term><literal>TU_All</literal>, <literal>TU_Summarizing</literal>, <literal>TU_None</literal></term>
+     <listitem>
+      <para>
+       As for any access method: every index, only the summarizing ones, or
+       none get entries.  With <literal>TU_All</literal> the row may have
+       moved, and <literal>*version_tag</literal> may be 0 or not, as the
+       access method chooses: a moved row has no history at its new locator.
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+
+   <para>
+    The same rule applies to logical replication apply and to
+    <command>REPACK (CONCURRENTLY)</command>.
+   </para>
+
+   <para>
+    Entries made for a new row (by <command>INSERT</command> or
+    <command>COPY</command>) are untagged; a new row has no history, so that
+    is valid.  Tags come only from the table access method: with the new
+    versions <function>tuple_update</function> makes, and from its index
+    build and validation scans, which set
+    <structfield>ii_VersionTag</structfield> in the
+    <structname>IndexInfo</structname> before handing each row to the index.
+   </para>
+
+   <para>
+    The table access method's obligations are:
+   </para>
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      For an entry of an index for which
+      <function>index_can_version()</function> is true, decide whether it is
+      valid for
+      the version of the row a snapshot sees, that is, whether its key is
+      that version's key.  The rule this interface was designed for: the
+      entry is valid if its tag names that version or an earlier one, and no
+      version since then changed an attribute the index reads; an untagged
+      entry counts as naming the oldest version the access method keeps
+      history for.  An entry of any other index is resolved by locator
+      alone: the executor never lets a row keep its locator across an update
+      that affects such an index, so its entries describe every version
+      their locator reaches, as with <literal>heap</literal>.  Every caller
+      that hands an entry to the table access method also identifies the
+      index.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      When building or validating an index for which
+      <function>index_can_version()</function> is true, tag a row whose history changed an attribute the index reads
+      with the current version's tag; leave it untagged only if there is no
+      such history.  Otherwise the new entry would be judged older than that
+      history, and rejected.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      When building any index from a row's current version while an older
+      version with different values for the index may still be visible to
+      some transaction, set <structfield>ii_BrokenHotChain</structfield>, as
+      <literal>heap</literal> does for a broken <acronym>HOT</acronym> chain,
+      so that such transactions do not use the index.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Keep enough history to decide validity for every entry any index still
+      holds, and discard history only once no entry depends on it.
+     </para>
+    </listitem>
+   </itemizedlist>
+
+   <para>
+    An access method whose locator is versioned must provide the
+    <function>fetch_tid_version</function> callback, which a unique check
+    uses instead of <function>fetch_tid</function>: given an entry's
+    locator, tag and index, it reports whether a version of the row for
+    which that entry is valid is visible to the snapshot, and whether no
+    snapshot needs the entry any more.
+   </para>
+
+   <para>
+    For <command>CREATE INDEX CONCURRENTLY</command>,
+    <function>validate_index</function> collects the entries of the index
+    being built and hands them, sorted, to the access method's
+    <function>index_validate_scan</function> in a
+    <structname>ValidateIndexState</structname>, whose
+    <structfield>tuplesort</structfield> holds the entries' locators as
+    <type>int8</type> datums.  If <function>index_can_version()</function>
+    is true for the index, it instead sets
+    <structfield>versioned</structfield> and collects one tuple per entry,
+    with descriptor <structfield>tupdesc</structfield>: the locator, encoded
+    in the same way, then the tag, both <type>int8</type>, sorted by locator
+    and then tag.  The scan inserts every row version visible to the
+    reference snapshot for which no collected entry is valid.
+   </para>
+
+   <para>
+    History is discarded the way <literal>heap</literal> reclaims dead line
+    pointers: only after an index pass has dealt with every entry that
+    depends on it.  For that, the access method's own
+    <command>VACUUM</command> can set <structfield>version_callback</structfield>
+    and <structfield>version_state</structfield> in the
+    <structname>IndexVacuumInfo</structname> it passes to
+    <function>index_bulk_delete</function> for an index for which
+    <function>index_can_version()</function> is true.  The index access method
+    then asks it about every entry, giving the entry's locator and tag, and
+    the callback answers <literal>INDEX_ENTRY_DEAD</literal> when no snapshot
+    can see a version for which the entry is valid,
+    <literal>INDEX_ENTRY_LIVE</literal>, or
+    <literal>INDEX_ENTRY_LIVE_UNTAG</literal> for a live entry whose tag can
+    be cleared to 0 without changing which versions it is valid for.  The
+    index is reachable through the state.  Other indexes are vacuumed with
+    the usual callback, by locator.  <literal>heap</literal> never sets the
+    callback.
+   </para>
+
+   <para>
+    The <acronym>TID</acronym> bitmap of a bitmap scan holds locators without
+    tags, so <function>scan_bitmap_next_tuple</function> must ask for a recheck
+    of any row whose locator a bitmap may hold only through an entry that is
+    not valid for the visible version.  Plain and index-only scans need
+    nothing beyond the validity rule: the table access method's
+    <structfield>xs_getnext_slot</structfield> callback sees the entry's tag
+    in <structfield>xs_heaptag</structfield>.
+   </para>
+  </sect2>
+ </sect1>
 
 </chapter>

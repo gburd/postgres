@@ -46,6 +46,9 @@ CATALOG(pg_index,2610,IndexRelationId) BKI_SCHEMA_MACRO
 	bool		indisready;		/* is this index ready for inserts? */
 	bool		indislive;		/* is this index alive at all? */
 	bool		indisreplident; /* is this index the identity for replication? */
+	Oid			indimplam BKI_LOOKUP_OPT(pg_am);	/* index AM whose code
+													 * implements the index,
+													 * or 0 for relam's own */
 
 	/* variable-length fields start here, but we allow direct access to indkey */
 	int2vector	indkey BKI_FORCE_NOT_NULL;	/* column numbers of indexed cols,

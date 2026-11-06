@@ -1,0 +1,17 @@
+# Copyright (c) 2022-2026, PostgreSQL Global Development Group
+
+backend_sources += files(
+  'bark.c',
+  'barkdelete.c',
+  'barkinsert.c',
+  'barkknn.c',
+  'barkscan.c',
+  'barksearch.c',
+  'barksort.c',
+  'barksplitloc.c',
+  'barkutils.c',
+  'barkvacuum.c',
+  'barkvalidate.c',
+  'barkverify.c',
+  'barkxlog.c',
+)

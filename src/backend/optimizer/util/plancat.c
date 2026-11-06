@@ -232,6 +232,7 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 			int			ncolumns,
 						nkeycolumns;
 			int			i;
+			bool		ownfamily = false;
 
 			/*
 			 * Extract info from the relation descriptor for the index.
@@ -305,16 +306,41 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 				/* We copy just the fields we need, not all of rd_indam */
 				amroutine = indexRelation->rd_indam;
 				info->amcanorderbyop = amroutine->amcanorderbyop;
+				info->ambtreeopfamilies = amroutine->ambtreeopfamilies;
 				info->amoptionalkey = amroutine->amoptionalkey;
 				info->amsearcharray = amroutine->amsearcharray;
 				info->amsearchnulls = amroutine->amsearchnulls;
 				info->amcanparallel = amroutine->amcanparallel;
 				info->amhasgettuple = (amroutine->amgettuple != NULL);
+
+				/*
+				 * An AM whose indexes differ in that (by operator class, say)
+				 * answers per index through amproperty, as
+				 * IndexSupportsBackwardScan asks it about backward scans.
+				 */
+				if (info->amhasgettuple && amroutine->amproperty != NULL)
+				{
+					bool		res = true;
+					bool		isnull = false;
+
+					if (amroutine->amproperty(indexoid, 0, AMPROP_INDEX_SCAN,
+											  "index_scan", &res, &isnull) &&
+						!isnull && !res)
+						info->amhasgettuple = false;
+				}
+
+				/*
+				 * A TID bitmap cannot hold the table's locators if their
+				 * offsets exceed its bound; see max_offset in amlocator.h.
+				 */
 				info->amhasgetbitmap = amroutine->amgetbitmap != NULL &&
-					relation->rd_tableam->scan_bitmap_next_tuple != NULL;
+					relation->rd_tableam->scan_bitmap_next_tuple != NULL &&
+					RelationGetLocatorDesc(relation)->max_offset <=
+					TBM_MAX_TUPLES_PER_PAGE;
 				info->amcanmarkpos = (amroutine->ammarkpos != NULL &&
 									  amroutine->amrestrpos != NULL);
 				info->amcostestimate = amroutine->amcostestimate;
+				info->amorderbyopcolumn = amroutine->amorderbyopcolumn;
 				Assert(info->amcostestimate != NULL);
 
 				/* Fetch index opclass options */
@@ -323,11 +349,13 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 				/*
 				 * Fetch the ordering information for the index, if any.
 				 */
-				if (info->relam == BTREE_AM_OID)
+				if (amroutine->ambtreeopfamilies)
 				{
 					/*
-					 * If it's a btree index, we can use its opfamily OIDs
-					 * directly as the sort ordering opfamily OIDs.
+					 * If the AM's operator families are btree operator
+					 * families (as the btree AM's are), we can use its
+					 * opfamily OIDs directly as the sort ordering opfamily
+					 * OIDs.
 					 */
 					Assert(amroutine->amcanorder);
 
@@ -341,6 +369,42 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 
 						info->reverse_sort[i] = (opt & INDOPTION_DESC) != 0;
 						info->nulls_first[i] = (opt & INDOPTION_NULLS_FIRST) != 0;
+
+						/*
+						 * Such an AM may also have operator families of its
+						 * own (classes that index several keys per row, say),
+						 * which order a column's keys but not its values.
+						 * The index is ordered by its columns before the
+						 * first one in such a family: give it its own array,
+						 * with InvalidOid there, where build_index_pathkeys
+						 * stops.
+						 *
+						 * Such a column has an entry per key of a row, and a
+						 * scan drops a row's later entries with a set of the
+						 * rows it returned.  The workers of a parallel scan
+						 * read different leaves and could not share it, so
+						 * the index gets no parallel scans.
+						 *
+						 * A unique such index is unique over its keys: a row
+						 * may hold many keys and the column's values are not
+						 * unique, so it is no proof that at most one row
+						 * matches; info->unique is false below.  ON CONFLICT
+						 * inference reads pg_index and still finds it.
+						 */
+						if (get_opfamily_method(info->opfamily[i]) !=
+							BTREE_AM_OID)
+						{
+							info->amcanparallel = false;
+							ownfamily = true;
+							if (info->sortopfamily == info->opfamily)
+							{
+								info->sortopfamily = palloc_array(Oid,
+																  nkeycolumns);
+								memcpy(info->sortopfamily, info->opfamily,
+									   sizeof(Oid) * nkeycolumns);
+							}
+							info->sortopfamily[i] = InvalidOid;
+						}
 					}
 				}
 				else if (amroutine->amcanorder)
@@ -406,6 +470,7 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 			else
 			{
 				info->amcanorderbyop = false;
+				info->ambtreeopfamilies = false;
 				info->amoptionalkey = false;
 				info->amsearcharray = false;
 				info->amsearchnulls = false;
@@ -457,7 +522,7 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 
 			info->indrestrictinfo = NIL;	/* set later, in indxpath.c */
 			info->predOK = false;	/* set later, in indxpath.c */
-			info->unique = index->indisunique;
+			info->unique = index->indisunique && !ownfamily;
 			info->nullsnotdistinct = index->indnullsnotdistinct;
 			info->immediate = index->indimmediate;
 			info->hypothetical = false;

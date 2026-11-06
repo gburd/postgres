@@ -17,6 +17,7 @@
 #ifndef TABLEAM_H
 #define TABLEAM_H
 
+#include "access/amlocator.h"
 #include "access/relscan.h"
 #include "access/sdir.h"
 #include "access/xact.h"
@@ -140,39 +141,62 @@ typedef enum TU_UpdateIndexes
 
 	/* Only summarized columns were updated, TID is unchanged */
 	TU_Summarizing,
+
+	/*
+	 * The row kept its locator, and the modified_idx_attrs passed to
+	 * table_tuple_update changed: every non-summarizing index whose
+	 * attributes overlap them, and every summarizing index, needs an entry
+	 * carrying the new version's (valid) tag; the others keep theirs.  Only
+	 * with TABLE_UPDATE_MAY_KEEP_LOCATOR.
+	 */
+	TU_Affected,
 } TU_UpdateIndexes;
 
 /*
- * When table_tuple_update, table_tuple_delete, or table_tuple_lock fail
- * because the target tuple is already outdated, they fill in this struct to
- * provide information to the caller about what happened. When those functions
- * succeed, the contents of this struct should not be relied upon, except for
- * `traversed`, which may be set in both success and failure cases.
+ * Additional results from table_tuple_update, table_tuple_delete, and
+ * table_tuple_lock.  The AM must initialize all fields on every call.  The
+ * first three fields describe the returned failure, not an intermediate
+ * result from a retry, and are false unless specified below.
  *
- * ctid is the target's ctid link: it is the same as the target's TID if the
- * target was deleted, or the location of the replacement tuple if the target
- * was updated.
+ * For TM_SelfModified, modified_by_same_command indicates that the modification
+ * responsible for the failure was made by the command identified by the cid
+ * argument.  When locking a later version, this can instead be the command
+ * that created that version.  A later command in the same transaction (for
+ * example, in a BEFORE trigger) must not be reported as the same command.
+ * modified_by_current_transaction indicates that the responsible transaction
+ * is our own, including its subtransactions.
  *
- * xmax is the outdating transaction's XID.  If the caller wants to visit the
- * replacement tuple, it must check that this matches before believing the
- * replacement is really a match.  This is InvalidTransactionId if the target
- * was !LP_NORMAL (expected only for a TID retrieved from syscache).
+ * For TM_Updated, moved_partitions indicates that the row was moved to another
+ * partition, rather than updated within this relation.  It does not describe
+ * a successful operation that moves a row.
  *
- * cmax is the outdating command's CID, but only when the failure code is
- * TM_SelfModified (i.e., something in the current transaction outdated the
- * tuple); otherwise cmax is zero.  (We make this restriction because
- * HeapTupleHeaderGetCmax doesn't work for tuples outdated in other
- * transactions.)
+ * retargeted is set when table_tuple_lock(), asked to find the last version,
+ * follows a later version of the row than the caller named.  On success, *tid
+ * holds the locator of the version that was locked, and the caller must
+ * re-evaluate the row (run EvalPlanQual, or recheck the key it searched for)
+ * before acting on what it read earlier.  On failure, retargeted records that
+ * a later version was followed, not that it was successfully locked.
  *
- * traversed indicates if an update chain was followed in order to try to lock
- * the target tuple.  (This may be set in both success and failure cases.)
+ * For heap, the named version is the one at *tid, and a later version is
+ * reached by following the update chain to a different TID.  An AM that
+ * updates rows in place keeps the latest version at the row's locator, so
+ * *tid never changes.  It takes the named version to be the one visible to
+ * the snapshot, unless the caller passes TUPLE_LOCK_FLAG_LOCKED_VERSION, and
+ * sets retargeted when the version it locked is newer.  Likewise
+ * table_tuple_update and table_tuple_delete report TM_Updated for a newer
+ * committed version unless passed TABLE_UPDATE_LOCKED_VERSION or
+ * TABLE_DELETE_LOCKED_VERSION.  Logical replication apply, which has no
+ * snapshot, passes these bits.
+ *
+ * retargeted is cumulative across retries within one lock call, but must be
+ * reset for each new call.
  */
 typedef struct TM_FailureData
 {
-	ItemPointerData ctid;
-	TransactionId xmax;
-	CommandId	cmax;
-	bool		traversed;
+	bool		modified_by_same_command;
+	bool		modified_by_current_transaction;
+	bool		moved_partitions;
+	bool		retargeted;
 } TM_FailureData;
 
 /*
@@ -229,6 +253,19 @@ typedef struct TM_FailureData
  * ndeltids is 0 on return from call to tableam, in which case no index tuple
  * deletions are possible.  Simple deletion callers can rely on any entries
  * they know to be deletable appearing in the final array as deletable.
+ *
+ * If the table's locator is versioned (see amlocator.h), an index that can
+ * store tags (index_can_version()) puts each entry's version tag in its
+ * TM_IndexStatus, and an entry is deletable when no snapshot can see a
+ * version for which the entry (tid, tag) is valid.  That lets the table AM
+ * reclaim the stale entries of a row whose current version is still live.
+ * Such an index can hold several entries of one row at one TID, so a TID may
+ * then appear more than once in deltids, once per entry, each with its own
+ * status and tag.  Every other caller leaves the tag InvalidIndexVersionTag
+ * and offers a TID once.  The tag is in TM_IndexStatus, not in
+ * TM_IndexDelete, to keep the array that the table AM sorts small; a table
+ * AM reaches it through the entry's id.  Heap ignores it: its locator is not
+ * versioned, so its verdict for a TID holds for every entry naming it.
  */
 typedef struct TM_IndexDelete
 {
@@ -244,6 +281,8 @@ typedef struct TM_IndexStatus
 	/* Bottom-up index deletion specific fields follow */
 	bool		promising;		/* Promising (duplicate) index tuple? */
 	int16		freespace;		/* Space freed in index if deleted */
+
+	IndexVersionTag tag;		/* entry's version tag; see above */
 } TM_IndexStatus;
 
 /*
@@ -289,15 +328,32 @@ typedef struct TM_IndexDeleteOp
 /* "options" flag bits for table_tuple_delete */
 #define TABLE_DELETE_CHANGING_PARTITION			(1 << 0)
 #define TABLE_DELETE_NO_LOGICAL					(1 << 1)
+#define TABLE_DELETE_LOCKED_VERSION				(1 << 2)
 
 /* "options" flag bits for table_tuple_update */
 #define TABLE_UPDATE_NO_LOGICAL					(1 << 0)
+#define TABLE_UPDATE_LOCKED_VERSION				(1 << 1)
+#define TABLE_UPDATE_MAY_KEEP_LOCATOR			(1 << 2)
 
 /* flag bits for table_tuple_lock */
 /* Follow tuples whose update is in progress if lock modes don't conflict  */
 #define TUPLE_LOCK_FLAG_LOCK_UPDATE_IN_PROGRESS	(1 << 0)
 /* Follow update chain and lock latest version of tuple */
 #define TUPLE_LOCK_FLAG_FIND_LAST_VERSION		(1 << 1)
+
+/*
+ * TUPLE_LOCK_FLAG_LOCKED_VERSION, TABLE_UPDATE_LOCKED_VERSION and
+ * TABLE_DELETE_LOCKED_VERSION: the caller names the version of the row this
+ * transaction has already locked in this command (or, for ON CONFLICT, the
+ * version it found with a dirty snapshot and is locking now), not the version
+ * visible to the snapshot.  Heap ignores this, since its locator names a
+ * version.  An AM that updates rows in place takes the named version to be
+ * the row's latest committed version when it is called.  If it then waits
+ * for a transaction that goes on to commit an update or delete of the row,
+ * it reports TM_Updated or TM_Deleted, as heap does, so that ON CONFLICT
+ * restarts its arbiter check.
+ */
+#define TUPLE_LOCK_FLAG_LOCKED_VERSION			(1 << 2)
 
 
 /* Typedef for callback function for table_index_build_scan */
@@ -323,6 +379,29 @@ typedef struct TableAmRoutine
 {
 	/* this must be set to T_TableAmRoutine */
 	NodeTag		type;
+
+	/* ------------------------------------------------------------------------
+	 * Locator.
+	 * ------------------------------------------------------------------------
+	 */
+
+	/*
+	 * Return the locator descriptor for this relation, which describes the
+	 * locator this AM hands to indexes; see amlocator.h.  Must not return
+	 * NULL.  The relcache keeps the pointer for the life of the relation's
+	 * cache entry.  Callers use RelationGetLocatorDesc().
+	 */
+	const struct LocatorDesc *(*relation_locator) (Relation rel);
+
+	/*
+	 * Optional.  Return the pg_am OID of the index AM that should implement a
+	 * new index of index AM amoid on rel, or InvalidOid for no preference.
+	 * The implementation's IndexAmRoutine must have amimplements == amoid.
+	 * CREATE INDEX asks this before consulting default_btree_implementation,
+	 * and records the answer in pg_index.indimplam; it is never asked again
+	 * for that index.
+	 */
+	Oid			(*index_implementation) (Relation rel, Oid amoid);
 
 
 	/* ------------------------------------------------------------------------
@@ -473,6 +552,21 @@ typedef struct TableAmRoutine
 	 * The xs_getnext_slot callback is also responsible for whatever
 	 * bookkeeping its callers expect of an index scan, such as maintaining
 	 * instrumentation counters.
+	 *
+	 * If the relation's locator is versioned (see amlocator.h), an entry
+	 * names a row version as (scan->xs_heaptid, scan->xs_heaptag), and the
+	 * callback returns the row only if that entry is valid for the version
+	 * the scan's snapshot sees.  Index-only scans are no different: the
+	 * callback must not return index data through an entry that is not valid
+	 * for the visible version.
+	 *
+	 * The callback reports what it did with each entry in
+	 * scan->xs_entry_verdict: INDEX_SCAN_ENTRY_VALID when it returns a tuple
+	 * through the entry, INDEX_SCAN_ENTRY_INVALID when it moves on to the
+	 * next entry without returning one (and without having returned one
+	 * through this entry before, as on a HOT chain).  An AM whose locator is
+	 * versioned must do this for indexes for which index_can_version() is
+	 * true; see amlocator.h.
 	 */
 	void		(*index_scan_begin) (IndexScanDesc scan, uint32 flags);
 
@@ -500,6 +594,17 @@ typedef struct TableAmRoutine
 							  ItemPointer tid,
 							  Snapshot snapshot,
 							  bool *all_dead);
+
+	/*
+	 * Optional; see table_fetch_tid_version().  An AM whose locator is
+	 * versioned must provide it.
+	 */
+	bool		(*fetch_tid_version) (Relation rel,
+									  ItemPointer tid,
+									  IndexVersionTag tag,
+									  Relation index,
+									  Snapshot snapshot,
+									  bool *all_dead);
 
 	/*
 	 * Fetch tuple at `tid` into `slot`, after doing a visibility test
@@ -586,7 +691,9 @@ typedef struct TableAmRoutine
 								 bool wait,
 								 TM_FailureData *tmfd,
 								 LockTupleMode *lockmode,
-								 TU_UpdateIndexes *update_indexes);
+								 const Bitmapset *modified_idx_attrs,
+								 TU_UpdateIndexes *update_indexes,
+								 IndexVersionTag *version_tag);
 
 	/* see table_tuple_lock() for reference about parameters */
 	TM_Result	(*tuple_lock) (Relation rel,
@@ -825,6 +932,12 @@ typedef struct TableAmRoutine
 	 *
 	 * Prefetching additional data from the bitmap is left to the table AM.
 	 *
+	 * A TID bitmap holds locators only, without version tags.  If the
+	 * relation's locator is versioned (see amlocator.h), a bitmap can hold a
+	 * row's locator only because some index has an entry for it that is not
+	 * valid for the visible version, so the callback sets *recheck for any
+	 * row for which such an entry may exist.
+	 *
 	 * This is an optional callback.
 	 */
 	bool		(*scan_bitmap_next_tuple) (TableScanDesc scan,
@@ -931,6 +1044,88 @@ table_beginscan_common(Relation rel, Snapshot snapshot, int nkeys,
 		elog(ERROR, "scan started during logical decoding");
 
 	return rel->rd_tableam->scan_begin(rel, snapshot, nkeys, key, pscan, flags);
+}
+
+/* ----------------------------------------------------------------------------
+ * Locator inspection functions
+ * ----------------------------------------------------------------------------
+ */
+
+/*
+ * Return the relation's locator descriptor, fetching it from the table AM the
+ * first time and keeping it in the relcache entry after that.
+ */
+static inline const struct LocatorDesc *
+RelationGetLocatorDesc(Relation rel)
+{
+	if (rel->rd_locdesc == NULL)
+	{
+		/*
+		 * A table AM that predates the locator contract has no
+		 * relation_locator callback.  Treat it as heap does: a fixed-width
+		 * TID that serves bitmap scans and moves a row on update.
+		 */
+		static const LocatorDesc default_locdesc = {
+			.width = sizeof(ItemPointerData),
+			.max_offset = MaxHeapTuplesPerPage,
+			.name = "tid",
+			.stable = false,
+			.old_version_retained = true,
+			.versioned = false,
+			.bitmap_and_inexact = NULL,
+			.bitmap_or_inexact = NULL,
+		};
+
+		rel->rd_locdesc = rel->rd_tableam->relation_locator ?
+			rel->rd_tableam->relation_locator(rel) : &default_locdesc;
+		Assert(OffsetNumberIsValid(rel->rd_locdesc->max_offset));
+		/* a versioned locator needs the callbacks that resolve tags */
+		Assert(!rel->rd_locdesc->versioned ||
+			   rel->rd_tableam->fetch_tid_version != NULL);
+	}
+	return rel->rd_locdesc;
+}
+
+/*
+ * Does a row of this relation keep its locator for its whole life?  See the
+ * stable field in amlocator.h.
+ */
+static inline bool
+table_locator_is_stable(Relation rel)
+{
+	return RelationGetLocatorDesc(rel)->stable;
+}
+
+/*
+ * Is a row's pre-update version still fetchable by locator after the UPDATE
+ * that replaced it?  See the old_version_retained field in amlocator.h.
+ */
+static inline bool
+table_locator_old_version_retained(Relation rel)
+{
+	return RelationGetLocatorDesc(rel)->old_version_retained;
+}
+
+/*
+ * Do this relation's index entries name a row version as (locator, tag)?
+ * See the versioned field in amlocator.h.
+ */
+static inline bool
+table_locator_is_versioned(Relation rel)
+{
+	return RelationGetLocatorDesc(rel)->versioned;
+}
+
+/*
+ * Does this relation's table AM overwrite a row's storage on UPDATE?  If so,
+ * code that needs the pre-update image after the write must capture it first.
+ * False for a relation without a table AM, such as a foreign table.
+ */
+static inline bool
+RelationUpdatesInPlace(Relation rel)
+{
+	return rel->rd_tableam != NULL &&
+		!table_locator_old_version_retained(rel);
 }
 
 /*
@@ -1351,6 +1546,49 @@ table_fetch_tid(Relation rel,
 }
 
 /*
+ * As table_fetch_tid(), for an entry of `index` that names the row version
+ * (tid, tag): is a version for which that entry is valid visible to
+ * `snapshot`?  *all_dead is set true iff no backend needs that entry: no
+ * snapshot can see a version for which it is valid.  Index AMs use this for
+ * unique checks, passing the tag of the entry they found an equal key in.
+ *
+ * If the relation's locator is versioned (see amlocator.h), this asks the
+ * table AM's fetch_tid_version callback, which must exist; the entry's tag
+ * may be InvalidIndexVersionTag.  Otherwise there are no tags, `tag` must be
+ * InvalidIndexVersionTag, and this is table_fetch_tid().
+ *
+ * Only an index that can store tags (index_can_version()) needs this.
+ * Every other index's entries are resolved by locator alone, as
+ * table_fetch_tid() does, even on a table whose locator is versioned; see
+ * amlocator.h.
+ *
+ * (This and the tepid patch set's fetch_tid_check, which also fills a slot
+ * and reports whether the caller must recheck the key, answer the same
+ * question for different table AMs; they would merge into one callback
+ * taking the tag and the index, with the slot and recheck outputs optional.)
+ */
+static inline bool
+table_fetch_tid_version(Relation rel,
+						ItemPointer tid,
+						IndexVersionTag tag,
+						Relation index,
+						Snapshot snapshot,
+						bool *all_dead)
+{
+	if (!table_locator_is_versioned(rel))
+	{
+		Assert(tag == InvalidIndexVersionTag);
+		return table_fetch_tid(rel, tid, snapshot, all_dead);
+	}
+
+	if (unlikely(TransactionIdIsValid(CheckXidAlive) && !bsysscan))
+		elog(ERROR, "unexpected table_fetch_tid_version call during logical decoding");
+
+	return rel->rd_tableam->fetch_tid_version(rel, tid, tag, index,
+											  snapshot, all_dead);
+}
+
+/*
  * Fetch tuple at `tid` into `slot`, after doing a visibility test according to
  * `snapshot`. If a tuple was found and passed the visibility test, returns
  * true, false otherwise.
@@ -1553,6 +1791,8 @@ table_multi_insert(Relation rel, TupleTableSlot **slots, int nslots,
  *		decoding information for the tuple.  This should solely be used
  *		during table rewrites where RelationIsLogicallyLogged(rel) is not
  *		yet accurate for the new relation.
+ *		TABLE_DELETE_LOCKED_VERSION: tid names the version this transaction
+ *		has already locked; see TUPLE_LOCK_FLAG_LOCKED_VERSION.
  *	crosscheck - if not InvalidSnapshot, also check tuple against this
  *	wait - true if should wait for any conflicting update to commit/abort
  *
@@ -1563,9 +1803,8 @@ table_multi_insert(Relation rel, TupleTableSlot **slots, int nslots,
  * delete it.  Failure return codes are TM_SelfModified, TM_Updated, and
  * TM_BeingModified (the last only possible if wait == false).
  *
- * In the failure cases, the routine fills *tmfd with the tuple's t_ctid,
- * t_xmax, and, if possible, t_cmax.  See comments for struct
- * TM_FailureData for additional info.
+ * The routine fills *tmfd with semantic failure information.  See
+ * TM_FailureData for details.
  */
 static inline TM_Result
 table_tuple_delete(Relation rel, ItemPointer tid, CommandId cid,
@@ -1593,7 +1832,16 @@ table_tuple_delete(Relation rel, ItemPointer tid, CommandId cid,
  *		decoding information for the tuple.  This should solely be used
  *		during table rewrites where RelationIsLogicallyLogged(rel) is not
  *		yet accurate for the new relation.
+ *		TABLE_UPDATE_LOCKED_VERSION: otid names the version this transaction
+ *		has already locked; see TUPLE_LOCK_FLAG_LOCKED_VERSION.
+ *		TABLE_UPDATE_MAY_KEEP_LOCATOR: the relation's locator is versioned
+ *		(see amlocator.h), and every index that needs a new entry because of
+ *		this update can store version tags; see below.
  *	crosscheck - if not InvalidSnapshot, also check old tuple against this
+ *	modified_idx_attrs - the indexed attributes whose values differ between
+ *		the old tuple and the new one, offset by
+ *		FirstLowInvalidHeapAttributeNumber; see ExecUpdateModifiedIdxAttrs().
+ *		The caller owns it.
  *
  * Output parameters:
  *	slot - newly constructed tuple data to store
@@ -1601,6 +1849,22 @@ table_tuple_delete(Relation rel, ItemPointer tid, CommandId cid,
  *	lockmode - filled with lock mode acquired on tuple
  *	update_indexes - in success cases this is set if new index entries
  *		are required for this tuple; see TU_UpdateIndexes
+ *	version_tag - in success cases, the version tag of the new row version,
+ *		which every index entry made for it carries, or InvalidIndexVersionTag;
+ *		see "Versioned locators" in amlocator.h
+ *
+ * An index entry promises that its key describes the row version its
+ * locator and tag name.  Heap keeps that promise for an update that changes
+ * an indexed attribute of a non-summarizing index by giving the new version
+ * a new TID, and so must any AM, unless the caller passes
+ * TABLE_UPDATE_MAY_KEEP_LOCATOR.  With it, an AM whose locator is versioned
+ * may instead keep the row's locator and report TU_Affected, with the new
+ * version's tag, which must be valid, in *version_tag.  The caller then
+ * inserts entries into the summarizing indexes and the non-summarizing
+ * indexes whose attributes (RelationGetIndexedAttrs) overlap
+ * modified_idx_attrs, and into no other index; see ExecUpdateIndexTuples().
+ * Heap ignores the option, never reports TU_Affected, and its *version_tag
+ * is always InvalidIndexVersionTag.
  *
  * Normal, successful return value is TM_Ok, which means we did actually
  * update it.  Failure return codes are TM_SelfModified, TM_Updated, and
@@ -1612,21 +1876,22 @@ table_tuple_delete(Relation rel, ItemPointer tid, CommandId cid,
  * update was done.  However, any TOAST changes in the new tuple's
  * data are not reflected into *newtup.
  *
- * In the failure cases, the routine fills *tmfd with the tuple's t_ctid,
- * t_xmax, and, if possible, t_cmax.  See comments for struct TM_FailureData
- * for additional info.
+ * The routine fills *tmfd with semantic failure information.  See
+ * TM_FailureData for details.
  */
 static inline TM_Result
 table_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot,
 				   CommandId cid, uint32 options,
 				   Snapshot snapshot, Snapshot crosscheck,
 				   bool wait, TM_FailureData *tmfd, LockTupleMode *lockmode,
-				   TU_UpdateIndexes *update_indexes)
+				   const Bitmapset *modified_idx_attrs, TU_UpdateIndexes *update_indexes,
+				   IndexVersionTag *version_tag)
 {
 	return rel->rd_tableam->tuple_update(rel, otid, slot,
 										 cid, options, snapshot, crosscheck,
-										 wait, tmfd,
-										 lockmode, update_indexes);
+										 wait, tmfd, lockmode,
+										 modified_idx_attrs, update_indexes,
+										 version_tag);
 }
 
 /*
@@ -1645,6 +1910,8 @@ table_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot,
  *		also lock descendant tuples if lock modes don't conflict.
  *		If TUPLE_LOCK_FLAG_FIND_LAST_VERSION, follow the update chain and lock
  *		latest version.
+ *		If TUPLE_LOCK_FLAG_LOCKED_VERSION, *tid names the version this
+ *		transaction has already locked, or found with a dirty snapshot.
  *
  * Output parameters:
  *	*slot: contains the target tuple
@@ -1658,11 +1925,12 @@ table_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot,
  *	TM_Deleted: lock failed because tuple deleted by other xact
  *	TM_WouldBlock: lock couldn't be acquired and wait_policy is skip
  *
- * In the failure cases other than TM_Invisible and TM_Deleted, the routine
- * fills *tmfd with the tuple's t_ctid, t_xmax, and, if possible, t_cmax.
- * Additionally, in both success and failure cases, tmfd->traversed is set if
- * an update chain was followed.  See comments for struct TM_FailureData for
- * additional info.
+ * The routine fills *tmfd with semantic failure information.  In both
+ * success and failure cases, tmfd->retargeted records whether this call
+ * followed a later version of the row.  On success the caller must then
+ * re-evaluate the row, and *tid holds the locator of the locked version.
+ * For an AM that updates rows in place, TUPLE_LOCK_FLAG_LOCKED_VERSION
+ * decides which version the caller named.  See TM_FailureData for details.
  */
 static inline TM_Result
 table_tuple_lock(Relation rel, ItemPointer tid, Snapshot snapshot,
@@ -1862,6 +2130,11 @@ table_scan_analyze_next_tuple(TableScanDesc scan,
  * very hard to detect whether they're really incompatible with the chain tip.
  * This only really makes sense for heap AM, it might need to be generalized
  * for other AMs later.
+ *
+ * A table AM whose locator is versioned (see amlocator.h) sets
+ * index_info->ii_VersionTag to the tag of the row version it hands to each
+ * callback call, before the call; the index AM's callback reads it there.
+ * Other AMs leave it InvalidIndexVersionTag.
  */
 static inline double
 table_index_build_scan(Relation table_rel,
@@ -1925,7 +2198,14 @@ table_index_build_range_scan(Relation table_rel,
 /*
  * table_index_validate_scan - second table scan for concurrent index build
  *
- * See validate_index() for an explanation.
+ * See validate_index() for an explanation.  A table AM whose locator is
+ * versioned sets index_info->ii_VersionTag before each index_insert() it
+ * makes, as for table_index_build_range_scan().
+ *
+ * state->tuplesort holds what the index contains: TIDs, or, if
+ * state->versioned, (TID, tag) pairs; see ValidateIndexState.  A row
+ * version visible to `snapshot` is missing from the index if no collected
+ * entry is valid for it.
  */
 static inline void
 table_index_validate_scan(Relation table_rel,
@@ -2112,6 +2392,16 @@ extern void simple_table_tuple_delete(Relation rel, ItemPointer tid,
 extern void simple_table_tuple_update(Relation rel, ItemPointer otid,
 									  TupleTableSlot *slot, Snapshot snapshot,
 									  TU_UpdateIndexes *update_indexes);
+extern void simple_table_tuple_update_ext(Relation rel, ItemPointer otid,
+										  TupleTableSlot *slot,
+										  Snapshot snapshot,
+										  const Bitmapset *modified_idx_attrs,
+										  uint32 options,
+										  TU_UpdateIndexes *update_indexes,
+										  IndexVersionTag *version_tag);
+extern Bitmapset *table_slot_modified_idx_attrs(Relation rel,
+												TupleTableSlot *old_slot,
+												TupleTableSlot *new_slot);
 
 
 /* ----------------------------------------------------------------------------

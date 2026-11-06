@@ -127,6 +127,8 @@ RelationGetIndexScan(Relation indexRelation, int nkeys, int norderbys)
 	scan->xs_hitupdesc = NULL;
 
 	scan->xs_getnext_slot = NULL;
+	scan->xs_heaptag = InvalidIndexVersionTag;
+	scan->xs_entry_verdict = INDEX_SCAN_ENTRY_UNKNOWN;
 
 	scan->xs_name_cstring_attnums = NULL;
 	scan->xs_name_cstring_buf = NULL;
@@ -342,6 +344,7 @@ index_compute_xid_horizon_for_tuples(Relation irel,
 		delstate.status[i].knowndeletable = true;	/* LP_DEAD-marked */
 		delstate.status[i].promising = false;	/* unused */
 		delstate.status[i].freespace = 0;	/* unused */
+		delstate.status[i].tag = InvalidIndexVersionTag;
 
 		delstate.ndeltids++;
 	}
