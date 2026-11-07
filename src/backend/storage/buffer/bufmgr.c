@@ -64,6 +64,9 @@
 #include "storage/read_stream.h"
 #include "storage/smgr.h"
 #include "storage/standby.h"
+#include "catalog/catalog.h"
+#include "utils/inval.h"
+#include "utils/memutils.h"
 #include "utils/memdebug.h"
 #include "utils/ps_status.h"
 #include "utils/rel.h"
@@ -636,7 +639,7 @@ static void PinBuffer_Locked(BufferDesc *buf);
 static void UnpinBuffer(BufferDesc *buf);
 static void UnpinBufferNoOwner(BufferDesc *buf);
 static void BufferSync(int flags);
-static int	SyncOneBuffer(int buf_id, bool skip_recently_used,
+static int	SyncOneBuffer(int buf_id, bool skip_recently_used, bool spend_chance,
 						  WritebackContext *wb_context);
 static void WaitIO(BufferDesc *buf);
 static void AbortBufferIO(Buffer buffer);
@@ -2335,7 +2338,12 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 	 * checkpoints, except for their "init" forks, which need to be treated
 	 * just like permanent relations.
 	 */
-	set_bits |= BM_TAG_VALID | BUF_USAGECOUNT_ONE;
+
+	/*
+	 * Admit the page on probation: no second chance yet, so the next pass of
+	 * the hand may reclaim it.  A further access promotes it (see PinBuffer).
+	 */
+	set_bits |= BM_TAG_VALID;
 	if (relpersistence == RELPERSISTENCE_PERMANENT || forkNum == INIT_FORKNUM)
 		set_bits |= BM_PERMANENT;
 
@@ -2445,7 +2453,7 @@ retry:
 
 	UnlockBufHdrExt(buf, buf_state,
 					0,
-					BUF_FLAG_MASK | BUF_USAGECOUNT_MASK,
+					BUF_FLAG_MASK,
 					0);
 
 	/*
@@ -2528,7 +2536,7 @@ InvalidateVictimBuffer(BufferDesc *buf_hdr)
 	ClearBufferTag(&buf_hdr->tag);
 	UnlockBufHdrExt(buf_hdr, buf_state,
 					0,
-					BUF_FLAG_MASK | BUF_USAGECOUNT_MASK,
+					BUF_FLAG_MASK,
 					0);
 
 	Assert(BUF_STATE_GET_REFCOUNT(buf_state) > 0);
@@ -3004,7 +3012,11 @@ ExtendBufferedRelShared(BufferManagerRelation bmr,
 
 			victim_buf_hdr->tag = tag;
 
-			set_bits |= BM_TAG_VALID | BUF_USAGECOUNT_ONE;
+			/*
+			 * Admit on probation; see the comment at the other admission
+			 * site.
+			 */
+			set_bits |= BM_TAG_VALID;
 			if (bmr.relpersistence == RELPERSISTENCE_PERMANENT || fork == INIT_FORKNUM)
 				set_bits |= BM_PERMANENT;
 
@@ -3336,18 +3348,21 @@ PinBuffer(BufferDesc *buf, BufferAccessStrategy strategy,
 
 			if (strategy == NULL)
 			{
-				/* Default case: increase usagecount unless already max. */
-				if (BUF_STATE_GET_USAGECOUNT(buf_state) < BM_MAX_USAGE_COUNT)
-					buf_state += BUF_USAGECOUNT_ONE;
+				/* Default case: grant the buffer its second chance. */
+				buf_state |= BM_SECOND_CHANCE;
 			}
 			else
 			{
 				/*
-				 * Ring buffers shouldn't evict others from pool.  Thus we
-				 * don't make usagecount more than 1.
+				 * Ring buffers: a page is pinned once per cycle through the
+				 * ring by the scan that owns it, and those pins must not keep
+				 * it resident -- otherwise a sequential scan would protect
+				 * its own pages and evict the working set.  With a single bit
+				 * there is nothing to cap: leave the bit alone and let the
+				 * ring recycle the page, while an access from outside the
+				 * ring (which takes the default path above) grants the chance
+				 * and so removes the page from the ring's reach.
 				 */
-				if (BUF_STATE_GET_USAGECOUNT(buf_state) == 0)
-					buf_state += BUF_USAGECOUNT_ONE;
 			}
 
 			if (pg_atomic_compare_exchange_u64(&buf->state, &old_buf_state,
@@ -3787,7 +3802,7 @@ BufferSync(int flags)
 		 */
 		if (pg_atomic_read_u64(&bufHdr->state) & BM_CHECKPOINT_NEEDED)
 		{
-			if (SyncOneBuffer(buf_id, false, &wb_context) & BUF_WRITTEN)
+			if (SyncOneBuffer(buf_id, false, false, &wb_context) & BUF_WRITTEN)
 			{
 				TRACE_POSTGRESQL_BUFFER_SYNC_WRITTEN(buf_id);
 				PendingCheckpointerStats.buffers_written++;
@@ -3842,33 +3857,34 @@ BufferSync(int flags)
 }
 
 /*
- * BgBufferSync -- Write out some dirty buffers in the pool.
+ * Information saved between calls so we can determine the strategy point's
+ * advance rate and avoid scanning already-cleaned buffers.
  *
- * This is called periodically by the background writer process.
- *
- * Returns true if it's appropriate for the bgwriter process to go into
- * low-power hibernation mode.  (This happens if the strategy clock-sweep
- * has been "lapped" and no buffer allocations have occurred recently,
- * or if the bgwriter has been effectively disabled by setting
- * bgwriter_lru_maxpages to 0.)
+ * XXX Does it actually make sense to split all of this information per
+ * partition? For example, does per-partition advance rate mean anything?
+ * Maybe we should have a global advance rate? Although, if we want to
+ * keep enough clean buffers in each partition, maybe having per-partition
+ * rates makes sense.
  */
-bool
-BgBufferSync(WritebackContext *wb_context)
+typedef struct BufferSyncPartition
+{
+	int			prev_strategy_buf_id;
+	uint32		prev_strategy_passes;
+	int			next_to_clean;
+	uint32		next_passes;
+}			BufferSyncPartition;
+
+static BufferSyncPartition * saved_info = NULL;
+static bool saved_info_valid = false;
+
+static bool
+BgBufferSyncPartition(WritebackContext *wb_context, int num_partitions,
+					  int partition, int recent_alloc_partition,
+					  BufferSyncPartition * saved)
 {
 	/* info obtained from freelist.c */
 	int			strategy_buf_id;
 	uint32		strategy_passes;
-	uint32		recent_alloc;
-
-	/*
-	 * Information saved between calls so we can determine the strategy
-	 * point's advance rate and avoid scanning already-cleaned buffers.
-	 */
-	static bool saved_info_valid = false;
-	static int	prev_strategy_buf_id;
-	static uint32 prev_strategy_passes;
-	static int	next_to_clean;
-	static uint32 next_passes;
 
 	/* Moving averages of allocation rate and clean-buffer density */
 	static float smoothed_alloc = 0;
@@ -3891,30 +3907,30 @@ BgBufferSync(WritebackContext *wb_context)
 	int			num_to_scan;
 	int			num_written;
 	int			reusable_buffers;
+	bool		spend_chance;
+	uint64		sweep_claims;
+
+	/*
+	 * Claim count as of our previous cycle, to get a rate rather than a
+	 * total. One entry per partition: each has its own clock hand and can
+	 * starve independently, so the decision is made for each one separately.
+	 */
+	static uint64 *prev_sweep_claims = NULL;
 
 	/* Variables for final smoothed_density update */
 	long		new_strategy_delta;
 	uint32		new_recent_alloc;
 
+	/* buffer range for the clocksweep partition */
+	int			first_buffer;
+	int			num_buffers;
+
 	/*
 	 * Find out where the clock-sweep currently is, and how many buffer
 	 * allocations have happened since our last call.
 	 */
-	strategy_buf_id = StrategySyncStart(&strategy_passes, &recent_alloc);
-
-	/* Report buffer alloc counts to pgstat */
-	PendingBgWriterStats.buf_alloc += recent_alloc;
-
-	/*
-	 * If we're not running the LRU scan, just stop after doing the stats
-	 * stuff.  We mark the saved state invalid so that we can recover sanely
-	 * if LRU scan is turned back on later.
-	 */
-	if (bgwriter_lru_maxpages <= 0)
-	{
-		saved_info_valid = false;
-		return true;
-	}
+	strategy_buf_id = StrategySyncStart(partition, &strategy_passes,
+										&first_buffer, &num_buffers);
 
 	/*
 	 * Compute strategy_delta = how many buffers have been scanned by the
@@ -3926,17 +3942,17 @@ BgBufferSync(WritebackContext *wb_context)
 	 */
 	if (saved_info_valid)
 	{
-		int32		passes_delta = strategy_passes - prev_strategy_passes;
+		int32		passes_delta = strategy_passes - saved->prev_strategy_passes;
 
-		strategy_delta = strategy_buf_id - prev_strategy_buf_id;
-		strategy_delta += (long) passes_delta * NBuffers;
+		strategy_delta = strategy_buf_id - saved->prev_strategy_buf_id;
+		strategy_delta += (long) passes_delta * num_buffers;
 
 		Assert(strategy_delta >= 0);
 
-		if ((int32) (next_passes - strategy_passes) > 0)
+		if ((int32) (saved->next_passes - strategy_passes) > 0)
 		{
 			/* we're one pass ahead of the strategy point */
-			bufs_to_lap = strategy_buf_id - next_to_clean;
+			bufs_to_lap = strategy_buf_id - saved->next_to_clean;
 #ifdef BGW_DEBUG
 			elog(DEBUG2, "bgwriter ahead: bgw %u-%u strategy %u-%u delta=%ld lap=%d",
 				 next_passes, next_to_clean,
@@ -3944,11 +3960,11 @@ BgBufferSync(WritebackContext *wb_context)
 				 strategy_delta, bufs_to_lap);
 #endif
 		}
-		else if (next_passes == strategy_passes &&
-				 next_to_clean >= strategy_buf_id)
+		else if (saved->next_passes == strategy_passes &&
+				 saved->next_to_clean >= strategy_buf_id)
 		{
 			/* on same pass, but ahead or at least not behind */
-			bufs_to_lap = NBuffers - (next_to_clean - strategy_buf_id);
+			bufs_to_lap = num_buffers - (saved->next_to_clean - strategy_buf_id);
 #ifdef BGW_DEBUG
 			elog(DEBUG2, "bgwriter ahead: bgw %u-%u strategy %u-%u delta=%ld lap=%d",
 				 next_passes, next_to_clean,
@@ -3968,9 +3984,9 @@ BgBufferSync(WritebackContext *wb_context)
 				 strategy_passes, strategy_buf_id,
 				 strategy_delta);
 #endif
-			next_to_clean = strategy_buf_id;
-			next_passes = strategy_passes;
-			bufs_to_lap = NBuffers;
+			saved->next_to_clean = strategy_buf_id;
+			saved->next_passes = strategy_passes;
+			bufs_to_lap = num_buffers;
 		}
 	}
 	else
@@ -3984,15 +4000,16 @@ BgBufferSync(WritebackContext *wb_context)
 			 strategy_passes, strategy_buf_id);
 #endif
 		strategy_delta = 0;
-		next_to_clean = strategy_buf_id;
-		next_passes = strategy_passes;
-		bufs_to_lap = NBuffers;
+		saved->next_to_clean = strategy_buf_id;
+		saved->next_passes = strategy_passes;
+		bufs_to_lap = num_buffers;
 	}
 
 	/* Update saved info for next time */
-	prev_strategy_buf_id = strategy_buf_id;
-	prev_strategy_passes = strategy_passes;
-	saved_info_valid = true;
+	saved->prev_strategy_buf_id = strategy_buf_id;
+	saved->prev_strategy_passes = strategy_passes;
+	/* XXX this needs to happen only after all partitions */
+	/* saved_info_valid = true; */
 
 	/*
 	 * Compute how many buffers had to be scanned for each new allocation, ie,
@@ -4000,9 +4017,9 @@ BgBufferSync(WritebackContext *wb_context)
 	 *
 	 * If the strategy point didn't move, we don't update the density estimate
 	 */
-	if (strategy_delta > 0 && recent_alloc > 0)
+	if (strategy_delta > 0 && recent_alloc_partition > 0)
 	{
-		scans_per_alloc = (float) strategy_delta / (float) recent_alloc;
+		scans_per_alloc = (float) strategy_delta / (float) recent_alloc_partition;
 		smoothed_density += (scans_per_alloc - smoothed_density) /
 			smoothing_samples;
 	}
@@ -4012,7 +4029,7 @@ BgBufferSync(WritebackContext *wb_context)
 	 * strategy point and where we've scanned ahead to, based on the smoothed
 	 * density estimate.
 	 */
-	bufs_ahead = NBuffers - bufs_to_lap;
+	bufs_ahead = num_buffers - bufs_to_lap;
 	reusable_buffers_est = (float) bufs_ahead / smoothed_density;
 
 	/*
@@ -4020,10 +4037,10 @@ BgBufferSync(WritebackContext *wb_context)
 	 * a true average we want a fast-attack, slow-decline behavior: we
 	 * immediately follow any increase.
 	 */
-	if (smoothed_alloc <= (float) recent_alloc)
-		smoothed_alloc = recent_alloc;
+	if (smoothed_alloc <= (float) recent_alloc_partition)
+		smoothed_alloc = recent_alloc_partition;
 	else
-		smoothed_alloc += ((float) recent_alloc - smoothed_alloc) /
+		smoothed_alloc += ((float) recent_alloc_partition - smoothed_alloc) /
 			smoothing_samples;
 
 	/* Scale the estimate by a GUC to allow more aggressive tuning. */
@@ -4050,7 +4067,7 @@ BgBufferSync(WritebackContext *wb_context)
 	 * the BGW will be called during the scan_whole_pool time; slice the
 	 * buffer pool into that many sections.
 	 */
-	min_scan_buffers = (int) (NBuffers / (scan_whole_pool_milliseconds / BgWriterDelay));
+	min_scan_buffers = (int) (num_buffers / (scan_whole_pool_milliseconds / BgWriterDelay));
 
 	if (upcoming_alloc_est < (min_scan_buffers + reusable_buffers_est))
 	{
@@ -4072,23 +4089,46 @@ BgBufferSync(WritebackContext *wb_context)
 	num_written = 0;
 	reusable_buffers = reusable_buffers_est;
 
+	/*
+	 * Decide whether to spend second chances as we scan.
+	 * StrategySweepClaims() counts allocations that gave up on the
+	 * second-chance rule because the sweep could not find a candidate; while
+	 * that count is rising the sweep is starving and the cheapest help we can
+	 * give is to make candidates ahead of the hand.  While it is flat we
+	 * leave the rule alone, so this costs nothing on a workload that does not
+	 * need it.
+	 */
+	if (prev_sweep_claims == NULL)
+	{
+		/* Same reason as saved_info below: a variable-length static. */
+		prev_sweep_claims = calloc(num_partitions, sizeof(uint64));
+		if (prev_sweep_claims == NULL)
+			ereport(ERROR,
+					(errcode(ERRCODE_OUT_OF_MEMORY),
+					 errmsg("out of memory")));
+	}
+
+	sweep_claims = StrategySweepClaims(partition);
+	spend_chance = (sweep_claims > prev_sweep_claims[partition]);
+	prev_sweep_claims[partition] = sweep_claims;
+
 	/* Execute the LRU scan */
 	while (num_to_scan > 0 && reusable_buffers < upcoming_alloc_est)
 	{
-		int			sync_state = SyncOneBuffer(next_to_clean, true,
-											   wb_context);
+		int			sync_state = SyncOneBuffer(saved->next_to_clean, true,
+											   spend_chance, wb_context);
 
-		if (++next_to_clean >= NBuffers)
+		if (++saved->next_to_clean >= (first_buffer + num_buffers))
 		{
-			next_to_clean = 0;
-			next_passes++;
+			saved->next_to_clean = first_buffer;
+			saved->next_passes++;
 		}
 		num_to_scan--;
 
 		if (sync_state & BUF_WRITTEN)
 		{
 			reusable_buffers++;
-			if (++num_written >= bgwriter_lru_maxpages)
+			if (++num_written >= (bgwriter_lru_maxpages / num_partitions))
 			{
 				PendingBgWriterStats.maxwritten_clean++;
 				break;
@@ -4102,7 +4142,7 @@ BgBufferSync(WritebackContext *wb_context)
 
 #ifdef BGW_DEBUG
 	elog(DEBUG1, "bgwriter: recent_alloc=%u smoothed=%.2f delta=%ld ahead=%d density=%.2f reusable_est=%d upcoming_est=%d scanned=%d wrote=%d reusable=%d",
-		 recent_alloc, smoothed_alloc, strategy_delta, bufs_ahead,
+		 recent_alloc_partition, smoothed_alloc, strategy_delta, bufs_ahead,
 		 smoothed_density, reusable_buffers_est, upcoming_alloc_est,
 		 bufs_to_lap - num_to_scan,
 		 num_written,
@@ -4132,12 +4172,95 @@ BgBufferSync(WritebackContext *wb_context)
 #endif
 	}
 
+	/* can this partition hibernate */
+	return (bufs_to_lap == 0 && recent_alloc_partition == 0);
+}
+
+/*
+ * BgBufferSync -- Write out some dirty buffers in the pool.
+ *
+ * This is called periodically by the background writer process.
+ *
+ * Returns true if it's appropriate for the bgwriter process to go into
+ * low-power hibernation mode.  (This happens if the strategy clock-sweep
+ * has been "lapped" and no buffer allocations have occurred recently,
+ * or if the bgwriter has been effectively disabled by setting
+ * bgwriter_lru_maxpages to 0.)
+ */
+bool
+BgBufferSync(WritebackContext *wb_context)
+{
+	/* info obtained from freelist.c */
+	uint32		recent_alloc;
+	uint32		recent_alloc_partition;
+	int			num_partitions;
+
+	/* assume we can hibernate, any partition can set to false */
+	bool		hibernate = true;
+
+	/* trigger partition rebalancing first */
+	StrategySyncBalance();
+
+	/* get the number of clocksweep partitions, and total alloc count */
+	StrategySyncPrepare(&num_partitions, &recent_alloc);
+
+	/* allocate space for per-partition information between calls */
+	if (saved_info == NULL)
+	{
+		/*
+		 * XXX Not great it's using malloc(), but how else to allocate a
+		 * variable-length array?
+		 */
+		saved_info = malloc(sizeof(BufferSyncPartition) * num_partitions);
+	}
+
+	/* Report buffer alloc counts to pgstat */
+	PendingBgWriterStats.buf_alloc += recent_alloc;
+
+	/* average alloc buffers per partition */
+	recent_alloc_partition = (recent_alloc / num_partitions);
+
+	/*
+	 * If we're not running the LRU scan, just stop after doing the stats
+	 * stuff.  We mark the saved state invalid so that we can recover sanely
+	 * if LRU scan is turned back on later.
+	 */
+	if (bgwriter_lru_maxpages <= 0)
+	{
+		saved_info_valid = false;
+		return true;
+	}
+
+	/*
+	 * now process the clocksweep partitions, one by one, using the same
+	 * cleanup that we used for all buffers
+	 *
+	 * XXX Maybe we should randomize the order of partitions a bit, so that we
+	 * don't start from partition 0 all the time? Perhaps not entirely, but at
+	 * least pick a random starting point?
+	 */
+	for (int partition = 0; partition < num_partitions; partition++)
+	{
+		/* hibernate if all partitions can hibernate */
+		hibernate &= BgBufferSyncPartition(wb_context, num_partitions,
+										   partition, recent_alloc_partition,
+										   &saved_info[partition]);
+	}
+
+	/* now that we've scanned all partitions, mark the cached info as valid */
+	saved_info_valid = true;
+
 	/* Return true if OK to hibernate */
-	return (bufs_to_lap == 0 && recent_alloc == 0);
+	return hibernate;
 }
 
 /*
  * SyncOneBuffer -- process a single buffer during syncing.
+ *
+ * If spend_chance is true, an unpinned buffer that still has its second
+ * chance has it spent here, which makes it reclaimable by the next pass of
+ * the clock hand.  The caller sets this only while the sweep is starving for
+ * candidates; see BgBufferSync().
  *
  * If skip_recently_used is true, we don't write currently-pinned buffers, nor
  * buffers marked recently used, as these are not replacement candidates.
@@ -4151,7 +4274,8 @@ BgBufferSync(WritebackContext *wb_context)
  * after locking it, but we don't care all that much.)
  */
 static int
-SyncOneBuffer(int buf_id, bool skip_recently_used, WritebackContext *wb_context)
+SyncOneBuffer(int buf_id, bool skip_recently_used, bool spend_chance,
+			  WritebackContext *wb_context)
 {
 	BufferDesc *bufHdr = GetBufferDescriptor(buf_id);
 	int			result = 0;
@@ -4174,9 +4298,23 @@ SyncOneBuffer(int buf_id, bool skip_recently_used, WritebackContext *wb_context)
 	buf_state = LockBufHdr(bufHdr);
 
 	if (BUF_STATE_GET_REFCOUNT(buf_state) == 0 &&
-		BUF_STATE_GET_USAGECOUNT(buf_state) == 0)
+		!BUF_STATE_HAS_SECOND_CHANCE(buf_state))
 	{
 		result |= BUF_REUSABLE;
+	}
+	else if (spend_chance &&
+			 BUF_STATE_GET_REFCOUNT(buf_state) == 0 &&
+			 BUF_STATE_HAS_SECOND_CHANCE(buf_state))
+	{
+		/*
+		 * Unpinned, but it still has its chance.  Spend it here so the next
+		 * pass of the hand can reclaim the buffer, and count it toward our
+		 * target: we have made a candidate, which is what the caller is short
+		 * of.  The buffer survives this cycle either way, exactly as it would
+		 * have if the hand had passed it.
+		 */
+		UnlockBufHdrExt(bufHdr, buf_state, 0, BM_SECOND_CHANCE, 0);
+		return result | BUF_REUSABLE;
 	}
 	else if (skip_recently_used)
 	{
@@ -4769,6 +4907,312 @@ BufferGetLSNAtomic(Buffer buffer)
 #endif
 }
 
+/*
+ * Buffer drop callbacks.  See RegisterBufferDropCallback().
+ */
+#define MAX_BUFFER_DROP_CALLBACKS	4
+
+static BufferDropCallback BufferDropCallbacks[MAX_BUFFER_DROP_CALLBACKS];
+static int	NumBufferDropCallbacks = 0;
+
+/*
+ * RegisterBufferDropCallback
+ *
+ * Register a function that this backend calls before it drops the buffers of
+ * a relation or a database.  A module that keeps its own long-lived pins (for
+ * example the nbtree root pin cache) uses this to release them, because
+ * InvalidateBuffer() fails on a buffer that this backend has pinned.
+ *
+ * Registrations last for the life of the backend.
+ */
+void
+RegisterBufferDropCallback(BufferDropCallback callback)
+{
+	if (NumBufferDropCallbacks >= MAX_BUFFER_DROP_CALLBACKS)
+		elog(FATAL, "out of buffer drop callback slots");
+
+	BufferDropCallbacks[NumBufferDropCallbacks++] = callback;
+}
+
+/*
+ * Call every registered buffer drop callback.  rlocator NULL means all
+ * relations of database dbOid.
+ */
+static void
+CallBufferDropCallbacks(Oid dbOid, const RelFileLocator *rlocator)
+{
+	for (int i = 0; i < NumBufferDropCallbacks; i++)
+		BufferDropCallbacks[i] (dbOid, rlocator);
+}
+
+/*
+ * Transaction-lifetime base pins.
+ *
+ * Some blocks are read on a very large fraction of a backend's queries: a
+ * btree fast root is read once per descent, and every backend reads the same
+ * one.  Each scan pins it (refcount 0 to 1) and unpins it (1 to 0), and both
+ * are atomic read-modify-writes on the buffer's state word, so that one cache
+ * line migrates between CPUs and limits read scaling.
+ *
+ * A base pin is one extra pin, held for the rest of the transaction, that
+ * exists to stop that migration.  While it is held this backend has a private
+ * refcount entry for the buffer, so every later pin of it increments only
+ * backend-local state: PinBuffer() takes its "we already have a pin" branch
+ * and does not touch the shared word at all.  The shared cache line then
+ * moves twice per transaction rather than twice per scan.
+ *
+ * The cache is only a hint.  GetXactPinnedBlock() re-checks the buffer tag
+ * through ReadRecentBuffer(), and the caller still applies whatever checks it
+ * would normally apply, so a stale entry can only cause a fallback to the
+ * ordinary path.
+ *
+ * A base pin is a pin that nothing else will release for us, and both
+ * InvalidateBuffer() and LockBufferForCleanup() wait for the refcount to
+ * fall.  Four rules keep that safe, and a caller must respect the first:
+ *
+ *	1. Do not base-pin a block that anyone takes a cleanup lock on.  A cleanup
+ *	   lock requires being the sole pinner, so a base pin would block it
+ *	   forever.  For btree that means internal pages only, never leaves,
+ *	   because VACUUM takes a cleanup lock on every leaf.  bufmgr cannot check
+ *	   this; it is the caller's contract.
+ *	2. Never base-pin a system catalog.  VACUUM FULL, CLUSTER and REINDEX can
+ *	   reclaim catalog buffers in this same backend, and catalog locks are not
+ *	   held to end of transaction, so a long-lived pin can deadlock on a
+ *	   buffer pin with no deadlock detection.  Enforced here.
+ *	3. Release on relcache invalidation, so a dropped or rebuilt relation
+ *	   cannot leave a pin on a stale buffer.
+ *	4. Release on buffer drop.  Relcache invalidation does not always come
+ *	   first: TRUNCATE of a table created in the same transaction truncates
+ *	   the files in place, and rolling back a savepoint deletes the files of a
+ *	   relation created after it.  In those cases InvalidateBuffer() would
+ *	   fail on our pin inside a critical section, which is a PANIC.
+ *
+ * The pin belongs to TopTransactionResourceOwner and is released by an
+ * end-of-transaction callback, which runs before ResourceOwnerRelease() and
+ * so leaves the owner nothing to warn about.  Transaction scope is not a
+ * choice: CheckForBufferLeaks() requires the private refcount array to be
+ * empty at commit, and a base pin is an entry in it.
+ */
+typedef struct XactPinnedBlock
+{
+	Oid			relid;			/* for relcache invalidation */
+	RelFileLocator rlocator;	/* for buffer-drop invalidation */
+	ForkNumber	forkNum;
+	BlockNumber blockNum;
+	Buffer		buffer;			/* InvalidBuffer if the slot is free */
+} XactPinnedBlock;
+
+int			max_pinned_blocks = 0;
+
+static XactPinnedBlock *XactPinnedBlocks = NULL;
+static int	XactPinnedBlockClock = 0;
+static bool XactPinnedBlockCallbacksSet = false;
+
+/*
+ * Release one base pin.  The pin belongs to TopTransactionResourceOwner, so
+ * release it against that owner whatever the current one happens to be.
+ */
+static void
+ForgetXactPinnedBlock(XactPinnedBlock *entry)
+{
+	if (!BufferIsValid(entry->buffer))
+		return;
+
+	if (TopTransactionResourceOwner != NULL)
+	{
+		ResourceOwner save = CurrentResourceOwner;
+
+		CurrentResourceOwner = TopTransactionResourceOwner;
+		ReleaseBuffer(entry->buffer);
+		CurrentResourceOwner = save;
+	}
+
+	entry->buffer = InvalidBuffer;
+	entry->relid = InvalidOid;
+}
+
+/*
+ * End-of-transaction callback: drop every base pin.  Runs for each event, and
+ * a second pass over an already-cleared slot does nothing.
+ */
+static void
+AtEOXact_XactPinnedBlocks(XactEvent event, void *arg)
+{
+	for (int i = 0; i < max_pinned_blocks; i++)
+		ForgetXactPinnedBlock(&XactPinnedBlocks[i]);
+}
+
+/*
+ * Relcache callback: drop base pins on one relation, or on all of them when
+ * relid is InvalidOid.
+ */
+static void
+InvalidateXactPinnedBlocks(Datum arg, Oid relid)
+{
+	for (int i = 0; i < max_pinned_blocks; i++)
+	{
+		XactPinnedBlock *entry = &XactPinnedBlocks[i];
+
+		if (BufferIsValid(entry->buffer) &&
+			(relid == InvalidOid || relid == entry->relid))
+			ForgetXactPinnedBlock(entry);
+	}
+}
+
+/*
+ * Buffer-drop callback: drop base pins on buffers this backend is about to
+ * drop.  See rule 4 above.
+ */
+static void
+DropXactPinnedBlocks(Oid dbOid, const RelFileLocator *rlocator)
+{
+	for (int i = 0; i < max_pinned_blocks; i++)
+	{
+		XactPinnedBlock *entry = &XactPinnedBlocks[i];
+
+		if (!BufferIsValid(entry->buffer))
+			continue;
+
+		if (rlocator != NULL ?
+			RelFileLocatorEquals(entry->rlocator, *rlocator) :
+			entry->rlocator.dbOid == dbOid)
+			ForgetXactPinnedBlock(entry);
+	}
+}
+
+/*
+ * Find the slot holding a base pin for a block, or NULL.
+ */
+static XactPinnedBlock *
+LookupXactPinnedBlock(Relation rel, ForkNumber forkNum, BlockNumber blockNum)
+{
+	if (XactPinnedBlocks == NULL)
+		return NULL;
+
+	for (int i = 0; i < max_pinned_blocks; i++)
+	{
+		XactPinnedBlock *entry = &XactPinnedBlocks[i];
+
+		if (BufferIsValid(entry->buffer) &&
+			entry->blockNum == blockNum &&
+			entry->forkNum == forkNum &&
+			RelFileLocatorEquals(entry->rlocator, rel->rd_locator))
+			return entry;
+	}
+
+	return NULL;
+}
+
+/*
+ * PinBlockForXact -- hold an extra pin on a block for the rest of the
+ * transaction, so that later pins of it do not write to shared state.
+ *
+ * The caller must already hold a pin on the buffer, and keeps it: this takes
+ * a reference of its own.  Because the caller's pin means a private refcount
+ * entry already exists, taking ours does not touch the shared state word.
+ *
+ * The caller is responsible for rule 1 above: do not offer a block that
+ * anything takes a cleanup lock on.
+ *
+ * Returns true if the block is base-pinned (or already was).
+ */
+bool
+PinBlockForXact(Relation rel, ForkNumber forkNum, BlockNumber blockNum,
+				Buffer buffer)
+{
+	XactPinnedBlock *entry;
+	ResourceOwner save;
+	int			slot = -1;
+
+	if (max_pinned_blocks == 0 || !BufferIsValid(buffer) ||
+		BufferIsLocal(buffer))
+		return false;
+
+	/* A base pin has to have the transaction-lifetime owner to belong to. */
+	if (TopTransactionResourceOwner == NULL)
+		return false;
+
+	/* Rule 2. */
+	if (IsCatalogRelation(rel))
+		return false;
+
+	Assert(BufferIsPinned(buffer));
+
+	if (XactPinnedBlocks == NULL)
+	{
+		XactPinnedBlocks = MemoryContextAllocZero(TopMemoryContext,
+												  max_pinned_blocks *
+												  sizeof(XactPinnedBlock));
+		for (int i = 0; i < max_pinned_blocks; i++)
+			XactPinnedBlocks[i].buffer = InvalidBuffer;
+	}
+
+	if (!XactPinnedBlockCallbacksSet)
+	{
+		RegisterXactCallback(AtEOXact_XactPinnedBlocks, NULL);
+		CacheRegisterRelcacheCallback(InvalidateXactPinnedBlocks, (Datum) 0);
+		RegisterBufferDropCallback(DropXactPinnedBlocks);
+		XactPinnedBlockCallbacksSet = true;
+	}
+
+	entry = LookupXactPinnedBlock(rel, forkNum, blockNum);
+	if (entry != NULL)
+		return true;
+
+	for (int i = 0; i < max_pinned_blocks; i++)
+	{
+		if (!BufferIsValid(XactPinnedBlocks[i].buffer))
+		{
+			slot = i;
+			break;
+		}
+	}
+	if (slot < 0)
+	{
+		/* Full: evict in round-robin order. */
+		slot = XactPinnedBlockClock;
+		XactPinnedBlockClock = (XactPinnedBlockClock + 1) % max_pinned_blocks;
+		ForgetXactPinnedBlock(&XactPinnedBlocks[slot]);
+	}
+	entry = &XactPinnedBlocks[slot];
+
+	save = CurrentResourceOwner;
+	CurrentResourceOwner = TopTransactionResourceOwner;
+	IncrBufferRefCount(buffer);
+	CurrentResourceOwner = save;
+
+	entry->relid = RelationGetRelid(rel);
+	entry->rlocator = rel->rd_locator;
+	entry->forkNum = forkNum;
+	entry->blockNum = blockNum;
+	entry->buffer = buffer;
+
+	return true;
+}
+
+/*
+ * GetXactPinnedBlock -- pin a base-pinned block without a mapping-table
+ * lookup.
+ *
+ * Returns an ordinary pinned buffer, which the caller releases as usual, or
+ * InvalidBuffer if this block has no base pin.  The saving is not the pin, it
+ * is that the pin is backend-local and that we skip BufTableLookup().
+ */
+Buffer
+GetXactPinnedBlock(Relation rel, ForkNumber forkNum, BlockNumber blockNum)
+{
+	XactPinnedBlock *entry;
+
+	entry = LookupXactPinnedBlock(rel, forkNum, blockNum);
+	if (entry == NULL)
+		return InvalidBuffer;
+
+	if (!ReadRecentBuffer(rel->rd_locator, forkNum, blockNum, entry->buffer))
+		return InvalidBuffer;	/* stale hint; caller uses the normal path */
+
+	return entry->buffer;
+}
+
 /* ---------------------------------------------------------------------
  *		DropRelationBuffers
  *
@@ -4801,6 +5245,9 @@ DropRelationBuffers(SMgrRelation smgr_reln, ForkNumber *forkNum,
 	uint64		nBlocksToInvalidate = 0;
 
 	rlocator = smgr_reln->smgr_rlocator;
+
+	/* Let modules release pins that this backend keeps on these buffers. */
+	CallBufferDropCallbacks(rlocator.locator.dbOid, &rlocator.locator);
 
 	/* If it's a local relation, it's localbuf.c's problem. */
 	if (RelFileLocatorBackendIsTemp(rlocator))
@@ -4924,6 +5371,11 @@ DropRelationsAllBuffers(SMgrRelation *smgr_reln, int nlocators)
 
 	if (nlocators == 0)
 		return;
+
+	/* Let modules release pins that this backend keeps on these buffers. */
+	for (i = 0; i < nlocators; i++)
+		CallBufferDropCallbacks(smgr_reln[i]->smgr_rlocator.locator.dbOid,
+								&smgr_reln[i]->smgr_rlocator.locator);
 
 	rels = palloc_array(SMgrRelation, nlocators);	/* non-local relations */
 
@@ -5144,6 +5596,9 @@ void
 DropDatabaseBuffers(Oid dbid)
 {
 	int			i;
+
+	/* Let modules release pins that this backend keeps on these buffers. */
+	CallBufferDropCallbacks(dbid, NULL);
 
 	/*
 	 * We needn't consider local buffers, since by assumption the target
