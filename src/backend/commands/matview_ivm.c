@@ -30,6 +30,7 @@
 #include "access/table.h"
 #include "catalog/dependency.h"
 #include "catalog/indexing.h"
+#include "catalog/objectaddress.h"
 #include "catalog/pg_aggregate.h"
 #include "catalog/pg_am.h"
 #include "catalog/pg_class.h"
@@ -44,6 +45,7 @@
 #include "rewrite/rewriteHandler.h"
 #include "rewrite/rewriteManip.h"
 #include "storage/lmgr.h"
+#include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/inval.h"
@@ -99,9 +101,20 @@ CompileIncrementalMatView(Oid matviewOid, Query *viewQuery)
 	Oid			baserel;
 	IvmProgram *program;
 	ObjectAddress myself;
+	AclResult	aclresult;
 
 	query = rewrite_view_query(viewQuery);
 	baserel = check_view_query(query);
+
+	/*
+	 * Maintenance will run inside other users' transactions on the base
+	 * table, and an error in it aborts them, so creating the view needs the
+	 * MAINTAIN privilege on (or ownership of) the base table.
+	 */
+	aclresult = pg_class_aclcheck(baserel, GetUserId(), ACL_MAINTAIN);
+	if (aclresult != ACLCHECK_OK)
+		aclcheck_error(aclresult, get_relkind_objtype(RELKIND_RELATION),
+					   get_rel_name(baserel));
 
 	/*
 	 * Keep the base table's writers out until this transaction commits: one

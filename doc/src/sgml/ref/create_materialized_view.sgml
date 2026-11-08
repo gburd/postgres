@@ -52,7 +52,10 @@ CREATE MATERIALIZED VIEW [ IF NOT EXISTS ] <replaceable>table_name</replaceable>
   <para>
    <command>CREATE MATERIALIZED VIEW</command> requires
    <literal>CREATE</literal> privilege on the schema used for the materialized
-   view.
+   view.  An incrementally maintained materialized view (see
+   <xref linkend="reloption-incremental-view-maintenance"/>) also requires
+   the <literal>MAINTAIN</literal> privilege on its base table, or
+   ownership of it.
   </para>
  </refsect1>
 

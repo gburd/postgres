@@ -344,6 +344,50 @@ SELECT * FROM ivm_classes();
  ivm_a7 |        1
 (9 rows)
 
+--
+-- Privileges: the creator needs MAINTAIN on (or ownership of) the base
+-- table, since maintenance runs in, and can fail, other users' writes.
+--
+CREATE ROLE regress_ivm_owner;
+CREATE ROLE regress_ivm_user;
+CREATE TABLE ivm_priv (a int, c int);
+ALTER TABLE ivm_priv OWNER TO regress_ivm_owner;
+GRANT CREATE ON SCHEMA public TO regress_ivm_user;
+GRANT SELECT ON ivm_priv TO regress_ivm_user;
+SET ROLE regress_ivm_user;
+-- SELECT is enough for an ordinary materialized view ...
+CREATE MATERIALIZED VIEW ivm_pm AS SELECT a, count(*) FROM ivm_priv GROUP BY a;
+DROP MATERIALIZED VIEW ivm_pm;
+-- ... but not for an incremental one
+CREATE MATERIALIZED VIEW ivm_pm WITH (incremental_view_maintenance) AS
+  SELECT a, count(*) FROM ivm_priv GROUP BY a;
+ERROR:  permission denied for table ivm_priv
+RESET ROLE;
+GRANT MAINTAIN ON ivm_priv TO regress_ivm_user;
+SET ROLE regress_ivm_user;
+CREATE MATERIALIZED VIEW ivm_pm WITH (incremental_view_maintenance) AS
+  SELECT a, count(*) FROM ivm_priv GROUP BY a;
+DROP MATERIALIZED VIEW ivm_pm;
+RESET ROLE;
+REVOKE MAINTAIN ON ivm_priv FROM regress_ivm_user;
+-- membership in pg_maintain grants MAINTAIN on every table
+GRANT pg_maintain TO regress_ivm_user;
+SET ROLE regress_ivm_user;
+CREATE MATERIALIZED VIEW ivm_pm WITH (incremental_view_maintenance) AS
+  SELECT a, count(*) FROM ivm_priv GROUP BY a;
+DROP MATERIALIZED VIEW ivm_pm;
+RESET ROLE;
+REVOKE pg_maintain FROM regress_ivm_user;
+-- the owner needs nothing granted
+GRANT CREATE ON SCHEMA public TO regress_ivm_owner;
+SET ROLE regress_ivm_owner;
+CREATE MATERIALIZED VIEW ivm_pm WITH (incremental_view_maintenance) AS
+  SELECT a, count(*) FROM ivm_priv GROUP BY a;
+DROP MATERIALIZED VIEW ivm_pm;
+RESET ROLE;
+DROP TABLE ivm_priv;
+REVOKE CREATE ON SCHEMA public FROM regress_ivm_user, regress_ivm_owner;
+DROP ROLE regress_ivm_user, regress_ivm_owner;
 DROP MATERIALIZED VIEW ivm_a1, ivm_a2, ivm_a3, ivm_a4, ivm_a5, ivm_a6, ivm_a7,
   ivm_a8, ivm_a9;
 DROP FUNCTION ivm_classes();
