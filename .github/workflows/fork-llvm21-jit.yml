@@ -12,6 +12,10 @@ name: LLVM 21 JIT
 
 on:
   push:
+  # opt (O3 on every query) takes ~3h on a 4-vCPU runner, too slow for every
+  # push; it runs weekly and on demand instead
+  schedule:
+    - cron: '23 4 * * 0'
   workflow_dispatch:
 
 permissions:
@@ -25,8 +29,7 @@ jobs:
   jit:
     name: Linux - LLVM ${{ matrix.llvm }} - ${{ matrix.mode }}
     runs-on: ubuntu-24.04
-    # opt (O3 on every query) needs over 90 minutes on a 4-vCPU runner
-    timeout-minutes: 180
+    timeout-minutes: ${{ matrix.mode == 'opt' && 300 || 90 }}
     container:
       image: ghcr.io/anarazel/pg-vm-images/main/linux_debian_trixie_ci:latest
       options: --privileged --pid=host --ipc=host --ulimit memlock=-1:-1
@@ -38,7 +41,7 @@ jobs:
         # inline: + inlining without optimization (the mode that found
         #         unresolvable references to hidden extension symbols)
         # opt:    + inlining and O3
-        mode: [jit, inline, opt]
+        mode: ${{ fromJSON(github.event_name == 'push' && '["jit", "inline"]' || '["jit", "inline", "opt"]') }}
     env:
       CCACHE_DIR: ${{ github.workspace }}/ccache_dir
       CCACHE_MAXSIZE: 250M
