@@ -1599,6 +1599,16 @@ SELECT JSON_VALUE('{"a": "A"}', '$.c' RETURNING d1 DEFAULT 'A'::d2 ON EMPTY) = '
 SELECT JSON_VALUE('{"a": "A"}', '$.c' RETURNING d1 DEFAULT 'A' COLLATE "C" ON EMPTY) = 'a'; -- error
 DROP DOMAIN d1, d2;
 
+-- an incrementally maintained view looks groups up by value, so it cannot
+-- group by a column whose equality is not byte equality
+CREATE TABLE ivm_nondet (b text COLLATE ctest_nondet, c int);
+CREATE MATERIALIZED VIEW ivm_nondet_m WITH (incremental_view_maintenance) AS
+  SELECT b, count(*) FROM ivm_nondet GROUP BY b;
+CREATE MATERIALIZED VIEW ivm_nondet_m WITH (incremental_view_maintenance) AS
+  SELECT c, count(*) FROM ivm_nondet GROUP BY c;
+DROP MATERIALIZED VIEW ivm_nondet_m;
+DROP TABLE ivm_nondet;
+
 -- cleanup
 RESET search_path;
 SET client_min_messages TO warning;

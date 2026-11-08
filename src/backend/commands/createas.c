@@ -32,6 +32,7 @@
 #include "catalog/toasting.h"
 #include "commands/createas.h"
 #include "commands/matview.h"
+#include "commands/matview_ivm.h"
 #include "commands/prepare.h"
 #include "commands/tablecmds.h"
 #include "commands/view.h"
@@ -136,9 +137,22 @@ create_ctas_internal(List *attrList, IntoClause *into)
 	{
 		/* StoreViewQuery scribbles on tree, so make a copy */
 		Query	   *query = copyObject(into->viewQuery);
+		Relation	matviewRel;
+		bool		incremental;
 
 		StoreViewQuery(intoRelationAddr.objectId, query, false);
 		CommandCounterIncrement();
+
+		/* Compile an incrementally maintained view's maintenance program. */
+		matviewRel = table_open(intoRelationAddr.objectId, NoLock);
+		incremental = RelationIsIncrementalMatView(matviewRel);
+		table_close(matviewRel, NoLock);
+		if (incremental)
+		{
+			CompileIncrementalMatView(intoRelationAddr.objectId,
+									  into->viewQuery);
+			CommandCounterIncrement();
+		}
 	}
 
 	return intoRelationAddr;

@@ -2398,4 +2398,49 @@ typedef struct OnConflictExpr
 	List	   *exclRelTlist;	/* tlist of the EXCLUDED pseudo relation */
 } OnConflictExpr;
 
+/*----------
+ * IvmProgram - the maintenance program of an incrementally maintained
+ * materialized view, compiled from its query at CREATE MATERIALIZED VIEW
+ * and stored in pg_matview_ivm.ivmprogram.
+ *
+ * The view reads one base relation, baserel.  Expressions are over that
+ * relation, with varno 1.  Each view column is either a grouping column
+ * (groupcols) or an aggregate (aggs); viewcols gives, for view column i
+ * (1-based), the position in groupcols if positive or in aggs if negative.
+ *----------
+ */
+typedef struct IvmProgram
+{
+	pg_node_attr(no_query_jumble)
+
+	NodeTag		type;
+	int16		ivmclass;		/* IVM_CLASS_xxx, see pg_matview_ivm.h */
+	Oid			baserel;		/* the base relation */
+	Node	   *qual;			/* WHERE clause, or NULL */
+	List	   *groupcols;		/* integer list: base attnos of GROUP BY keys */
+	List	   *aggs;			/* list of IvmAgg */
+	List	   *viewcols;		/* integer list, see above */
+}			IvmProgram;
+
+/*----------
+ * IvmAgg - one aggregate of an IvmProgram
+ *
+ * arg is the aggregate's argument over the base relation, or NULL for
+ * count(*).  invertible says whether a removed input can be undone with the
+ * aggregate's inverse transition function; if not, the group is recomputed.
+ *----------
+ */
+typedef struct IvmAgg
+{
+	pg_node_attr(no_query_jumble)
+
+	NodeTag		type;
+	Oid			aggfnoid;		/* pg_proc OID of the aggregate */
+	Oid			aggtype;		/* result type */
+	Oid			aggcollid;		/* collation of the result */
+	Oid			inputcollid;	/* collation the function uses */
+	Expr	   *arg;			/* argument, or NULL for count(*) */
+	bool		invertible;
+}			IvmAgg;
+
 #endif							/* PRIMNODES_H */

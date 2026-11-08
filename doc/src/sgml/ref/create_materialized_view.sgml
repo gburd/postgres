@@ -138,6 +138,30 @@ CREATE MATERIALIZED VIEW [ IF NOT EXISTS ] <replaceable>table_name</replaceable>
          Declares the materialized view as incrementally maintained.
          It is rejected for tables.
         </para>
+        <para>
+         The view's query must read a single permanent table, named
+         directly in <literal>FROM</literal>, with an optional
+         <literal>WHERE</literal> clause and an optional
+         <literal>GROUP BY</literal> on plain columns of that table.  Every
+         output column must be a grouping column or one of the aggregates
+         <function>count</function>, <function>sum</function> or
+         <function>avg</function> over <type>smallint</type>,
+         <type>integer</type>, <type>bigint</type>, <type>numeric</type> or
+         <type>interval</type>, or <function>min</function>,
+         <function>max</function>, <function>bool_and</function>,
+         <function>bool_or</function> or <function>every</function>, without
+         <literal>DISTINCT</literal>, <literal>ORDER BY</literal> or
+         <literal>FILTER</literal>.  All grouping columns must be output
+         columns, and their types must compare equal only when their
+         binary representations are equal, which excludes
+         <type>numeric</type>, floating-point types, <type>interval</type>,
+         and text with a nondeterministic collation.  Functions used in the
+         query must be immutable.  Joins, subqueries, views,
+         <literal>WITH</literal>, set operations, <literal>DISTINCT</literal>,
+         <literal>HAVING</literal>, <literal>ORDER BY</literal>,
+         <literal>LIMIT</literal>, window functions, grouping sets, and
+         system columns are not supported.
+        </para>
        </listitem>
       </varlistentry>
      </variablelist>

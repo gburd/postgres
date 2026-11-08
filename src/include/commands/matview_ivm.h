@@ -14,6 +14,9 @@
 #ifndef MATVIEW_IVM_H
 #define MATVIEW_IVM_H
 
+#include "nodes/parsenodes.h"
+
+extern void CompileIncrementalMatView(Oid matviewOid, Query *viewQuery);
 extern void RemoveMatViewIvmEntry(Oid matviewOid);
 
 #endif							/* MATVIEW_IVM_H */

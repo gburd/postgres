@@ -4054,6 +4054,17 @@ LINE 1: ...ON_VALUE('{"a": "A"}', '$.c' RETURNING d1 DEFAULT 'A' COLLAT...
                                                              ^
 DETAIL:  "C" versus "case_insensitive"
 DROP DOMAIN d1, d2;
+-- an incrementally maintained view looks groups up by value, so it cannot
+-- group by a column whose equality is not byte equality
+CREATE TABLE ivm_nondet (b text COLLATE ctest_nondet, c int);
+CREATE MATERIALIZED VIEW ivm_nondet_m WITH (incremental_view_maintenance) AS
+  SELECT b, count(*) FROM ivm_nondet GROUP BY b;
+ERROR:  materialized view cannot be incrementally maintained
+DETAIL:  Grouping column "b" uses nondeterministic collation "ctest_nondet", which cannot be used as an incremental group key.
+CREATE MATERIALIZED VIEW ivm_nondet_m WITH (incremental_view_maintenance) AS
+  SELECT c, count(*) FROM ivm_nondet GROUP BY c;
+DROP MATERIALIZED VIEW ivm_nondet_m;
+DROP TABLE ivm_nondet;
 -- cleanup
 RESET search_path;
 SET client_min_messages TO warning;
