@@ -3133,6 +3133,31 @@ my %tests = (
 		},
 	},
 
+	'CREATE MATERIALIZED VIEW matview_ivm' => {
+		create_order => 21,
+		create_sql => 'CREATE TABLE dump_test.matview_ivm_base (k int, v int);
+					   CREATE MATERIALIZED VIEW dump_test.matview_ivm
+						   WITH (incremental_view_maintenance) AS
+						   SELECT k, count(*) AS n, sum(v) AS s
+						   FROM dump_test.matview_ivm_base GROUP BY k;',
+		regexp => qr/^
+			\QCREATE MATERIALIZED VIEW dump_test.matview_ivm\E
+			\n\QWITH (incremental_view_maintenance='true') AS\E
+			\n\s+\QSELECT k,\E
+			\n\s+\Qcount(*) AS n,\E
+			\n\s+\Qsum(v) AS s\E
+			\n\s+\QFROM dump_test.matview_ivm_base\E
+			\n\s+\QGROUP BY k\E
+			\n\s+\QWITH NO DATA;\E
+			/xm,
+		like =>
+		  { %full_runs, %dump_test_schema_runs, section_pre_data => 1, },
+		unlike => {
+			exclude_dump_test_schema => 1,
+			only_dump_measurement => 1,
+		},
+	},
+
 	'Check ordering of a matview that depends on a primary key' => {
 		create_order => 42,
 		create_sql => '

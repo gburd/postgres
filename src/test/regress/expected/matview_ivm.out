@@ -393,3 +393,8 @@ DROP MATERIALIZED VIEW ivm_a1, ivm_a2, ivm_a3, ivm_a4, ivm_a5, ivm_a6, ivm_a7,
 DROP FUNCTION ivm_classes();
 DROP VIEW ivm_v;
 DROP TABLE ivm_s, ivm_u, ivm_p, ivm_ul, ivm_t;
+-- leave an incrementally maintained view for the pg_upgrade test
+CREATE TABLE ivm_upgrade (k int, v int);
+INSERT INTO ivm_upgrade VALUES (1, 10), (1, 20), (2, 5);
+CREATE MATERIALIZED VIEW ivm_upgrade_m WITH (incremental_view_maintenance) AS
+  SELECT k, count(*), sum(v) FROM ivm_upgrade GROUP BY k;
