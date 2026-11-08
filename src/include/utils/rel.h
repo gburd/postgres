@@ -367,6 +367,8 @@ typedef struct StdRdOptions
 												 * at toast table creation */
 	AutoVacOpts autovacuum;		/* autovacuum-related options */
 	bool		user_catalog_table; /* use as an additional catalog relation */
+	bool		incremental_view_maintenance;	/* matview kept up to date
+												 * incrementally */
 	int			parallel_workers;	/* max number of parallel workers */
 	StdRdOptIndexCleanup vacuum_index_cleanup;	/* controls index vacuuming */
 	pg_ternary	vacuum_truncate;	/* enables vacuum to truncate a relation */
@@ -429,6 +431,16 @@ typedef struct StdRdOptions
 	 ((relation)->rd_rel->relkind == RELKIND_RELATION || \
 	  (relation)->rd_rel->relkind == RELKIND_MATVIEW) ? \
 	 ((StdRdOptions *) (relation)->rd_options)->user_catalog_table : false)
+
+/*
+ * RelationIsIncrementalMatView
+ *		Returns whether the relation is a materialized view created with
+ *		incremental_view_maintenance.  Note multiple eval of argument!
+ */
+#define RelationIsIncrementalMatView(relation)	\
+	((relation)->rd_rel->relkind == RELKIND_MATVIEW && \
+	 (relation)->rd_options && \
+	 ((StdRdOptions *) (relation)->rd_options)->incremental_view_maintenance)
 
 /*
  * RelationGetParallelWorkers

@@ -118,6 +118,15 @@ static relopt_bool boolRelOpts[] =
 	},
 	{
 		{
+			"incremental_view_maintenance",
+			"Keep the materialized view up to date incrementally",
+			RELOPT_KIND_HEAP,
+			AccessExclusiveLock
+		},
+		false
+	},
+	{
+		{
 			"fastupdate",
 			"Enables \"fast update\" feature for this GIN index",
 			RELOPT_KIND_GIN,
@@ -2110,6 +2119,8 @@ static const relopt_parse_elt stdRdOptionsTab[] = {
 	offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, analyze_scale_factor)},
 	{"user_catalog_table", RELOPT_TYPE_BOOL,
 	offsetof(StdRdOptions, user_catalog_table)},
+	{"incremental_view_maintenance", RELOPT_TYPE_BOOL,
+	offsetof(StdRdOptions, incremental_view_maintenance)},
 	{"parallel_workers", RELOPT_TYPE_INT,
 	offsetof(StdRdOptions, parallel_workers)},
 	{"vacuum_index_cleanup", RELOPT_TYPE_ENUM,
@@ -2383,7 +2394,21 @@ heap_reloptions(char relkind, Datum reloptions, bool validate)
 			return (bytea *) rdopts;
 		case RELKIND_RELATION:
 		case RELKIND_MATVIEW:
-			return default_reloptions(reloptions, validate, RELOPT_KIND_HEAP);
+			rdopts = (StdRdOptions *)
+				default_reloptions(reloptions, validate, RELOPT_KIND_HEAP);
+
+			/*
+			 * incremental_view_maintenance shares the heap option namespace
+			 * but means nothing for a table.
+			 */
+			if (validate && rdopts != NULL &&
+				rdopts->incremental_view_maintenance &&
+				relkind != RELKIND_MATVIEW)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("\"%s\" is valid only for materialized views",
+								"incremental_view_maintenance")));
+			return (bytea *) rdopts;
 		default:
 			/* other relkinds are not supported */
 			return NULL;

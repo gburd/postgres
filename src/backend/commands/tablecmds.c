@@ -18048,9 +18048,30 @@ ATExecSetRelOptions(Relation rel, List *defList, AlterTableType operation,
 	switch (rel->rd_rel->relkind)
 	{
 		case RELKIND_RELATION:
-		case RELKIND_MATVIEW:
 			(void) heap_reloptions(rel->rd_rel->relkind, newOptions, true);
 			break;
+		case RELKIND_MATVIEW:
+			{
+				StdRdOptions *newopts;
+				bool		new_ivm;
+
+				newopts = (StdRdOptions *)
+					heap_reloptions(RELKIND_MATVIEW, newOptions, true);
+				new_ivm = newopts && newopts->incremental_view_maintenance;
+
+				/*
+				 * Turning incremental maintenance on would need the view
+				 * compiled and its base tables locked; turning it off would
+				 * leave its maintenance state behind.  Neither is supported.
+				 */
+				if (new_ivm != RelationIsIncrementalMatView(rel))
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("cannot change \"%s\" of materialized view \"%s\"",
+									"incremental_view_maintenance",
+									RelationGetRelationName(rel))));
+				break;
+			}
 		case RELKIND_PARTITIONED_TABLE:
 			(void) partitioned_table_reloptions(newOptions, true);
 			break;

@@ -122,6 +122,25 @@ CREATE MATERIALIZED VIEW [ IF NOT EXISTS ] <replaceable>table_name</replaceable>
       VIEW</literal>.
       See <xref linkend="sql-createtable"/> for more information.
      </para>
+     <para>
+      Materialized views also accept the following parameter, which can only
+      be given when the view is created and cannot be changed afterwards:
+     </para>
+     <variablelist>
+      <varlistentry id="reloption-incremental-view-maintenance" xreflabel="incremental_view_maintenance">
+       <term><literal>incremental_view_maintenance</literal> (<type>boolean</type>)
+       <indexterm>
+        <primary><varname>incremental_view_maintenance</varname> storage parameter</primary>
+       </indexterm>
+       </term>
+       <listitem>
+        <para>
+         Declares the materialized view as incrementally maintained.
+         It is rejected for tables.
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
     </listitem>
    </varlistentry>
 
