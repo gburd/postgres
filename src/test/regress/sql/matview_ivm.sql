@@ -24,6 +24,11 @@ CREATE MATERIALIZED VIEW ivm_n AS SELECT k FROM ivm_t;
 ALTER MATERIALIZED VIEW ivm_n SET (incremental_view_maintenance = true);
 DROP MATERIALIZED VIEW ivm_n;
 
+-- The catalog and the base-table flag exist.  The compiler that fills
+-- them comes later; for now nothing is recorded.
+SELECT count(*) FROM pg_matview_ivm;
+SELECT relhasivm FROM pg_class WHERE oid = 'ivm_t'::regclass;
+
 -- Other options can still be changed.
 ALTER MATERIALIZED VIEW ivm_m SET (fillfactor = 50);
 SELECT reloptions FROM pg_class WHERE oid = 'ivm_m'::regclass;

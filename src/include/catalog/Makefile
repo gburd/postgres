@@ -40,6 +40,7 @@ CATALOG_HEADERS := \
 	pg_statistic_ext.h \
 	pg_statistic_ext_data.h \
 	pg_rewrite.h \
+	pg_matview_ivm.h \
 	pg_trigger.h \
 	pg_event_trigger.h \
 	pg_description.h \

@@ -109,6 +109,9 @@ CATALOG(pg_class,1259,RelationRelationId) BKI_BOOTSTRAP BKI_ROWTYPE_OID(83,Relat
 	/* has (or has had) child tables or indexes */
 	bool		relhassubclass BKI_DEFAULT(f);
 
+	/* is (or was) a base table of an incrementally maintained matview */
+	bool		relhasivm BKI_DEFAULT(f);
+
 	/* row security is enabled or not */
 	bool		relrowsecurity BKI_DEFAULT(f);
 

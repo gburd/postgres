@@ -55,6 +55,7 @@
 #include "catalog/pg_tablespace.h"
 #include "catalog/pg_type.h"
 #include "catalog/storage.h"
+#include "commands/matview_ivm.h"
 #include "commands/tablecmds.h"
 #include "commands/typecmds.h"
 #include "common/int.h"
@@ -1214,6 +1215,7 @@ InsertPgClassTuple(Relation pg_class_desc,
 	values[Anum_pg_class_relrowsecurity - 1] = BoolGetDatum(rd_rel->relrowsecurity);
 	values[Anum_pg_class_relforcerowsecurity - 1] = BoolGetDatum(rd_rel->relforcerowsecurity);
 	values[Anum_pg_class_relhassubclass - 1] = BoolGetDatum(rd_rel->relhassubclass);
+	values[Anum_pg_class_relhasivm - 1] = BoolGetDatum(rd_rel->relhasivm);
 	values[Anum_pg_class_relispopulated - 1] = BoolGetDatum(rd_rel->relispopulated);
 	values[Anum_pg_class_relreplident - 1] = CharGetDatum(rd_rel->relreplident);
 	values[Anum_pg_class_relispartition - 1] = BoolGetDatum(rd_rel->relispartition);
@@ -2149,6 +2151,13 @@ heap_drop_with_catalog(Oid relid)
 	 */
 	if (rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
 		RemovePartitionKeyByRelId(relid);
+
+	/*
+	 * If an incrementally maintained materialized view, delete its
+	 * pg_matview_ivm tuple.
+	 */
+	if (rel->rd_rel->relkind == RELKIND_MATVIEW)
+		RemoveMatViewIvmEntry(relid);
 
 	/*
 	 * If the relation being dropped is the default partition itself,
