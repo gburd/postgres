@@ -1,5 +1,13 @@
 # GAP (not a bug): `xtc_orc`'s public API has no per-child DOWN classification
 
+> UPDATE 2026-11-04: re-raised against the currently pinned libxtc
+> `6dd001e0` (`v2.1.1-6`), where the gap is unchanged, with a concrete new
+> consequence (our optional per-loop `xtc_orc` supervisor is forced to carry
+> ZERO children because of it). See
+> `LIBXTC_ORC_PER_CHILD_DOWN_HOOK_2026-11-04.md` (copy sent to the libxtc team
+> as `/tmp/libxtc-orc-per-child-down-hook-2026-11-04.md`). The two proposed API
+> shapes (on_down callback / xtc_sup_forward_down) are unchanged.
+
 Date: 2026-09-11
 libxtc: **v1.44.0** (tag `2c6d4db`), checkout verified pristine (`git status --short` empty).
 Reporter context: PostgreSQL-on-libxtc branch, building a real supervision tree on `xtc_orc`.
