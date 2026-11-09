@@ -305,10 +305,23 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 		 * For materialized views, reuse the REFRESH logic, which locks down
 		 * security-restricted operations and restricts the search_path.  This
 		 * reduces the chance that a subsequent refresh will fail.
+		 *
+		 * An incrementally maintained view's base table was locked against
+		 * writers after this statement's snapshot was taken, so populate it
+		 * from a fresh snapshot: a writer that committed while we waited for
+		 * the lock must be included, since nothing will capture its change.
 		 */
 		if (do_refresh)
+		{
+			bool		fresh = IsIncrementalMatView(address.objectId);
+
+			if (fresh)
+				PushActiveSnapshot(GetLatestSnapshot());
 			RefreshMatViewByOid(address.objectId, true, false, false,
 								pstate->p_sourcetext, qc);
+			if (fresh)
+				PopActiveSnapshot();
+		}
 
 	}
 	else

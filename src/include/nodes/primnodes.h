@@ -2420,7 +2420,7 @@ typedef struct IvmProgram
 	List	   *groupcols;		/* integer list: base attnos of GROUP BY keys */
 	List	   *aggs;			/* list of IvmAgg */
 	List	   *viewcols;		/* integer list, see above */
-}			IvmProgram;
+} IvmProgram;
 
 /*----------
  * IvmAgg - one aggregate of an IvmProgram
@@ -2441,6 +2441,6 @@ typedef struct IvmAgg
 	Oid			inputcollid;	/* collation the function uses */
 	Expr	   *arg;			/* argument, or NULL for count(*) */
 	bool		invertible;
-}			IvmAgg;
+} IvmAgg;
 
 #endif							/* PRIMNODES_H */

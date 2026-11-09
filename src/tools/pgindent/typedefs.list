@@ -923,6 +923,7 @@ FormData_pg_inherits
 FormData_pg_language
 FormData_pg_largeobject
 FormData_pg_largeobject_metadata
+FormData_pg_matview_ivm
 FormData_pg_namespace
 FormData_pg_opclass
 FormData_pg_operator
@@ -983,6 +984,7 @@ Form_pg_inherits
 Form_pg_language
 Form_pg_largeobject
 Form_pg_largeobject_metadata
+Form_pg_matview_ivm
 Form_pg_namespace
 Form_pg_opclass
 Form_pg_operator
@@ -1387,6 +1389,8 @@ ItemPointerData
 IterateDirectModify_function
 IterateForeignScan_function
 IterateJsonStringValuesState
+IvmAgg
+IvmProgram
 JEntry
 JHashState
 JOBOBJECT_BASIC_LIMIT_INFORMATION
@@ -3627,6 +3631,7 @@ backup_manifest_info
 backup_manifest_option
 backup_wal_range
 base_yy_extra_type
+base_vars_context
 basebackup_options
 bbsink
 bbsink_copystream

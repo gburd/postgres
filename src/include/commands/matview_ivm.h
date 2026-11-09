@@ -15,8 +15,11 @@
 #define MATVIEW_IVM_H
 
 #include "nodes/parsenodes.h"
+#include "utils/relcache.h"
 
 extern void CompileIncrementalMatView(Oid matviewOid, Query *viewQuery);
+extern bool IsIncrementalMatView(Oid matviewOid);
+extern void CheckNoIncrementalMatViews(Relation rel, const char *detail);
 extern void RemoveMatViewIvmEntry(Oid matviewOid);
 
 #endif							/* MATVIEW_IVM_H */

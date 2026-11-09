@@ -28,12 +28,16 @@
 #include "access/htup_details.h"
 #include "access/nbtree.h"
 #include "access/table.h"
+#include "access/transam.h"
 #include "catalog/dependency.h"
 #include "catalog/indexing.h"
 #include "catalog/objectaddress.h"
 #include "catalog/pg_aggregate.h"
 #include "catalog/pg_am.h"
+#include "access/genam.h"
+#include "catalog/catalog.h"
 #include "catalog/pg_class.h"
+#include "catalog/pg_inherits.h"
 #include "catalog/pg_matview_ivm.h"
 #include "commands/defrem.h"
 #include "commands/matview_ivm.h"
@@ -56,35 +60,25 @@
 
 
 static Query *rewrite_view_query(Query *viewQuery);
+static bool relation_has_row_security(Oid relid);
 static Oid	check_view_query(Query *query);
-static IvmProgram * build_program(Query *query, Oid baserel);
-static IvmAgg * build_agg(Aggref *aggref);
+static IvmProgram *build_program(Query *query, Oid baserel);
+static IvmAgg *build_agg(Aggref *aggref, bool *recomputes);
 static Oid	get_agg_sortop(Oid aggfnoid);
 static void check_group_key_type(Oid baserel, AttrNumber attno);
-static void store_program(Oid matviewOid, IvmProgram * program);
+static void store_program(Oid matviewOid, IvmProgram *program);
 static void set_relhasivm(Oid relid);
-static void ivm_unsupported(const char *fmt, ...) pg_attribute_printf(1, 2);
 
 
 /*
- * Raise the error for a query that cannot be incrementally maintained,
- * with the given detail.
+ * Raise the error for a query that cannot be incrementally maintained.  The
+ * arguments are those of errdetail(), so that the detail is translatable.
  */
-static void
-ivm_unsupported(const char *fmt, ...)
-{
-	va_list		args;
-	char		detail[1024];
-
-	va_start(args, fmt);
-	vsnprintf(detail, sizeof(detail), fmt, args);
-	va_end(args);
-
-	ereport(ERROR,
-			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-			 errmsg("materialized view cannot be incrementally maintained"),
-			 errdetail_internal("%s", detail)));
-}
+#define ivm_unsupported(...) \
+	ereport(ERROR, \
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED), \
+			 errmsg("materialized view cannot be incrementally maintained"), \
+			 errdetail(__VA_ARGS__)))
 
 /*
  * CompileIncrementalMatView
@@ -100,7 +94,6 @@ CompileIncrementalMatView(Oid matviewOid, Query *viewQuery)
 	Query	   *query;
 	Oid			baserel;
 	IvmProgram *program;
-	ObjectAddress myself;
 	AclResult	aclresult;
 
 	query = rewrite_view_query(viewQuery);
@@ -109,9 +102,14 @@ CompileIncrementalMatView(Oid matviewOid, Query *viewQuery)
 	/*
 	 * Maintenance will run inside other users' transactions on the base
 	 * table, and an error in it aborts them, so creating the view needs the
-	 * MAINTAIN privilege on (or ownership of) the base table.
+	 * MAINTAIN privilege on (or ownership of) the base table, as well as
+	 * SELECT.  (A plain matview gets its SELECT check when it is populated,
+	 * which WITH NO DATA skips.)  Check them separately: pg_class_aclcheck
+	 * succeeds if any one of several requested privileges is held.
 	 */
-	aclresult = pg_class_aclcheck(baserel, GetUserId(), ACL_MAINTAIN);
+	aclresult = pg_class_aclcheck(baserel, GetUserId(), ACL_SELECT);
+	if (aclresult == ACLCHECK_OK)
+		aclresult = pg_class_aclcheck(baserel, GetUserId(), ACL_MAINTAIN);
 	if (aclresult != ACLCHECK_OK)
 		aclcheck_error(aclresult, get_relkind_objtype(RELKIND_RELATION),
 					   get_rel_name(baserel));
@@ -131,12 +129,10 @@ CompileIncrementalMatView(Oid matviewOid, Query *viewQuery)
 	store_program(matviewOid, program);
 
 	/*
-	 * The view's _RETURN rule already depends on everything the query
-	 * references; record the same for the program, so that dropping or
-	 * replacing what it uses is refused while the program is stored.
+	 * The program refers only to objects the view's _RETURN rule depends on
+	 * already (rewriting adds nothing, since tables with row security are
+	 * refused), so it needs no dependencies of its own.
 	 */
-	ObjectAddressSet(myself, RelationRelationId, matviewOid);
-	recordDependencyOnExpr(&myself, (Node *) query, NIL, DEPENDENCY_NORMAL);
 
 	set_relhasivm(baserel);
 }
@@ -181,16 +177,18 @@ check_view_query(Query *query)
 	if (query->cteList)
 		ivm_unsupported("WITH clauses are not supported.");
 	if (query->distinctClause)
-		ivm_unsupported(query->hasDistinctOn ?
-						"DISTINCT ON is not supported." :
-						"DISTINCT is not supported.");
+	{
+		if (query->hasDistinctOn)
+			ivm_unsupported("DISTINCT ON is not supported.");
+		ivm_unsupported("DISTINCT is not supported.");
+	}
 	if (query->havingQual)
 		ivm_unsupported("HAVING is not supported.");
 	if (query->sortClause)
 		ivm_unsupported("ORDER BY is not supported.");
 	if (query->limitCount || query->limitOffset)
 		ivm_unsupported("LIMIT and OFFSET are not supported.");
-	if (query->hasWindowFuncs)
+	if (query->hasWindowFuncs || query->windowClause)
 		ivm_unsupported("Window functions are not supported.");
 	if (query->groupingSets)
 		ivm_unsupported("Grouping sets are not supported.");
@@ -200,6 +198,8 @@ check_view_query(Query *query)
 		ivm_unsupported("Subqueries are not supported.");
 	if (query->hasForUpdate || query->rowMarks)
 		ivm_unsupported("FOR UPDATE and FOR SHARE are not supported.");
+	if (!query->hasAggs && query->groupClause == NIL)
+		ivm_unsupported("The query must have a GROUP BY clause or aggregates.");
 
 	foreach(lc, query->rtable)
 	{
@@ -211,6 +211,27 @@ check_view_query(Query *query)
 			case RTE_RELATION:
 				if (rte->relkind != RELKIND_RELATION)
 					ivm_unsupported("Base relation \"%s\" is not a table.",
+									get_rel_name(rte->relid));
+				if (IsCatalogRelationOid(rte->relid))
+					ivm_unsupported("Base table \"%s\" is a system catalog.",
+									get_rel_name(rte->relid));
+				if (get_rel_relispartition(rte->relid))
+					ivm_unsupported("Base table \"%s\" is a partition.",
+									get_rel_name(rte->relid));
+				/* children would be read but their changes never captured */
+				if (rte->inh && has_subclass(rte->relid))
+					ivm_unsupported("Base table \"%s\" has inheritance children.",
+									get_rel_name(rte->relid));
+
+				/*
+				 * The program does not carry row security policies, and
+				 * whether they apply depends on who reads, so refuse a table
+				 * that has row security enabled at all, even if its policies
+				 * are not applied to the creator.
+				 */
+				if (rte->securityQuals != NIL ||
+					relation_has_row_security(rte->relid))
+					ivm_unsupported("Base table \"%s\" has row-level security enabled.",
 									get_rel_name(rte->relid));
 				if (rte->tablesample)
 					ivm_unsupported("TABLESAMPLE is not supported.");
@@ -263,6 +284,24 @@ check_view_query(Query *query)
 }
 
 /*
+ * Is row-level security enabled on the relation (pg_class.relrowsecurity)?
+ */
+static bool
+relation_has_row_security(Oid relid)
+{
+	HeapTuple	tuple;
+	bool		result;
+
+	tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(relid));
+	if (!HeapTupleIsValid(tuple))
+		elog(ERROR, "cache lookup failed for relation %u", relid);
+	result = ((Form_pg_class) GETSTRUCT(tuple))->relrowsecurity;
+	ReleaseSysCache(tuple);
+
+	return result;
+}
+
+/*
  * Return the varno of the base relation in a query that check_view_query
  * accepted.
  */
@@ -272,11 +311,20 @@ base_varno(Query *query)
 	return castNode(RangeTblRef, linitial(query->jointree->fromlist))->rtindex;
 }
 
+typedef struct
+{
+	int			varno;			/* varno of the base relation */
+	Oid			relid;			/* the base relation */
+} base_vars_context;
+
 /*
- * Rewrite Vars of the base relation to varno 1, and reject system columns.
+ * Check the Vars of an expression over the base relation: no outer or other
+ * relations, no system columns, no virtual generated columns (the planner,
+ * not the rewriter, expands those, so the stored expression would name a
+ * column that has no stored value).
  */
 static bool
-check_base_vars_walker(Node *node, int *varno)
+check_base_vars_walker(Node *node, base_vars_context *context)
 {
 	if (node == NULL)
 		return false;
@@ -284,20 +332,32 @@ check_base_vars_walker(Node *node, int *varno)
 	{
 		Var		   *var = (Var *) node;
 
-		if (var->varlevelsup != 0 || var->varno != *varno)
+		if (var->varlevelsup != 0 || var->varno != context->varno)
 			elog(ERROR, "unexpected Var in incrementally maintained materialized view");
 		if (var->varattno <= 0)
 			ivm_unsupported("System columns and whole-row references are not supported.");
+		if (get_attgenerated(context->relid, var->varattno) ==
+			ATTRIBUTE_GENERATED_VIRTUAL)
+			ivm_unsupported("Virtual generated column \"%s\" is not supported.",
+							get_attname(context->relid, var->varattno, false));
 		return false;
 	}
-	return expression_tree_walker(node, check_base_vars_walker, varno);
+	return expression_tree_walker(node, check_base_vars_walker, context);
 }
 
+/*
+ * Return a copy of an expression over the base relation, checked, with its
+ * Vars renumbered to varno 1.
+ */
 static Node *
-to_base_varno(Node *node, int varno)
+to_base_varno(Node *node, int varno, Oid relid)
 {
+	base_vars_context context;
+
+	context.varno = varno;
+	context.relid = relid;
 	node = copyObject(node);
-	(void) check_base_vars_walker(node, &varno);
+	(void) check_base_vars_walker(node, &context);
 	if (varno != 1)
 		ChangeVarNodes(node, varno, 1, 0);
 	return node;
@@ -311,12 +371,12 @@ build_program(Query *query, Oid baserel)
 {
 	IvmProgram *program = makeNode(IvmProgram);
 	int			varno = base_varno(query);
-	bool		all_invertible = true;
+	bool		recomputes = false;
 	ListCell   *lc;
 
 	program->baserel = baserel;
 	if (query->jointree->quals)
-		program->qual = to_base_varno(query->jointree->quals, varno);
+		program->qual = to_base_varno(query->jointree->quals, varno, baserel);
 
 	/* GROUP BY keys must be plain columns of the base table. */
 	foreach(lc, query->groupClause)
@@ -328,7 +388,7 @@ build_program(Query *query, Oid baserel)
 
 		if (!IsA(expr, Var))
 			ivm_unsupported("GROUP BY expressions are not supported.");
-		var = castNode(Var, to_base_varno(expr, varno));
+		var = castNode(Var, to_base_varno(expr, varno, baserel));
 		check_group_key_type(baserel, var->varattno);
 		program->groupcols = lappend_int(program->groupcols, var->varattno);
 	}
@@ -361,12 +421,10 @@ build_program(Query *query, Oid baserel)
 		}
 		else if (IsA(expr, Aggref))
 		{
-			IvmAgg	   *agg = build_agg((Aggref *) expr);
+			IvmAgg	   *agg = build_agg((Aggref *) expr, &recomputes);
 
 			if (agg->arg)
-				agg->arg = (Expr *) to_base_varno((Node *) agg->arg, varno);
-			if (!agg->invertible)
-				all_invertible = false;
+				agg->arg = (Expr *) to_base_varno((Node *) agg->arg, varno, baserel);
 			program->aggs = lappend(program->aggs, agg);
 			program->viewcols = lappend_int(program->viewcols,
 											-list_length(program->aggs));
@@ -400,8 +458,12 @@ build_program(Query *query, Oid baserel)
 		}
 	}
 
-	program->ivmclass = all_invertible ? IVM_CLASS_SELF_MAINTAINABLE :
-		IVM_CLASS_READS_BASE;
+	/*
+	 * Recomputing a group reads base rows that other transactions may be
+	 * changing, so such a view needs the class 2 protocol.
+	 */
+	program->ivmclass = recomputes ? IVM_CLASS_READS_BASE :
+		IVM_CLASS_SELF_MAINTAINABLE;
 
 	/*
 	 * The view's rows are identified by their group key, so every GROUP BY
@@ -425,7 +487,7 @@ build_program(Query *query, Oid baserel)
  * Check an aggregate call and describe how it is maintained.
  */
 static IvmAgg *
-build_agg(Aggref *aggref)
+build_agg(Aggref *aggref, bool *recomputes)
 {
 	IvmAgg	   *agg = makeNode(IvmAgg);
 	bool		invertible;
@@ -442,33 +504,48 @@ build_agg(Aggref *aggref)
 
 	switch (aggref->aggfnoid)
 	{
-			/* count(*) and count(x) */
+			/*
+			 * count, and sum and avg over integers and interval, have an
+			 * inverse transition function that always succeeds.
+			 */
 		case F_COUNT_:
 		case F_COUNT_ANY:
-			/* sum and avg with an exact inverse transition function */
 		case F_SUM_INT2:
 		case F_SUM_INT4:
 		case F_SUM_INT8:
-		case F_SUM_NUMERIC:
 		case F_SUM_INTERVAL:
 		case F_AVG_INT2:
 		case F_AVG_INT4:
 		case F_AVG_INT8:
-		case F_AVG_NUMERIC:
 		case F_AVG_INTERVAL:
 			invertible = true;
 			break;
 
 			/*
-			 * Aggregates that the planner could compute from an index
-			 * ordering (min, max, bool_and, bool_or, every: those with an
-			 * aggsortop) are recomputed per group when an input goes away.
+			 * The numeric inverse gives up when it removes the only input
+			 * with the largest display scale (numeric_accum_inv); the group
+			 * is then recomputed.  Maintenance is otherwise incremental.
+			 */
+		case F_SUM_NUMERIC:
+		case F_AVG_NUMERIC:
+			invertible = true;
+			*recomputes = true;
+			break;
+
+			/*
+			 * Built-in aggregates with a sort operator (min, max, bool_and,
+			 * bool_or, every) are recomputed per group when an input goes
+			 * away.  User-defined aggregates are not accepted: the volatility
+			 * of their support functions is not visible here, since CREATE
+			 * AGGREGATE marks the aggregate itself immutable.
 			 */
 		default:
-			if (!OidIsValid(get_agg_sortop(aggref->aggfnoid)))
+			if (aggref->aggfnoid >= FirstUnpinnedObjectId ||
+				!OidIsValid(get_agg_sortop(aggref->aggfnoid)))
 				ivm_unsupported("Aggregate function %s is not supported.",
 								format_procedure(aggref->aggfnoid));
 			invertible = false;
+			*recomputes = true;
 			break;
 	}
 
@@ -554,7 +631,7 @@ check_group_key_type(Oid baserel, AttrNumber attno)
  * Insert the pg_matview_ivm row of a new view.
  */
 static void
-store_program(Oid matviewOid, IvmProgram * program)
+store_program(Oid matviewOid, IvmProgram *program)
 {
 	Relation	rel;
 	HeapTuple	tuple;
@@ -617,6 +694,58 @@ set_relhasivm(Oid relid)
 
 	heap_freetuple(tuple);
 	table_close(pg_class, RowExclusiveLock);
+}
+
+/*
+ * IsIncrementalMatView
+ *		Does the materialized view have a stored maintenance program?
+ */
+bool
+IsIncrementalMatView(Oid matviewOid)
+{
+	return SearchSysCacheExists1(MATVIEWIVMRELID, ObjectIdGetDatum(matviewOid));
+}
+
+/*
+ * CheckNoIncrementalMatViews
+ *		Refuse DDL that would make a table something an incrementally
+ *		maintained view on it could not have been created over.
+ *
+ * detail is the (translated) reason, for the error message.  Without this,
+ * a dump of the database would fail to restore, since it recreates the view
+ * after the table's new state.
+ */
+void
+CheckNoIncrementalMatViews(Relation rel, const char *detail)
+{
+	Relation	ivmrel;
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	Oid			relid = RelationGetRelid(rel);
+
+	/* relhasivm is set for every base table, and only cleared never */
+	if (!rel->rd_rel->relhasivm)
+		return;
+
+	ivmrel = table_open(MatViewIvmRelationId, AccessShareLock);
+	scan = systable_beginscan(ivmrel, InvalidOid, false, NULL, 0, NULL);
+	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
+	{
+		Form_pg_matview_ivm form = (Form_pg_matview_ivm) GETSTRUCT(tuple);
+
+		for (int i = 0; i < form->ivmbaserels.dim1; i++)
+		{
+			if (form->ivmbaserels.values[i] == relid)
+				ereport(ERROR,
+						(errcode(ERRCODE_DEPENDENT_OBJECTS_STILL_EXIST),
+						 errmsg("cannot alter table \"%s\" because incrementally maintained materialized view \"%s\" depends on it",
+								RelationGetRelationName(rel),
+								get_rel_name(form->ivmrelid)),
+						 errdetail_internal("%s", detail)));
+		}
+	}
+	systable_endscan(scan);
+	table_close(ivmrel, AccessShareLock);
 }
 
 /*

@@ -63,6 +63,7 @@
 #include "commands/comment.h"
 #include "commands/defrem.h"
 #include "commands/event_trigger.h"
+#include "commands/matview_ivm.h"
 #include "commands/repack.h"
 #include "commands/sequence.h"
 #include "commands/tablecmds.h"
@@ -908,6 +909,15 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 							get_rel_name(parentOid))));
 
 		inheritOids = lappend_oid(inheritOids, parentOid);
+
+		/* the incremental views of a parent do not see the new child */
+		if (stmt->partbound == NULL)
+		{
+			Relation	parent = table_open(parentOid, NoLock);
+
+			CheckNoIncrementalMatViews(parent, _("Incrementally maintained materialized views do not support inheritance children."));
+			table_close(parent, NoLock);
+		}
 	}
 
 	/*
@@ -5721,6 +5731,7 @@ ATExecCmd(List **wqueue, AlteredTableInfo *tab,
 			ATExecReplicaIdentity(rel, (ReplicaIdentityStmt *) cmd->def, lockmode);
 			break;
 		case AT_EnableRowSecurity:
+			CheckNoIncrementalMatViews(rel, _("Incrementally maintained materialized views do not support row-level security."));
 			ATExecSetRowSecurity(rel, true);
 			break;
 		case AT_DisableRowSecurity:
@@ -9301,6 +9312,13 @@ ATExecSetExpression(AlteredTableInfo *tab, Relation rel, const char *colName,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("column \"%s\" of relation \"%s\" is not a generated column",
 						colName, RelationGetRelationName(rel))));
+
+	/*
+	 * A stored generated column is rewritten here, not through the executor,
+	 * so incremental maintenance would not see the new values.
+	 */
+	if (attgenerated == ATTRIBUTE_GENERATED_STORED)
+		CheckNoIncrementalMatViews(rel, _("Changing the expression of a stored generated column rewrites the table outside incremental maintenance."));
 
 	if (attgenerated == ATTRIBUTE_GENERATED_VIRTUAL && attTup->attnotnull)
 		tab->verify_new_notnull = true;
@@ -18654,6 +18672,8 @@ ATExecAddInherit(Relation child_rel, RangeVar *parent, LOCKMODE lockmode)
 	ATSimplePermissions(AT_AddInherit, parent_rel,
 						ATT_TABLE | ATT_PARTITIONED_TABLE | ATT_FOREIGN_TABLE);
 
+	CheckNoIncrementalMatViews(parent_rel, _("Incrementally maintained materialized views do not support inheritance children."));
+
 	/* Permanent rels cannot inherit from temporary ones */
 	if (parent_rel->rd_rel->relpersistence == RELPERSISTENCE_TEMP &&
 		child_rel->rd_rel->relpersistence != RELPERSISTENCE_TEMP)
@@ -20242,6 +20262,7 @@ ATPrepChangePersistence(AlteredTableInfo *tab, Relation rel, bool toLogged)
 			if (toLogged)
 				/* nothing to do */
 				return;
+			CheckNoIncrementalMatViews(rel, _("Incrementally maintained materialized views require permanent base tables."));
 			break;
 		case RELPERSISTENCE_UNLOGGED:
 			if (!toLogged)
@@ -21714,6 +21735,8 @@ ATExecAttachPartition(List **wqueue, Relation rel, PartitionCmd *cmd,
 	 */
 	ATSimplePermissions(AT_AttachPartition, attachrel,
 						ATT_TABLE | ATT_PARTITIONED_TABLE | ATT_FOREIGN_TABLE);
+
+	CheckNoIncrementalMatViews(attachrel, _("Incrementally maintained materialized views do not support partitions."));
 
 	/* A partition can only have one parent */
 	if (attachrel->rd_rel->relispartition)

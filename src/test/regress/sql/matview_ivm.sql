@@ -51,7 +51,8 @@ INSERT INTO ivm_s VALUES (1, 'x', 10, 1.5, '2026-01-01', 0.5),
 
 CREATE FUNCTION ivm_classes() RETURNS TABLE (view regclass, ivmclass int2)
 LANGUAGE sql AS $$
-  SELECT ivmrelid::regclass, ivmclass FROM pg_matview_ivm ORDER BY 1::text
+  SELECT ivmrelid::regclass, ivmclass FROM pg_matview_ivm
+  ORDER BY ivmrelid::regclass::text
 $$;
 
 -- invertible aggregates, two grouping columns: class 1
@@ -180,6 +181,57 @@ CREATE MATERIALIZED VIEW ivm_r WITH (incremental_view_maintenance) AS
   SELECT f, count(*) FROM ivm_s GROUP BY f;
 CREATE MATERIALIZED VIEW ivm_r WITH (incremental_view_maintenance) AS
   SELECT generate_series(1, a), count(*) FROM ivm_s GROUP BY a;
+-- no GROUP BY and no aggregates: the view would be one row per base row
+CREATE MATERIALIZED VIEW ivm_r WITH (incremental_view_maintenance) AS
+  SELECT FROM ivm_s;
+-- a WINDOW clause, even unused by any window function
+CREATE MATERIALIZED VIEW ivm_r WITH (incremental_view_maintenance) AS
+  SELECT count(*) AS c FROM ivm_s WINDOW w AS (ORDER BY count(*));
+-- a user-defined aggregate, even one with a sort operator
+CREATE FUNCTION ivm_larger(int, int) RETURNS int LANGUAGE sql
+  AS 'SELECT greatest($1, $2)';
+CREATE AGGREGATE ivm_max (int) (sfunc = ivm_larger, stype = int, sortop = >);
+CREATE MATERIALIZED VIEW ivm_r WITH (incremental_view_maintenance) AS
+  SELECT a, ivm_max(c) FROM ivm_s GROUP BY a;
+DROP AGGREGATE ivm_max (int);
+DROP FUNCTION ivm_larger(int, int);
+-- a system catalog
+CREATE MATERIALIZED VIEW ivm_r WITH (incremental_view_maintenance) AS
+  SELECT relkind, count(*) FROM pg_class GROUP BY relkind;
+-- an inheritance parent with children, and a partition
+CREATE TABLE ivm_par (a int);
+CREATE TABLE ivm_chi () INHERITS (ivm_par);
+CREATE MATERIALIZED VIEW ivm_r WITH (incremental_view_maintenance) AS
+  SELECT a, count(*) FROM ivm_par GROUP BY a;
+-- ONLY the parent is fine
+CREATE MATERIALIZED VIEW ivm_r WITH (incremental_view_maintenance) AS
+  SELECT a, count(*) FROM ONLY ivm_par GROUP BY a;
+DROP MATERIALIZED VIEW ivm_r;
+CREATE TABLE ivm_p1 PARTITION OF ivm_p FOR VALUES IN (1);
+CREATE MATERIALIZED VIEW ivm_r WITH (incremental_view_maintenance) AS
+  SELECT a, count(*) FROM ivm_p1 GROUP BY a;
+-- row-level security enabled, whether or not policies apply to the creator
+CREATE TABLE ivm_rls (a int, c int);
+ALTER TABLE ivm_rls ENABLE ROW LEVEL SECURITY;
+CREATE MATERIALIZED VIEW ivm_r WITH (incremental_view_maintenance) AS
+  SELECT a, count(*) FROM ivm_rls GROUP BY a;
+-- a virtual generated column, as a key or an argument
+CREATE TABLE ivm_gen (a int, g int GENERATED ALWAYS AS (a * 2) VIRTUAL,
+                      s int GENERATED ALWAYS AS (a * 3) STORED);
+CREATE MATERIALIZED VIEW ivm_r WITH (incremental_view_maintenance) AS
+  SELECT g, count(*) FROM ivm_gen GROUP BY g;
+CREATE MATERIALIZED VIEW ivm_r WITH (incremental_view_maintenance) AS
+  SELECT a, sum(g) FROM ivm_gen GROUP BY a;
+-- a stored generated column is an ordinary column; changing its expression
+-- rewrites the table outside the executor, so it is refused while the view
+-- exists (a plain materialized view over it allows it)
+CREATE MATERIALIZED VIEW ivm_r WITH (incremental_view_maintenance) AS
+  SELECT s, count(*) FROM ivm_gen GROUP BY s;
+ALTER TABLE ivm_gen ALTER COLUMN s SET EXPRESSION AS (a * 4);
+DROP MATERIALIZED VIEW ivm_r;
+CREATE MATERIALIZED VIEW ivm_r AS SELECT s, count(*) FROM ivm_gen GROUP BY s;
+ALTER TABLE ivm_gen ALTER COLUMN s SET EXPRESSION AS (a * 4);
+DROP MATERIALIZED VIEW ivm_r;
 -- nothing was created by the failures
 SELECT * FROM ivm_classes();
 
@@ -216,6 +268,14 @@ CREATE MATERIALIZED VIEW ivm_pm WITH (incremental_view_maintenance) AS
 DROP MATERIALIZED VIEW ivm_pm;
 RESET ROLE;
 REVOKE pg_maintain FROM regress_ivm_user;
+-- MAINTAIN without SELECT is not enough either, even WITH NO DATA
+GRANT pg_maintain TO regress_ivm_user;
+REVOKE SELECT ON ivm_priv FROM regress_ivm_user;
+SET ROLE regress_ivm_user;
+CREATE MATERIALIZED VIEW ivm_pm WITH (incremental_view_maintenance) AS
+  SELECT a, count(*) FROM ivm_priv GROUP BY a WITH NO DATA;
+RESET ROLE;
+REVOKE pg_maintain FROM regress_ivm_user;
 -- the owner needs nothing granted
 GRANT CREATE ON SCHEMA public TO regress_ivm_owner;
 SET ROLE regress_ivm_owner;
@@ -231,7 +291,32 @@ DROP MATERIALIZED VIEW ivm_a1, ivm_a2, ivm_a3, ivm_a4, ivm_a5, ivm_a6, ivm_a7,
   ivm_a8, ivm_a9;
 DROP FUNCTION ivm_classes();
 DROP VIEW ivm_v;
-DROP TABLE ivm_s, ivm_u, ivm_p, ivm_ul, ivm_t;
+--
+-- DDL that would make a base table something a view could not be created
+-- over is refused while the view exists
+--
+CREATE TABLE ivm_ddl (a int, c int);
+CREATE MATERIALIZED VIEW ivm_ddl_m WITH (incremental_view_maintenance) AS
+  SELECT a, count(*) FROM ivm_ddl GROUP BY a;
+ALTER TABLE ivm_ddl SET UNLOGGED;
+ALTER TABLE ivm_ddl ENABLE ROW LEVEL SECURITY;
+CREATE TABLE ivm_ddl_c () INHERITS (ivm_ddl);
+CREATE TABLE ivm_ddl_c (a int, c int);
+ALTER TABLE ivm_ddl_c INHERIT ivm_ddl;
+CREATE TABLE ivm_ddl_p (a int, c int) PARTITION BY LIST (a);
+ALTER TABLE ivm_ddl_p ATTACH PARTITION ivm_ddl FOR VALUES IN (1);
+-- the view itself can still be indexed, and the table altered otherwise
+CREATE INDEX ON ivm_ddl_m (a);
+ALTER TABLE ivm_ddl ADD COLUMN d int;
+ALTER TABLE ivm_ddl SET LOGGED;
+-- after the view is dropped, all of it is allowed
+DROP MATERIALIZED VIEW ivm_ddl_m;
+ALTER TABLE ivm_ddl ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ivm_ddl_c ADD COLUMN d int;
+ALTER TABLE ivm_ddl_c INHERIT ivm_ddl;
+DROP TABLE ivm_ddl, ivm_ddl_c, ivm_ddl_p;
+
+DROP TABLE ivm_s, ivm_u, ivm_p, ivm_ul, ivm_t, ivm_par, ivm_chi, ivm_rls, ivm_gen;
 
 -- leave an incrementally maintained view for the pg_upgrade test
 CREATE TABLE ivm_upgrade (k int, v int);
