@@ -106,7 +106,8 @@ the index each probe uses, and how each aggregate is maintained.
 captured change and the view's own rows: one base relation appearing
 once, no join, no subquery over a base relation, no recompute path.
 Everything else is class 2, including self-joins and views whose
-aggregates are recomputed from the base table (section 5.3).  Section 6
+aggregates may be recomputed from the base table (section 5.3): min and
+max, and sum or avg over numeric, whose inverse can give up.  Section 6
 explains why the distinction is the delta rule's inputs, not the number
 of tables.
 
@@ -178,17 +179,36 @@ query; binary upgrade reproduces the column layout exactly.
 - for each probe a delta rule makes (group-key index on the base table
   for recompute, join-key index for class 2), an index if none exists.
 
-**Locks at CREATE.**  `ShareLock` on every base table until commit, plus
-a relcache invalidation for each.  Without it a writer that started
-before CREATE has no capture and its committed change never reaches the
-view.  A CONCURRENTLY form can come later.
+**Locks at CREATE.**  `ShareRowExclusiveLock` on every base table until
+commit, plus a relcache invalidation for each.  It blocks writers, so no
+writer can commit a change before capture exists for it, and it is
+self-exclusive, so two CREATEs on one table do not race on its
+`pg_class` row (heap's in-place-update check requires one of these two
+modes, `heapam.c:4445`).  The view is then populated from a fresh
+snapshot taken after the lock (`GetLatestSnapshot()`), not the
+statement's snapshot, which predates the lock wait: a writer that
+committed during the wait must be in the view.  A CONCURRENTLY form can
+come later.
 
 **Rejected at CREATE**, all versions: mutable functions (the rule for
-index expressions), `TABLESAMPLE`, `FOR UPDATE`, foreign tables or
-partitions, temporary objects (already rejected, `parser/analyze.c:3205`),
-system columns.  In the first version also: unlogged base tables (they
-come back empty after a crash and are unreadable on a standby, so the
-view would silently disagree).
+index expressions), user-defined aggregates (CREATE AGGREGATE marks the
+aggregate immutable whatever its support functions are), `TABLESAMPLE`,
+`FOR UPDATE`, foreign tables or partitions, system catalogs (their
+writes bypass the executor), temporary objects (already rejected,
+`parser/analyze.c:3205`), system columns, virtual generated columns
+(the planner expands them, so the stored program would name a column
+with no stored value).  In the first version also: unlogged base tables
+(they come back empty after a crash and are unreadable on a standby, so
+the view would silently disagree), base tables with inheritance
+children (their changes would not be captured), and base tables with
+row-level security enabled (the program does not carry policies).
+
+**Kept true after CREATE.**  Each rejection above that a later DDL
+could undo is also refused while the view exists, or a dump of the
+database would fail to restore the view: `SET UNLOGGED`, `ENABLE ROW
+LEVEL SECURITY`, gaining an inheritance child (`INHERITS`, `INHERIT`),
+becoming a partition (`ATTACH PARTITION`), and `SET EXPRESSION` on a
+stored generated column (which rewrites the table outside the executor).
 
 ## 4. Capture
 
