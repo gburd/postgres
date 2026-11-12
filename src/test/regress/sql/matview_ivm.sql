@@ -38,7 +38,7 @@ SELECT relhasivm FROM pg_class WHERE oid = 'ivm_t'::regclass;
 DROP TABLE ivm_t;
 -- Dropping the view removes its row; the flag stays, set lazily.
 DROP MATERIALIZED VIEW ivm_m;
-SELECT count(*) FROM pg_matview_ivm;
+SELECT count(*) FROM pg_matview_ivm WHERE ivmbaserels[0] = 'ivm_t'::regclass;
 SELECT relhasivm FROM pg_class WHERE oid = 'ivm_t'::regclass;
 
 --
@@ -52,6 +52,7 @@ INSERT INTO ivm_s VALUES (1, 'x', 10, 1.5, '2026-01-01', 0.5),
 CREATE FUNCTION ivm_classes() RETURNS TABLE (view regclass, ivmclass int2)
 LANGUAGE sql AS $$
   SELECT ivmrelid::regclass, ivmclass FROM pg_matview_ivm
+  WHERE ivmrelid::regclass::text LIKE 'ivm\_%'
   ORDER BY ivmrelid::regclass::text
 $$;
 

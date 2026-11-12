@@ -31,6 +31,7 @@
 #include "catalog/pg_proc.h"
 #include "catalog/pg_trigger.h"
 #include "catalog/pg_type.h"
+#include "commands/matview_ivm.h"
 #include "commands/trigger.h"
 #include "executor/executor.h"
 #include "executor/instrument.h"
@@ -2608,6 +2609,10 @@ ExecARInsertTriggers(EState *estate, ResultRelInfo *relinfo,
 							  recheckIndexes, NULL,
 							  transition_capture,
 							  false);
+
+	/* record the change for incrementally maintained materialized views */
+	if (relinfo->ri_RelationDesc->rd_rel->relhasivm)
+		IvmCaptureRow(relinfo, NULL, slot);
 }
 
 bool
@@ -2887,6 +2892,17 @@ ExecARDeleteTriggers(EState *estate,
 							  true, slot, NULL, NULL, NIL, NULL,
 							  transition_capture,
 							  is_crosspart_update);
+	}
+
+	/* record the change for incrementally maintained materialized views */
+	if (relinfo->ri_RelationDesc->rd_rel->relhasivm &&
+		ItemPointerIsValid(tupleid))
+	{
+		TupleTableSlot *slot = ExecGetTriggerOldSlot(estate, relinfo);
+
+		GetTupleForTrigger(estate, NULL, relinfo, tupleid, LockTupleExclusive,
+						   slot, false, NULL, NULL, NULL);
+		IvmCaptureRow(relinfo, slot, NULL);
 	}
 }
 
@@ -3255,6 +3271,26 @@ ExecARUpdateTriggers(EState *estate, ResultRelInfo *relinfo,
 							  ExecGetAllUpdatedCols(relinfo, estate),
 							  transition_capture,
 							  is_crosspart_update);
+	}
+
+	/*
+	 * Record the change for incrementally maintained materialized views.  A
+	 * cross-partition move is reported separately for each side and cannot
+	 * involve a base table, since partitioned tables are not supported.
+	 */
+	if (relinfo->ri_RelationDesc->rd_rel->relhasivm &&
+		src_partinfo == NULL && !is_crosspart_update &&
+		ItemPointerIsValid(tupleid) && !TupIsNull(newslot))
+	{
+		TupleTableSlot *oldslot = ExecGetTriggerOldSlot(estate, relinfo);
+
+		/*
+		 * The old version is still visible to SnapshotAny: this transaction
+		 * made it dead, and nothing can remove it before we commit.
+		 */
+		GetTupleForTrigger(estate, NULL, relinfo, tupleid, LockTupleExclusive,
+						   oldslot, false, NULL, NULL, NULL);
+		IvmCaptureRow(relinfo, oldslot, newslot);
 	}
 }
 

@@ -589,9 +589,10 @@ CopyMultiInsertBufferFlush(CopyMultiInsertInfo *miinfo,
 			 * There's no indexes, but see if we need to run AFTER ROW INSERT
 			 * triggers anyway.
 			 */
-			else if (resultRelInfo->ri_TrigDesc != NULL &&
-					 (resultRelInfo->ri_TrigDesc->trig_insert_after_row ||
-					  resultRelInfo->ri_TrigDesc->trig_insert_new_table))
+			else if ((resultRelInfo->ri_TrigDesc != NULL &&
+					  (resultRelInfo->ri_TrigDesc->trig_insert_after_row ||
+					   resultRelInfo->ri_TrigDesc->trig_insert_new_table)) ||
+					 resultRelInfo->ri_RelationDesc->rd_rel->relhasivm)
 			{
 				cstate->cur_lineno = buffer->linenos[i];
 				ExecARInsertTriggers(estate, resultRelInfo,

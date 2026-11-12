@@ -525,6 +525,9 @@ typedef struct ResultRelInfo
 	/* updates do LockTuple() before oldtup read; see README.tuplock */
 	bool		ri_needLockTagTuple;
 
+	/* capture changes for incremental views? IVM_CAPTURE_xxx, 0 = unknown */
+	int8		ri_IvmCapture;
+
 	/* triggers to be fired, if any */
 	TriggerDesc *ri_TrigDesc;
 

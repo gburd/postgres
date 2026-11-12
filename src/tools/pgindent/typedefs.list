@@ -1390,6 +1390,8 @@ IterateDirectModify_function
 IterateForeignScan_function
 IterateJsonStringValuesState
 IvmAgg
+IvmChangeEntry
+IvmChangeSet
 IvmProgram
 JEntry
 JHashState

@@ -2203,6 +2203,13 @@ ExecuteTruncateGuts(List *explicit_rels,
 			continue;
 
 		/*
+		 * Incrementally maintained materialized views over the table cannot
+		 * follow a TRUNCATE row by row; they are recomputed instead.
+		 */
+		if (rel->rd_rel->relhasivm)
+			IvmCaptureRecompute(rel);
+
+		/*
 		 * Build the lists of foreign tables belonging to each foreign server
 		 * and pass each list to the foreign data wrapper's callback function,
 		 * so that each server can truncate its all foreign tables in bulk.

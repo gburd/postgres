@@ -1,0 +1,155 @@
+--
+-- Capture of changes to base tables of incrementally maintained
+-- materialized views
+--
+\getenv libdir PG_LIBDIR
+\getenv dlsuffix PG_DLSUFFIX
+\set regresslib :libdir '/regress' :dlsuffix
+
+CREATE FUNCTION ivm_captured(regclass, OUT olds int8, OUT news int8,
+                             OUT recompute bool)
+  AS :'regresslib' LANGUAGE C STRICT;
+
+CREATE TABLE cap_t (k int, v int, w text);
+CREATE MATERIALIZED VIEW cap_m WITH (incremental_view_maintenance) AS
+  SELECT k, count(*), sum(v) FROM cap_t GROUP BY k;
+CREATE TABLE cap_plain (k int, v int);
+
+-- each kind of change, within one transaction
+BEGIN;
+INSERT INTO cap_t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c');
+SELECT * FROM ivm_captured('cap_t');
+UPDATE cap_t SET v = v + 1 WHERE k = 1;
+SELECT * FROM ivm_captured('cap_t');
+-- an UPDATE that changes nothing is not captured
+UPDATE cap_t SET v = v WHERE k = 2;
+SELECT * FROM ivm_captured('cap_t');
+DELETE FROM cap_t WHERE k = 3;
+SELECT * FROM ivm_captured('cap_t');
+-- a table with no incremental view is not captured
+INSERT INTO cap_plain VALUES (1, 1);
+SELECT * FROM ivm_captured('cap_plain');
+COMMIT;
+-- nothing survives the transaction
+SELECT * FROM ivm_captured('cap_t');
+
+-- MERGE and INSERT ON CONFLICT
+CREATE UNIQUE INDEX ON cap_t (k);
+BEGIN;
+MERGE INTO cap_t t USING (VALUES (1, 100), (4, 40)) s(k, v) ON t.k = s.k
+  WHEN MATCHED THEN UPDATE SET v = s.v
+  WHEN NOT MATCHED THEN INSERT VALUES (s.k, s.v, 'm');
+SELECT * FROM ivm_captured('cap_t');
+INSERT INTO cap_t VALUES (2, 200, 'x'), (5, 50, 'y')
+  ON CONFLICT (k) DO UPDATE SET v = excluded.v;
+SELECT * FROM ivm_captured('cap_t');
+-- ON CONFLICT DO NOTHING on an existing row captures nothing
+INSERT INTO cap_t VALUES (2, 999, 'z') ON CONFLICT DO NOTHING;
+SELECT * FROM ivm_captured('cap_t');
+ROLLBACK;
+
+-- COPY, with and without an index on the table
+BEGIN;
+COPY cap_t FROM stdin;
+6	60	c
+7	70	c
+\.
+SELECT * FROM ivm_captured('cap_t');
+ROLLBACK;
+DROP INDEX cap_t_k_idx;
+BEGIN;
+COPY cap_t FROM stdin;
+6	60	c
+7	70	c
+\.
+SELECT * FROM ivm_captured('cap_t');
+ROLLBACK;
+
+-- subtransactions: rolled-back changes are dropped, released ones kept
+BEGIN;
+INSERT INTO cap_t VALUES (10, 1, 's');
+SAVEPOINT a;
+INSERT INTO cap_t VALUES (11, 1, 's'), (12, 1, 's');
+SELECT * FROM ivm_captured('cap_t');
+ROLLBACK TO a;
+SELECT * FROM ivm_captured('cap_t');
+INSERT INTO cap_t VALUES (13, 1, 's');
+SAVEPOINT b;
+DELETE FROM cap_t WHERE k = 13;
+RELEASE b;
+SELECT * FROM ivm_captured('cap_t');
+-- nested, with the inner one rolled back after the outer one released
+SAVEPOINT c;
+SAVEPOINT d;
+UPDATE cap_t SET v = 2 WHERE k = 10;
+RELEASE d;
+SELECT * FROM ivm_captured('cap_t');
+ROLLBACK TO c;
+SELECT * FROM ivm_captured('cap_t');
+-- an error inside a subtransaction drops its changes
+SAVEPOINT e;
+INSERT INTO cap_t VALUES (14, 1, 's');
+SELECT 1 / 0;
+ROLLBACK TO e;
+SELECT * FROM ivm_captured('cap_t');
+ROLLBACK;
+
+-- capture does not depend on triggers being enabled
+BEGIN;
+SET LOCAL session_replication_role = replica;
+INSERT INTO cap_t VALUES (20, 1, 'r');
+SELECT * FROM ivm_captured('cap_t');
+ROLLBACK;
+BEGIN;
+ALTER TABLE cap_t DISABLE TRIGGER ALL;
+INSERT INTO cap_t VALUES (21, 1, 'r');
+SELECT * FROM ivm_captured('cap_t');
+ROLLBACK;
+
+-- a BEFORE ROW trigger's changes to the row are what is captured, and an
+-- UPDATE it turns into a no-op is not captured
+CREATE FUNCTION cap_noop() RETURNS trigger LANGUAGE plpgsql AS
+  $$ BEGIN RETURN OLD; END $$;
+CREATE TRIGGER cap_noop BEFORE UPDATE ON cap_t
+  FOR EACH ROW WHEN (NEW.w = 'noop') EXECUTE FUNCTION cap_noop();
+BEGIN;
+UPDATE cap_t SET w = 'noop' WHERE k = 1;
+SELECT * FROM ivm_captured('cap_t');
+ROLLBACK;
+DROP TRIGGER cap_noop ON cap_t;
+DROP FUNCTION cap_noop();
+
+-- a writable CTE that changes the base table twice over
+BEGIN;
+WITH d AS (DELETE FROM cap_t WHERE k = 1 RETURNING *)
+INSERT INTO cap_t SELECT k, v * 2, w FROM d;
+SELECT * FROM ivm_captured('cap_t');
+ROLLBACK;
+
+-- TRUNCATE turns the transaction's capture into a recompute
+BEGIN;
+INSERT INTO cap_t VALUES (30, 1, 't');
+TRUNCATE cap_t;
+SELECT * FROM ivm_captured('cap_t');
+INSERT INTO cap_t VALUES (31, 1, 't');
+SELECT * FROM ivm_captured('cap_t');
+ROLLBACK;
+-- a TRUNCATE inside a rolled-back subtransaction does not
+BEGIN;
+INSERT INTO cap_t VALUES (32, 1, 't');
+SAVEPOINT f;
+TRUNCATE cap_t;
+ROLLBACK TO f;
+SELECT * FROM ivm_captured('cap_t');
+ROLLBACK;
+
+-- once the view is gone, nothing is captured although relhasivm stays set
+DROP MATERIALIZED VIEW cap_m;
+SELECT relhasivm FROM pg_class WHERE oid = 'cap_t'::regclass;
+BEGIN;
+INSERT INTO cap_t VALUES (40, 1, 'g');
+SELECT * FROM ivm_captured('cap_t');
+ROLLBACK;
+
+DROP TABLE cap_t, cap_plain;
+DROP FUNCTION ivm_captured(regclass);

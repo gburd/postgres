@@ -25,6 +25,7 @@
 #include "catalog/namespace.h"
 #include "catalog/pg_operator.h"
 #include "catalog/pg_type.h"
+#include "commands/matview_ivm.h"
 #include "commands/sequence.h"
 #include "commands/trigger.h"
 #include "common/pg_lzcompress.h"
@@ -1743,4 +1744,32 @@ test_pg_locale_apis(PG_FUNCTION_ARGS)
 	test_case_mapping(locale);
 
 	PG_RETURN_VOID();
+}
+
+/*
+ * ivm_captured(rel, OUT olds int8, OUT news int8, OUT recompute bool)
+ *		What the current transaction has captured so far for a base table of
+ *		an incrementally maintained materialized view.
+ */
+PG_FUNCTION_INFO_V1(ivm_captured);
+Datum
+ivm_captured(PG_FUNCTION_ARGS)
+{
+	Oid			relid = PG_GETARG_OID(0);
+	TupleDesc	tupdesc;
+	Datum		values[3];
+	bool		nulls[3] = {0};
+	int64		nold;
+	int64		nnew;
+	bool		recompute;
+
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+
+	(void) IvmCapturedCounts(relid, &nold, &nnew, &recompute);
+	values[0] = Int64GetDatum(nold);
+	values[1] = Int64GetDatum(nnew);
+	values[2] = BoolGetDatum(recompute);
+
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(tupdesc, values, nulls)));
 }
