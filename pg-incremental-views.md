@@ -672,6 +672,15 @@ it would.
 Patches 1-3 are the first usable slice: incremental `GROUP BY` views
 over one table, maintained at commit.  Patch 4 adds read-your-writes.
 
+**Status (2026-11-12).**  Patches 1 and 2 are done.  Patch 3 is done in
+a first form, 3a: every view is maintained by the class 2 protocol, as a
+recompute of the groups the transaction touched, under the view lock.
+That is correct for every accepted aggregate, including min/max and
+numeric, but costs a read of each touched group and serialises writers
+to one view.  3b adds incremental state (internal columns, inverse
+transition functions) and the lock-free class 1 path for invertible
+aggregates.
+
 ## 10. Testing
 
 - **Oracle.**  After every statement and every commit: the view
