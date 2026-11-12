@@ -402,6 +402,47 @@ AtEOXact_IvmCapture(bool isCommit)
 }
 
 /*
+ * IvmTakeCapturedChanges
+ *		Hand over the transaction's captured changes, one IvmCapturedTable
+ *		per changed table, and start capturing afresh.
+ *
+ * Called at commit, outside any subtransaction, so each table has a single
+ * change set.  The caller must tuplestore_end() the stores when done.
+ */
+List *
+IvmTakeCapturedChanges(void)
+{
+	HASH_SEQ_STATUS seq;
+	IvmChangeEntry *entry;
+	List	   *result = NIL;
+
+	if (ivm_changes == NULL)
+		return NIL;
+
+	hash_seq_init(&seq, ivm_changes);
+	while ((entry = (IvmChangeEntry *) hash_seq_search(&seq)) != NULL)
+	{
+		IvmChangeSet *set = entry->set;
+		IvmCapturedTable *ct;
+
+		Assert(set->outer == NULL);
+		if (!set->recompute && set->nold == 0 && set->nnew == 0)
+			continue;
+		ct = palloc_object(IvmCapturedTable);
+		ct->relid = set->relid;
+		ct->olds = set->olds;
+		ct->news = set->news;
+		ct->recompute = set->recompute;
+		result = lappend(result, ct);
+	}
+
+	/* the change sets' memory goes with ivm_context at transaction end */
+	ivm_changes = NULL;
+
+	return result;
+}
+
+/*
  * IvmCapturedCounts
  *		Report the rows captured so far in this transaction for a table, as
  *		seen from the current subtransaction.  For tests.

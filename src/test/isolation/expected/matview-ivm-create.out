@@ -70,5 +70,6 @@ step c_show: SELECT * FROM ivm_mv ORDER BY k;
 k|count|sum
 -+-----+---
 1|    1| 10
-(1 row)
+3|    1| 40
+(2 rows)
 

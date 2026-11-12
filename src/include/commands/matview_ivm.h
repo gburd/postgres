@@ -40,4 +40,18 @@ extern void AtEOXact_IvmCapture(bool isCommit);
 extern bool IvmCapturedCounts(Oid relid, int64 *nold, int64 *nnew,
 							  bool *recompute);
 
+/* the changes to one table handed to the commit pass */
+typedef struct IvmCapturedTable
+{
+	Oid			relid;
+	struct Tuplestorestate *olds;	/* rows removed, or NULL */
+	struct Tuplestorestate *news;	/* rows added, or NULL */
+	bool		recompute;		/* changed outside the executor */
+} IvmCapturedTable;
+
+extern List *IvmTakeCapturedChanges(void);
+
+/* the commit pass, matview_ivm_maintain.c */
+extern bool PreCommit_MaintainMatViews(void);
+
 #endif							/* MATVIEW_IVM_H */

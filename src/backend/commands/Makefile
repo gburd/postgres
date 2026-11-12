@@ -44,6 +44,7 @@ OBJS = \
 	matview.o \
 	matview_ivm.o \
 	matview_ivm_capture.o \
+	matview_ivm_maintain.o \
 	opclasscmds.o \
 	operatorcmds.o \
 	policy.o \

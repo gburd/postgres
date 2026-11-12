@@ -1,0 +1,165 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1_begin s2_begin s1_ins s2_ins s1_commit s2_commit s3_check s3_show
+step s1_begin: BEGIN;
+step s2_begin: BEGIN;
+step s1_ins: INSERT INTO ivm_c VALUES (1, 10);
+step s2_ins: INSERT INTO ivm_c VALUES (1, 100);
+step s1_commit: COMMIT;
+step s2_commit: COMMIT;
+step s3_check: SELECT ivm_cm_ok();
+ivm_cm_ok
+---------
+t        
+(1 row)
+
+step s3_show: SELECT * FROM ivm_cm ORDER BY k;
+k|n|  s
+-+-+---
+1|3|111
+2|1|  2
+(2 rows)
+
+
+starting permutation: s1_begin s2_begin s1_ins s2_ins s2_commit s1_commit s3_check s3_show
+step s1_begin: BEGIN;
+step s2_begin: BEGIN;
+step s1_ins: INSERT INTO ivm_c VALUES (1, 10);
+step s2_ins: INSERT INTO ivm_c VALUES (1, 100);
+step s2_commit: COMMIT;
+step s1_commit: COMMIT;
+step s3_check: SELECT ivm_cm_ok();
+ivm_cm_ok
+---------
+t        
+(1 row)
+
+step s3_show: SELECT * FROM ivm_cm ORDER BY k;
+k|n|  s
+-+-+---
+1|3|111
+2|1|  2
+(2 rows)
+
+
+starting permutation: s1_begin s2_begin s1_ins s2_upd s1_commit s2_commit s3_check s3_show
+step s1_begin: BEGIN;
+step s2_begin: BEGIN;
+step s1_ins: INSERT INTO ivm_c VALUES (1, 10);
+step s2_upd: UPDATE ivm_c SET v = v + 1000 WHERE k = 2;
+step s1_commit: COMMIT;
+step s2_commit: COMMIT;
+step s3_check: SELECT ivm_cm_ok();
+ivm_cm_ok
+---------
+t        
+(1 row)
+
+step s3_show: SELECT * FROM ivm_cm ORDER BY k;
+k|n|   s
+-+-+----
+1|2|  11
+2|1|1002
+(2 rows)
+
+
+starting permutation: s1_rr s2_rr s1_ins s2_ins s1_commit s2_commit s3_check s3_show
+step s1_rr: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT 1;
+?column?
+--------
+       1
+(1 row)
+
+step s2_rr: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT 1;
+?column?
+--------
+       1
+(1 row)
+
+step s1_ins: INSERT INTO ivm_c VALUES (1, 10);
+step s2_ins: INSERT INTO ivm_c VALUES (1, 100);
+step s1_commit: COMMIT;
+step s2_commit: COMMIT;
+step s3_check: SELECT ivm_cm_ok();
+ivm_cm_ok
+---------
+t        
+(1 row)
+
+step s3_show: SELECT * FROM ivm_cm ORDER BY k;
+k|n|  s
+-+-+---
+1|3|111
+2|1|  2
+(2 rows)
+
+
+starting permutation: s1_begin s2_begin s1_ins s2_ins s1_abort s2_commit s3_check s3_show
+step s1_begin: BEGIN;
+step s2_begin: BEGIN;
+step s1_ins: INSERT INTO ivm_c VALUES (1, 10);
+step s2_ins: INSERT INTO ivm_c VALUES (1, 100);
+step s1_abort: ROLLBACK;
+step s2_commit: COMMIT;
+step s3_check: SELECT ivm_cm_ok();
+ivm_cm_ok
+---------
+t        
+(1 row)
+
+step s3_show: SELECT * FROM ivm_cm ORDER BY k;
+k|n|  s
+-+-+---
+1|2|101
+2|1|  2
+(2 rows)
+
+
+starting permutation: s1_begin s1_ins s3_check s1_commit s3_check
+step s1_begin: BEGIN;
+step s1_ins: INSERT INTO ivm_c VALUES (1, 10);
+step s3_check: SELECT ivm_cm_ok();
+ivm_cm_ok
+---------
+t        
+(1 row)
+
+step s1_commit: COMMIT;
+step s3_check: SELECT ivm_cm_ok();
+ivm_cm_ok
+---------
+t        
+(1 row)
+
+
+starting permutation: s1_begin s1_ins s1_prepare s3_check s3_show s1_cprep s3_check s3_show
+step s1_begin: BEGIN;
+step s1_ins: INSERT INTO ivm_c VALUES (1, 10);
+step s1_prepare: PREPARE TRANSACTION 'ivm_p';
+step s3_check: SELECT ivm_cm_ok();
+ivm_cm_ok
+---------
+t        
+(1 row)
+
+step s3_show: SELECT * FROM ivm_cm ORDER BY k;
+k|n|s
+-+-+-
+1|1|1
+2|1|2
+(2 rows)
+
+step s1_cprep: COMMIT PREPARED 'ivm_p';
+step s3_check: SELECT ivm_cm_ok();
+ivm_cm_ok
+---------
+t        
+(1 row)
+
+step s3_show: SELECT * FROM ivm_cm ORDER BY k;
+k|n| s
+-+-+--
+1|2|11
+2|1| 2
+(2 rows)
+

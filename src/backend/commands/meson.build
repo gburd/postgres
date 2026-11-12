@@ -32,6 +32,7 @@ backend_sources += files(
   'matview.c',
   'matview_ivm.c',
   'matview_ivm_capture.c',
+  'matview_ivm_maintain.c',
   'opclasscmds.c',
   'operatorcmds.c',
   'policy.c',

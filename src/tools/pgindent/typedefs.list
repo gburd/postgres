@@ -1390,9 +1390,12 @@ IterateDirectModify_function
 IterateForeignScan_function
 IterateJsonStringValuesState
 IvmAgg
+IvmCapturedTable
 IvmChangeEntry
 IvmChangeSet
+IvmGroupKey
 IvmProgram
+IvmViewWork
 JEntry
 JHashState
 JOBOBJECT_BASIC_LIMIT_INFORMATION

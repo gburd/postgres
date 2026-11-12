@@ -1,0 +1,39 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1_begin s2_begin s1_a s2_b s1_b s2_a s1_commit s2_commit s3_show
+step s1_begin: BEGIN;
+step s2_begin: BEGIN;
+step s1_a: INSERT INTO ivm_la VALUES (1, 1);
+step s2_b: INSERT INTO ivm_lb VALUES (2, 2);
+step s1_b: INSERT INTO ivm_lb VALUES (1, 1);
+step s2_a: INSERT INTO ivm_la VALUES (2, 2);
+step s1_commit: COMMIT;
+step s2_commit: COMMIT;
+step s3_show: SELECT 'a', * FROM ivm_lva UNION ALL SELECT 'b', * FROM ivm_lvb ORDER BY 1, 2;
+?column?|k|n
+--------+-+-
+a       |1|1
+a       |2|1
+b       |1|1
+b       |2|1
+(4 rows)
+
+
+starting permutation: s1_begin s2_begin s1_a s2_b s1_b s2_a s2_commit s1_commit s3_show
+step s1_begin: BEGIN;
+step s2_begin: BEGIN;
+step s1_a: INSERT INTO ivm_la VALUES (1, 1);
+step s2_b: INSERT INTO ivm_lb VALUES (2, 2);
+step s1_b: INSERT INTO ivm_lb VALUES (1, 1);
+step s2_a: INSERT INTO ivm_la VALUES (2, 2);
+step s2_commit: COMMIT;
+step s1_commit: COMMIT;
+step s3_show: SELECT 'a', * FROM ivm_lva UNION ALL SELECT 'b', * FROM ivm_lvb ORDER BY 1, 2;
+?column?|k|n
+--------+-+-
+a       |1|1
+a       |2|1
+b       |1|1
+b       |2|1
+(4 rows)
+

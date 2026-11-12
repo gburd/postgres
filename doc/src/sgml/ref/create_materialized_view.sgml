@@ -171,6 +171,24 @@ CREATE MATERIALIZED VIEW [ IF NOT EXISTS ] <replaceable>table_name</replaceable>
          columns are not supported.
         </para>
         <para>
+         Each transaction that changes the base table brings the view up to
+         date before it commits: it recomputes the view's rows for the
+         groups it changed, reading the base table with a snapshot that
+         includes its own changes and every transaction that committed
+         before.  It holds an <literal>EXCLUSIVE</literal> lock on the view
+         from then until its commit is visible to other sessions, so
+         transactions that change one view's base table commit one at a
+         time; plain reads of the view are not blocked.  An error while
+         maintaining the view, such as an overflow in an aggregate, aborts
+         the transaction that changed the base table.  The query runs as the
+         view's owner, in a security-restricted operation, as it does for
+         <command>REFRESH MATERIALIZED VIEW</command>.  A view created
+         <literal>WITH NO DATA</literal> is not maintained until
+         <command>REFRESH MATERIALIZED VIEW</command> populates it.  Changes
+         to the base table are not visible in the view to the transaction
+         that made them until it commits.
+        </para>
+        <para>
          While such a view exists, its base table cannot be made unlogged,
          have row-level security enabled, gain inheritance children, become
          a partition, or have the expression of a stored generated column

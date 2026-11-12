@@ -48,5 +48,5 @@ permutation w_begin w_insert c_create w_abort c_show
 permutation c_rr w_begin w_insert c_create_rr w_commit c_commit c_show
 
 # A writer that starts after CREATE (in an open transaction) waits until
-# CREATE commits.
+# CREATE commits, and its change is then maintained into the view.
 permutation c_begin c_create w_insert2 c_commit c_show

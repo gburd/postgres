@@ -1,0 +1,405 @@
+--
+-- Maintenance of incrementally maintained materialized views at commit
+--
+CREATE TABLE mnt_t (k int, v int, w text);
+INSERT INTO mnt_t VALUES (1, 10, 'a'), (1, 20, 'b'), (2, 5, 'c');
+CREATE MATERIALIZED VIEW mnt_g WITH (incremental_view_maintenance) AS
+  SELECT k, count(*) AS n, count(v) AS nv, sum(v) AS s, avg(v) AS a,
+         min(w) AS lo, max(v) AS hi
+  FROM mnt_t GROUP BY k;
+CREATE MATERIALIZED VIEW mnt_s WITH (incremental_view_maintenance) AS
+  SELECT count(*) AS n, sum(v) AS s FROM mnt_t;
+CREATE MATERIALIZED VIEW mnt_w WITH (incremental_view_maintenance) AS
+  SELECT k, count(*) AS n FROM mnt_t WHERE v > 8 GROUP BY k;
+CREATE UNIQUE INDEX ON mnt_g (k) NULLS NOT DISTINCT;
+-- every view equals its query
+CREATE FUNCTION mnt_check() RETURNS TABLE (view text, ok bool)
+LANGUAGE sql AS $$
+  SELECT 'mnt_g', NOT EXISTS (
+    (SELECT * FROM mnt_g EXCEPT ALL
+     SELECT k, count(*), count(v), sum(v), avg(v), min(w), max(v)
+     FROM mnt_t GROUP BY k)
+    UNION ALL
+    (SELECT k, count(*), count(v), sum(v), avg(v), min(w), max(v)
+     FROM mnt_t GROUP BY k EXCEPT ALL SELECT * FROM mnt_g))
+  UNION ALL
+  SELECT 'mnt_s', NOT EXISTS (
+    (SELECT * FROM mnt_s EXCEPT ALL SELECT count(*), sum(v) FROM mnt_t)
+    UNION ALL
+    (SELECT count(*), sum(v) FROM mnt_t EXCEPT ALL SELECT * FROM mnt_s))
+  UNION ALL
+  SELECT 'mnt_w', NOT EXISTS (
+    (SELECT * FROM mnt_w EXCEPT ALL
+     SELECT k, count(*) FROM mnt_t WHERE v > 8 GROUP BY k)
+    UNION ALL
+    (SELECT k, count(*) FROM mnt_t WHERE v > 8 GROUP BY k
+     EXCEPT ALL SELECT * FROM mnt_w))
+$$;
+SELECT * FROM mnt_check();
+ view  | ok 
+-------+----
+ mnt_g | t
+ mnt_s | t
+ mnt_w | t
+(3 rows)
+
+INSERT INTO mnt_t VALUES (3, 7, 'd'), (1, 30, 'e');
+SELECT * FROM mnt_check();
+ view  | ok 
+-------+----
+ mnt_g | t
+ mnt_s | t
+ mnt_w | t
+(3 rows)
+
+UPDATE mnt_t SET v = v + 100 WHERE k = 2;
+SELECT * FROM mnt_check();
+ view  | ok 
+-------+----
+ mnt_g | t
+ mnt_s | t
+ mnt_w | t
+(3 rows)
+
+-- a row moving between groups, and in and out of the WHERE clause
+UPDATE mnt_t SET k = 4, v = 1 WHERE k = 3;
+SELECT * FROM mnt_check();
+ view  | ok 
+-------+----
+ mnt_g | t
+ mnt_s | t
+ mnt_w | t
+(3 rows)
+
+-- removing the extreme value of a group
+DELETE FROM mnt_t WHERE v = 30;
+SELECT * FROM mnt_check();
+ view  | ok 
+-------+----
+ mnt_g | t
+ mnt_s | t
+ mnt_w | t
+(3 rows)
+
+SELECT * FROM mnt_g ORDER BY k;
+ k | n | nv |  s  |           a            | lo | hi  
+---+---+----+-----+------------------------+----+-----
+ 1 | 2 |  2 |  30 |    15.0000000000000000 | a  |  20
+ 2 | 1 |  1 | 105 |   105.0000000000000000 | c  | 105
+ 4 | 1 |  1 |   1 | 1.00000000000000000000 | d  |   1
+(3 rows)
+
+-- emptying a group removes its row; the scalar view keeps its one row
+DELETE FROM mnt_t WHERE k = 4;
+SELECT * FROM mnt_check();
+ view  | ok 
+-------+----
+ mnt_g | t
+ mnt_s | t
+ mnt_w | t
+(3 rows)
+
+DELETE FROM mnt_t;
+SELECT * FROM mnt_check();
+ view  | ok 
+-------+----
+ mnt_g | t
+ mnt_s | t
+ mnt_w | t
+(3 rows)
+
+SELECT * FROM mnt_s;
+ n | s 
+---+---
+ 0 |  
+(1 row)
+
+SELECT count(*) FROM mnt_g;
+ count 
+-------
+     0
+(1 row)
+
+-- NULL group keys and NULL inputs
+INSERT INTO mnt_t VALUES (NULL, 1, 'x'), (NULL, 2, NULL), (5, NULL, 'y');
+SELECT * FROM mnt_check();
+ view  | ok 
+-------+----
+ mnt_g | t
+ mnt_s | t
+ mnt_w | t
+(3 rows)
+
+SELECT * FROM mnt_g ORDER BY k;
+ k | n | nv | s |         a          | lo | hi 
+---+---+----+---+--------------------+----+----
+ 5 | 1 |  0 |   |                    | y  |   
+   | 2 |  2 | 3 | 1.5000000000000000 | x  |  2
+(2 rows)
+
+UPDATE mnt_t SET v = 3 WHERE k IS NULL AND v = 1;
+SELECT * FROM mnt_check();
+ view  | ok 
+-------+----
+ mnt_g | t
+ mnt_s | t
+ mnt_w | t
+(3 rows)
+
+-- several statements in one transaction
+BEGIN;
+INSERT INTO mnt_t VALUES (6, 60, 'z');
+UPDATE mnt_t SET v = 61 WHERE k = 6;
+INSERT INTO mnt_t VALUES (6, 1, 'z');
+DELETE FROM mnt_t WHERE k = 5;
+COMMIT;
+SELECT * FROM mnt_check();
+ view  | ok 
+-------+----
+ mnt_g | t
+ mnt_s | t
+ mnt_w | t
+(3 rows)
+
+-- rolled back changes leave the views alone
+BEGIN;
+INSERT INTO mnt_t VALUES (7, 70, 'q');
+ROLLBACK;
+SELECT * FROM mnt_check();
+ view  | ok 
+-------+----
+ mnt_g | t
+ mnt_s | t
+ mnt_w | t
+(3 rows)
+
+BEGIN;
+INSERT INTO mnt_t VALUES (8, 80, 'q');
+SAVEPOINT a;
+INSERT INTO mnt_t VALUES (9, 90, 'q');
+ROLLBACK TO a;
+COMMIT;
+SELECT * FROM mnt_check();
+ view  | ok 
+-------+----
+ mnt_g | t
+ mnt_s | t
+ mnt_w | t
+(3 rows)
+
+SELECT k FROM mnt_g WHERE k IN (8, 9) ORDER BY k;
+ k 
+---
+ 8
+(1 row)
+
+-- the view's own index is kept up to date
+SET enable_seqscan = off;
+SELECT k, n FROM mnt_g WHERE k = 8;
+ k | n 
+---+---
+ 8 | 1
+(1 row)
+
+RESET enable_seqscan;
+-- TRUNCATE recomputes the views
+TRUNCATE mnt_t;
+SELECT * FROM mnt_check();
+ view  | ok 
+-------+----
+ mnt_g | t
+ mnt_s | t
+ mnt_w | t
+(3 rows)
+
+SELECT * FROM mnt_s;
+ n | s 
+---+---
+ 0 |  
+(1 row)
+
+INSERT INTO mnt_t SELECT g % 10, g, 'g' FROM generate_series(1, 1000) g;
+SELECT * FROM mnt_check();
+ view  | ok 
+-------+----
+ mnt_g | t
+ mnt_s | t
+ mnt_w | t
+(3 rows)
+
+-- COPY
+COPY mnt_t FROM stdin;
+SELECT * FROM mnt_check();
+ view  | ok 
+-------+----
+ mnt_g | t
+ mnt_s | t
+ mnt_w | t
+(3 rows)
+
+-- captured rows that spill to temporary files survive the statement and
+-- a released savepoint
+SET work_mem = '64kB';
+BEGIN;
+INSERT INTO mnt_t VALUES (1, 1, 'w');
+INSERT INTO mnt_t SELECT g % 7, g, 'w' FROM generate_series(1, 20000) g;
+SAVEPOINT a;
+UPDATE mnt_t SET v = v + 1 WHERE k = 3;
+RELEASE a;
+COMMIT;
+RESET work_mem;
+SELECT * FROM mnt_check();
+ view  | ok 
+-------+----
+ mnt_g | t
+ mnt_s | t
+ mnt_w | t
+(3 rows)
+
+-- a WITH NO DATA view is not maintained until REFRESH populates it
+CREATE MATERIALIZED VIEW mnt_nd WITH (incremental_view_maintenance) AS
+  SELECT k, count(*) AS n FROM mnt_t GROUP BY k WITH NO DATA;
+INSERT INTO mnt_t VALUES (12, 1, 'n');
+SELECT relispopulated FROM pg_class WHERE oid = 'mnt_nd'::regclass;
+ relispopulated 
+----------------
+ f
+(1 row)
+
+REFRESH MATERIALIZED VIEW mnt_nd;
+INSERT INTO mnt_t VALUES (12, 2, 'n');
+SELECT * FROM mnt_nd WHERE k = 12;
+ k  | n 
+----+---
+ 12 | 2
+(1 row)
+
+DROP MATERIALIZED VIEW mnt_nd;
+-- maintenance runs the view's query as the view's owner
+CREATE ROLE regress_mnt_writer;
+GRANT INSERT, SELECT ON mnt_t TO regress_mnt_writer;
+SET ROLE regress_mnt_writer;
+INSERT INTO mnt_t VALUES (13, 13, 'r');
+RESET ROLE;
+SELECT * FROM mnt_check();
+ view  | ok 
+-------+----
+ mnt_g | t
+ mnt_s | t
+ mnt_w | t
+(3 rows)
+
+REVOKE ALL ON mnt_t FROM regress_mnt_writer;
+DROP ROLE regress_mnt_writer;
+-- a writer cannot modify the view directly
+INSERT INTO mnt_g VALUES (99, 1, 1, 1, 1, 'x', 1);
+ERROR:  cannot change materialized view "mnt_g"
+DROP FUNCTION mnt_check();
+DROP TABLE mnt_t CASCADE;
+NOTICE:  drop cascades to 3 other objects
+DETAIL:  drop cascades to materialized view mnt_g
+drop cascades to materialized view mnt_s
+drop cascades to materialized view mnt_w
+-- changes made by foreign key actions and deferred triggers, which run as
+-- SPI DML, and by MERGE, repeated updates, and a writable CTE
+CREATE TABLE mnt_p (id int PRIMARY KEY);
+CREATE TABLE mnt_c (id int, pid int REFERENCES mnt_p
+                    ON DELETE CASCADE ON UPDATE CASCADE, v int);
+CREATE TABLE mnt_c2 (id int, pid int REFERENCES mnt_p ON DELETE SET NULL,
+                     v int);
+INSERT INTO mnt_p VALUES (1), (2);
+INSERT INTO mnt_c VALUES (1, 1, 10), (2, 1, 20), (3, 2, 30);
+INSERT INTO mnt_c2 VALUES (1, 1, 1);
+CREATE MATERIALIZED VIEW mnt_mc WITH (incremental_view_maintenance) AS
+  SELECT pid, count(*) AS n, sum(v) AS s FROM mnt_c GROUP BY pid;
+CREATE MATERIALIZED VIEW mnt_mc2 WITH (incremental_view_maintenance) AS
+  SELECT pid, count(*) AS n FROM mnt_c2 GROUP BY pid;
+CREATE FUNCTION mnt_ok() RETURNS bool LANGUAGE sql AS $$
+  SELECT NOT EXISTS (
+    (SELECT * FROM mnt_mc EXCEPT ALL
+     SELECT pid, count(*), sum(v) FROM mnt_c GROUP BY pid)
+    UNION ALL
+    (SELECT pid, count(*), sum(v) FROM mnt_c GROUP BY pid
+     EXCEPT ALL SELECT * FROM mnt_mc))
+  AND NOT EXISTS (
+    (SELECT * FROM mnt_mc2 EXCEPT ALL
+     SELECT pid, count(*) FROM mnt_c2 GROUP BY pid)
+    UNION ALL
+    (SELECT pid, count(*) FROM mnt_c2 GROUP BY pid
+     EXCEPT ALL SELECT * FROM mnt_mc2))
+$$;
+DELETE FROM mnt_p WHERE id = 1;
+SELECT mnt_ok();
+ mnt_ok 
+--------
+ t
+(1 row)
+
+UPDATE mnt_p SET id = 20 WHERE id = 2;
+SELECT mnt_ok();
+ mnt_ok 
+--------
+ t
+(1 row)
+
+CREATE TABLE mnt_trig (a int);
+CREATE FUNCTION mnt_trigf() RETURNS trigger LANGUAGE plpgsql AS
+  $$ BEGIN INSERT INTO mnt_c VALUES (99, NULL, 99); RETURN NULL; END $$;
+CREATE CONSTRAINT TRIGGER mnt_ct AFTER INSERT ON mnt_trig
+  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION mnt_trigf();
+INSERT INTO mnt_trig VALUES (1);
+SELECT mnt_ok();
+ mnt_ok 
+--------
+ t
+(1 row)
+
+SELECT n, s FROM mnt_mc WHERE pid IS NULL;
+ n | s  
+---+----
+ 1 | 99
+(1 row)
+
+BEGIN;
+UPDATE mnt_c SET v = v + 1 WHERE id = 3;
+UPDATE mnt_c SET v = v + 1 WHERE id = 3;
+UPDATE mnt_c SET pid = NULL WHERE id = 3;
+UPDATE mnt_c SET v = 0 WHERE id = 3;
+COMMIT;
+SELECT mnt_ok();
+ mnt_ok 
+--------
+ t
+(1 row)
+
+MERGE INTO mnt_c t USING (VALUES (99)) s(id) ON t.id = s.id
+  WHEN MATCHED THEN DELETE;
+SELECT mnt_ok();
+ mnt_ok 
+--------
+ t
+(1 row)
+
+WITH a AS (INSERT INTO mnt_c VALUES (70, NULL, 7) RETURNING 1)
+INSERT INTO mnt_c2 SELECT 70, NULL, 7 FROM a;
+SELECT mnt_ok();
+ mnt_ok 
+--------
+ t
+(1 row)
+
+BEGIN ISOLATION LEVEL SERIALIZABLE;
+INSERT INTO mnt_c VALUES (60, NULL, 1);
+COMMIT;
+SELECT mnt_ok();
+ mnt_ok 
+--------
+ t
+(1 row)
+
+DROP FUNCTION mnt_ok();
+DROP TABLE mnt_trig, mnt_c, mnt_c2, mnt_p CASCADE;
+NOTICE:  drop cascades to 2 other objects
+DETAIL:  drop cascades to materialized view mnt_mc2
+drop cascades to materialized view mnt_mc
+DROP FUNCTION mnt_trigf();

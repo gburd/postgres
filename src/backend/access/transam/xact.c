@@ -2321,10 +2321,18 @@ CommitTransaction(void)
 
 		/*
 		 * Close open portals (converting holdable ones into static portals).
-		 * If there weren't any, we are done ... otherwise loop back to check
-		 * if they queued deferred triggers.  Lather, rinse, repeat.
+		 * If there were any, loop back to check if they queued deferred
+		 * triggers.
 		 */
-		if (!PreCommit_Portals(false))
+		if (PreCommit_Portals(false))
+			continue;
+
+		/*
+		 * Bring incrementally maintained materialized views up to date with
+		 * this transaction's changes.  If that did anything, loop back: its
+		 * writes are part of the transaction too.  Otherwise we are done.
+		 */
+		if (!PreCommit_MaintainMatViews())
 			break;
 	}
 
@@ -2607,10 +2615,18 @@ PrepareTransaction(void)
 
 		/*
 		 * Close open portals (converting holdable ones into static portals).
-		 * If there weren't any, we are done ... otherwise loop back to check
-		 * if they queued deferred triggers.  Lather, rinse, repeat.
+		 * If there were any, loop back to check if they queued deferred
+		 * triggers.
 		 */
-		if (!PreCommit_Portals(true))
+		if (PreCommit_Portals(true))
+			continue;
+
+		/*
+		 * Bring incrementally maintained materialized views up to date with
+		 * this transaction's changes.  If that did anything, loop back: its
+		 * writes are part of the transaction too.  Otherwise we are done.
+		 */
+		if (!PreCommit_MaintainMatViews())
 			break;
 	}
 
