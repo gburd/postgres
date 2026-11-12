@@ -519,6 +519,25 @@ test_rwlock(void)
 	pg_rwlock_destroy(&rwlock);
 }
 
+/* Naming the calling thread is best-effort, but must not crash. */
+static int
+setname_thread(void *arg)
+{
+	pg_thrd_setname("test_pg_threads worker with a long name");
+	return 0;
+}
+
+static void
+test_setname(void)
+{
+	pg_thrd_t	thread;
+	int			result = -1;
+
+	CHECK(pg_thrd_create(&thread, setname_thread, NULL) == pg_thrd_success);
+	CHECK(pg_thrd_join(thread, &result) == pg_thrd_success);
+	CHECK(result == 0);
+}
+
 /* Errors must come back with a usable description. */
 static void
 test_error_strings(void)
@@ -549,6 +568,7 @@ main(int argc, char **argv)
 	test_tss();
 	test_barrier();
 	test_rwlock();
+	test_setname();
 	test_error_strings();
 
 	if (failures > 0)
