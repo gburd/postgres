@@ -134,6 +134,7 @@ test: matview-write-skew
 test: matview-ivm-create
 test: matview-ivm-maintain
 test: matview-ivm-lockorder
+test: matview-ivm-refresh
 test: lock-nowait
 test: ddl-dependency-locking
 test: tablespace-dependency-locking

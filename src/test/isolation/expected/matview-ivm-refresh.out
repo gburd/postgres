@@ -1,0 +1,90 @@
+Parsed test spec with 3 sessions
+
+starting permutation: h_hold w_begin w_ins w_commit r_refresh h_commit h_check h_show
+step h_hold: BEGIN; REFRESH MATERIALIZED VIEW ivm_r2;
+step w_begin: BEGIN;
+step w_ins: INSERT INTO ivm_r VALUES (1, 10), (3, 30);
+step w_commit: COMMIT; <waiting ...>
+step r_refresh: REFRESH MATERIALIZED VIEW ivm_r1; <waiting ...>
+step h_commit: COMMIT;
+step w_commit: <... completed>
+step r_refresh: <... completed>
+step h_check: SELECT * FROM ivm_r_ok();
+r1|r2
+--+--
+t |t 
+(1 row)
+
+step h_show: SELECT * FROM ivm_r1 ORDER BY k;
+k|n| s
+-+-+--
+1|2|11
+2|1| 2
+3|1|30
+(3 rows)
+
+
+starting permutation: h_hold w_begin w_ins w_commit r_refreshc h_commit h_check h_show
+step h_hold: BEGIN; REFRESH MATERIALIZED VIEW ivm_r2;
+step w_begin: BEGIN;
+step w_ins: INSERT INTO ivm_r VALUES (1, 10), (3, 30);
+step w_commit: COMMIT; <waiting ...>
+step r_refreshc: REFRESH MATERIALIZED VIEW CONCURRENTLY ivm_r1; <waiting ...>
+step h_commit: COMMIT;
+step w_commit: <... completed>
+step r_refreshc: <... completed>
+step h_check: SELECT * FROM ivm_r_ok();
+r1|r2
+--+--
+t |t 
+(1 row)
+
+step h_show: SELECT * FROM ivm_r1 ORDER BY k;
+k|n| s
+-+-+--
+1|2|11
+2|1| 2
+3|1|30
+(3 rows)
+
+
+starting permutation: w_begin w_ins h_hold w_commit h_commit h_check
+step w_begin: BEGIN;
+step w_ins: INSERT INTO ivm_r VALUES (1, 10), (3, 30);
+step h_hold: BEGIN; REFRESH MATERIALIZED VIEW ivm_r2;
+step w_commit: COMMIT; <waiting ...>
+step h_commit: COMMIT;
+step w_commit: <... completed>
+step h_check: SELECT * FROM ivm_r_ok();
+r1|r2
+--+--
+t |t 
+(1 row)
+
+
+starting permutation: r_rr r_rrrefresh r_end h_check
+step r_rr: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT 1;
+?column?
+--------
+       1
+(1 row)
+
+step r_rrrefresh: REFRESH MATERIALIZED VIEW ivm_r1;
+ERROR:  cannot refresh incrementally maintained materialized view "ivm_r1" in a REPEATABLE READ or SERIALIZABLE transaction
+step r_end: COMMIT;
+step h_check: SELECT * FROM ivm_r_ok();
+r1|r2
+--+--
+t |t 
+(1 row)
+
+
+starting permutation: r_rr r_rrnodata r_end
+step r_rr: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT 1;
+?column?
+--------
+       1
+(1 row)
+
+step r_rrnodata: REFRESH MATERIALIZED VIEW ivm_r1 WITH NO DATA;
+step r_end: COMMIT;

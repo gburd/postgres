@@ -25,6 +25,7 @@
 #include "catalog/pg_am.h"
 #include "catalog/pg_opclass.h"
 #include "commands/matview.h"
+#include "commands/matview_ivm.h"
 #include "commands/repack.h"
 #include "commands/tablecmds.h"
 #include "commands/tablespace.h"
@@ -122,6 +123,8 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 {
 	Oid			matviewOid;
 	LOCKMODE	lockmode;
+	bool		fresh;
+	ObjectAddress address;
 
 	/* Determine strength of lock needed. */
 	lockmode = stmt->concurrent ? ExclusiveLock : AccessExclusiveLock;
@@ -134,8 +137,33 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 										  RangeVarCallbackMaintainsTable,
 										  NULL);
 
-	return RefreshMatViewByOid(matviewOid, false, stmt->skipData,
-							   stmt->concurrent, queryString, qc);
+	/*
+	 * A writer maintains an incremental view at commit under a lock that
+	 * conflicts with ours, held until its commit is visible.  Read the base
+	 * tables with a snapshot taken now that we hold the lock: the statement's
+	 * snapshot predates the wait, and refreshing from it would overwrite a
+	 * change committed meanwhile.  A transaction snapshot can't be replaced,
+	 * so refuse under REPEATABLE READ and SERIALIZABLE.
+	 */
+	fresh = !stmt->skipData && IsIncrementalMatView(matviewOid);
+	if (fresh)
+	{
+		if (IsolationUsesXactSnapshot())
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("cannot refresh incrementally maintained materialized view \"%s\" in a REPEATABLE READ or SERIALIZABLE transaction",
+							get_rel_name(matviewOid)),
+					 errhint("Refresh it in a READ COMMITTED transaction.")));
+		PushActiveSnapshot(GetLatestSnapshot());
+	}
+
+	address = RefreshMatViewByOid(matviewOid, false, stmt->skipData,
+								  stmt->concurrent, queryString, qc);
+
+	if (fresh)
+		PopActiveSnapshot();
+
+	return address;
 }
 
 /*

@@ -105,6 +105,16 @@ REFRESH MATERIALIZED VIEW [ CONCURRENTLY ] <replaceable class="parameter">name</
    linkend="guc-search-path"/> is temporarily changed to <literal>pg_catalog,
    pg_temp</literal>.
   </para>
+
+  <para>
+   For an incrementally maintained materialized view (see <xref
+   linkend="reloption-incremental-view-maintenance"/>), the query reads the
+   base table with a snapshot taken after the lock on the view is acquired,
+   so it includes every transaction that maintained the view before it.
+   Such a view can therefore be refreshed only in a
+   <literal>READ COMMITTED</literal> transaction, unless
+   <literal>WITH NO DATA</literal> is specified.
+  </para>
  </refsect1>
 
  <refsect1>

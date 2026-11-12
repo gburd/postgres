@@ -126,6 +126,13 @@ SELECT relispopulated FROM pg_class WHERE oid = 'mnt_nd'::regclass;
 REFRESH MATERIALIZED VIEW mnt_nd;
 INSERT INTO mnt_t VALUES (12, 2, 'n');
 SELECT * FROM mnt_nd WHERE k = 12;
+-- REFRESH of an incremental view needs a fresh snapshot
+BEGIN ISOLATION LEVEL REPEATABLE READ;
+REFRESH MATERIALIZED VIEW mnt_nd;
+ROLLBACK;
+BEGIN ISOLATION LEVEL REPEATABLE READ;
+REFRESH MATERIALIZED VIEW mnt_nd WITH NO DATA;
+ROLLBACK;
 DROP MATERIALIZED VIEW mnt_nd;
 
 -- maintenance runs the view's query as the view's owner

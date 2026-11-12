@@ -274,6 +274,15 @@ SELECT * FROM mnt_nd WHERE k = 12;
  12 | 2
 (1 row)
 
+-- REFRESH of an incremental view needs a fresh snapshot
+BEGIN ISOLATION LEVEL REPEATABLE READ;
+REFRESH MATERIALIZED VIEW mnt_nd;
+ERROR:  cannot refresh incrementally maintained materialized view "mnt_nd" in a REPEATABLE READ or SERIALIZABLE transaction
+HINT:  Refresh it in a READ COMMITTED transaction.
+ROLLBACK;
+BEGIN ISOLATION LEVEL REPEATABLE READ;
+REFRESH MATERIALIZED VIEW mnt_nd WITH NO DATA;
+ROLLBACK;
 DROP MATERIALIZED VIEW mnt_nd;
 -- maintenance runs the view's query as the view's owner
 CREATE ROLE regress_mnt_writer;
