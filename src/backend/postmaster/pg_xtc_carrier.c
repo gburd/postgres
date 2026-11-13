@@ -552,7 +552,16 @@ xtc_carrier_supervisor_proc(void *arg)
 			 *                           child runs -- but we still classify it.)
 			 *   XTC_DOWN_KIND_SIGNAL -> a GENUINE crash: di.signal is the R1
 			 *                           contained-fault signal (e.g. 11 ==
-			 *                           SIGSEGV).  Escalate.
+			 *                           SIGSEGV).  Escalate.  libxtc 2.2
+			 *                           (8a7e9c06) GUARANTEES this kind for any
+			 *                           contained fault regardless of the code
+			 *                           the fiber then passed to xtc_exit_self:
+			 *                           our backends arm a recovery frame and
+			 *                           xtc_exit_self(sig) on a fault, which
+			 *                           v2.1.x MISREPORTED as KIND_EXIT(sig) and
+			 *                           silently skipped this escalation (libxtc
+			 *                           reply 2026-11-12 section 1).  The signal
+			 *                           replaces any passed code in the DOWN.
 			 *   XTC_DOWN_KIND_EXIT   -> a non-zero application exit: di.exit_code
 			 *                           is the code the fiber passed to
 			 *                           xtc_exit_self (our backends pass
@@ -561,9 +570,15 @@ xtc_carrier_supervisor_proc(void *arg)
 			 *                           carries that verbatim).  A NORMAL exit the
 			 *                           postmaster reaps under its own restart
 			 *                           policy -- NOT a fault.  Do NOT escalate.
-			 * A bare xtc_exit_self(1) is now KIND_EXIT (exit_code 1), distinct
-			 * from a signal-1 fault (KIND_SIGNAL, signal 1) -- the overloading
-			 * we reported against v1.2.1 is gone.
+			 *   XTC_DOWN_KIND_KILLED -> (libxtc 2.2, =5) the fiber was terminated
+			 *                           on purpose (xtc_exit_pid, a supervisor
+			 *                           stop, a link/group kill); di.exit_code is
+			 *                           the KILL REASON, not a proc_exit code.
+			 *                           Deliberate teardown -- NOT a fault.  Do
+			 *                           NOT escalate.  (NOCONNECTION and any
+			 *                           future kind share this terminal branch.)
+			 * A bare xtc_exit_self(1) is KIND_EXIT (exit_code 1), distinct from a
+			 * signal-1 fault (KIND_SIGNAL, signal 1).
 			 */
 			if (di.kind == XTC_DOWN_KIND_CLEAN)
 			{
@@ -664,7 +679,7 @@ xtc_carrier_supervisor_proc(void *arg)
 						SetLatch(pml);
 				}
 			}
-			else
+			else if (di.kind == XTC_DOWN_KIND_EXIT)
 			{
 				/*
 				 * XTC_DOWN_KIND_EXIT: a non-zero application exit.  The
@@ -672,6 +687,15 @@ xtc_carrier_supervisor_proc(void *arg)
 				 * policy; do NOT escalate the runtime.  di.exit_code carries
 				 * the backend_thread_exitstatus(code) value verbatim (<< 8
 				 * wait-status form), so recover the proc_exit code with >> 8.
+				 *
+				 * NB (libxtc 2.2, 8a7e9c06): a CONTAINED FAULT is now always
+				 * reported as XTC_DOWN_KIND_SIGNAL regardless of the code the
+				 * fiber passed to xtc_exit_self -- so a backend that faults
+				 * inside its recovery frame and then calls xtc_exit_self(sig)
+				 * no longer lands HERE as EXIT(sig) (the v2.1.x
+				 * misclassification that silently skipped the genuine-crash
+				 * fail-stop; libxtc reply 2026-11-12 section 1).  This branch
+				 * is now reached only by a genuine application exit.
 				 */
 				static __thread int nappx = 0;
 
@@ -686,6 +710,44 @@ xtc_carrier_supervisor_proc(void *arg)
 								 "pid=(loop=%u,local=%u,gen=" UINT64_FORMAT ") exit_code=%d (postmaster reaps)\n",
 								 down_pid.loop_id, down_pid.local_id,
 								 (uint64) down_pid.gen, di.exit_code >> 8);
+					if (n > 0)
+					{
+						if (n > (int) sizeof(buf))
+							n = (int) sizeof(buf);
+						xtc_diag_write(STDERR_FILENO, buf, (size_t) n);
+					}
+				}
+			}
+			else
+			{
+				/*
+				 * XTC_DOWN_KIND_KILLED (libxtc 2.2: xtc_exit_pid / a
+				 * supervisor stop / a link or group-restart kill),
+				 * XTC_DOWN_KIND_NOCONNECTION (a cross-process channel died --
+				 * not produced on the in-process backend-fiber path), or any
+				 * future kind.  A KILLED backend fiber was terminated on
+				 * purpose (we or the runtime asked it to stop), so it is NOT a
+				 * genuine crash: the postmaster owns the teardown, do NOT
+				 * escalate.  Handle it explicitly rather than folding it into
+				 * the EXIT branch -- di.exit_code here is the KILL REASON, not
+				 * a proc_exit code, so the >> 8 recovery above would misread
+				 * it.  An unrecognised kind is logged and treated
+				 * conservatively as a non-escalating teardown; if a future
+				 * libxtc adds a kind that must fail-stop, it will be a SIGNAL.
+				 */
+				static __thread int nkill = 0;
+
+				if (nkill < 8)
+				{
+					char		buf[192];
+					int			n;
+
+					nkill++;
+					n = snprintf(buf, sizeof(buf),
+								 "xtc: supervisor observed terminated backend fiber DOWN "
+								 "pid=(loop=%u,local=%u,gen=" UINT64_FORMAT ") kind=%d reason=%d (postmaster reaps)\n",
+								 down_pid.loop_id, down_pid.local_id,
+								 (uint64) down_pid.gen, (int) di.kind, di.exit_code);
 					if (n > 0)
 					{
 						if (n > (int) sizeof(buf))
