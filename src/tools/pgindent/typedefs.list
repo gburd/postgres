@@ -2278,9 +2278,11 @@ PgAioWorkerSubmissionQueue
 PgArchData
 PgBackend
 PgBackendGSSStatus
+PgBackendInterruptVisitArg
 PgBackendModel
 PgBackendSSLStatus
 PgBackendStatus
+PgBackendWaitSnapshotVisitArg
 PgBenchExpr
 PgBenchExprLink
 PgBenchExprList

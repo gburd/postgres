@@ -52,10 +52,63 @@
 #include "utils/resowner.h"
 #include "utils/timestamp.h"
 
+#ifdef USE_XTC_CARRIER
+#include "xtc.h"					/* XTC_OK, XTC_E_EXIST, XTC_E_NOTFOUND, xtc_pid_t */
+#include "xtc_proc.h"				/* XTC_PID_NONE */
+#include "xtc_reg.h"				/* xtc_reg_put / xtc_reg_visit (libxtc 2.2) */
+#endif
+
 static PG_GLOBAL_RUNTIME bool backend_id_counter_initialized = false;
 static PG_GLOBAL_RUNTIME pg_atomic_uint64 next_backend_id;
 
-#ifndef WIN32
+#if defined(USE_XTC_CARRIER) && !defined(WIN32)
+/*
+ * Threaded backend registry on libxtc's xtc_reg value API (libxtc 2.2).
+ *
+ * Replaces the hand-rolled PgBackendId -> PgBackend* list + raw pthread mutex
+ * with xtc_reg_put (name -> (pid, value)) + xtc_reg_visit (the lookup+use runs
+ * under the registry's own lock).  The name is "backend:<PgBackendId>"; the
+ * value is the PgBackend*; the pid slot is DELIBERATELY XTC_PID_NONE -- see
+ * PgBackendRegisterThreadedBackend for why our dispatch does not use it.
+ *
+ * The registry is process-global and created once, lazily, on the first
+ * register (pthread_once): register runs on the postmaster/spawning thread
+ * (potentially concurrently for parallel spawns), which is not an xtc proc, so
+ * a bare xtc_reg_create at an xtc-only init hook would be awkward and the once
+ * guard makes the create thread-safe without a new init site.  It is
+ * process-lifetime and never destroyed (one bringup per process; mirrors the
+ * old PTHREAD_MUTEX_INITIALIZER static that was likewise never torn down).
+ */
+static PG_GLOBAL_RUNTIME xtc_reg_t *g_backends = NULL;
+static PG_GLOBAL_RUNTIME pthread_once_t g_backends_once = PTHREAD_ONCE_INIT;
+
+static void
+ThreadedBackendRegistryCreate(void)
+{
+	xtc_reg_t  *reg = NULL;
+
+	if (xtc_reg_create(&reg) != XTC_OK || reg == NULL)
+		elog(FATAL, "could not create threaded backend registry");
+	g_backends = reg;
+}
+
+static xtc_reg_t *
+ThreadedBackendRegistry(void)
+{
+	(void) pthread_once(&g_backends_once, ThreadedBackendRegistryCreate);
+	return g_backends;
+}
+
+/*
+ * Build the registry key for a backend id.  "backend:<id>" per the libxtc
+ * reply's section 3 example; PgBackendId is 64-bit so format it as such.
+ */
+static inline void
+ThreadedBackendRegistryName(char *buf, size_t buflen, PgBackendId backend_id)
+{
+	snprintf(buf, buflen, "backend:%llu", (unsigned long long) backend_id);
+}
+#elif !defined(WIN32)
 typedef struct ThreadedBackendRegistryEntry
 {
 	PgBackendId backend_id;
@@ -264,23 +317,24 @@ PgBackendAssignId(void)
 	return pg_atomic_add_fetch_u64(&next_backend_id, 1);
 }
 
-#ifndef WIN32
+#if !defined(WIN32) && !defined(USE_XTC_CARRIER)
 /*
- * The threaded backend registry mutex serializes the PgBackendId -> PgBackend*
- * index used by PgBackendSendInterruptById().  It is a RAW pthread mutex on
- * purpose: unlike the GUC critical section (guc.c, moved to xtc_amutex because
- * GUC code can park a fiber while holding it), nothing held under this mutex
- * parks a fiber -- the only work done while locked is a list walk plus
- * SendInterrupt(), which is non-parking (an atomic fetch_or on the pending mask
- * plus a non-blocking xtc_proc_wake; see interrupt.c).  A lock never held across
- * a fiber yield cannot block a carrier loop, so the fiber-aware xtc_amutex (and
- * its load-bearing six-root save/restore park seam) is unnecessary here.
+ * Hand-rolled threaded backend registry -- the NON-xtc threaded build only.
  *
- * INVARIANT: do not introduce any parking wait (xtc_proc_wait_fd, xtc_yield, an
- * allocation that parks, a contended xtc_amutex) under this mutex.  If that ever
- * becomes necessary, this lock must be converted to xtc_amutex exactly like
- * ThreadedGUCLock() in guc.c, or a backend fiber that parks while holding it
- * will block its whole carrier OS thread.
+ * When libxtc is linked (USE_XTC_CARRIER) the registry lives on xtc_reg (see
+ * the g_backends block at the top of this file); this hand-rolled list + raw
+ * pthread mutex is retained for the threaded build WITHOUT libxtc, where
+ * backends run on raw pthreads (launch_backend.c's pg_thread_create path) and
+ * there is no xtc_reg to lean on.
+ *
+ * The mutex is a RAW pthread mutex on purpose: unlike the GUC critical section
+ * (guc.c, moved to xtc_amutex because GUC code can park a fiber while holding
+ * it), nothing held under this mutex parks -- the only work done while locked
+ * is a list walk plus SendInterrupt(), which is non-parking (an atomic fetch_or
+ * on the pending mask plus a latch/eventfd wake through the PgBackend struct;
+ * see interrupt.c).  In the non-xtc build there are no fibers at all, so there
+ * is nothing to park.  (Under xtc_reg the same "nothing under this lock may
+ * park" invariant moves into xtc_reg_visit's documented contract.)
  */
 static void
 ThreadedBackendRegistryLock(void)
@@ -326,7 +380,45 @@ ThreadedBackendRegistryLookupLocked(PgBackendId backend_id)
 static void
 PgBackendRegisterThreadedBackend(PgBackend *backend)
 {
-#ifndef WIN32
+#if defined(USE_XTC_CARRIER) && !defined(WIN32)
+	char		name[32];
+	int			rc;
+
+	Assert(backend != NULL);
+
+	if (!PgRuntimeIsThreadBacked(backend->runtime))
+		return;
+
+	ThreadedBackendRegistryName(name, sizeof(name), backend->id);
+
+	/*
+	 * Store name -> (pid, value) with the PgBackend* as the value.  The pid
+	 * slot is XTC_PID_NONE on purpose: this runs on the postmaster/spawning
+	 * thread (launch_backend.c calls InitializePgThreadBackendRuntimeState
+	 * -> here BEFORE the backend fiber is spawned), which is not an xtc proc,
+	 * so xtc_self() here would be XTC_PID_NONE anyway and the fiber's real pid
+	 * does not exist yet.  It does not matter: our interrupt dispatch
+	 * (PgBackendSendInterruptById's visit callback) wakes the target through
+	 * the PgBackend struct -- SendInterrupt() reads backend->my_proc's
+	 * interrupt-wake eventfd and backend->interrupt_latch -- NOT via
+	 * xtc_proc_wake(pid).  The registry pid is unused by our dispatch, so an
+	 * XTC_PID_NONE pid is correct rather than a stale/wrong one.  (This is the
+	 * xtc_self()-context answer from the libxtc 2.2 adoption: we deliberately
+	 * do not use the pid slot.)
+	 *
+	 * flags 0 means a unique name; a taken name returns XTC_E_EXIST.  A unique
+	 * PgBackendId should never collide, so treat a duplicate as the
+	 * "already registered" FATAL the hand-rolled path raised.
+	 */
+	rc = xtc_reg_put(ThreadedBackendRegistry(), name, XTC_PID_NONE,
+					 backend, 0);
+	if (rc == XTC_E_EXIST)
+		elog(FATAL, "threaded backend id %llu is already registered",
+			 (unsigned long long) backend->id);
+	else if (rc != XTC_OK)
+		elog(FATAL, "could not register threaded backend id %llu (xtc_reg_put rc=%d)",
+			 (unsigned long long) backend->id, rc);
+#elif !defined(WIN32)
 	ThreadedBackendRegistryEntry *entry;
 
 	Assert(backend != NULL);
@@ -370,7 +462,28 @@ PgBackendRegisterThreadedBackend(PgBackend *backend)
 void
 PgBackendUnregisterThreadedBackend(PgBackend *backend)
 {
-#ifndef WIN32
+#if defined(USE_XTC_CARRIER) && !defined(WIN32)
+	char		name[32];
+
+	Assert(backend != NULL);
+
+	if (!PgRuntimeIsThreadBacked(backend->runtime))
+		return;
+
+	/*
+	 * Unregister BEFORE the PgBackend struct can be freed (libxtc's rule:
+	 * remove the entry, then free the value, so a concurrent xtc_reg_visit
+	 * cannot see a freed value).  PgBackendResetClosedState() calls us first,
+	 * before any bucket reset, and it runs inside the fiber's proc_exit
+	 * (ipc.c shmem_exit) -- strictly before backend_thread_start_release()
+	 * free()s the BackendThreadStart that embeds this PgBackend.  Missing-name
+	 * (xtc_reg_unregister returns XTC_E_INVAL) is fine: a backend that never
+	 * registered (not thread-backed, or a double teardown) is a no-op
+	 * unregister.
+	 */
+	ThreadedBackendRegistryName(name, sizeof(name), backend->id);
+	(void) xtc_reg_unregister(ThreadedBackendRegistry(), name);
+#elif !defined(WIN32)
 	Assert(backend != NULL);
 
 	if (!PgRuntimeIsThreadBacked(backend->runtime))
@@ -394,12 +507,66 @@ PgBackendUnregisterThreadedBackend(PgBackend *backend)
 #endif
 }
 
+#if defined(USE_XTC_CARRIER) && !defined(WIN32)
+/*
+ * xtc_reg_visit callback for PgBackendSendInterruptById.  Runs UNDER the
+ * registry lock (xtc_reg_visit's contract), so it must be brief and must not
+ * park or re-enter the registry.  It does exactly what the old locked body
+ * did: raise PROC_DIE (preserving the sender pid/uid distinction) or send the
+ * ordinary interrupt.  Both reach SendInterrupt(), which is non-parking (an
+ * atomic fetch_or on the pending mask plus a latch/eventfd wake through the
+ * PgBackend struct).  `pid` is the registry's stored pid (XTC_PID_NONE here;
+ * unused -- we wake through the PgBackend, see the register comment).
+ */
+typedef struct PgBackendInterruptVisitArg
+{
+	PgBackendInterruptType interrupt_type;
+	int			sender_pid;
+	int			sender_uid;
+} PgBackendInterruptVisitArg;
+
+static int
+PgBackendInterruptVisit(xtc_pid_t pid, void *value, void *user)
+{
+	PgBackend  *backend = value;
+	const PgBackendInterruptVisitArg *a = user;
+
+	(void) pid;
+	if (a->interrupt_type == PG_BACKEND_INTERRUPT_PROC_DIE)
+		PgBackendRaiseProcDieInterrupt(backend, a->sender_pid, a->sender_uid);
+	else
+		SendInterrupt(backend, a->interrupt_type);
+	return 0;					/* 0 = continue; the name is unique, so there is just this one entry */
+}
+#endif
+
 bool
 PgBackendSendInterruptById(PgBackendId backend_id,
 						   PgBackendInterruptType interrupt_type,
 						   int sender_pid, int sender_uid)
 {
-#ifndef WIN32
+#if defined(USE_XTC_CARRIER) && !defined(WIN32)
+	char		name[32];
+	PgBackendInterruptVisitArg arg;
+
+	arg.interrupt_type = interrupt_type;
+	arg.sender_pid = sender_pid;
+	arg.sender_uid = sender_uid;
+
+	ThreadedBackendRegistryName(name, sizeof(name), backend_id);
+
+	/*
+	 * Look up and dispatch under one registry lock: xtc_reg_visit calls the
+	 * callback with the lock held, so the PgBackend* cannot be freed while
+	 * PgBackendInterruptVisit uses it (the teardown unregisters first).
+	 * XTC_E_NOTFOUND means no such backend -> false, matching the
+	 * "backend != NULL" result of the old lookup.
+	 */
+	if (xtc_reg_visit(ThreadedBackendRegistry(), name,
+					  PgBackendInterruptVisit, &arg, NULL) == XTC_E_NOTFOUND)
+		return false;
+	return true;
+#elif !defined(WIN32)
 	PgBackend  *backend = NULL;
 
 	ThreadedBackendRegistryLock();
@@ -1587,12 +1754,69 @@ PgBackendCurrentWaitCompletion(PgBackend *backend)
 	return &backend->wait_state.completion;
 }
 
+#if defined(PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION) && \
+	defined(USE_XTC_CARRIER) && !defined(WIN32)
+/*
+ * xtc_reg_visit callback for PgBackendSnapshotWaitCompletionById: copy the
+ * target's wait-completion snapshot under the registry lock (non-parking).
+ */
+typedef struct PgBackendWaitSnapshotVisitArg
+{
+	PgWaitCompletion *snapshot;
+	uint32	   *waiting;
+} PgBackendWaitSnapshotVisitArg;
+
+static int
+PgBackendWaitSnapshotVisit(xtc_pid_t pid, void *value, void *user)
+{
+	PgBackend  *backend = value;
+	const PgBackendWaitSnapshotVisitArg *a = user;
+	PgWaitCompletion *completion = &backend->wait_state.completion;
+
+	(void) pid;
+	if (a->snapshot != NULL)
+	{
+		a->snapshot->spec = completion->spec;
+		a->snapshot->backend = completion->backend;
+		a->snapshot->session = completion->session;
+		a->snapshot->execution = completion->execution;
+		pg_atomic_init_u32(&a->snapshot->state,
+						   pg_atomic_read_u32(&completion->state));
+		pg_atomic_init_u32(&a->snapshot->ready_events,
+						   pg_atomic_read_u32(&completion->ready_events));
+		pg_atomic_init_u32(&a->snapshot->interrupt_events,
+						   pg_atomic_read_u32(&completion->interrupt_events));
+	}
+	if (a->waiting != NULL)
+		*a->waiting = pg_atomic_read_u32(&backend->wait_state.waiting);
+	return 0;
+}
+#endif
+
 bool
 PgBackendSnapshotWaitCompletionById(PgBackendId backend_id,
 									PgWaitCompletion *snapshot,
 									uint32 *waiting)
 {
-#if defined(PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION) && !defined(WIN32)
+#if defined(PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION) && \
+	defined(USE_XTC_CARRIER) && !defined(WIN32)
+	char		name[32];
+	PgBackendWaitSnapshotVisitArg arg;
+
+	if (snapshot != NULL)
+		PgWaitCompletionInitialize(snapshot);
+	if (waiting != NULL)
+		*waiting = 0;
+
+	arg.snapshot = snapshot;
+	arg.waiting = waiting;
+
+	ThreadedBackendRegistryName(name, sizeof(name), backend_id);
+	if (xtc_reg_visit(ThreadedBackendRegistry(), name,
+					  PgBackendWaitSnapshotVisit, &arg, NULL) == XTC_E_NOTFOUND)
+		return false;
+	return true;
+#elif defined(PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION) && !defined(WIN32)
 	PgBackend  *backend = NULL;
 	bool		found = false;
 
@@ -1689,10 +1913,40 @@ PgBackendWakeWaitCompletion(PgBackend *backend, uint32 ready_events)
 #endif
 }
 
+#if defined(PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION) && \
+	defined(USE_XTC_CARRIER) && !defined(WIN32)
+/*
+ * xtc_reg_visit callback for PgBackendWakeWaitCompletionById: wake the target's
+ * wait completion under the registry lock.  PgBackendWakeWaitCompletion is
+ * non-parking (atomics plus a latch/eventfd wake), as it was when called under
+ * the hand-rolled lock.
+ */
+static int
+PgBackendWakeWaitVisit(xtc_pid_t pid, void *value, void *user)
+{
+	PgBackend  *backend = value;
+	uint32		ready_events = *(const uint32 *) user;
+
+	(void) pid;
+	(void) PgBackendWakeWaitCompletion(backend, ready_events);
+	return 0;
+}
+#endif
+
 bool
 PgBackendWakeWaitCompletionById(PgBackendId backend_id, uint32 ready_events)
 {
-#if defined(PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION) && !defined(WIN32)
+#if defined(PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION) && \
+	defined(USE_XTC_CARRIER) && !defined(WIN32)
+	char		name[32];
+	uint32		arg = ready_events;
+
+	ThreadedBackendRegistryName(name, sizeof(name), backend_id);
+	if (xtc_reg_visit(ThreadedBackendRegistry(), name,
+					  PgBackendWakeWaitVisit, &arg, NULL) == XTC_E_NOTFOUND)
+		return false;
+	return true;
+#elif defined(PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION) && !defined(WIN32)
 	PgBackend  *backend = NULL;
 
 	ThreadedBackendRegistryLock();
@@ -2253,11 +2507,103 @@ PgRuntimeProtocolSchedulerRemoveBackend(PgRuntime *runtime, PgBackend *backend)
 	return true;
 }
 
+#if defined(USE_XTC_CARRIER) && !defined(WIN32)
+/*
+ * xtc_reg_visit callback for PgBackendSnapshotProtocolParkById: copy the
+ * target's protocol-park snapshot under the registry lock.  It takes the
+ * scheduler spinlock (non-parking) exactly as the hand-rolled locked body did.
+ */
+static int
+PgBackendProtocolParkSnapshotVisit(xtc_pid_t pid, void *value, void *user)
+{
+	PgBackend  *backend = value;
+	PgProtocolParkSnapshot *snapshot = user;
+	PgRuntime  *runtime = backend->runtime;
+	PgProtocolSchedulerState *scheduler;
+	PgBackendProtocolParkState *park_state;
+
+	(void) pid;
+	if (runtime != NULL && snapshot != NULL)
+	{
+		scheduler = &runtime->protocol_scheduler;
+		park_state = &backend->protocol_park;
+
+		SpinLockAcquire(&scheduler->lock);
+		snapshot->state = park_state->state;
+		snapshot->scheduler_queue_state =
+			park_state->scheduler_queue_state;
+		snapshot->generation = park_state->spec.generation;
+		snapshot->wake_reasons = park_state->wake_reasons;
+		snapshot->wake_events = park_state->wake_events;
+		snapshot->wake_generation = park_state->wake_generation;
+		snapshot->last_wake_reasons = park_state->last_wake_reasons;
+		snapshot->last_wake_events = park_state->last_wake_events;
+		snapshot->last_wake_generation = park_state->last_wake_generation;
+		snapshot->notify_wake_generation =
+			park_state->notify_wake_generation;
+		snapshot->deferred_notify_generation =
+			park_state->deferred_notify_generation;
+		snapshot->deferred_notify_park_generation =
+			park_state->deferred_notify_park_generation;
+		snapshot->deferred_notify_reasons =
+			park_state->deferred_notify_reasons;
+		snapshot->scheduler_runnable_count = scheduler->runnable_count;
+		snapshot->scheduler_parked_protocol_count =
+			scheduler->parked_protocol_count;
+		snapshot->scheduler_runnable_enqueue_count =
+			scheduler->runnable_enqueue_count;
+		snapshot->scheduler_parked_protocol_enqueue_count =
+			scheduler->parked_protocol_enqueue_count;
+		snapshot->scheduler_carrier_limit =
+			scheduler->carrier_limit;
+		snapshot->scheduler_same_carrier_resume_count =
+			scheduler->same_carrier_resume_count;
+		snapshot->scheduler_migrated_resume_count =
+			scheduler->migrated_resume_count;
+		snapshot->scheduler_registered_carrier_count =
+			scheduler->registered_carrier_count;
+		snapshot->scheduler_idle_carrier_count =
+			scheduler->idle_carrier_count;
+		snapshot->scheduler_active_carrier_count =
+			scheduler->active_carrier_count;
+		snapshot->last_park_duration_valid =
+			park_state->last_park_duration_valid;
+		snapshot->last_park_duration_ms =
+			park_state->last_park_duration_ms;
+		SpinLockRelease(&scheduler->lock);
+
+		snapshot->carrier_attached = backend->carrier != NULL;
+		snapshot->session_present = backend->session != NULL;
+		snapshot->connection_present = backend->connection != NULL;
+		snapshot->execution_present = backend->execution != NULL;
+	}
+	return 0;
+}
+#endif
+
 bool
 PgBackendSnapshotProtocolParkById(PgBackendId backend_id,
 								  PgProtocolParkSnapshot *snapshot)
 {
-#ifndef WIN32
+#if defined(USE_XTC_CARRIER) && !defined(WIN32)
+	char		name[32];
+
+	if (snapshot != NULL)
+		MemSet(snapshot, 0, sizeof(*snapshot));
+
+	/*
+	 * found == entry exists, independent of whether the snapshot was filled
+	 * (the hand-rolled path set found=true for backend != NULL even when
+	 * runtime/snapshot were NULL), so a non-NOTFOUND visit result is the
+	 * "found" answer.
+	 */
+	ThreadedBackendRegistryName(name, sizeof(name), backend_id);
+	if (xtc_reg_visit(ThreadedBackendRegistry(), name,
+					  PgBackendProtocolParkSnapshotVisit, snapshot,
+					  NULL) == XTC_E_NOTFOUND)
+		return false;
+	return true;
+#elif !defined(WIN32)
 	PgBackend  *backend = NULL;
 	bool		found = false;
 
