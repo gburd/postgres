@@ -67,6 +67,7 @@
 #include "utils/datum.h"
 #include "utils/guc.h"
 #include "utils/hsearch.h"
+#include "utils/injection_point.h"
 #include "utils/lsyscache.h"
 #include "utils/queryenvironment.h"
 #include "utils/rel.h"
@@ -742,6 +743,8 @@ maintain_view(IvmViewWork *work)
 	}
 
 	PopActiveSnapshot();
+
+	INJECTION_POINT("matview-ivm-maintained", NULL);
 
 	AtEOXact_GUC(false, save_nestlevel);
 	SetUserIdAndSecContext(save_userid, save_sec_context);
