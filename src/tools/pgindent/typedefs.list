@@ -1394,6 +1394,7 @@ IvmCapturedTable
 IvmChangeEntry
 IvmChangeSet
 IvmGroupKey
+IvmKeyBucket
 IvmProgram
 IvmViewWork
 JEntry

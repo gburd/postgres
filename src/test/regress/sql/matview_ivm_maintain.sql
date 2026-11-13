@@ -145,6 +145,41 @@ SELECT * FROM mnt_check();
 REVOKE ALL ON mnt_t FROM regress_mnt_writer;
 DROP ROLE regress_mnt_writer;
 
+-- an error while maintaining a view aborts the writer's transaction
+CREATE TABLE mnt_z (k int, v int);
+CREATE MATERIALIZED VIEW mnt_zv WITH (incremental_view_maintenance) AS
+  SELECT k, sum(100 / v) AS q FROM mnt_z GROUP BY k;
+INSERT INTO mnt_z VALUES (1, 5);
+INSERT INTO mnt_z VALUES (1, 0);
+SELECT * FROM mnt_z;
+SELECT * FROM mnt_zv;
+DROP TABLE mnt_z CASCADE;
+
+-- a NULL group key next to keys without NULLs, in one transaction, and
+-- a view whose grouping columns are out of order and repeated
+CREATE TABLE mnt_n (a int, b text, v int);
+CREATE MATERIALIZED VIEW mnt_nv WITH (incremental_view_maintenance) AS
+  SELECT b AS bee, a, count(*) AS n, a AS a_again, sum(v) AS s
+  FROM mnt_n GROUP BY a, b;
+CREATE FUNCTION mnt_nv_ok() RETURNS bool LANGUAGE sql AS $$
+  SELECT NOT EXISTS (
+    (SELECT * FROM mnt_nv EXCEPT ALL
+     SELECT b, a, count(*), a, sum(v) FROM mnt_n GROUP BY a, b)
+    UNION ALL
+    (SELECT b, a, count(*), a, sum(v) FROM mnt_n GROUP BY a, b
+     EXCEPT ALL SELECT * FROM mnt_nv))
+$$;
+INSERT INTO mnt_n VALUES (1, 'x', 1), (1, NULL, 2), (NULL, 'x', 3),
+  (NULL, NULL, 4);
+SELECT mnt_nv_ok();
+UPDATE mnt_n SET b = NULL WHERE a = 1;
+SELECT mnt_nv_ok();
+UPDATE mnt_n SET a = 5 WHERE a IS NULL AND b IS NULL;
+SELECT mnt_nv_ok();
+SELECT * FROM mnt_nv ORDER BY a, bee;
+DROP TABLE mnt_n CASCADE;
+DROP FUNCTION mnt_nv_ok();
+
 -- a writer cannot modify the view directly
 INSERT INTO mnt_g VALUES (99, 1, 1, 1, 1, 'x', 1);
 

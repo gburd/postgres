@@ -8,10 +8,17 @@
  * incrementally maintained view over it is brought up to date before the
  * commit record is written.  This first version maintains each view by
  * recomputing only the groups the transaction touched: it collects the
- * group keys of the captured rows that pass the view's WHERE clause,
- * deletes the view's rows for those keys, and inserts the rows the view's
- * query now produces for them.  A table changed outside the executor
- * (TRUNCATE) gets its views recomputed entirely.
+ * distinct group keys of the captured rows that pass the view's WHERE
+ * clause, deletes the view's rows for those keys, and inserts the rows the
+ * view's query now produces for them.  A table changed outside the
+ * executor (TRUNCATE) gets its views recomputed entirely.
+ *
+ * The keys without NULLs are handed to the planner as a named tuplestore,
+ * the same mechanism trigger transition tables use, and joined to the
+ * view's query and to the view, so each view costs one recompute query and
+ * one lookup query however many groups changed, and the planner can use
+ * the base table's and the view's indexes.  Keys with a NULL can't be
+ * joined with equality; each gets its own pair of queries using IS NULL.
  *
  * Recomputing reads the base table, so concurrent maintainers of one view
  * must be ordered: each takes ExclusiveLock on the view, held until its
@@ -31,13 +38,16 @@
 #include "postgres.h"
 
 #include "access/genam.h"
-#include "common/int.h"
 #include "access/htup_details.h"
+#include "access/sysattr.h"
 #include "access/table.h"
 #include "access/tableam.h"
 #include "access/xact.h"
 #include "catalog/pg_am.h"
 #include "catalog/pg_matview_ivm.h"
+#include "catalog/pg_type.h"
+#include "common/hashfn.h"
+#include "common/int.h"
 #include "commands/defrem.h"
 #include "commands/matview.h"
 #include "commands/matview_ivm.h"
@@ -47,6 +57,7 @@
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
+#include "parser/parse_node.h"
 #include "parser/parse_relation.h"
 #include "rewrite/rewriteHandler.h"
 #include "rewrite/rewriteManip.h"
@@ -55,7 +66,9 @@
 #include "utils/builtins.h"
 #include "utils/datum.h"
 #include "utils/guc.h"
+#include "utils/hsearch.h"
 #include "utils/lsyscache.h"
+#include "utils/queryenvironment.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
@@ -69,6 +82,13 @@ typedef struct IvmGroupKey
 	bool	   *isnull;
 } IvmGroupKey;
 
+/* the group keys with one hash value; nearly always a single key */
+typedef struct IvmKeyBucket
+{
+	uint32		hash;			/* hash key; must be first */
+	List	   *keys;			/* list of IvmGroupKey * */
+} IvmKeyBucket;
+
 /* what one view needs from the commit pass */
 typedef struct IvmViewWork
 {
@@ -76,7 +96,11 @@ typedef struct IvmViewWork
 	IvmProgram *program;
 	bool		recompute;		/* recompute all of it */
 	List	   *keys;			/* list of IvmGroupKey *, without duplicates */
+	HTAB	   *keyhash;		/* IvmKeyBucket by key hash, for deduplication */
 } IvmViewWork;
+
+/* the name the planner and executor know the key tuplestore by */
+#define IVM_KEYS_ENR_NAME	"pg_ivm_keys"
 
 
 static IvmProgram *load_program(Oid viewoid);
@@ -135,11 +159,67 @@ keys_equal(IvmGroupKey *a, IvmGroupKey *b, TupleDesc desc, List *groupcols)
 }
 
 /*
+ * Hash a group key, consistently with keys_equal().
+ */
+static uint32
+key_hash(IvmGroupKey *key, TupleDesc desc, List *groupcols)
+{
+	uint32		hash = 0;
+	int			i = 0;
+	ListCell   *lc;
+
+	foreach(lc, groupcols)
+	{
+		Form_pg_attribute att = TupleDescAttr(desc, lfirst_int(lc) - 1);
+		uint32		h = 0;
+
+		if (!key->isnull[i])
+			h = datum_image_hash(key->values[i], att->attbyval, att->attlen);
+		hash = hash_combine(hash, h);
+		i++;
+	}
+	return hash;
+}
+
+/*
+ * Add one group key to work->keys unless an equal key is already there.
+ * Takes ownership of key.
+ */
+static void
+add_key(IvmViewWork *work, IvmGroupKey *key, TupleDesc desc)
+{
+	List	   *groupcols = work->program->groupcols;
+	uint32		hash = key_hash(key, desc, groupcols);
+	IvmKeyBucket *bucket;
+	bool		found;
+	ListCell   *lc;
+
+	if (work->keyhash == NULL)
+	{
+		HASHCTL		ctl;
+
+		ctl.keysize = sizeof(uint32);
+		ctl.entrysize = sizeof(IvmKeyBucket);
+		ctl.hcxt = CurrentMemoryContext;
+		work->keyhash = hash_create("incremental view group keys", 256, &ctl,
+									HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	}
+
+	bucket = hash_search(work->keyhash, &hash, HASH_ENTER, &found);
+	if (!found)
+		bucket->keys = NIL;
+	foreach(lc, bucket->keys)
+	{
+		if (keys_equal(lfirst(lc), key, desc, groupcols))
+			return;
+	}
+	bucket->keys = lappend(bucket->keys, key);
+	work->keys = lappend(work->keys, key);
+}
+
+/*
  * Add the group keys of the captured rows that pass the view's WHERE
  * clause to work->keys.
- *
- * shortcut: a linear duplicate check per row; use a hash table once the
- * number of affected groups per transaction is large.
  */
 static void
 collect_keys(IvmViewWork *work, Relation baserel, Tuplestorestate *rows)
@@ -167,7 +247,6 @@ collect_keys(IvmViewWork *work, Relation baserel, Tuplestorestate *rows)
 	{
 		IvmGroupKey *key;
 		ListCell   *lc;
-		bool		dup = false;
 		int			i = 0;
 
 		CHECK_FOR_INTERRUPTS();
@@ -200,17 +279,7 @@ collect_keys(IvmViewWork *work, Relation baserel, Tuplestorestate *rows)
 						  att->attlen);
 			i++;
 		}
-
-		foreach(lc, work->keys)
-		{
-			if (keys_equal(lfirst(lc), key, desc, groupcols))
-			{
-				dup = true;
-				break;
-			}
-		}
-		if (!dup)
-			work->keys = lappend(work->keys, key);
+		add_key(work, key, desc);
 	}
 
 	ExecDropSingleTupleTableSlot(slot);
@@ -218,44 +287,155 @@ collect_keys(IvmViewWork *work, Relation baserel, Tuplestorestate *rows)
 }
 
 /*
- * Return the view's query, rewritten, with an added condition restricting
- * the base table to the given group key (or to nothing extra, if key is
- * NULL).  The condition uses the grouping columns' default btree equality
- * operators, and IS NULL for null key values.
+ * Does a group key have a NULL in it?
  */
-static Query *
-view_query_for_key(Relation viewrel, IvmProgram *program,
-				   TupleDesc basedesc, IvmGroupKey *key)
+static bool
+key_has_null(IvmGroupKey *key, int nkeys)
 {
-	RewriteRule *rule;
-	Query	   *query;
-	List	   *rewritten;
-	List	   *conds = NIL;
-	int			varno;
+	for (int i = 0; i < nkeys; i++)
+		if (key->isnull[i])
+			return true;
+	return false;
+}
+
+/*
+ * Build the named tuplestore holding the keys without NULLs, one row per
+ * key with one column per grouping column, and register it in a new query
+ * environment.  Returns NULL if there are no such keys.
+ */
+static QueryEnvironment *
+make_key_env(IvmViewWork *work, TupleDesc basedesc)
+{
+	List	   *groupcols = work->program->groupcols;
+	int			nkeys = list_length(groupcols);
+	TupleDesc	keydesc;
+	Tuplestorestate *store;
+	EphemeralNamedRelation enr;
+	QueryEnvironment *env;
+	double		ntuples = 0;
 	int			i = 0;
 	ListCell   *lc;
 
-	rule = viewrel->rd_rules->rules[0];
-	query = copyObject(linitial_node(Query, rule->actions));
-	AcquireRewriteLocks(query, true, false);
-	rewritten = QueryRewrite(query);
-	if (list_length(rewritten) != 1)
-		elog(ERROR, "unexpected rewrite result for incremental view maintenance");
-	query = linitial_node(Query, rewritten);
-
-	if (key == NULL || program->groupcols == NIL)
-		return query;
-
-	varno = castNode(RangeTblRef, linitial(query->jointree->fromlist))->rtindex;
-	foreach(lc, program->groupcols)
+	keydesc = CreateTemplateTupleDesc(nkeys);
+	foreach(lc, groupcols)
 	{
-		AttrNumber	attno = lfirst_int(lc);
-		Form_pg_attribute att = TupleDescAttr(basedesc, attno - 1);
-		Var		   *var;
+		Form_pg_attribute att = TupleDescAttr(basedesc, lfirst_int(lc) - 1);
 
-		var = makeVar(varno, attno, att->atttypid, att->atttypmod,
-					  att->attcollation, 0);
-		if (key->isnull[i])
+		TupleDescInitEntry(keydesc, ++i, NameStr(att->attname),
+						   att->atttypid, att->atttypmod, 0);
+		TupleDescInitEntryCollation(keydesc, i, att->attcollation);
+	}
+	TupleDescFinalize(keydesc);
+
+	store = tuplestore_begin_heap(false, false, work_mem);
+	foreach(lc, work->keys)
+	{
+		IvmGroupKey *key = lfirst(lc);
+
+		if (key_has_null(key, nkeys))
+			continue;
+		tuplestore_putvalues(store, keydesc, key->values, key->isnull);
+		ntuples++;
+	}
+	if (ntuples == 0)
+	{
+		tuplestore_end(store);
+		return NULL;
+	}
+
+	enr = palloc0_object(EphemeralNamedRelationData);
+	enr->md.name = IVM_KEYS_ENR_NAME;
+	enr->md.reliddesc = InvalidOid;
+	enr->md.tupdesc = keydesc;
+	enr->md.enrtype = ENR_NAMED_TUPLESTORE;
+	enr->md.enrtuples = ntuples;
+	enr->reldata = store;
+	env = create_queryEnv();
+	register_ENR(env, enr);
+	return env;
+}
+
+/*
+ * Make "var = value" with the default btree equality operator of var's type,
+ * the operator the group key's distinctness was judged by at CREATE.
+ */
+static Expr *
+make_key_eq(Var *var, Expr *value)
+{
+	Oid			opclass = GetDefaultOpClass(var->vartype, BTREE_AM_OID);
+	Oid			opfamily = get_opclass_family(opclass);
+	Oid			opcintype = get_opclass_input_type(opclass);
+	Oid			eqop = get_opfamily_member(opfamily, opcintype, opcintype,
+										   BTEqualStrategyNumber);
+
+	if (!OidIsValid(eqop))
+		elog(ERROR, "missing equality operator for type %u", var->vartype);
+	return make_opclause(eqop, BOOLOID, false, (Expr *) var, value,
+						 InvalidOid, var->varcollid);
+}
+
+/*
+ * Restrict a query to group keys.  keyvars are the Vars of the query that
+ * hold the grouping columns, in groupcols order.  With env set, join the
+ * query to the key tuplestore registered there; the keys are distinct, so
+ * the join doesn't duplicate rows.  Otherwise restrict it to the one key
+ * given, using IS NULL for its NULL columns, or, with no key either, leave
+ * it alone.
+ */
+static void
+restrict_to_keys(Query *query, List *keyvars, QueryEnvironment *env,
+				 IvmGroupKey *key)
+{
+	List	   *conds = NIL;
+	int			keyrti = 0;
+	int			i = 0;
+	ListCell   *lc;
+
+	if (env == NULL && key == NULL)
+		return;
+
+	if (env)
+	{
+		EphemeralNamedRelationMetadata md =
+			get_visible_ENR_metadata(env, IVM_KEYS_ENR_NAME);
+		RangeTblEntry *rte = makeNode(RangeTblEntry);
+		RangeTblRef *rtr = makeNode(RangeTblRef);
+		TupleDesc	keydesc = md->tupdesc;
+
+		rte->rtekind = RTE_NAMEDTUPLESTORE;
+		rte->enrname = md->name;
+		rte->enrtuples = md->enrtuples;
+		rte->eref = makeAlias(md->name, NIL);
+		for (int j = 0; j < keydesc->natts; j++)
+		{
+			Form_pg_attribute att = TupleDescAttr(keydesc, j);
+
+			rte->eref->colnames = lappend(rte->eref->colnames,
+										  makeString(pstrdup(NameStr(att->attname))));
+			rte->coltypes = lappend_oid(rte->coltypes, att->atttypid);
+			rte->coltypmods = lappend_int(rte->coltypmods, att->atttypmod);
+			rte->colcollations = lappend_oid(rte->colcollations,
+											 att->attcollation);
+		}
+		rte->inFromCl = true;
+		query->rtable = lappend(query->rtable, rte);
+		keyrti = list_length(query->rtable);
+		rtr->rtindex = keyrti;
+		query->jointree->fromlist = lappend(query->jointree->fromlist, rtr);
+	}
+
+	foreach(lc, keyvars)
+	{
+		Var		   *var = copyObject(lfirst(lc));
+
+		if (env)
+		{
+			Var		   *keyvar = makeVar(keyrti, i + 1, var->vartype,
+										 var->vartypmod, var->varcollid, 0);
+
+			conds = lappend(conds, make_key_eq(var, (Expr *) keyvar));
+		}
+		else if (key->isnull[i])
 		{
 			NullTest   *nt = makeNode(NullTest);
 
@@ -267,23 +447,14 @@ view_query_for_key(Relation viewrel, IvmProgram *program,
 		}
 		else
 		{
-			Oid			opclass = GetDefaultOpClass(att->atttypid, BTREE_AM_OID);
-			Oid			opfamily = get_opclass_family(opclass);
-			Oid			opcintype = get_opclass_input_type(opclass);
-			Oid			eqop = get_opfamily_member(opfamily, opcintype,
-												   opcintype,
-												   BTEqualStrategyNumber);
+			int16		typlen;
+			bool		typbyval;
 			Const	   *c;
 
-			if (!OidIsValid(eqop))
-				elog(ERROR, "missing equality operator for type %u",
-					 att->atttypid);
-			c = makeConst(att->atttypid, att->atttypmod, att->attcollation,
-						  att->attlen, key->values[i], false, att->attbyval);
-			conds = lappend(conds,
-							make_opclause(eqop, BOOLOID, false,
-										  (Expr *) var, (Expr *) c,
-										  InvalidOid, att->attcollation));
+			get_typlenbyval(var->vartype, &typlen, &typbyval);
+			c = makeConst(var->vartype, var->vartypmod, var->varcollid,
+						  typlen, key->values[i], false, typbyval);
+			conds = lappend(conds, make_key_eq(var, (Expr *) c));
 		}
 		i++;
 	}
@@ -291,7 +462,107 @@ view_query_for_key(Relation viewrel, IvmProgram *program,
 	if (query->jointree->quals)
 		conds = lappend(conds, query->jointree->quals);
 	query->jointree->quals = (Node *) make_ands_explicit(conds);
+}
 
+/*
+ * Return the view's query, rewritten.
+ */
+static Query *
+view_query(Relation viewrel)
+{
+	RewriteRule *rule = viewrel->rd_rules->rules[0];
+	Query	   *query = copyObject(linitial_node(Query, rule->actions));
+	List	   *rewritten;
+
+	AcquireRewriteLocks(query, true, false);
+	rewritten = QueryRewrite(query);
+	if (list_length(rewritten) != 1)
+		elog(ERROR, "unexpected rewrite result for incremental view maintenance");
+	return linitial_node(Query, rewritten);
+}
+
+/*
+ * Return the view's query restricted to the given keys (see
+ * restrict_to_keys).
+ */
+static Query *
+view_query_for_keys(Relation viewrel, IvmProgram *program, TupleDesc basedesc,
+					QueryEnvironment *env, IvmGroupKey *key)
+{
+	Query	   *query = view_query(viewrel);
+	int			varno;
+	List	   *keyvars = NIL;
+	ListCell   *lc;
+
+	varno = castNode(RangeTblRef, linitial(query->jointree->fromlist))->rtindex;
+	foreach(lc, program->groupcols)
+	{
+		AttrNumber	attno = lfirst_int(lc);
+		Form_pg_attribute att = TupleDescAttr(basedesc, attno - 1);
+
+		keyvars = lappend(keyvars, makeVar(varno, attno, att->atttypid,
+										   att->atttypmod, att->attcollation,
+										   0));
+	}
+	restrict_to_keys(query, keyvars, env, key);
+	return query;
+}
+
+/*
+ * Return "SELECT ctid FROM view" restricted to the given keys (see
+ * restrict_to_keys).  The view's grouping columns are found through
+ * program->viewcols; the first view column for each grouping column is
+ * used.
+ */
+static Query *
+view_rows_for_keys(Relation viewrel, IvmProgram *program,
+				   QueryEnvironment *env, IvmGroupKey *key)
+{
+	Query	   *query = makeNode(Query);
+	ParseState *pstate = make_parsestate(NULL);
+	ParseNamespaceItem *nsitem;
+	RangeTblRef *rtr = makeNode(RangeTblRef);
+	TupleDesc	viewdesc = RelationGetDescr(viewrel);
+	int			nkeys = list_length(program->groupcols);
+	Var		  **keyvars = palloc0_array(Var *, Max(nkeys, 1));
+	List	   *keyvarlist = NIL;
+	Var		   *ctid;
+	int			col = 0;
+	ListCell   *lc;
+
+	nsitem = addRangeTableEntryForRelation(pstate, viewrel, AccessShareLock,
+										   NULL, false, false);
+	nsitem->p_perminfo->requiredPerms = ACL_SELECT;
+	foreach(lc, program->viewcols)
+	{
+		int			pos = lfirst_int(lc);
+
+		col++;
+		if (pos > 0 && keyvars[pos - 1] == NULL)
+		{
+			Form_pg_attribute att = TupleDescAttr(viewdesc, col - 1);
+
+			keyvars[pos - 1] = makeVar(1, col, att->atttypid, att->atttypmod,
+									   att->attcollation, 0);
+			nsitem->p_perminfo->selectedCols =
+				bms_add_member(nsitem->p_perminfo->selectedCols,
+							   col - FirstLowInvalidHeapAttributeNumber);
+		}
+	}
+	for (int i = 0; i < nkeys; i++)
+		keyvarlist = lappend(keyvarlist, keyvars[i]);
+
+	query->commandType = CMD_SELECT;
+	query->canSetTag = true;
+	query->rtable = pstate->p_rtable;
+	query->rteperminfos = pstate->p_rteperminfos;
+	rtr->rtindex = 1;
+	query->jointree = makeFromExpr(list_make1(rtr), NULL);
+	ctid = makeVar(1, SelfItemPointerAttributeNumber, TIDOID, -1,
+				   InvalidOid, 0);
+	query->targetList = list_make1(makeTargetEntry((Expr *) ctid, 1,
+												   pstrdup("ctid"), false));
+	restrict_to_keys(query, keyvarlist, env, key);
 	return query;
 }
 
@@ -299,7 +570,7 @@ view_query_for_key(Relation viewrel, IvmProgram *program,
  * Run a query and return its result rows in a tuplestore.
  */
 static Tuplestorestate *
-run_query(Query *query)
+run_query(Query *query, QueryEnvironment *env)
 {
 	PlannedStmt *plan;
 	QueryDesc  *qd;
@@ -313,7 +584,7 @@ run_query(Query *query)
 
 	plan = pg_plan_query(query, "", 0, NULL, NULL);
 	qd = CreateQueryDesc(plan, "", GetActiveSnapshot(), InvalidSnapshot,
-						 dest, NULL, NULL, 0);
+						 dest, NULL, env, 0);
 	ExecutorStart(qd, 0);
 	ExecutorRun(qd, ForwardScanDirection, 0);
 	ExecutorFinish(qd);
@@ -325,72 +596,30 @@ run_query(Query *query)
 }
 
 /*
- * Does a view row have one of the given group keys?  The view's grouping
- * columns are found through program->viewcols.
- */
-static bool
-row_has_key(TupleTableSlot *slot, IvmProgram *program, List *keys,
-			TupleDesc basedesc)
-{
-	int			nkeys = list_length(program->groupcols);
-	Datum	   *values = palloc_array(Datum, Max(nkeys, 1));
-	bool	   *isnull = palloc_array(bool, Max(nkeys, 1));
-	IvmGroupKey rowkey = {values, isnull};
-	int			col = 0;
-	bool		result = false;
-	ListCell   *lc;
-
-	slot_getallattrs(slot);
-	foreach(lc, program->viewcols)
-	{
-		int			pos = lfirst_int(lc);
-
-		/* first view column for each grouping column wins */
-		if (pos > 0)
-		{
-			values[pos - 1] = slot->tts_values[col];
-			isnull[pos - 1] = slot->tts_isnull[col];
-		}
-		col++;
-	}
-
-	foreach(lc, keys)
-	{
-		if (keys_equal(lfirst(lc), &rowkey, basedesc, program->groupcols))
-		{
-			result = true;
-			break;
-		}
-	}
-	pfree(values);
-	pfree(isnull);
-	return result;
-}
-
-/*
- * Delete the view rows with the given group keys (all rows if keys is NIL
- * and all is true), keeping its indexes up to date: index entries of a
- * deleted heap row are removed by VACUUM, as for any DELETE.
+ * Delete the view rows whose ctids a query returns.  Index entries of a
+ * deleted row are removed by VACUUM, as for any DELETE.
  */
 static void
-delete_view_rows(Relation viewrel, IvmProgram *program, List *keys,
-				 bool all, TupleDesc basedesc)
+delete_view_rows(Relation viewrel, Query *query, QueryEnvironment *env)
 {
-	TableScanDesc scan;
+	Tuplestorestate *tids = run_query(query, env);
+	TupleDesc	desc = CreateTemplateTupleDesc(1);
 	TupleTableSlot *slot;
 
-	slot = table_slot_create(viewrel, NULL);
-	scan = table_beginscan(viewrel, GetActiveSnapshot(), 0, NULL, SO_NONE);
-	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
+	TupleDescInitEntry(desc, 1, "ctid", TIDOID, -1, 0);
+	TupleDescFinalize(desc);
+	slot = MakeSingleTupleTableSlot(desc, &TTSOpsMinimalTuple);
+	tuplestore_rescan(tids);
+	while (tuplestore_gettupleslot(tids, true, false, slot))
 	{
+		bool		isnull;
+		ItemPointer tid = DatumGetItemPointer(slot_getattr(slot, 1, &isnull));
+
 		CHECK_FOR_INTERRUPTS();
-		if (all || program->groupcols == NIL ||
-			row_has_key(slot, program, keys, basedesc))
-			simple_table_tuple_delete(viewrel, &slot->tts_tid,
-									  GetActiveSnapshot());
+		simple_table_tuple_delete(viewrel, tid, GetActiveSnapshot());
 	}
-	table_endscan(scan);
 	ExecDropSingleTupleTableSlot(slot);
+	tuplestore_end(tids);
 }
 
 /*
@@ -432,6 +661,25 @@ insert_view_rows(Relation viewrel, Tuplestorestate *rows)
 }
 
 /*
+ * Replace the view's rows for some group keys (see restrict_to_keys) by
+ * the rows its query now produces for them.  The lookup of the old rows
+ * runs to completion before the first insert, so it can't see the new ones.
+ */
+static void
+recompute_keys(Relation viewrel, IvmProgram *program, TupleDesc basedesc,
+			   QueryEnvironment *env, IvmGroupKey *key)
+{
+	Tuplestorestate *rows;
+
+	delete_view_rows(viewrel, view_rows_for_keys(viewrel, program, env, key),
+					 env);
+	rows = run_query(view_query_for_keys(viewrel, program, basedesc, env, key),
+					 env);
+	insert_view_rows(viewrel, rows);
+	tuplestore_end(rows);
+}
+
+/*
  * Bring one view up to date.
  */
 static void
@@ -470,26 +718,26 @@ maintain_view(IvmViewWork *work)
 	CommandCounterIncrement();
 	PushActiveSnapshot(GetLatestSnapshot());
 
-	if (work->recompute)
+	if (work->recompute || work->program->groupcols == NIL)
 	{
-		delete_view_rows(viewrel, work->program, NIL, true, basedesc);
-		insert_view_rows(viewrel,
-						 run_query(view_query_for_key(viewrel, work->program,
-													  basedesc, NULL)));
+		/* the whole view, which is a single group if there's no GROUP BY */
+		if (work->recompute || work->keys != NIL)
+			recompute_keys(viewrel, work->program, basedesc, NULL, NULL);
 	}
 	else if (work->keys != NIL)
 	{
+		int			nkeys = list_length(work->program->groupcols);
+		QueryEnvironment *env = make_key_env(work, basedesc);
 		ListCell   *lc;
 
-		delete_view_rows(viewrel, work->program, work->keys, false, basedesc);
+		if (env)
+			recompute_keys(viewrel, work->program, basedesc, env, NULL);
 		foreach(lc, work->keys)
 		{
-			Tuplestorestate *rows;
+			IvmGroupKey *key = lfirst(lc);
 
-			rows = run_query(view_query_for_key(viewrel, work->program,
-												basedesc, lfirst(lc)));
-			insert_view_rows(viewrel, rows);
-			tuplestore_end(rows);
+			if (key_has_null(key, nkeys))
+				recompute_keys(viewrel, work->program, basedesc, NULL, key);
 		}
 	}
 
