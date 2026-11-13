@@ -412,9 +412,11 @@ PG_PROP(deadlock_one_victim)
 	if (!ok2 && ss2 && strcmp(ss2, "40P01") == 0)
 		victims++;
 
-	/* the surviving session commits; the victim's transaction is already aborted */
+	/*
+	 * The surviving session commits; the victim's transaction was already
+	 * aborted by the deadlock detector, so nothing else is left open.
+	 */
 	run(ok1 ? t1 : t2, "COMMIT", &err);
-	run(ok1 ? t1 : t2, "ROLLBACK", &err);	/* no-op if already committed */
 
 	if (victims != 1)
 		pg_prop_fail(tc,
