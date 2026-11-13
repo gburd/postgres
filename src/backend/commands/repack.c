@@ -3890,7 +3890,7 @@ start_repack_decoding_worker(Oid relid)
 	 */
 	shared->lock_timeout = LockTimeout;
 	shared->transaction_timeout = TransactionTimeout;
-	shared->temp_file_limit = temp_file_limit;
+	shared->temp_file_limit_setting = temp_file_limit;
 
 	mq = shm_mq_create((char *) BUFFERALIGN(shared->error_queue),
 					   REPACK_ERROR_QUEUE_SIZE);

@@ -105,7 +105,14 @@ typedef struct DecodingWorkerShared
 	/* Settings to use in the worker */
 	int			lock_timeout;
 	int			transaction_timeout;
-	int			temp_file_limit;
+	/*
+	 * Named _setting (not temp_file_limit) to avoid the session-owned GUC
+	 * macro in guc.h: under the threaded runtime temp_file_limit expands to
+	 * (*PgCurrentTempFileLimitRef()), so a struct field of that name would
+	 * break as shared->(*...).  The field just carries the GUC's int value
+	 * from the leader to the worker.
+	 */
+	int			temp_file_limit_setting;
 
 	/* Relation from which data changes to decode. */
 	Oid			relid;

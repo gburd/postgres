@@ -126,7 +126,7 @@ RepackWorkerMain(Datum main_arg)
 	SetConfigOption("lock_timeout", buf, PGC_SUSET, PGC_S_OVERRIDE);
 	snprintf(buf, sizeof(buf), "%d", shared->transaction_timeout);
 	SetConfigOption("transaction_timeout", buf, PGC_SUSET, PGC_S_OVERRIDE);
-	snprintf(buf, sizeof(buf), "%d", shared->temp_file_limit);
+	snprintf(buf, sizeof(buf), "%d", shared->temp_file_limit_setting);
 	SetConfigOption("temp_file_limit", buf, PGC_SUSET, PGC_S_OVERRIDE);
 
 	/*
