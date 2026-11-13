@@ -52,11 +52,17 @@ PG_GLOBAL_RUNTIME char *log_connections_string = NULL;
 
 /*
  * ConnectionTiming stores timestamps of various points in connection
- * establishment and setup.
- * ready_for_use is initialized to a special value here so we can check if
- * we've already set it before doing so in PostgresMain().
+ * establishment and setup.  ready_for_use is seeded to TIMESTAMP_MINUS_INFINITY
+ * so PostgresMain() can tell whether it has already been set.
+ *
+ * In the threaded runtime conn_timing is session-owned: guc.h / backend_runtime
+ * make it the macro (*PgCurrentConnectionTimingRef()), and the bucket's
+ * initializer (backend_runtime_connection.c) performs the
+ * ready_for_use = TIMESTAMP_MINUS_INFINITY seed per connection.  So we must NOT
+ * define a file-scope "ConnectionTiming conn_timing = {...}" here -- the macro
+ * would expand it to an invalid declaration, and it would reintroduce a
+ * process-global.  The upstream definition is intentionally omitted.
  */
-ConnectionTiming conn_timing = {.ready_for_use = TIMESTAMP_MINUS_INFINITY};
 
 /*
  * Cancel request parsed from a startup packet.
