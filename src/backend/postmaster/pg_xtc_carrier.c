@@ -865,18 +865,19 @@ xtc_carrier_start_supervisors(void)
  * remain the UNCHANGED source of truth for backend-fiber crash detection and
  * Stage-1b escalation (SIGNAL DOWN -> g_xtc_genuine_crash + postmaster latch).
  *
- * WHY BACKEND FIBERS ARE NOT xtc_sup CHILDREN -- the durable design-doc
+ * WHY BACKEND FIBERS WERE NOT xtc_sup CHILDREN -- the durable design-doc
  * correction.  The F4 design
  * (plan_docs/MULTITHREADED_F4_SUPERVISION_FUSION_DESIGN.md, 2026-08-31) called
  * for routing backend fibers through xtc_sup_add_child and mapping the
- * SIGNAL-DOWN escalation "into the supervisor's DOWN handling".  That is NOT
- * implementable with this libxtc and would SILENTLY LOSE the escalation:
+ * SIGNAL-DOWN escalation "into the supervisor's DOWN handling".  Against the
+ * libxtc pinned through 2026-11-04 that was NOT implementable and would have
+ * SILENTLY LOST the escalation:
  *
- *   - xtc_orc's public API (xtc_orc.h) exposes only AGGREGATE counters
- *     (xtc_sup_n_alive / n_restarts); it has NO per-child DOWN callback and no
- *     DOWN-forwarding hook.  The supervisor decodes each child's DOWN inside
+ *   - xtc_orc's public API then exposed only AGGREGATE counters
+ *     (xtc_sup_n_alive / n_restarts); it had NO per-child DOWN callback and no
+ *     DOWN-forwarding hook.  The supervisor decoded each child's DOWN inside
  *     its own private xtc_recv loop purely to drive the restart decision and
- *     then DISCARDS the classification -- an external caller cannot learn
+ *     then DISCARDED the classification -- an external caller could not learn
  *     whether a specific child crashed (SIGNAL) or exited cleanly.
  *   - A caller-side follow-up xtc_monitor() on the pid xtc_sup_add_child
  *     returns is NOT a substitute: it races the supervisor's own monitor and
@@ -885,27 +886,94 @@ xtc_carrier_start_supervisors(void)
  *
  * Both facts are verified and filed in
  * plan_docs/phase16_audits/LIBXTC_ORC_NO_PER_CHILD_DOWN.md (against libxtc
- * v1.44.0; re-confirmed against the currently pinned build).  Because our
- * crash policy is "a crashed backend may have corrupted the shared address
- * space, so FAIL-STOP the whole process", the SIGNAL-vs-clean distinction is
- * mandatory and must stay on a monitor we own -- our own
+ * v1.44.0).  Because our crash policy is "a crashed backend may have corrupted
+ * the shared address space, so FAIL-STOP the whole process", the
+ * SIGNAL-vs-clean distinction is mandatory; until libxtc could report it per
+ * child it had to stay on a monitor we own -- our own
  * xtc_proc_spawn_monitor() in xtc_carrier_supervisor_proc, which establishes
- * the monitor atomically before the child runs.  Moving any spawn whose death
- * must be classified onto xtc_sup_add_child would lose that.
+ * the monitor atomically before the child runs.
  *
- * So today these supervisors legitimately own ZERO children: there is no
- * carrier child whose death does NOT require PG classification AND whose spawn
- * is not already postmaster-thread-affine (see
- * plan_docs/phase16_audits/SUPERVISION_SCOPE_WHY_NO_CRASH_RESPAWN.md for the
- * aux-worker thread-affinity constraint).  The supervisor therefore exists as
- * the standing OTP-supervisor SCAFFOLD + bookkeeping surface: a real
- * xtc_supervisor_t per loop, ready to adopt children the day libxtc gains an
- * on_down / xtc_sup_forward_down hook (the two API shapes requested in the
- * audit), at which point backend-crash classification can migrate onto it
- * without losing escalation.  Until then it adds no children and changes no
- * behaviour -- which is exactly why it is safe to stand up behind a default-off
- * developer GUC.
+ * THE PER-CHILD-DOWN GAP IS NOW CLOSED (libxtc 2.2, 8a7e9c06).  The audit
+ * requested exactly this, and libxtc delivered it as
+ * xtc_sup_opts_t.on_child_down (one hook per supervisor, NOT per child spec),
+ * fired on the supervisor's own fiber BEFORE the restart decision, observe-only
+ * and non-parking, with the child's spec (so spec->arg / spec->name identify
+ * the child across restarts).  We install that hook here (xtc_carrier_orc_child_down)
+ * so an xtc_sup child that goes DOWN with XTC_DOWN_KIND_SIGNAL drives the SAME
+ * Stage-1b escalation (g_xtc_genuine_crash + postmaster latch) the hand-rolled
+ * classifier does.  The mechanism is therefore wired and testable the moment a
+ * child is added.
+ *
+ * These supervisors still own ZERO children today, deliberately.  Routing the
+ * real backend spawn (xtc_pg_launch_backend_fiber) through xtc_sup_add_child is
+ * a larger behavioural cutover -- it moves the spawn+monitor+DOWN plumbing off
+ * the hand-rolled XTC_SUP_SPAWN mailbox onto the OTP supervisor -- and needs its
+ * own A/B on check-threaded-pooled (neutral-or-better, no crash-containment
+ * regression) before it can replace the escalation source of truth.  That is
+ * the remaining step (F4 design step 2), intentionally NOT taken in this commit.
+ * Until a child is added the hook never fires and changes no behaviour -- which
+ * is exactly why it is safe to wire behind a default-off developer GUC.
  */
+
+/*
+ * on_child_down hook for the GUC-gated xtc_orc supervisors (libxtc 2.2).
+ *
+ * Runs on the supervisor's own fiber, once per DOWN of a child the supervisor
+ * owns, BEFORE the supervisor decides whether to restart it.  It mirrors the
+ * SIGNAL branch of the hand-rolled classifier (xtc_carrier_supervisor_proc):
+ * an XTC_DOWN_KIND_SIGNAL is an R1 contained fault -- a genuine crash that may
+ * have torn the shared address space -- so flag g_xtc_genuine_crash and kick
+ * the postmaster latch, the identical Stage-1b escalation.  CLEAN / EXIT are a
+ * normal end and KILLED is a deliberate teardown; none escalate (the postmaster
+ * owns reaping), matching the hand-rolled classifier's non-escalating branches.
+ *
+ * The hook MUST NOT park (libxtc's contract): only an atomic store,
+ * xtc_proc_wake, SetLatch or xtc_sup_stop are allowed -- no xtc_recv, sleep,
+ * blocking I/O or xtc_amutex.  atomic_store + SetLatch satisfy that exactly.
+ * Unlike the hand-rolled SIGNAL branch we do NOT call xtc_dump() here: xtc_dump
+ * takes libxtc's per-loop inspection locks and is not a non-parking operation,
+ * so it stays on the hand-rolled path (which runs in a plain xtc_recv loop, not
+ * under the supervisor's restart-decision fiber).  The escalation itself --
+ * the only load-bearing effect -- is byte-identical: atomic_store(&..., 1) then
+ * SetLatch(postmaster).  spec->arg will carry the PgBackend/carrier identity
+ * once backends are added as children; today it is unused (zero children).
+ */
+static void
+xtc_carrier_orc_child_down(xtc_supervisor_t *sup,
+						   const xtc_child_spec_t *spec,
+						   const xtc_down_info_t *info, void *user)
+{
+	(void) sup;
+	(void) spec;
+	(void) user;
+
+	if (info == NULL)
+		return;
+
+	if (info->kind == XTC_DOWN_KIND_SIGNAL)
+	{
+		/*
+		 * A genuine contained-fault crash.  Escalate exactly as the
+		 * hand-rolled classifier does: set the flag the postmaster polls, then
+		 * kick its latch so it drives the crash policy immediately rather than
+		 * waiting out DetermineSleepTime().  Store 1 (not info->signal) to keep
+		 * g_xtc_genuine_crash's value byte-identical to the hand-rolled path;
+		 * the consumer (xtc_pg_consume_genuine_crash) only tests != 0.  Both
+		 * atomic_store and SetLatch are non-parking, honouring the hook
+		 * contract.
+		 */
+		Latch	   *pml;
+
+		atomic_store(&g_xtc_genuine_crash, 1);
+		pml = atomic_load(&g_xtc_postmaster_latch);
+		if (pml != NULL)
+			SetLatch(pml);
+	}
+	/* CLEAN / EXIT: a normal end.  KILLED / NOCONNECTION: deliberate teardown.
+	 * None escalate -- the postmaster owns reaping (matches the hand-rolled
+	 * classifier's non-SIGNAL branches). */
+}
+
 static void
 xtc_carrier_start_orc_supervisors(void)
 {
@@ -928,6 +996,16 @@ xtc_carrier_start_orc_supervisors(void)
 		 * comment above), so the child-spec array is empty.
 		 */
 		opts.strategy = XTC_SUP_ONE_FOR_ONE;
+
+		/*
+		 * Install the libxtc 2.2 per-child DOWN hook.  It covers the static
+		 * children, the children added via xtc_sup_add_child, and (if we ever
+		 * give the supervisor one) its root -- one registration for all.  With
+		 * zero children today it never fires; it is wired now so the mechanism
+		 * is in place and testable the moment a child is added (F4 step 2).
+		 */
+		opts.on_child_down = xtc_carrier_orc_child_down;
+		opts.on_child_down_user = NULL;
 		if (xtc_sup_start(loop, &opts, NULL, 0, &sup) == XTC_OK)
 			g_xtc_orc_sup[i] = sup;
 		else
@@ -1372,7 +1450,7 @@ xtc_pg_carrier_start(void)
 		 * presence, not a child count.
 		 */
 		if (xtc_carrier_use_orc)
-			elog(LOG, "xtc: xtc_orc supervisor scaffold up (%d supervisor%s, 0 children; escalation stays on the hand-rolled classifier)",
+			elog(LOG, "xtc: xtc_orc supervisor scaffold up (%d supervisor%s, 0 children; on_child_down hook installed, escalation still on the hand-rolled classifier)",
 				 g_xtc_n_orc_sups, g_xtc_n_orc_sups == 1 ? "" : "s");
 	}
 
