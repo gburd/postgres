@@ -2595,14 +2595,6 @@
   boot_val => 'false',
 },
 
-{ name => 'xtc_xproc_watchdog_demo', type => 'bool', context => 'PGC_POSTMASTER', group => 'DEVELOPER_OPTIONS',
-  short_desc => 'Runs a self-contained demonstration of the xtc_xproc cross-fork watchdog at carrier start.',
-  long_desc => 'Developer demonstration only. When on (and multithreaded), the xtc carrier runs a self-contained demo that xtc_xspawns a throwaway child, xtc_xmonitors it, decodes its DOWN, and restarts it under a small bounded intensity -- the in-tree restart-after-crash USAGE pattern for libxtc xtc_xproc. It does NOT change the real PostgreSQL backend crash policy, which stays fail-stop. POSIX only; a no-op where xtc_xproc is unsupported. Off (the default) runs nothing and has zero production impact. Ignored when multithreaded=off.',
-  flags => 'GUC_NOT_IN_SAMPLE',
-  variable => 'xtc_xproc_watchdog_demo',
-  boot_val => 'false',
-},
-
 { name => 'pooled_protocol_hibernate_after_ms', type => 'int', context => 'PGC_POSTMASTER', group => 'DEVELOPER_OPTIONS',
   short_desc => 'Sets the idle duration before pooled protocol sessions hibernate.',
   long_desc => 'A pooled protocol session that remains parked for this many milliseconds is resumed and reparked with idle memory compaction applied once.',
@@ -3997,6 +3989,14 @@
   options => 'xmloption_options',
 },
 
+{ name => 'xtc_carrier_use_orc', type => 'bool', context => 'PGC_POSTMASTER', group => 'DEVELOPER_OPTIONS',
+  short_desc => 'Stands up a libxtc xtc_orc OTP supervisor per carrier loop.',
+  long_desc => 'F4 supervision-fusion knob for the multithreaded PostgreSQL development branch. When multithreaded=on, stands up one libxtc xtc_orc supervisor (xtc_sup_start, ONE_FOR_ONE) per carrier loop alongside the hand-rolled per-loop supervisor fiber. The hand-rolled supervisor remains the source of truth for backend-fiber crash DETECTION and Stage-1b escalation (SIGNAL DOWN -> genuine-crash flag + postmaster latch): libxtc xtc_orc exposes no per-child DOWN classification to an external caller (only aggregate counters), so an orc-owned backend child cannot surface the crash-vs-clean distinction the escalation policy requires. Off (the default) keeps the hand-rolled supervisor path byte-for-byte. Has no effect under multithreaded=off.',
+  flags => 'GUC_NOT_IN_SAMPLE',
+  variable => 'xtc_carrier_use_orc',
+  boot_val => 'false',
+},
+
 { name => 'xtc_force_process_fallback', type => 'bool', context => 'PGC_POSTMASTER', group => 'DEVELOPER_OPTIONS',
   short_desc => 'Routes every pooled client backend to a forked+exec\'d process-fallback backend instead of a carrier fiber.',
   long_desc => 'Experimental Phase 19 test knob for the multithreaded PostgreSQL development branch. When multithreaded=on, forces the process-fallback route (the same route a session needing a process-only extension will take) for all client backends, so the fork+exec path can be exercised deterministically. Requires shared_memory_type=sysv (an exec\'d child cannot re-attach anonymous mmap shared memory). Has no effect under multithreaded=off.',
@@ -4013,19 +4013,19 @@
   boot_val => 'false',
 },
 
-{ name => 'xtc_carrier_use_orc', type => 'bool', context => 'PGC_POSTMASTER', group => 'DEVELOPER_OPTIONS',
-  short_desc => 'Stands up a libxtc xtc_orc OTP supervisor per carrier loop.',
-  long_desc => 'F4 supervision-fusion knob for the multithreaded PostgreSQL development branch. When multithreaded=on, stands up one libxtc xtc_orc supervisor (xtc_sup_start, ONE_FOR_ONE) per carrier loop alongside the hand-rolled per-loop supervisor fiber. The hand-rolled supervisor remains the source of truth for backend-fiber crash DETECTION and Stage-1b escalation (SIGNAL DOWN -> genuine-crash flag + postmaster latch): libxtc xtc_orc exposes no per-child DOWN classification to an external caller (only aggregate counters), so an orc-owned backend child cannot surface the crash-vs-clean distinction the escalation policy requires. Off (the default) keeps the hand-rolled supervisor path byte-for-byte. Has no effect under multithreaded=off.',
-  flags => 'GUC_NOT_IN_SAMPLE',
-  variable => 'xtc_carrier_use_orc',
-  boot_val => 'false',
-},
-
 { name => 'xtc_tls_use_fiber', type => 'bool', context => 'PGC_POSTMASTER', group => 'DEVELOPER_OPTIONS',
   short_desc => 'Drives backend-fiber TLS through the xtc TLS stack instead of OpenSSL directly.',
   long_desc => 'When multithreaded=on, a client backend running as an xtc carrier fiber terminates TLS through xtc_tls (a fiber-aware custom transport) instead of calling OpenSSL directly, provided the parallel xtc TLS server context built successfully. Off (the default), and on process-mode or non-fiber backends, the connection uses the OpenSSL path unchanged. Experimental developer knob for the multithreaded PostgreSQL development branch; has no effect under multithreaded=off.',
   flags => 'GUC_NOT_IN_SAMPLE',
   variable => 'xtc_tls_use_fiber',
+  boot_val => 'false',
+},
+
+{ name => 'xtc_xproc_watchdog_demo', type => 'bool', context => 'PGC_POSTMASTER', group => 'DEVELOPER_OPTIONS',
+  short_desc => 'Runs a self-contained demonstration of the xtc_xproc cross-fork watchdog at carrier start.',
+  long_desc => 'Developer demonstration only. When on (and multithreaded), the xtc carrier runs a self-contained demo that xtc_xspawns a throwaway child, xtc_xmonitors it, decodes its DOWN, and restarts it under a small bounded intensity -- the in-tree restart-after-crash USAGE pattern for libxtc xtc_xproc. It does NOT change the real PostgreSQL backend crash policy, which stays fail-stop. POSIX only; a no-op where xtc_xproc is unsupported. Off (the default) runs nothing and has zero production impact. Ignored when multithreaded=off.',
+  flags => 'GUC_NOT_IN_SAMPLE',
+  variable => 'xtc_xproc_watchdog_demo',
   boot_val => 'false',
 },
 
