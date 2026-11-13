@@ -2202,7 +2202,7 @@ PgRelCacheCollectMemoryStats(PgRelCacheMemoryStatsCallback callback, void *arg)
 			stats.class_tuple_bytes = MAXALIGN(CLASS_TUPLE_SIZE);
 		if (relation->rd_att != NULL)
 		{
-			stats.tuple_desc_bytes = MAXALIGN(TupleDescSize(relation->rd_att));
+			stats.tuple_desc_bytes = MAXALIGN(TupleDescCopySize(relation->rd_att));
 			stats.tuple_constr_bytes =
 				PgRelCacheTupleConstrBytes(relation->rd_att);
 		}
