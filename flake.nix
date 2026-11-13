@@ -9,15 +9,23 @@
     # Defaults to GitHub; for local development point it at a checkout with
     #   nix develop --override-input libxtc path:$HOME/ws/xtc
     libxtc = {
-      # DEV PIN (2026-11-04): fix/stale-readiness-dispatch @ 6dd001e0 -- carries
-      # the stale-readiness gen-token fix (the fd107 XTC_E_INVAL root cause) AND
-      # the OTP headers (xtc_svr/xtc_orc/xtc_reg/xtc_xproc) and the TLS
-      # transport/SNI hooks (xtc_tls_create_transport, xtc_tls_ctx_set_sni_cb)
-      # this branch's libxtc-fusion gap-closing work consumes.  THIS COMMIT IS
-      # UNRELEASED/UNPUSHED (local only): before any trusted validation, re-pin
-      # to the released v2.1.2 tag once the libxtc team cuts it, and confirm the
-      # tree matches.  No PG runtime validation has been done against this pin.
-      url = "github:gburd/libxtc?rev=6dd001e02cd52d64dcde0be6df43600b7e89b696";
+      # DEV PIN (2026-11-13): libxtc main @ 8a7e9c06 -- the 2.2 development line
+      # (symbol node XTC_2.2), pushed as origin/main.  It supersedes the earlier
+      # 6dd001e0 pin and contains, on top of the stale-readiness gen-token fix
+      # (the fd107 XTC_E_INVAL root cause, released as v2.1.2):
+      #   - the DOWN-classification fix: a contained fault is always reported as
+      #     XTC_DOWN_KIND_SIGNAL regardless of the exit code the fiber passed to
+      #     xtc_exit_self, plus the new XTC_DOWN_KIND_KILLED (=5) value.  v2.1.2
+      #     still MISREPORTS our backends' "fault inside the recovery frame ->
+      #     xtc_exit_self(sig)" pattern as KIND_EXIT, which silently skipped our
+      #     genuine-crash fail-stop; this commit fixes that (reply
+      #     /tmp/libxtc-reply-pgreq-2026-11-12.md section 1).
+      #   - the xtc_orc per-child DOWN hook (xtc_sup_opts_t.on_child_down).
+      #   - the xtc_reg value API (xtc_reg_put / xtc_reg_visit).
+      # This is the 2.2 DEV line, not an LTS tag (no v2.2.x tag exists yet).
+      # Re-pin to the v2.2.x release tag once cut.  No PG runtime validation has
+      # been done against this pin yet (EC2 build pending this session).
+      url = "github:gburd/libxtc?rev=8a7e9c06bcda2ea9241dbc5cacee48fde7fb2620";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.flake-utils.follows = "flake-utils";
     };
