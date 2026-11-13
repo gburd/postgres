@@ -4168,7 +4168,7 @@ WalSndWait(uint32 socket_events, long timeout, uint32 wait_event)
 			else
 				flushPtr = GetFlushRecPtr(NULL);
 
-			if (flushPtr > sentPtr || becameHistoric)
+			if (flushPtr > MyWalSnd->sentPtr || becameHistoric)
 			{
 				ConditionVariableCancelSleep();
 				return;
