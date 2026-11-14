@@ -1,0 +1,92 @@
+Parsed test spec with 3 sessions
+
+starting permutation: r_begin r_alpha w_beta r_alpha r_beta r_commit
+step r_begin: BEGIN ISOLATION LEVEL REPEATABLE READ;
+step r_alpha: SELECT count(*) AS alpha FROM tdoc WHERE d @@@ 'alpha'::ftsquery;
+alpha
+-----
+  200
+(1 row)
+
+step w_beta: INSERT INTO tdoc SELECT g, to_ftsdoc('beta doc ' || g)
+                      FROM generate_series(1000, 1049) g;
+step r_alpha: SELECT count(*) AS alpha FROM tdoc WHERE d @@@ 'alpha'::ftsquery;
+alpha
+-----
+  200
+(1 row)
+
+step r_beta: SELECT count(*) AS beta  FROM tdoc WHERE d @@@ 'beta'::ftsquery;
+beta
+----
+   0
+(1 row)
+
+step r_commit: COMMIT;
+
+starting permutation: w_beta f_beta
+step w_beta: INSERT INTO tdoc SELECT g, to_ftsdoc('beta doc ' || g)
+                      FROM generate_series(1000, 1049) g;
+step f_beta: SELECT count(*) AS beta  FROM tdoc WHERE d @@@ 'beta'::ftsquery;
+beta
+----
+  50
+(1 row)
+
+
+starting permutation: r_begin r_alpha w_vacuum r_alpha r_commit
+step r_begin: BEGIN ISOLATION LEVEL REPEATABLE READ;
+step r_alpha: SELECT count(*) AS alpha FROM tdoc WHERE d @@@ 'alpha'::ftsquery;
+alpha
+-----
+  200
+(1 row)
+
+step w_vacuum: VACUUM tdoc;
+step r_alpha: SELECT count(*) AS alpha FROM tdoc WHERE d @@@ 'alpha'::ftsquery;
+alpha
+-----
+  200
+(1 row)
+
+step r_commit: COMMIT;
+
+starting permutation: r_begin r_alpha w_merge r_alpha r_commit
+step r_begin: BEGIN ISOLATION LEVEL REPEATABLE READ;
+step r_alpha: SELECT count(*) AS alpha FROM tdoc WHERE d @@@ 'alpha'::ftsquery;
+alpha
+-----
+  200
+(1 row)
+
+step w_merge: SELECT fts_merge('tdoc_bm25');
+fts_merge
+---------
+f        
+(1 row)
+
+step r_alpha: SELECT count(*) AS alpha FROM tdoc WHERE d @@@ 'alpha'::ftsquery;
+alpha
+-----
+  200
+(1 row)
+
+step r_commit: COMMIT;
+
+starting permutation: w_del w_vacuum w_reuse f_alpha f_gamma
+step w_del: DELETE FROM tdoc WHERE id <= 100;
+step w_vacuum: VACUUM tdoc;
+step w_reuse: INSERT INTO tdoc SELECT g, to_ftsdoc('gamma doc ' || g)
+                      FROM generate_series(1, 40) g;
+step f_alpha: SELECT count(*) AS alpha FROM tdoc WHERE d @@@ 'alpha'::ftsquery;
+alpha
+-----
+  100
+(1 row)
+
+step f_gamma: SELECT count(*) AS gamma FROM tdoc WHERE d @@@ 'gamma'::ftsquery;
+gamma
+-----
+   40
+(1 row)
+
