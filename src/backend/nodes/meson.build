@@ -2,6 +2,7 @@
 
 backend_sources += files(
   'bitmapset.c',
+  'bms_census.c',
   'extensible.c',
   'list.c',
   'makefuncs.c',

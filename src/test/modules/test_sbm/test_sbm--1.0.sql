@@ -270,3 +270,20 @@ CREATE FUNCTION test_sbm_internals() RETURNS boolean
 AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
 
 COMMENT ON EXTENSION test_sbm IS 'Test code for the sparse bitmap set (sbm) ADT';
+
+CREATE FUNCTION test_sbm_intset_bench(
+    nmembers bigint, nblocks bigint, pattern int, runlen bigint,
+    nprobes bigint, reps int,
+    OUT structure text, OUT members bigint, OUT add_ns double precision,
+    OUT iterate_ns double precision, OUT probe_ns double precision,
+    OUT bytes bigint, OUT used_bytes bigint)
+RETURNS SETOF record
+AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
+
+CREATE FUNCTION test_sbm_bms_shapes(
+    nparts bigint, iters int, reps int,
+    OUT shape text, OUT op text, OUT bms_ns double precision,
+    OUT sbm_ns double precision, OUT ratio double precision,
+    OUT bms_bytes bigint, OUT sbm_bytes bigint)
+RETURNS SETOF record
+AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
