@@ -1,0 +1,204 @@
+=== regress
+set-producing calls 7,664,534; bytes allocated: bms 73,656,584  off 122,604,120 (1.66x)  sbm 122,630,096 (1.66x)
+   bms alloc off/bms sbm/bms     calls avg memb  avg w  max w  fn  site
+   6,433,872    1.67    1.67   315,873      1.1    1.0      1  add_member  pull_varnos_walker src/backend/optimizer/util/var.c:171
+   4,080,624    1.67    1.67   220,762      1.3    1.0      1  add_member  ExecNestLoop src/backend/executor/nodeNestloop.c:135
+   3,942,816    1.67    1.67   165,422      1.0    1.0      1  intersect  UpdateChangedParamSet src/backend/executor/execUtils.c:943
+   3,254,712    1.67    1.67   135,613      1.0    1.0      1  make_singleton  examine_simple_variable src/backend/utils/adt/selfuncs.c:6090
+   2,988,096    1.67    1.67   169,506      1.4    1.0      1  add_members  add_vars_to_targetlist src/backend/optimizer/plan/initsplan.c:333
+   2,583,264    1.67    1.67   194,395      3.1    1.0      1  add_members  get_eclass_indexes_for_relids src/backend/optimizer/path/equivclass.c:3603
+   2,226,528    1.67    1.67   360,781      3.7    1.0      1  add_member  pull_varattnos_walker src/backend/optimizer/util/var.c:319
+   2,118,216    1.67    1.67   129,554      1.4    1.0      1  add_member  check_index_only src/backend/optimizer/path/indxpath.c:2285
+   2,041,696    1.59    1.61    81,324      1.0    1.1     17  make_singleton  build_simple_rel src/backend/optimizer/util/relnode.c:231
+   2,039,424    1.67    1.67    84,976      1.1    1.0      1  union  calc_nestloop_required_outer src/backend/optimizer/util/pathnode.c:2292
+   1,845,144    1.67    1.67    78,993      1.3    1.0      1  difference  make_plain_restrictinfo src/backend/optimizer/util/restrictinfo.c:198
+   1,762,896    1.67    1.67    73,454      1.0    1.0      1  union  markNullableIfNeeded src/backend/parser/parse_relation.c:1098
+   1,565,232    1.67    1.67    65,233      1.4    1.0      1  union  make_plain_restrictinfo src/backend/optimizer/util/restrictinfo.c:155
+   1,490,592    1.67    1.67    93,739      1.1    1.0      1  add_members  add_eq_member src/backend/optimizer/path/equivclass.c:639
+   1,360,944    1.67    1.67   103,817      0.6    0.5      1  difference  examine_variable src/backend/utils/adt/selfuncs.c:5706
+   1,197,240    1.67    1.67    49,885      1.0    1.0      1  make_singleton  deconstruct_recurse src/backend/optimizer/plan/initsplan.c:1521
+   1,109,160    1.67    1.67   812,582      0.1    0.1      1  copy  _copyVar include/nodes/copyfuncs.funcs.c:122
+     990,936    1.67    1.67    48,855      1.5    1.0      1  add_members  build_index_paths src/backend/optimizer/path/indxpath.c:888
+     954,576    1.67    1.67    49,885      1.3    1.0      1  add_member  deconstruct_recurse src/backend/optimizer/plan/initsplan.c:1518
+     953,952    1.67    1.67   157,111      3.6    1.0     18  add_member  markRTEForSelectPriv src/backend/parser/parse_relation.c:1122
+-- sites where sbm allocates <= half of off (0):
+-- read sites by words examined:
+      479,360    508,091    0.9  next_member  make_build_data src/backend/statistics/extended_stats.c:2597
+      339,602    169,801    2.0  is_subset  add_vars_to_targetlist src/backend/optimizer/plan/initsplan.c:315
+      289,956    144,978    2.0  is_subset  initial_cost_mergejoin src/backend/optimizer/path/costsize.c:3758
+      270,816    135,408    2.0  nonempty_difference  build_joinrel_tlist src/backend/optimizer/util/relnode.c:1380
+      245,702    122,851    2.0  overlap  select_outer_pathkeys_for_merge src/backend/optimizer/path/pathkeys.c:1718
+      243,872    121,936    2.0  nonempty_difference  ExecReScanMemoize src/backend/executor/nodeMemoize.c:1200
+      241,960    120,980    2.0  equal  generate_implied_equalities_for_column src/backend/optimizer/path/equivclass.c:3261
+      240,764    240,764    1.0  is_member  hashagg_spill_tuple src/backend/executor/nodeAgg.c:3047
+      227,366    113,683    2.0  equal  find_join_rel src/backend/optimizer/util/relnode.c:697
+      194,395    194,395    1.0  next_member  get_eclass_indexes_for_relids src/backend/optimizer/path/equivclass.c:3589
+      188,244    156,028    1.2  overlap  create_nestloop_path src/backend/optimizer/util/pathnode.c:2390
+      179,181     91,067    2.0  is_subset  check_index_only src/backend/optimizer/path/indxpath.c:2290
+
+=== partition
+set-producing calls 858,584; bytes allocated: bms 58,332,304  off 12,900,264 (0.22x)  sbm 12,527,472 (0.21x)
+   bms alloc off/bms sbm/bms     calls avg memb  avg w  max w  fn  site
+  16,704,816    0.06    0.11    27,020      1.0   61.5    157  make_singleton  build_simple_rel src/backend/optimizer/util/relnode.c:231
+   8,137,176    0.06    0.11    13,039      1.0   62.3    157  add_member  pull_varnos_walker src/backend/optimizer/util/var.c:171
+   8,136,768    0.06    0.11    13,020      1.0   62.3    157  difference  make_plain_restrictinfo src/backend/optimizer/util/restrictinfo.c:198
+   8,136,672    0.06    0.11    13,016      1.0   62.4    157  union  make_plain_restrictinfo src/backend/optimizer/util/restrictinfo.c:155
+   7,818,144    0.05    0.09    10,004      1.0   78.6    157  add_members  build_index_paths src/backend/optimizer/path/indxpath.c:888
+   2,956,224    0.83    0.24    16,000      1.8   16.2     32  add_member  adjust_child_relids src/backend/optimizer/util/appendinfo.c:646
+     962,480    0.25    0.43     6,000      1.0   13.6     32  add_members  add_child_rel_equivalences src/backend/optimizer/path/equivclass.c:2882
+     750,240    0.81    0.37     4,021      1.5   16.1     32  copy  fetch_upper_rel src/backend/optimizer/util/relnode.c:1692
+     672,672    1.67    1.67    28,028      1.0    1.0      1  make_singleton  examine_simple_variable src/backend/utils/adt/selfuncs.c:6090
+     672,312    1.67    1.67    28,013      1.0    1.0      1  add_member  all_rows_selectable src/backend/utils/adt/selfuncs.c:6519
+     538,240    0.98    0.27     2,000      2.0   24.0     32  union  create_hashjoin_plan src/backend/optimizer/plan/createplan.c:4901
+     538,240    0.98    0.27     2,000      2.0   24.0     32  union  try_partitionwise_join src/backend/optimizer/path/joinrels.c:1802
+     480,096    1.67    1.67    20,004      1.0    1.0      1  add_member  check_index_only src/backend/optimizer/path/indxpath.c:2285
+     264,448    0.05    0.01    27,006   3833.0   61.6    157  add_members  expand_partitioned_rtentry src/backend/optimizer/util/inherit.c:407
+     264,144    1.67    1.67    11,006      1.0    1.0      1  add_member  make_partition_pruneinfo src/backend/partitioning/partprune.c:283
+     240,096    1.67    1.67    30,013      1.7    1.0      1  add_member  pull_varattnos_walker src/backend/optimizer/util/var.c:319
+     240,000    1.67    1.67    10,000      1.6    1.0      1  copy  adjust_child_relids src/backend/optimizer/util/appendinfo.c:643
+     144,000    1.67    1.67     6,000      1.0    1.0      1  add_member  add_child_eq_member src/backend/optimizer/path/equivclass.c:698
+      96,000    1.67    1.67     4,000      1.0    1.0      1  add_member  find_childrel_parents src/backend/optimizer/util/relnode.c:1732
+      48,000    1.67    1.67     2,000      1.0    1.0      1  add_members  ExecInitAgg src/backend/executor/nodeAgg.c:3549
+-- sites where sbm allocates <= half of off (14):
+   2,956,224    0.83    0.24    16,000      1.8   16.2     32  add_member  adjust_child_relids src/backend/optimizer/util/appendinfo.c:646
+     750,240    0.81    0.37     4,021      1.5   16.1     32  copy  fetch_upper_rel src/backend/optimizer/util/relnode.c:1692
+     538,240    0.98    0.27     2,000      2.0   24.0     32  union  create_hashjoin_plan src/backend/optimizer/plan/createplan.c:4901
+     538,240    0.98    0.27     2,000      2.0   24.0     32  union  try_partitionwise_join src/backend/optimizer/path/joinrels.c:1802
+     264,448    0.05    0.01    27,006   3833.0   61.6    157  add_members  expand_partitioned_rtentry src/backend/optimizer/util/inherit.c:407
+      16,856    0.71    0.10    27,019   3906.3   61.5    157  add_member  add_rte_to_flat_rtable src/backend/optimizer/plan/setrefs.c:605
+      13,128    1.00    0.03         9   7000.0  110.0    157  copy  CreatePartitionPruneState src/backend/executor/execPartition.c:2280
+      11,360    0.47    0.05    13,003   4039.2   64.8    157  add_member  ExplainPreScanNode src/backend/commands/explain.c:1210
+      10,056    0.36    0.09        15      1.2   57.3    157  add_member  get_matching_partitions src/backend/partitioning/partprune.c:930
+       9,488    0.17    0.02     2,000   1001.0   24.0     32  add_members  try_partitionwise_join src/backend/optimizer/path/joinrels.c:1824
+       6,576    1.00    0.07         9      2.0   55.4    157  add_members  ExecDoInitialPruning src/backend/executor/execPartition.c:1961
+       4,712    0.98    0.13    11,000   4591.4   72.3    157  add_member  register_partpruneinfo src/backend/optimizer/plan/setrefs.c:1838
+       4,472    0.86    0.13        12   1334.9   21.6    157  difference  standard_planner src/backend/optimizer/plan/planner.c:679
+       4,392    1.36    0.13         9   3000.0   47.3    157  add_range  prune_append_rel_partitions src/backend/partitioning/partprune.c:813
+-- read sites by words examined:
+   64,730,000  2,002,024   32.3  equal  fetch_upper_rel src/backend/optimizer/util/relnode.c:1686
+    8,249,170     98,013   84.2  compare  append_startup_cost_compare src/backend/optimizer/util/pathnode.c:1516
+    3,573,144     63,012   56.7  next_member  find_appinfos_by_relids src/backend/optimizer/util/appendinfo.c:818
+    3,253,302     27,019  120.4  next_member  expand_partitioned_rtentry src/backend/optimizer/util/inherit.c:371
+    3,221,270     25,017  128.8  next_member  apply_scanjoin_target_to_paths src/backend/optimizer/plan/planner.c:8338
+    3,146,286     40,014   78.6  is_member  clause_selectivity_ext src/backend/optimizer/path/clausesel.c:730
+    1,730,514     16,024  108.0  is_member  ExecGetRangeTableRelation src/backend/executor/execUtils.c:856
+    1,726,572     29,006   59.5  num_members  find_appinfos_by_relids src/backend/optimizer/util/appendinfo.c:815
+    1,650,273     13,009  126.9  is_member  set_rtable_names src/backend/utils/adt/ruleutils.c:3947
+    1,635,223     14,027  116.6  next_member  ExecInitAppend src/backend/executor/nodeAppend.c:198
+    1,586,173     11,002  144.2  next_member  make_partitionedrel_pruneinfo src/backend/partitioning/partprune.c:666
+      811,698     13,020   62.3  num_members  make_plain_restrictinfo src/backend/optimizer/util/restrictinfo.c:200
+
+=== join
+set-producing calls 327,396; bytes allocated: bms 1,421,016  off 2,368,360 (1.67x)  sbm 2,368,360 (1.67x)
+   bms alloc off/bms sbm/bms     calls avg memb  avg w  max w  fn  site
+     903,864    1.67    1.67   121,344      1.2    1.0      1  add_members  get_eclass_indexes_for_relids src/backend/optimizer/path/equivclass.c:3603
+     230,784    1.67    1.67     9,616      6.1    1.0      1  union  make_join_rel src/backend/optimizer/path/joinrels.c:739
+     230,784    1.67    1.67     9,616      6.1    1.0      1  union  build_joinrel_restrictlist src/backend/optimizer/util/relnode.c:1502
+      13,632    1.67    1.67       568      4.7    1.0      1  copy  build_join_rel src/backend/optimizer/util/relnode.c:862
+      10,728    1.67    1.67       447      1.0    1.0      1  make_singleton  examine_simple_variable src/backend/utils/adt/selfuncs.c:6090
+       8,928    1.67    1.67       372      1.1    1.0      1  union  calc_nestloop_required_outer src/backend/optimizer/util/pathnode.c:2292
+       4,152    1.67    1.67       192      1.1    1.0      1  add_member  pull_varnos_walker src/backend/optimizer/util/var.c:171
+       2,640    1.67    1.67    69,752      0.0    0.0      1  union  calc_non_nestloop_required_outer src/backend/optimizer/util/pathnode.c:2335
+       2,640    1.67    1.67    72,316      0.0    0.0      1  copy  calc_nestloop_required_outer src/backend/optimizer/util/pathnode.c:2290
+       1,584    1.67    1.67        66      2.0    1.0      1  difference  make_plain_restrictinfo src/backend/optimizer/util/restrictinfo.c:198
+       1,584    1.67    1.67        66      2.0    1.0      1  union  make_plain_restrictinfo src/backend/optimizer/util/restrictinfo.c:155
+       1,512    1.67    1.67       132      2.7    1.0      1  add_members  add_vars_to_targetlist src/backend/optimizer/plan/initsplan.c:333
+       1,128    1.67    1.67        47      2.0    1.0      1  union  create_join_clause src/backend/optimizer/path/equivclass.c:2020
+         768    1.67    1.67        96      2.0    1.0      1  add_member  pull_varattnos_walker src/backend/optimizer/util/var.c:319
+         768    1.67    1.67        32      1.0    1.0      1  add_member  check_index_only src/backend/optimizer/path/indxpath.c:2285
+         528    1.67    1.67        22      1.0    1.0      1  difference  examine_variable src/backend/utils/adt/selfuncs.c:5706
+         504    1.67    1.67        21      1.0    1.0      1  make_singleton  deconstruct_recurse src/backend/optimizer/plan/initsplan.c:1521
+         504    1.67    1.67        21      1.0    1.0      1  add_member  get_relation_notnullatts src/backend/optimizer/util/plancat.c:741
+         504    1.67    1.67        31      1.3    1.0      1  add_member  generate_base_implied_equalities src/backend/optimizer/path/equivclass.c:1257
+         504    1.67    1.67        21      1.0    1.0      1  make_singleton  build_simple_rel src/backend/optimizer/util/relnode.c:231
+-- sites where sbm allocates <= half of off (0):
+-- read sites by words examined:
+      338,168    169,084    2.0  overlap  select_outer_pathkeys_for_merge src/backend/optimizer/path/pathkeys.c:1718
+      194,094     97,047    2.0  overlap  eclass_useful_for_merging src/backend/optimizer/path/equivclass.c:3503
+      169,128     84,564    2.0  is_subset  generate_join_implied_equalities_normal src/backend/optimizer/path/equivclass.c:1749
+      147,984     73,992    2.0  overlap  join_search_one_level src/backend/optimizer/path/joinrels.c:188
+      121,344    121,344    1.0  next_member  get_eclass_indexes_for_relids src/backend/optimizer/path/equivclass.c:3589
+      114,678     57,339    2.0  is_subset  generate_join_implied_equalities_normal src/backend/optimizer/path/equivclass.c:1752
+      100,050     50,025    2.0  is_subset  initial_cost_mergejoin src/backend/optimizer/path/costsize.c:3758
+       70,272     35,136    2.0  is_subset  eclass_useful_for_merging src/backend/optimizer/path/equivclass.c:3490
+       60,300     30,150    2.0  is_subset  generate_join_implied_equalities_normal src/backend/optimizer/path/equivclass.c:1754
+       38,464     19,232    2.0  is_subset  clause_sides_match_join src/include/optimizer/restrictinfo.h:76
+       38,464     19,232    2.0  is_subset  clause_sides_match_join src/include/optimizer/restrictinfo.h:76
+       38,464     19,232    2.0  is_subset  final_cost_hashjoin src/backend/optimizer/path/costsize.c:4544
+
+=== pgbench
+set-producing calls 1,399,453; bytes allocated: bms 19,281,552  off 32,135,920 (1.67x)  sbm 32,135,920 (1.67x)
+   bms alloc off/bms sbm/bms     calls avg memb  avg w  max w  fn  site
+   1,153,968    1.67    1.67    48,096      1.0    1.0      1  add_member  pull_varnos_walker src/backend/optimizer/util/var.c:171
+     864,408    1.67    1.67    36,025      1.0    1.0      1  add_members  add_vars_to_targetlist src/backend/optimizer/plan/initsplan.c:333
+     672,384    1.67    1.67    28,016      1.0    1.0      1  make_singleton  build_simple_rel src/backend/optimizer/util/relnode.c:231
+     672,168    1.67    1.67    28,013      1.0    1.0      1  add_member  add_rte_to_flat_rtable src/backend/optimizer/plan/setrefs.c:605
+     672,168    1.67    1.67    28,007      1.0    1.0      1  difference  standard_planner src/backend/optimizer/plan/planner.c:679
+     672,168    1.67    1.67    28,007      1.0    1.0      1  copy  InitPlan src/backend/executor/execMain.c:867
+     577,704    1.67    1.67    24,071      1.0    1.0      1  make_singleton  examine_simple_variable src/backend/utils/adt/selfuncs.c:6090
+     576,840    1.67    1.67    24,049      1.0    1.0      1  add_member  check_index_only src/backend/optimizer/path/indxpath.c:2285
+     576,792    1.67    1.67    60,074      1.8    1.0      1  add_member  pull_varattnos_walker src/backend/optimizer/util/var.c:319
+     576,408    1.67    1.67    48,024      1.0    1.0      1  add_members  add_eq_member src/backend/optimizer/path/equivclass.c:639
+     576,360    1.67    1.67    24,015      1.0    1.0      1  difference  make_plain_restrictinfo src/backend/optimizer/util/restrictinfo.c:198
+     576,312    1.67    1.67    24,015      1.0    1.0      1  add_members  build_index_paths src/backend/optimizer/path/indxpath.c:888
+     576,312    1.67    1.67    24,013      1.0    1.0      1  make_singleton  deconstruct_recurse src/backend/optimizer/plan/initsplan.c:1521
+     576,312    1.67    1.67    24,185      1.1    1.0      1  add_member  get_relation_notnullatts src/backend/optimizer/util/plancat.c:741
+     576,312    1.67    1.67    24,013      1.0    1.0      1  union  make_plain_restrictinfo src/backend/optimizer/util/restrictinfo.c:155
+     576,264    1.67    1.67    24,013      1.0    1.0      1  add_member  deconstruct_recurse src/backend/optimizer/plan/initsplan.c:1518
+     576,264    1.67    1.67    24,015      1.0    1.0      1  add_member  generate_base_implied_equalities src/backend/optimizer/path/equivclass.c:1257
+     576,264    1.67    1.67    48,026      1.5    1.0      1  add_member  markRTEForSelectPriv src/backend/parser/parse_relation.c:1122
+     576,168    1.67    1.67    24,013      1.0    1.0      1  add_member  deconstruct_recurse src/backend/optimizer/plan/initsplan.c:1515
+     576,168    1.67    1.67    24,007      1.0    1.0      1  union  deconstruct_jointree src/backend/optimizer/plan/initsplan.c:1445
+-- sites where sbm allocates <= half of off (0):
+-- read sites by words examined:
+       72,050     36,025    2.0  is_subset  add_vars_to_targetlist src/backend/optimizer/plan/initsplan.c:315
+       48,068     24,035    2.0  is_subset  check_index_only src/backend/optimizer/path/indxpath.c:2290
+       48,034     24,017    2.0  is_subset  distribute_qual_to_rels src/backend/optimizer/plan/initsplan.c:2916
+       48,028     48,028    1.0  next_member  generate_base_implied_equalities src/backend/optimizer/path/equivclass.c:1241
+       48,026     24,013    2.0  equal  set_rel_pathlist src/backend/optimizer/path/allpaths.c:607
+       44,000     44,000    1.0  is_member  ExecBuildUpdateProjection src/backend/executor/execExpr.c:735
+       36,016     36,016    1.0  is_member  clause_selectivity_ext src/backend/optimizer/path/clausesel.c:730
+       28,004     16,020    1.7  is_subset  finalize_plan src/backend/optimizer/plan/subselect.c:3166
+       25,210     25,210    1.0  next_member  HeapDetermineColumnsInfo src/backend/access/heap/heapam.c:4566
+       24,606     24,606    1.0  is_member  ExecGetRangeTableRelation src/backend/executor/execUtils.c:856
+       24,025     24,017    1.0  overlap  distribute_qual_to_rels src/backend/optimizer/plan/initsplan.c:3035
+       24,015     24,015    1.0  num_members  make_plain_restrictinfo src/backend/optimizer/util/restrictinfo.c:200
+
+=== wide
+set-producing calls 530; bytes allocated: bms 4,144  off 4,416 (1.07x)  sbm 3,496 (0.84x)
+   bms alloc off/bms sbm/bms     calls avg memb  avg w  max w  fn  site
+         848    0.77    0.35         7      1.9   14.0     24  add_member  markRTEForSelectPriv src/backend/parser/parse_relation.c:1122
+         400    0.44    0.18         2      1.5   18.0     24  add_member  ExecBuildUpdateProjection src/backend/executor/execExpr.c:613
+         400    0.44    0.18         2      1.5   18.0     24  add_member  transformUpdateTargetList src/backend/parser/analyze.c:2662
+         312    0.38    0.49         3      1.0    8.7     24  make_singleton  examine_simple_variable src/backend/utils/adt/selfuncs.c:6090
+         288    1.06    0.39         2      1.5   12.5     24  add_member  checkInsertTargets src/backend/parser/parse_target.c:1090
+         288    1.06    0.39         2      1.5   12.5     24  add_member  transformInsertStmt src/backend/parser/analyze.c:1030
+         144    1.67    1.67         6      1.0    1.0      1  add_member  pull_varnos_walker src/backend/optimizer/util/var.c:171
+         120    1.67    1.67         5      1.0    1.0      1  add_members  add_vars_to_targetlist src/backend/optimizer/plan/initsplan.c:333
+          96    1.67    1.67         4      1.0    1.0      1  add_member  add_rte_to_flat_rtable src/backend/optimizer/plan/setrefs.c:605
+          96    1.67    1.67         4      1.0    1.0      1  make_singleton  build_simple_rel src/backend/optimizer/util/relnode.c:231
+          96    1.67    1.67         4      1.0    1.0      1  difference  standard_planner src/backend/optimizer/plan/planner.c:679
+          96    1.67    1.67         4      1.0    1.0      1  copy  InitPlan src/backend/executor/execMain.c:867
+          72    1.67    1.67         3      1.0    1.0      1  make_singleton  deconstruct_recurse src/backend/optimizer/plan/initsplan.c:1521
+          72    1.67    1.67         3      1.0    1.0      1  add_member  deconstruct_recurse src/backend/optimizer/plan/initsplan.c:1515
+          72    1.67    1.67         3      1.0    1.0      1  union  deconstruct_jointree src/backend/optimizer/plan/initsplan.c:1445
+          72    1.67    1.67         3      1.0    1.0      1  difference  make_plain_restrictinfo src/backend/optimizer/util/restrictinfo.c:198
+          72    1.67    1.67         3      1.0    1.0      1  add_member  deconstruct_recurse src/backend/optimizer/plan/initsplan.c:1518
+          72    1.67    1.67         3      1.0    1.0      1  add_members  deconstruct_recurse src/backend/optimizer/plan/initsplan.c:1557
+          72    1.67    1.67         3      1.0    1.0      1  union  make_plain_restrictinfo src/backend/optimizer/util/restrictinfo.c:155
+          48    1.67    1.67         2      1.0    1.0      1  add_member  finalize_plan src/backend/optimizer/plan/subselect.c:2899
+-- sites where sbm allocates <= half of off (0):
+-- read sites by words examined:
+       36,000      1,500   24.0  is_member  ExecBuildUpdateProjection src/backend/executor/execExpr.c:735
+           24          1   24.0  is_member  ExecBuildUpdateProjection src/backend/executor/execExpr.c:627
+           10          5    2.0  is_subset  add_vars_to_targetlist src/backend/optimizer/plan/initsplan.c:315
+            6          3    2.0  equal  set_rel_pathlist src/backend/optimizer/path/allpaths.c:607
+            6          3    2.0  is_subset  distribute_qual_to_rels src/backend/optimizer/plan/initsplan.c:2916
+            3          3    1.0  overlap  distribute_qual_to_rels src/backend/optimizer/plan/initsplan.c:3035
+            3          3    1.0  get_singleton_member  distribute_restrictinfo_to_rels src/backend/optimizer/plan/initsplan.c:3475
+            3          3    1.0  is_member  ExecGetRangeTableRelation src/backend/executor/execUtils.c:856
+            3          3    1.0  membership  distribute_qual_to_rels src/backend/optimizer/plan/initsplan.c:3122
+            3          2    1.5  is_subset  finalize_plan src/backend/optimizer/plan/subselect.c:3166
+            3          3    1.0  num_members  make_plain_restrictinfo src/backend/optimizer/util/restrictinfo.c:200
+            2          2    1.0  next_member  generate_base_implied_equalities src/backend/optimizer/path/equivclass.c:1241
+
