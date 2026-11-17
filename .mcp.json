@@ -1,0 +1,29 @@
+{
+  "mcpServers": {
+    "postgresq": {
+      "type": "http",
+      "url": "https://pg.ddx.io/mcp/"
+    },
+    "postgres-mcp": {
+      "args": [],
+      "command": "/nix/store/j9ln9cay5m6bn2v1r672i0g7qykiyqx6-postgres-mcp"
+    },
+    "zvec-grep": {
+      "args": [
+        "-y",
+        "--prefer-offline",
+        "@zvec/zvec-grep@0.3.0",
+        "--server",
+        "--stdio",
+        "--mcp-toolset",
+        "agent"
+      ],
+      "command": "npx",
+      "env": {
+        "ZVEC_GREP_DEVICE": "auto",
+        "ZVEC_GREP_EMBEDDING": "local/potion-code-16m-v2",
+        "ZVEC_GREP_MODEL_CACHE": "/home/gburd/.cache/zvec-grep/models"
+      }
+    }
+  }
+}
