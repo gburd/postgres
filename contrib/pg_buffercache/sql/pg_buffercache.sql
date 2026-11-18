@@ -93,3 +93,8 @@ SELECT pg_buffercache_mark_dirty(1) IS NOT NULL;
 SELECT pg_buffercache_mark_dirty_all() IS NOT NULL;
 
 DROP ROLE regress_buffercache_normal;
+
+-- The partitions cover every buffer exactly once
+SELECT count(*) > 0 AS has_partitions,
+       sum(num_buffers) = (SELECT count(*) FROM pg_buffercache) AS covers_pool
+FROM pg_buffercache_partitions;

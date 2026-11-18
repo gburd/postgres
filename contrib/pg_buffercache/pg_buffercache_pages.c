@@ -989,6 +989,7 @@ pg_buffercache_partitions(PG_FUNCTION_ARGS)
 						   INT8OID, -1, 0);
 		TupleDescInitEntry(tupledesc, (AttrNumber) 12, "weigths",
 						   typentry->typarray, -1, 0);
+		TupleDescFinalize(tupledesc);
 
 		funcctx->user_fctx = BlessTupleDesc(tupledesc);
 
