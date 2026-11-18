@@ -351,12 +351,29 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem,
 
 	Assert(!GISTSearchItemIsHeap(*pageItem));
 
-	buffer = ReadBuffer(scan->indexRelation, pageItem->blkno);
+	/*
+	 * Every scan of this index starts at the root, so if we hold a base pin
+	 * on it from earlier in this transaction, pin it again from backend-local
+	 * state.  See PinBlockForXact().
+	 */
+	buffer = InvalidBuffer;
+	if (pageItem->blkno == GIST_ROOT_BLKNO)
+		buffer = GetXactPinnedBlock(r, MAIN_FORKNUM, GIST_ROOT_BLKNO);
+	if (!BufferIsValid(buffer))
+		buffer = ReadBuffer(scan->indexRelation, pageItem->blkno);
 	LockBuffer(buffer, GIST_SHARE);
 	PredicateLockPage(r, BufferGetBlockNumber(buffer), scan->xs_snapshot);
 	gistcheckpage(scan->indexRelation, buffer);
 	page = BufferGetPage(buffer);
 	opaque = GistPageGetOpaque(page);
+
+	/*
+	 * Nothing in GiST takes a cleanup lock, so a base pin on the root cannot
+	 * block VACUUM.  A leaf root means a one-page index, which has no root
+	 * contention to relieve.
+	 */
+	if (pageItem->blkno == GIST_ROOT_BLKNO && !GistPageIsLeaf(page))
+		PinBlockForXact(r, MAIN_FORKNUM, GIST_ROOT_BLKNO, buffer);
 
 	/*
 	 * Check if we need to follow the rightlink. We need to follow it if the

@@ -684,7 +684,15 @@ gistdoinsert(Relation r, IndexTuple itup, Size freespace,
 		}
 
 		if (!XLogRecPtrIsValid(stack->lsn))
-			stack->buffer = ReadBuffer(state.r, stack->blkno);
+		{
+			/* Try the root's base pin first; see gistScanPage(). */
+			stack->buffer = InvalidBuffer;
+			if (stack->blkno == GIST_ROOT_BLKNO)
+				stack->buffer = GetXactPinnedBlock(state.r, MAIN_FORKNUM,
+												   GIST_ROOT_BLKNO);
+			if (!BufferIsValid(stack->buffer))
+				stack->buffer = ReadBuffer(state.r, stack->blkno);
+		}
 
 		/*
 		 * Be optimistic and grab shared lock first. Swap it for an exclusive
@@ -751,6 +759,10 @@ gistdoinsert(Relation r, IndexTuple itup, Size freespace,
 			IndexTuple	newtup;
 			GISTInsertStack *item;
 			OffsetNumber downlinkoffnum;
+
+			if (stack->blkno == GIST_ROOT_BLKNO)
+				PinBlockForXact(state.r, MAIN_FORKNUM, GIST_ROOT_BLKNO,
+								stack->buffer);
 
 			downlinkoffnum = gistchoose(state.r, stack->page, itup, giststate);
 			iid = PageGetItemId(stack->page, downlinkoffnum);
