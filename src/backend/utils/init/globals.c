@@ -83,7 +83,7 @@ PG_GLOBAL_RUNTIME bool multithreaded = false;
 PG_GLOBAL_RUNTIME bool xtc_force_process_fallback = false;
 /*
  * Fusion F0a: when true (and multithreaded=on), route libxtc's internal
- * diagnostics (the host-tuning advisor via xtc_tuning_check -- CPU governor,
+ * diagnostics (the host-tuning advisor via xtc_runtime_tuning_check -- CPU governor,
  * intel_pstate, THP, swappiness, io_uring probes) into the server log instead
  * of libxtc's default stderr.  Developer knob; default off.  Read once at
  * carrier bringup; a plain postmaster-wide global.

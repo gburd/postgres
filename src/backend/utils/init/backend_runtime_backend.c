@@ -477,12 +477,12 @@ PgBackendUnregisterThreadedBackend(PgBackend *backend)
 	 * before any bucket reset, and it runs inside the fiber's proc_exit
 	 * (ipc.c shmem_exit) -- strictly before backend_thread_start_release()
 	 * free()s the BackendThreadStart that embeds this PgBackend.  Missing-name
-	 * (xtc_reg_unregister returns XTC_E_INVAL) is fine: a backend that never
+	 * (xtc_reg_del returns XTC_E_NOTFOUND) is fine: a backend that never
 	 * registered (not thread-backed, or a double teardown) is a no-op
 	 * unregister.
 	 */
 	ThreadedBackendRegistryName(name, sizeof(name), backend->id);
-	(void) xtc_reg_unregister(ThreadedBackendRegistry(), name);
+	(void) xtc_reg_del(ThreadedBackendRegistry(), name, XTC_PID_NONE);
 #elif !defined(WIN32)
 	Assert(backend != NULL);
 

@@ -6,8 +6,8 @@
  *
  *	WHAT THIS IS.  libxtc's xtc_xproc extends the Erlang-style process
  *	relations (spawn / send / link / monitor) across a fork() boundary:
- *	a parent xtc_xspawn()s a child that runs its own xtc runtime, then
- *	xtc_xmonitor()s it so the child's CRASH or EXIT surfaces as a normal
+ *	a parent xtc_xproc_spawn()s a child that runs its own xtc runtime, then
+ *	xtc_xproc_monitor()s it so the child's CRASH or EXIT surfaces as a normal
  *	xtc DOWN -- with the signal / exit code decoded from the child's
  *	waitpid status, or XTC_DOWN_KIND_NOCONNECTION if the control channel
  *	dies first.  This file demonstrates, end to end, how an in-tree
@@ -28,16 +28,16 @@
  *	xtc_pg_carrier_start() (pg_xtc_carrier.c), right after the per-loop
  *	supervisors are spawned, iff the GUC is on.  It spawns a single demo
  *	fiber on carrier loop 0 via xtc_proc_spawn (exactly as the supervisors
- *	are spawned) -- xtc_xspawn must be called from a fiber on the loop, so
+ *	are spawned) -- xtc_xproc_spawn must be called from a fiber on the loop, so
  *	the demo cannot run on the bare scheduler thread.  The demo fiber owns
  *	the whole dance and then exits; it never respawns the PG backend and
  *	never touches a PMChild slot.
  *
  *	PLATFORM.  xtc_xproc is POSIX-only (fork + socketpair + waitpid); on
- *	Windows / where the facility declines, xtc_xspawn returns XTC_E_NOSYS
+ *	Windows / where the facility declines, xtc_xproc_spawn returns XTC_E_NOSYS
  *	and the demo logs "not supported here" and exits cleanly.  The demo
- *	uses xtc_xspawn (a raw function pointer across fork), NOT the
- *	re-exec'd xtc_xspawn_entry path, so it does NOT need the
+ *	uses xtc_xproc_spawn (a raw function pointer across fork), NOT the
+ *	re-exec'd xtc_xproc_spawn_entry path, so it does NOT need the
  *	xtc_xproc_win_child_maybe main()-hook: that hook only matters for the
  *	re-exec entry path, which this POSIX-only demo deliberately does not
  *	exercise.
@@ -60,7 +60,7 @@
 #include "xtc.h"
 #include "xtc_loop.h"
 #include "xtc_proc.h"			/* xtc_proc_spawn, xtc_recv, xtc_proc_sleep, DOWN decode */
-#include "xtc_xproc.h"			/* xtc_xspawn / xtc_xmonitor / xtc_xproc_* (POSIX-only) */
+#include "xtc_xproc.h"			/* xtc_xproc_spawn / xtc_xproc_monitor / xtc_xproc_* (POSIX-only) */
 
 /*
  * Bounded restart intensity for the watchdog DEMO: at most this many child
@@ -107,12 +107,12 @@ xtc_xproc_demo_write(const char *buf, int n)
 /*
  * Child body (POSIX: this runs in the fork'd child, which inherited the
  * parent's address space so this raw function pointer is meaningful -- the
- * xtc_xspawn contract).  It is a trivial OTP "worker": sleep briefly, then
+ * xtc_xproc_spawn contract).  It is a trivial OTP "worker": sleep briefly, then
  * exit abnormally with a distinctive code so the parent watchdog observes an
  * XTC_DOWN_KIND_EXIT and demonstrates the restart path.  xtc_proc_sleep parks
  * the fiber (keeps the child loop live); xtc_exit_self delivers the DOWN.
  *
- * Note: xtc_xspawn arranges the child side (xtc_xproc_child_main) internally;
+ * Note: xtc_xproc_spawn arranges the child side (xtc_xproc_child_main) internally;
  * this function is the root_fn that child_main runs as the child's root proc.
  */
 static void
@@ -146,9 +146,9 @@ xtc_xproc_demo_spawn_one(xtc_loop_t *loop, xtc_xproc_t **out_p, uint64_t *out_re
 	*out_p = NULL;
 	*out_ref = 0;
 
-	/* 1) xtc_xspawn: fork a child that runs xtc_xproc_demo_child_root under
+	/* 1) xtc_xproc_spawn: fork a child that runs xtc_xproc_demo_child_root under
 	 * its own xtc runtime.  POSIX-only; XTC_E_NOSYS where unsupported. */
-	rc = xtc_xspawn(loop, "pg-xtc-xproc-demo-child",
+	rc = xtc_xproc_spawn(loop, "pg-xtc-xproc-demo-child",
 					xtc_xproc_demo_child_root, NULL, 0, &child);
 	if (rc != XTC_OK)
 		return rc;
@@ -157,11 +157,11 @@ xtc_xproc_demo_spawn_one(xtc_loop_t *loop, xtc_xproc_t **out_p, uint64_t *out_re
 	XTC_XPROC_DEMO_LOG("xtc_xproc demo: spawned child os_pid=%ld\n",
 					   xtc_xproc_os_pid(child));
 
-	/* 3) xtc_xmonitor: a one-way DOWN when the child exits/crashes or its
-	 * control channel dies.  (xtc_xmonitor, not xtc_xlink: a monitor does NOT
+	/* 3) xtc_xproc_monitor: a one-way DOWN when the child exits/crashes or its
+	 * control channel dies.  (xtc_xproc_monitor, not xtc_xproc_link: a monitor does NOT
 	 * bind the watchdog's own fate to the child, which is what a supervisor
 	 * wants.)  Must be called from a fiber -- we are one. */
-	rc = xtc_xmonitor(child, &ref);
+	rc = xtc_xproc_monitor(child, &ref);
 	if (rc != XTC_OK)
 	{
 		xtc_xproc_destroy(child);	/* 5) tear the child down on failure */
@@ -207,13 +207,13 @@ xtc_xproc_demo_proc(void *arg)
 	if (rc == XTC_E_NOSYS)
 	{
 		/* POSIX-only facility: Windows / unsupported build.  Log and exit. */
-		XTC_XPROC_DEMO_LOG("xtc_xproc demo: xtc_xspawn not supported here "
+		XTC_XPROC_DEMO_LOG("xtc_xproc demo: xtc_xproc_spawn not supported here "
 						   "(XTC_E_NOSYS); demo is POSIX-only, exiting.\n");
 		return;
 	}
 	if (rc != XTC_OK)
 	{
-		XTC_XPROC_DEMO_LOG("xtc_xproc demo: initial xtc_xspawn/monitor failed "
+		XTC_XPROC_DEMO_LOG("xtc_xproc demo: initial xtc_xproc_spawn/monitor failed "
 						   "rc=%d; exiting.\n", rc);
 		return;
 	}
@@ -303,7 +303,7 @@ xtc_xproc_demo_proc(void *arg)
 		rc = xtc_xproc_demo_spawn_one(loop, &child, &mon_ref);
 		if (rc != XTC_OK)
 		{
-			XTC_XPROC_DEMO_LOG("xtc_xproc demo: restart xtc_xspawn/monitor "
+			XTC_XPROC_DEMO_LOG("xtc_xproc demo: restart xtc_xproc_spawn/monitor "
 							   "failed rc=%d; exiting.\n", rc);
 			break;
 		}
@@ -320,7 +320,7 @@ xtc_xproc_demo_proc(void *arg)
  * Kick the demo once, from the carrier scheduler thread at carrier start.
  * No-op unless the GUC is on.  Spawns the demo fiber on loop 0 with
  * xtc_proc_spawn -- the same bare-fiber spawn the supervisors use -- because
- * xtc_xspawn must be called from a fiber on the loop.  Best-effort: if the
+ * xtc_xproc_spawn must be called from a fiber on the loop.  Best-effort: if the
  * spawn fails the demo simply does not run.
  */
 void

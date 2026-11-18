@@ -154,7 +154,7 @@ fiber_identity_thread(void *arg)
 	FiberIdentityTest *test = arg;
 
 	FIBER_IDENTITY_CHECK(test, !xtc_pg_in_backend_fiber());
-	if (xtc_loop_init(&test->loop) != XTC_OK)
+	if (xtc_loop_create(&test->loop) != XTC_OK)
 	{
 		test->failures++;
 		return;
@@ -165,7 +165,7 @@ fiber_identity_thread(void *arg)
 		test->failures++;
 	FIBER_IDENTITY_CHECK(test, !xtc_pg_in_backend_fiber());
 	FIBER_IDENTITY_CHECK(test, test->completed == 1 && test->exited == 2);
-	FIBER_IDENTITY_CHECK(test, xtc_loop_fini(test->loop) == XTC_OK);
+	xtc_loop_destroy(test->loop);
 }
 #endif
 

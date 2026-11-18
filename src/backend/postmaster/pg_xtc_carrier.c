@@ -52,12 +52,18 @@
 #include "xtc_loop.h"		/* xtc_loop_wake (v1.39: lost-wake-free cross-thread loop nudge) */
 #include "xtc_proc.h"
 #include "xtc_orc.h"		/* xtc_sup_* (F4: optional per-loop OTP supervisor) */
-/* Installed libxtc headers do not export configured version macros. */
-#ifndef XTC_PROC_OPTS_INIT
-#error "PostgreSQL requires libxtc 2.0 or later (sized public structs)"
+#include "xtc_version.h"		/* XTC_VERSION_* (installed from libxtc 2.2) */
+/*
+ * This file uses 2.2 API: xtc_sup_opts_t.on_child_down, XTC_DOWN_KIND_KILLED,
+ * xtc_reg_put / xtc_reg_visit (backend_runtime_backend.c), and the 2.2 names
+ * for the API 2.2 renamed.  Meson also requires xtc >= 2.2.0.
+ */
+#if !defined(XTC_VERSION_MAJOR) || \
+	(XTC_VERSION_MAJOR == 2 && XTC_VERSION_MINOR < 2) || XTC_VERSION_MAJOR < 2
+#error "PostgreSQL requires libxtc 2.2 or later"
 #endif
-#include "xtc_async.h"		/* xtc_set_stack_size */
-#include "xtc_stats.h"		/* xtc_counter_* (fusion F1 runtime counters); xtc_tuning_check (F0a) */
+#include "xtc_runtime.h"		/* xtc_runtime_set_stack_size */
+#include "xtc_stats.h"		/* xtc_counter_* (fusion F1 runtime counters); xtc_runtime_tuning_check (F0a) */
 #include "xtc_sync.h"		/* xtc_amutex_*, xtc_notify_* (fusion F2 pooled-queue lock) */
 #include "xtc_log.h"		/* xtc_log_set_default (fusion F0a: libxtc diagnostics -> server log) */
 #include "xtc_dump.h"		/* xtc_dump (fusion F0d: full runtime dump on threaded crash) */
@@ -83,7 +89,7 @@ xtc_diag_write(int fd, const void *buf, size_t n)
  * When xtc_log_to_server is on, we install this as libxtc's default log sink
  * (xtc_log_set_default) at carrier bringup, so libxtc's internal diagnostics
  * reach the PG log instead of libxtc's own stderr fd.  In v1.32.0 the reachable
- * producer is the host-tuning advisor (xtc_tuning_check, which xtc_app_start
+ * producer is the host-tuning advisor (xtc_runtime_tuning_check, which xtc_app_start
  * also runs): CPU-governor / intel_pstate / THP / swappiness / io_uring probes
  * -- exactly the host mis-tuning signal that shows up as the CFS-load-balancer
  * tax in our benchmarks.  libxtc streams no other internal log today; the sink
@@ -984,7 +990,7 @@ xtc_carrier_start_orc_supervisors(void)
 	{
 		xtc_loop_t *loop = (g_xtc_exec != NULL && g_xtc_n_loops > 1)
 			? xtc_exec_loop(g_xtc_exec, i) : g_xtc_loop;
-		xtc_sup_opts_t opts = XTC_SUP_OPTS_DEFAULT;
+		xtc_sup_opts_t opts = XTC_SUP_OPTS_INIT;
 		xtc_supervisor_t *sup = NULL;
 
 		/*
@@ -1207,7 +1213,7 @@ xtc_pg_carrier_start(void)
 	}
 
 	{
-		xtc_app_opts_t opts = XTC_APP_OPTS_DEFAULT;
+		xtc_app_opts_t opts = XTC_APP_OPTS_INIT;
 
 		/*
 		 * Block all signals across the entire xtc bringup.  As of libxtc v1.4.2+
@@ -1236,7 +1242,7 @@ xtc_pg_carrier_start(void)
 		masked = true;
 
 		/* Big fiber stacks: PG backends recurse deeply (see above). */
-		xtc_set_stack_size(XTC_PG_FIBER_STACK);
+		xtc_runtime_set_stack_size(XTC_PG_FIBER_STACK);
 
 		/*
 		 * Fusion F0a: route libxtc's internal diagnostics into the PG server
@@ -1250,7 +1256,7 @@ xtc_pg_carrier_start(void)
 		 */
 		if (xtc_log_to_server)
 		{
-			xtc_log_opts_t logopts = XTC_LOG_OPTS_DEFAULT;
+			xtc_log_opts_t logopts = XTC_LOG_OPTS_INIT;
 			xtc_log_t  *pglog = NULL;
 
 			logopts.sink = xtc_pg_log_sink;
@@ -1259,11 +1265,11 @@ xtc_pg_carrier_start(void)
 			if (xtc_log_create(&logopts, &pglog) == XTC_OK && pglog != NULL)
 			{
 				(void) xtc_log_set_default(pglog);
-				xtc_tuning_check();	/* fills libxtc's log ring with advisories */
+				xtc_runtime_tuning_check();	/* fills libxtc's log ring with advisories */
 
 				/*
 				 * xtc_log is a RING BUFFER: xtc_log_write() (which
-				 * xtc_tuning_check -> XTC_LOG_INFO_F feeds) only enqueues
+				 * xtc_runtime_tuning_check -> XTC_LOG_INFO_F feeds) only enqueues
 				 * records; the sink callback fires only from xtc_log_drain()
 				 * (there is no background drain thread, and we deliberately
 				 * never destroy the process-lifetime log, so the destroy-time

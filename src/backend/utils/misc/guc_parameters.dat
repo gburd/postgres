@@ -4007,7 +4007,7 @@
 
 { name => 'xtc_log_to_server', type => 'bool', context => 'PGC_POSTMASTER', group => 'DEVELOPER_OPTIONS',
   short_desc => 'Routes libxtc internal log diagnostics into the server log.',
-  long_desc => 'When multithreaded=on, installs a libxtc default-log sink at carrier bringup that writes libxtc internal diagnostics -- the host-tuning advisor (CPU governor, intel_pstate, transparent hugepages, swappiness, io_uring probes, via xtc_tuning_check) -- to the server log instead of libxtc default stderr. Developer knob for the multithreaded PostgreSQL development branch; has no effect under multithreaded=off.',
+  long_desc => 'When multithreaded=on, installs a libxtc default-log sink at carrier bringup that writes libxtc internal diagnostics -- the host-tuning advisor (CPU governor, intel_pstate, transparent hugepages, swappiness, io_uring probes, via xtc_runtime_tuning_check) -- to the server log instead of libxtc default stderr. Developer knob for the multithreaded PostgreSQL development branch; has no effect under multithreaded=off.',
   flags => 'GUC_NOT_IN_SAMPLE',
   variable => 'xtc_log_to_server',
   boot_val => 'false',
@@ -4023,7 +4023,7 @@
 
 { name => 'xtc_xproc_watchdog_demo', type => 'bool', context => 'PGC_POSTMASTER', group => 'DEVELOPER_OPTIONS',
   short_desc => 'Runs a self-contained demonstration of the xtc_xproc cross-fork watchdog at carrier start.',
-  long_desc => 'Developer demonstration only. When on (and multithreaded), the xtc carrier runs a self-contained demo that xtc_xspawns a throwaway child, xtc_xmonitors it, decodes its DOWN, and restarts it under a small bounded intensity -- the in-tree restart-after-crash USAGE pattern for libxtc xtc_xproc. It does NOT change the real PostgreSQL backend crash policy, which stays fail-stop. POSIX only; a no-op where xtc_xproc is unsupported. Off (the default) runs nothing and has zero production impact. Ignored when multithreaded=off.',
+  long_desc => 'Developer demonstration only. When on (and multithreaded), the xtc carrier runs a self-contained demo that spawns a throwaway child with xtc_xproc_spawn, monitors it with xtc_xproc_monitor, decodes its DOWN, and restarts it under a small bounded intensity -- the in-tree restart-after-crash USAGE pattern for libxtc xtc_xproc. It does NOT change the real PostgreSQL backend crash policy, which stays fail-stop. POSIX only; a no-op where xtc_xproc is unsupported. Off (the default) runs nothing and has zero production impact. Ignored when multithreaded=off.',
   flags => 'GUC_NOT_IN_SAMPLE',
   variable => 'xtc_xproc_watchdog_demo',
   boot_val => 'false',
