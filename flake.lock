@@ -29,17 +29,17 @@
         "uringscope": "uringscope"
       },
       "locked": {
-        "lastModified": 1793123876,
-        "narHash": "sha256-RAZAt2b7n717SLjHxZgPbr33N5DYqmbdxD5IVl1nv6w=",
+        "lastModified": 1795010266,
+        "narHash": "sha256-fPQdYOHV9CShxi011TtGJLsRbvu+kSJYH+DW87eV9oc=",
         "owner": "gburd",
         "repo": "libxtc",
-        "rev": "95041727ab08dca6b1474aabca38e2738c66e6ed",
+        "rev": "2e2e10b00a9a2c4d66892153498bf5a7c067f44b",
         "type": "github"
       },
       "original": {
         "owner": "gburd",
         "repo": "libxtc",
-        "rev": "95041727ab08dca6b1474aabca38e2738c66e6ed",
+        "rev": "2e2e10b00a9a2c4d66892153498bf5a7c067f44b",
         "type": "github"
       }
     },
