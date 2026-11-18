@@ -3532,6 +3532,7 @@ XactCallback
 XactCallbackItem
 XactEvent
 XactLockTableWaitInfo
+XactPinnedBlock
 XidBoundsViolation
 XidCacheStatus
 XidCommitStatus
