@@ -1030,16 +1030,6 @@ StrategySyncBalance(void)
 				if (allocs[j] > avg_allocs)
 					continue;
 
-				/*
-				 * Only use other partitions that actually have demand of
-				 * their own (avoid idle). If we fail, there's always the
-				 * scan-all-partitions fallback.
-				 *
-				 * TODO:: just guessing,heuristics
-				 */
-				if (allocs[j] < (avg_allocs / 2))
-					continue;
-
 				/* fraction to redirect */
 				w = (int) ((100.0 * receive_allocs / allocs[i]) + 0.5);
 				balance[j] = w;
