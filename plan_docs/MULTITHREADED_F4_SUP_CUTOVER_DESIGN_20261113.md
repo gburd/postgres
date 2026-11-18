@@ -1,5 +1,14 @@
 # F4 cutover: route backend fibers through the xtc_orc supervisor
 
+> Re-checked 2026-11-18 against libxtc v2.2.0 (2e2e10b0): still blocked.
+> v2.2.0 adds child-spec knobs (`migratable`, `stack_size`, `reg_name`,
+> `sched_class`) that the cutover will use, but `xtc_sup_add_child` still
+> must run inside a proc (`xtc_pid_is_none(xtc_self())` returns
+> XTC_E_INVAL) and there is no off-thread add.  `xtc_thread_register`
+> (new in 2.2) gives a plain thread a sender identity only; `xtc_self()`
+> stays XTC_PID_NONE, so it does not unblock add_child.  The
+> `xtc_sup_cast_add_child` request below is still open.
+
 Status: DESIGN (2026-11-13). The next structural fusion increment after the
 2.2 adoption (on_child_down hook + classifier fix landed). Two-review +
 A/B-on-check-threaded-pooled gated. Branch stabilize-v23-20261113.
