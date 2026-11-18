@@ -1583,14 +1583,17 @@ test_sbm_locator_check(PG_FUNCTION_ARGS)
 	card = sbm_cardinality(map);
 	loc = sbm_locator_build(map);
 
-	/* An empty map has no locator (NULL by contract); nothing to check. */
+	/* An empty map gets a locator too, and every query finds nothing. */
+	EXPECT_TRUE(loc != NULL);
 	if (card == 0)
 	{
-		EXPECT_TRUE(loc == NULL);
-		sbm_locator_free(loc);	/* NULL-safe */
+		EXPECT_TRUE(!sbm_locator_contains(loc, 0));
+		EXPECT_TRUE(sbm_locator_rank(loc, 0, 100, true) == 0);
+		EXPECT_TRUE(sbm_locator_select(loc, 0, true) == SBM_IDX_MAX);
+		EXPECT_TRUE(sbm_locator_select(loc, 7, false) == 7);
+		sbm_locator_free(loc);
 		PG_RETURN_INT64(0);
 	}
-	EXPECT_TRUE(loc != NULL);
 
 	idx = SBM_IDX_MAX;
 	while ((idx = sbm_next_member(map, idx, &cur)) != SBM_IDX_MAX)
@@ -3277,10 +3280,16 @@ test_edges(void)
 	EXPECT_TRUE(sbm_select(empty, 7, false) == 7);
 	EXPECT_TRUE(sbm_span(empty, 3, 0, true) == 3);	/* zero length */
 	EXPECT_TRUE(sbm_span(empty, 3, 5, false) == 3);
-	EXPECT_TRUE(sbm_locator_build(empty) == NULL);
+	{
+		SbmLocator *loc = sbm_locator_build(empty); /* every query: none */
+
+		EXPECT_TRUE(loc != NULL && !sbm_locator_contains(loc, 3));
+		EXPECT_TRUE(sbm_locator_select(loc, 2, false) == 2);
+		sbm_locator_free(loc);
+	}
 	{
 		Sbm		   *small = sbm_create_singleton(3);
-		SbmLocator *loc = sbm_locator_build(small); /* degenerate locator */
+		SbmLocator *loc = sbm_locator_build(small); /* small-set locator */
 
 		EXPECT_TRUE(loc != NULL && sbm_locator_contains(loc, 3));
 		EXPECT_TRUE(sbm_locator_select(loc, 0, true) == 3);
@@ -3323,7 +3332,12 @@ test_edges(void)
 	EXPECT_TRUE(sbm_is_empty(chunked));
 	EXPECT_TRUE(sbm_minimum(chunked) == 0 && sbm_maximum(chunked) == 0);
 	EXPECT_TRUE(sbm_rank(chunked, 0, 9, false) == 10);
-	EXPECT_TRUE(sbm_locator_build(chunked) == NULL);
+	{
+		SbmLocator *loc = sbm_locator_build(chunked);
+
+		EXPECT_TRUE(loc != NULL && sbm_locator_rank(loc, 0, 9, false) == 10);
+		sbm_locator_free(loc);
+	}
 	sbm_contains_many(chunked, q, res, 2);
 	EXPECT_TRUE(!res[0] && !res[1]);
 
@@ -3350,7 +3364,10 @@ test_edges(void)
 	EXPECT_TRUE(sbm_serialize(empty, NULL, 0) == 0);
 	EXPECT_TRUE(sbm_capacity_remaining(NULL) == 0.0);
 
-	/* locator: stale after each kind of mutation, still correct */
+	/*
+	 * locator: a mutation that inserts, removes or moves a chunk is detected,
+	 * and the queries fall back to the plain functions
+	 */
 	{
 		Sbm		   *m = sbm_create_from_range(0, 50000);
 		SbmLocator *loc;
@@ -4408,6 +4425,680 @@ test_cursor_gap(void)
 }
 
 /*
+ * v590_holds: fail unless map holds exactly v[0..n) (ascending), checked by
+ * sbm_validate, cardinality, minimum, maximum, a forward walk and a probe of
+ * every member and of each member's two neighbours.
+ */
+static void
+v590_holds(const Sbm *map, const uint64 *v, size_t n, const char *what)
+{
+	uint64		x = SBM_IDX_MAX;
+	size_t		k = 0;
+	SbmCursor	c = SBM_CURSOR_INIT;
+
+	if (!sbm_validate(map))
+		elog(ERROR, "%s: sbm_validate false", what);
+	if (sbm_cardinality(map) != n)
+		elog(ERROR, "%s: cardinality %zu, expected %zu", what,
+			 sbm_cardinality(map), n);
+	if (n > 0 && (sbm_minimum(map) != v[0] || sbm_maximum(map) != v[n - 1]))
+		elog(ERROR, "%s: min/max " UINT64_FORMAT "/" UINT64_FORMAT
+			 ", expected " UINT64_FORMAT "/" UINT64_FORMAT, what,
+			 sbm_minimum(map), sbm_maximum(map), v[0], v[n - 1]);
+	while ((x = sbm_next_member(map, x, &c)) != SBM_IDX_MAX)
+	{
+		if (k >= n || x != v[k])
+			elog(ERROR, "%s: iteration gave " UINT64_FORMAT " at %zu", what,
+				 x, k);
+		k++;
+	}
+	if (k != n)
+		elog(ERROR, "%s: iteration ended after %zu of %zu", what, k, n);
+	for (size_t i = 0; i < n; i++)
+	{
+		if (!sbm_contains(map, v[i], NULL))
+			elog(ERROR, "%s: member " UINT64_FORMAT " missing", what, v[i]);
+		if (v[i] > 0 && (i == 0 || v[i - 1] != v[i] - 1) &&
+			sbm_contains(map, v[i] - 1, NULL))
+			elog(ERROR, "%s: spurious " UINT64_FORMAT, what, v[i] - 1);
+	}
+}
+
+/* A map built by one sbm_add_grow per member of v[0..n). */
+static Sbm *
+v590_by_add(const uint64 *v, size_t n)
+{
+	Sbm		   *m = NULL;
+
+	for (size_t i = 0; i < n; i++)
+		if (sbm_add_grow(&m, v[i]) != v[i])
+			elog(ERROR, "sbm_add_grow(" UINT64_FORMAT ") failed", v[i]);
+	return m;
+}
+
+/* Members of the run [lo, hi) in rank-only form: sbm_rank must equal len. */
+static void
+v590_run_is(const Sbm *m, uint64 lo, uint64 hi, const char *what)
+{
+	if (!sbm_validate(m))
+		elog(ERROR, "%s: sbm_validate false", what);
+	if (sbm_cardinality(m) != hi - lo)
+		elog(ERROR, "%s: cardinality %zu, expected " UINT64_FORMAT, what,
+			 sbm_cardinality(m), hi - lo);
+	if (sbm_rank(m, lo, hi - 1, true) != hi - lo)
+		elog(ERROR, "%s: rank over the run is %zu", what,
+			 sbm_rank(m, lo, hi - 1, true));
+	if ((lo > 0 && sbm_contains(m, lo - 1, NULL)) ||
+		sbm_contains(m, hi, NULL))
+		elog(ERROR, "%s: a bit just outside the run is set", what);
+	if (sbm_minimum(m) != lo || sbm_maximum(m) != hi - 1)
+		elog(ERROR, "%s: min/max " UINT64_FORMAT "/" UINT64_FORMAT, what,
+			 sbm_minimum(m), sbm_maximum(m));
+}
+
+/* 2^64 - 1 - x: an index x below the top of the universe. */
+#define V590_TOP(x)	(PG_UINT64_MAX - (uint64) (x))
+
+/*
+ * test_v590_fixes: one reproducer per data-loss and wrong-answer defect that
+ * sparsemap 5.9.0 fixed, each failing on the 5.8.5-derived port.
+ *
+ *  - Emptying a sparse chunk next to an RLE run corrupted the next run.
+ *  - RLE runs of 2^31 bits or more were truncated to their low 31 bits.
+ *  - Chunk and run ends that reach 2^64 wrapped to 0 (top of the universe).
+ *  - SBM_IDX_MAX was stored as a member, so sbm_add_grow grew on it.
+ *  - sbm_select(map, n, false) skipped the unset bits between chunks.
+ *  - sbm_offset left a reduced-capacity chunk that a later add duplicated.
+ *  - sbm_split left an empty chunk in `other`.
+ *  - sbm_span with a length past the end of the universe never returned.
+ *
+ * Mirrors upstream tests/test_remove_between_runs.c, test_long_runs.c,
+ * test_top_universe.c, test_select0.c, test_reduced_capacity.c and
+ * test_empty_chunk.c (their minimized cases, not their sweeps).
+ */
+static void
+test_v590_fixes(void)
+{
+	/* ---- removing a chunk's last member next to an RLE run ---- */
+	{
+		Sbm		   *m = sbm_create(0);
+
+		EXPECT_TRUE(sbm_add_range(m, 0, 0x1000));
+		EXPECT_TRUE(sbm_add(m, 0x17ff) == 0x17ff);
+		EXPECT_TRUE(sbm_add_range(m, 0x1800, 1 << 20));
+		EXPECT_TRUE(sbm_remove(m, 0x17ff) == 0x17ff);
+		EXPECT_TRUE(sbm_validate(m));
+		EXPECT_TRUE(sbm_cardinality(m) == 0x1000 + (1 << 20) - 0x1800);
+		EXPECT_TRUE(!sbm_contains(m, 0x1000, NULL));
+		EXPECT_TRUE(!sbm_contains(m, 0x17ff, NULL));
+		EXPECT_TRUE(sbm_contains(m, (1 << 20) - 1, NULL));
+		EXPECT_TRUE(sbm_maximum(m) == (1 << 20) - 1);
+		sbm_free(m);
+	}
+
+	/* ---- runs of 2^31 bits or more ---- */
+	{
+		static const uint64 lens[] = {
+			UINT64CONST(1) << 31, (UINT64CONST(1) << 31) + 4096,
+			UINT64CONST(1) << 32
+		};
+
+		for (int i = 0; i < lengthof(lens); i++)
+		{
+			for (uint64 lo = 0; lo <= 5; lo += 5)
+			{
+				Sbm		   *m = sbm_create(0);
+
+				EXPECT_TRUE(sbm_add_range(m, lo, lo + lens[i]));
+				v590_run_is(m, lo, lo + lens[i], "add_range long run");
+				sbm_free(m);
+				m = sbm_create_from_range(lo, lo + lens[i]);
+				v590_run_is(m, lo, lo + lens[i], "from_range long run");
+				sbm_free(m);
+			}
+		}
+
+		/*
+		 * Grow a run one bit at a time across the 31-bit capacity limit: the
+		 * extension that reached 2^31 wrote length 0 and lost the run.  Start
+		 * from a run just below the limit so the loop is short.
+		 */
+		{
+			const uint64 hi = (UINT64CONST(1) << 31) + 8;
+			uint64		x = (UINT64CONST(1) << 31) - 8;
+			Sbm		   *m = sbm_create_from_range(0, x);
+
+			for (; x < hi; x++)
+				EXPECT_TRUE(sbm_add_grow(&m, x) == x);
+			v590_run_is(m, 0, hi, "add_grow past 2^31");
+			sbm_free(m);
+		}
+	}
+
+	/* ---- the top of the 64-bit universe ---- */
+	{
+		const uint64 va[] = {100, V590_TOP(4000), V590_TOP(3)};
+		const uint64 vb[] = {5, 900};
+		const uint64 want[] = {5, 100, 900, V590_TOP(4000), V590_TOP(3)};
+		Sbm		   *a = v590_by_add(va, 3);
+		Sbm		   *b = v590_by_add(vb, 2);
+		Sbm		   *r;
+
+		r = sbm_xor(a, b);
+		v590_holds(r, want, 5, "xor in the top chunk");
+		sbm_free(r);
+		r = sbm_or(a, b);
+		v590_holds(r, want, 5, "or in the top chunk");
+		sbm_free(r);
+		sbm_free(a);
+		sbm_free(b);
+	}
+	{
+		const uint64 v7[] = {V590_TOP(276)};
+		const uint64 va[] = {V590_TOP(2952), V590_TOP(39)};
+		const uint64 vb[] = {V590_TOP(849)};
+		Sbm		   *a = v590_by_add(v7, 1);
+		Sbm		   *b;
+		Sbm		   *r = sbm_and(a, a);
+
+		v590_holds(r, v7, 1, "and in the top chunk");
+		sbm_free(r);
+		sbm_free(a);
+		a = v590_by_add(va, 2);
+		b = v590_by_add(vb, 1);
+		r = sbm_andnot(a, b);
+		v590_holds(r, va, 2, "andnot in the top chunk");
+		sbm_free(r);
+		sbm_free(a);
+		sbm_free(b);
+	}
+	{
+		const uint64 v[] = {5, V590_TOP(5)};
+		Sbm		   *a = sbm_create_from_array(v, 2);
+		size_t		len = sbm_serialized_size(a);
+		uint8	   *buf = palloc(len);
+		Sbm		   *r;
+
+		v590_holds(a, v, 2, "from_array in the top chunk");
+		EXPECT_TRUE(sbm_serialize(a, buf, len) == len);
+		r = sbm_deserialize(buf, len);
+		v590_holds(r, v, 2, "deserialize a top-chunk map");
+		sbm_free(r);
+		sbm_free(a);
+		pfree(buf);
+	}
+	{
+		/* The largest run below SBM_IDX_MAX, and a split inside it. */
+		const uint64 lo = PG_UINT64_MAX - 8191;
+		Sbm		   *a = sbm_create_from_range(lo, PG_UINT64_MAX);
+		Sbm		   *o = sbm_create(0);
+		Sbm		   *r;
+
+		v590_run_is(a, lo, PG_UINT64_MAX, "top run");
+		r = sbm_and(a, a);
+		v590_run_is(r, lo, PG_UINT64_MAX, "and of the top run");
+		sbm_free(r);
+		r = sbm_copy(a);
+		EXPECT_TRUE(sbm_remove(r, V590_TOP(10)) == V590_TOP(10));
+		EXPECT_TRUE(!sbm_contains(r, V590_TOP(10), NULL));
+		EXPECT_TRUE(sbm_cardinality(r) == 8191 - 1);
+		EXPECT_TRUE(sbm_validate(r));
+		sbm_free(r);
+		(void) sbm_split(a, V590_TOP(100), o);
+		v590_run_is(a, lo, V590_TOP(100), "split of the top run, left");
+		v590_run_is(o, V590_TOP(100), PG_UINT64_MAX,
+					"split of the top run, right");
+		sbm_free(o);
+		sbm_free(a);
+	}
+
+	/* ---- SBM_IDX_MAX is not a member ---- */
+	{
+		Sbm		   *m = sbm_create(0);
+		const uint64 bad[] = {3, SBM_IDX_MAX};
+		size_t		cap;
+
+		errno = 0;
+		EXPECT_TRUE(sbm_add(m, SBM_IDX_MAX) == SBM_IDX_MAX);
+		EXPECT_TRUE(errno == EINVAL);
+		EXPECT_TRUE(sbm_is_empty(m));
+		cap = sbm_get_capacity(m);
+		EXPECT_TRUE(sbm_add_grow(&m, SBM_IDX_MAX) == SBM_IDX_MAX);
+		EXPECT_TRUE(sbm_get_capacity(m) == cap);
+		EXPECT_TRUE(!sbm_contains(m, SBM_IDX_MAX, NULL));
+		EXPECT_TRUE(!sbm_add_many_grow(&m, bad, 2));
+		EXPECT_TRUE(sbm_is_empty(m));
+		EXPECT_TRUE(sbm_create_from_array(bad, 2) == NULL);
+		EXPECT_TRUE(sbm_create_singleton(SBM_IDX_MAX) == NULL);
+		EXPECT_TRUE(sbm_add(m, V590_TOP(1)) == V590_TOP(1));
+		EXPECT_TRUE(sbm_maximum(m) == V590_TOP(1));
+		EXPECT_TRUE(sbm_offset(m, 1) == NULL);
+		sbm_free(m);
+	}
+
+	/* ---- select0 counts the unset bits between and after chunks ---- */
+	{
+		const uint64 v[] = {0, 1, 2, 10000, 10001, 50000};
+		Sbm		   *m = sbm_create_from_array(v, lengthof(v));
+		Sbm		   *one = sbm_create_singleton(8192);
+
+		EXPECT_TRUE(sbm_select(m, 2045, false) == 2048);
+		EXPECT_TRUE(sbm_select(m, 9997, false) == 10000 + 2);
+		EXPECT_TRUE(sbm_select(one, 8192, false) == 8193);
+		for (uint64 k = 0; k < 60000; k += 997)
+		{
+			uint64		x = sbm_select(m, k, false);
+
+			EXPECT_TRUE(x != SBM_IDX_MAX && !sbm_contains(m, x, NULL));
+			EXPECT_TRUE(x == 0 || sbm_rank(m, 0, x - 1, false) == k);
+		}
+		sbm_free(one);
+		sbm_free(m);
+	}
+
+	/* ---- a reduced-capacity chunk from sbm_offset owns its window ---- */
+	{
+		const uint64 v[] = {3 * 2048 - 1, 3 * 2048 + 1000};
+		Sbm		   *src = sbm_create_from_array(v, 2);
+		Sbm		   *m = sbm_offset(src, 1000);
+		Sbm		   *run;
+		Sbm		   *r;
+		uint64		probe;
+
+		EXPECT_TRUE(m != NULL && sbm_validate(m));
+		probe = sbm_maximum(m) + 500;
+		EXPECT_TRUE(sbm_add_grow(&m, probe) == probe);
+		EXPECT_TRUE(sbm_validate(m));
+		EXPECT_TRUE(sbm_cardinality(m) == 3);
+		EXPECT_TRUE(sbm_contains(m, probe, NULL));
+		run = sbm_create_from_range(3 * 2048, 4 * 2048);
+		r = sbm_union(m, run);
+		EXPECT_TRUE(sbm_validate(r));
+		EXPECT_TRUE(sbm_cardinality(r) == 2048 + 1);
+		sbm_free(r);
+		r = sbm_difference(run, m);
+		EXPECT_TRUE(sbm_validate(r));
+		EXPECT_TRUE(sbm_cardinality(r) == 2048 - 2);
+		sbm_free(r);
+		sbm_free(run);
+		sbm_free(m);
+		sbm_free(src);
+	}
+	{
+		/*
+		 * A run over a reduced-capacity chunk's window: chunk 6144 of the
+		 * shifted map has capacity 128, so the union and difference swept its
+		 * tail as past the chunk and emitted a second chunk at 6144.
+		 */
+		const uint64 v[] = {6143, 30000};
+		Sbm		   *src = sbm_create_from_array(v, 2);
+		Sbm		   *b = sbm_offset(src, 64);
+		Sbm		   *a = sbm_create_from_range(4096, 12288);
+		Sbm		   *r;
+
+		r = sbm_union(a, b);
+		EXPECT_TRUE(sbm_validate(r));
+		EXPECT_TRUE(sbm_cardinality(r) == 8192 + 1);
+		sbm_free(r);
+		r = sbm_difference(a, b);
+		EXPECT_TRUE(sbm_validate(r));
+		EXPECT_TRUE(sbm_cardinality(r) == 8192 - 1);
+		sbm_free(r);
+		sbm_free(a);
+		sbm_free(b);
+		sbm_free(src);
+	}
+
+	/* ---- sbm_split leaves no empty chunk in `other` ---- */
+	{
+		const uint64 v[] = {4100, 4110, 13096};
+		Sbm		   *m = sbm_create_from_array(v, 3);
+		Sbm		   *o = sbm_create(0);
+
+		(void) sbm_split(m, 4111, o);
+		v590_holds(m, v, 2, "split left");
+		v590_holds(o, v + 2, 1, "split right");
+		sbm_free(o);
+		sbm_free(m);
+	}
+
+	/* ---- readers drop an empty chunk; validate rejects one ---- */
+	{
+		/*
+		 * An earlier sbm_split could leave a chunk with descriptor 0 in its
+		 * output.  Craft the chunk-mode body [count 3] [5 | desc | word]
+		 * [4096 | desc 0] [10240 | desc | word]: sbm_open_copy and
+		 * sbm_deserialize must drop the empty chunk and keep {5, 10240}, and
+		 * sbm_validate must reject the raw buffer.  Every field is a uint64;
+		 * a sparse chunk's MIXED slot 0 is descriptor value 2 (2#10).
+		 */
+		const uint64 want[] = {5, 10240};
+		const uint64 body[] = {
+			3,
+			0, 2, UINT64CONST(1) << 5,
+			4096, 0,
+			10240, 2, 1
+		};
+		const size_t wire_header = 16;	/* magic, version, flags, card */
+		uint8	   *wire;
+		Sbm		   *r;
+		Sbm			raw;
+		uint64		copy[lengthof(body)];
+
+		memcpy(copy, body, sizeof(body));
+		sbm_init(&raw, (uint8 *) copy, sizeof(copy));
+		raw.m_data_used = sizeof(copy);
+		EXPECT_TRUE(!sbm_validate(&raw));
+		r = sbm_open_copy((const uint8 *) body, sizeof(body), 0);
+		EXPECT_TRUE(r != NULL);
+		v590_holds(r, want, 2, "open_copy drops an empty chunk");
+
+		/* borrow a real wire header from a serialized map, then the body */
+		wire = palloc(wire_header + sizeof(body));
+		EXPECT_TRUE(sbm_serialized_size(r) >= wire_header);
+		{
+			size_t		wlen = sbm_serialized_size(r);
+			uint8	   *tmp = palloc(wlen);
+
+			EXPECT_TRUE(sbm_serialize(r, tmp, wlen) == wlen);
+			memcpy(wire, tmp, wire_header);
+			pfree(tmp);
+		}
+		memcpy(wire + wire_header, body, sizeof(body));
+		sbm_free(r);
+		r = sbm_deserialize(wire, wire_header + sizeof(body));
+		EXPECT_TRUE(r != NULL);
+		v590_holds(r, want, 2, "deserialize drops an empty chunk");
+		sbm_free(r);
+		pfree(wire);
+	}
+
+	/* ---- the locator over chunks more than 2^27 bits apart ---- */
+	{
+		/*
+		 * A group of 16 chunks whose starts span more than 2^16 windows does
+		 * not fit the packed deltas and is stored wide.  Space 40 members
+		 * 2^28 bits apart, with a run in the middle.
+		 */
+		uint64		v[40];
+		Sbm		   *m;
+		SbmLocator *loc;
+
+		for (int i = 0; i < 40; i++)
+			v[i] = (uint64) i << 28;
+		m = sbm_create_from_array(v, 40);
+		EXPECT_TRUE(sbm_add_range(m, (UINT64CONST(20) << 28) + 1,
+								  (UINT64CONST(20) << 28) + 5000) ||
+					errno == ENOSPC);
+		loc = sbm_locator_build(m);
+		for (int i = 0; i < 40; i++)
+		{
+			EXPECT_TRUE(sbm_locator_contains(loc, v[i]));
+			EXPECT_TRUE(!sbm_locator_contains(loc, v[i] + 7000));
+			EXPECT_TRUE(sbm_locator_rank(loc, 0, v[i], true) ==
+						sbm_rank(m, 0, v[i], true));
+			EXPECT_TRUE(sbm_locator_select(loc, i, true) ==
+						sbm_select(m, i, true));
+			EXPECT_TRUE(sbm_locator_select(loc, v[i], false) ==
+						sbm_select(m, v[i], false));
+		}
+		EXPECT_TRUE(sbm_locator_rank(loc, 9, 3, true) == 0);
+		EXPECT_TRUE(sbm_locator_select(loc, PG_UINT64_MAX - 3, false) ==
+					SBM_IDX_MAX);
+		sbm_locator_free(loc);
+		sbm_free(m);
+	}
+
+	/* ---- statistics on small-set runs report the RLE view ---- */
+	{
+		static const uint64 lens[] = {1, 63, 64, 100, 128, 129, 300, 1023};
+
+		for (int i = 0; i < lengthof(lens); i++)
+		{
+			Sbm		   *m = sbm_create_from_range(0, lens[i]);
+			SbmStats	st;
+
+			sbm_statistics(m, &st);
+			EXPECT_TRUE(st.bits_set == lens[i]);
+			EXPECT_TRUE(st.chunks_total == 1);
+			EXPECT_TRUE(st.chunks_rle + st.chunks_sparse == 1);
+			sbm_free(m);
+		}
+		{
+			Sbm		   *m = sbm_create_singleton(3);
+			SbmStats	st;
+
+			EXPECT_TRUE(sbm_remove(m, 3) == 3);
+			sbm_statistics(m, &st);
+			EXPECT_TRUE(st.chunks_total == 0 && st.bits_set == 0);
+			sbm_free(m);
+		}
+	}
+
+	/* ---- sbm_span past the end of the universe returns ---- */
+	{
+		Sbm		   *m = sbm_create_singleton(5);
+
+		EXPECT_TRUE(sbm_span(m, 0, SIZE_MAX, false) == SBM_IDX_MAX);
+		sbm_free(m);
+	}
+}
+
+/* Callback for test_v590_paths: append scanned members to an oracle. */
+static void
+v590_scan_cb(uint64 vec[], size_t n, void *aux)
+{
+	SbmOracle  *o = (SbmOracle *) aux;
+
+	for (size_t i = 0; i < n; i++)
+	{
+		if (vec[i] >= ORACLE_BITS || o->bit[vec[i]])
+			elog(ERROR, "scan: member " UINT64_FORMAT " out of range or twice",
+				 vec[i]);
+		o->bit[vec[i]] = true;
+	}
+}
+
+/*
+ * test_v590_paths: differential checks of the paths sparsemap 5.9 rewrote,
+ * against a bit-array oracle, over random maps built from runs, isolated
+ * members and RLE stretches (small-set and chunk mode alike):
+ *
+ *  - sbm_remove_range and sbm_flip_range, now one run sweep, on ranges that
+ *    start and end inside, at the edges of, and outside runs and chunks;
+ *  - sbm_overlap, sbm_is_subset and sbm_nonempty_difference, now an
+ *    early-exit run sweep, on random pairs and on a map and a range cut out
+ *    of it;
+ *  - a full reverse scan with one cursor (sbm_prev_member now resumes in the
+ *    cursor's chunk);
+ *  - sbm_rank, sbm_select (both values) and sbm_scan on small-set maps,
+ *    which now read the words directly, and sbm_statistics on the same maps.
+ */
+static void
+test_v590_paths(void)
+{
+	pg_prng_state rng;
+	SbmOracle  *o = palloc0_object(SbmOracle);
+	SbmOracle  *o2 = palloc0_object(SbmOracle);
+
+	pg_prng_seed(&rng, UINT64CONST(0x5900590059));
+	for (int trial = 0; trial < 120; trial++)
+	{
+		/* small-set maps every fourth trial: all members below 1024 */
+		const uint64 span = (trial % 4 == 0) ? 1024 : ORACLE_BITS;
+		Sbm		   *m;
+		Sbm		   *b;
+		uint64		lo;
+		uint64		hi;
+
+		memset(o, 0, sizeof(*o));
+		for (int k = 0; k < 24; k++)
+		{
+			uint64		at = pg_prng_uint64(&rng) % span;
+			uint64		len = (pg_prng_uint32(&rng) % 3 == 0) ?
+				1 + pg_prng_uint64(&rng) % 5000 : 1 + pg_prng_uint64(&rng) % 70;
+
+			oracle_set_range(o, at, Min(at + len, span), true);
+		}
+		m = oracle_to_sbm(o);
+		check_against_oracle(m, o, "v590: built");
+
+		/* reverse scan with one cursor visits every member, descending */
+		{
+			SbmCursor	c = SBM_CURSOR_INIT;
+			uint64		x = SBM_IDX_MAX;
+			int			next = ORACLE_BITS - 1;
+			size_t		k = 0;
+
+			while ((x = sbm_prev_member(m, x, &c)) != SBM_IDX_MAX)
+			{
+				while (next >= 0 && !o->bit[next])
+					next--;
+				if (x != (uint64) next)
+					elog(ERROR, "v590: reverse scan gave " UINT64_FORMAT
+						 ", expected %d", x, next);
+				next--;
+				k++;
+			}
+			if (k != oracle_count(o))
+				elog(ERROR, "v590: reverse scan saw %zu of %zu", k,
+					 oracle_count(o));
+		}
+
+		/* small-set direct readers: rank, select of both values, scan */
+		if (span == 1024)
+		{
+			uint64		ones = 0;
+			uint64		zeros = 0;
+			SbmStats	st;
+
+			memset(o2, 0, sizeof(*o2));
+			sbm_scan(m, v590_scan_cb, 0, o2);
+			for (int i = 0; i < ORACLE_BITS; i++)
+				if (o2->bit[i] != o->bit[i])
+					elog(ERROR, "v590: small scan differs at %d", i);
+			for (uint64 i = 0; i < 1100; i++)
+			{
+				const bool	in = i < ORACLE_BITS && o->bit[i];
+
+				if (sbm_rank(m, 0, i, true) != ones + in)
+					elog(ERROR, "v590: small rank1(0, " UINT64_FORMAT ")", i);
+				if (in && sbm_select(m, ones, true) != i)
+					elog(ERROR, "v590: small select1(" UINT64_FORMAT ")", ones);
+				if (!in && sbm_select(m, zeros, false) != i)
+					elog(ERROR, "v590: small select0(" UINT64_FORMAT ")", zeros);
+				ones += in;
+				zeros += !in;
+			}
+			sbm_statistics(m, &st);
+			if (st.bits_set != oracle_count(o))
+				elog(ERROR, "v590: small statistics bits_set");
+		}
+
+		/* relations against a random map and against a cut-out range */
+		memset(o2, 0, sizeof(*o2));
+		for (int k = 0; k < 6; k++)
+		{
+			uint64		at = pg_prng_uint64(&rng) % span;
+
+			uint64		len = 1 + pg_prng_uint64(&rng) % 300;
+
+			oracle_set_range(o2, at, Min(at + len, span), true);
+		}
+		lo = pg_prng_uint64(&rng) % span;
+		hi = lo + 1 + pg_prng_uint64(&rng) % 6000;
+		if (trial % 2 == 0)
+		{
+			/* b = m restricted to [lo, hi): a subset of m */
+			for (uint64 i = 0; i < ORACLE_BITS; i++)
+				o2->bit[i] = o->bit[i] && i >= lo && i < hi;
+		}
+		b = oracle_to_sbm(o2);
+		{
+			bool		shared = false;
+			bool		b_extra = false;
+			bool		m_extra = false;
+
+			for (int i = 0; i < ORACLE_BITS; i++)
+			{
+				shared |= o->bit[i] && o2->bit[i];
+				b_extra |= o2->bit[i] && !o->bit[i];
+				m_extra |= o->bit[i] && !o2->bit[i];
+			}
+			if (sbm_overlap(m, b) != shared || sbm_overlap(b, m) != shared)
+				elog(ERROR, "v590: overlap trial %d", trial);
+			if (sbm_is_subset(b, m) != !b_extra ||
+				sbm_is_subset(m, b) != !m_extra)
+				elog(ERROR, "v590: is_subset trial %d", trial);
+			if (sbm_nonempty_difference(m, b) != m_extra ||
+				sbm_nonempty_difference(b, m) != b_extra)
+				elog(ERROR, "v590: nonempty_difference trial %d", trial);
+		}
+		sbm_free(b);
+
+		/* remove_range and flip_range, each into a roomy copy */
+		for (int op = 0; op < 2; op++)
+		{
+			Sbm		   *c = sbm_create(sbm_get_size(m) * 2 + 8192);
+			uint64	   *v = palloc_array(uint64, ORACLE_BITS);
+			size_t		n = 0;
+			uint64		rlo = pg_prng_uint64(&rng) % span;
+			uint64		rlen = 1 + pg_prng_uint64(&rng) % 7000;
+
+			/*
+			 * Flip sets the unset bits of the range, so the whole range must
+			 * lie inside the oracle's universe.  (Min evaluates its arguments
+			 * twice, so draw the length first.)
+			 */
+			uint64		rhi = Min(rlo + rlen, (uint64) ORACLE_BITS);
+
+			for (int i = 0; i < ORACLE_BITS; i++)
+				if (o->bit[i])
+					v[n++] = i;
+			if (n > 0 && !sbm_add_many(c, v, n))
+				elog(ERROR, "v590: copy failed");
+			pfree(v);
+			memcpy(o2, o, sizeof(*o));
+			if (op == 0)
+			{
+				EXPECT_TRUE(sbm_remove_range(c, rlo, rhi));
+				oracle_set_range(o2, rlo, rhi, false);
+				check_against_oracle(c, o2, "v590: remove_range");
+			}
+			else
+			{
+				EXPECT_TRUE(sbm_flip_range(c, rlo, rhi));
+				for (uint64 i = rlo; i < rhi; i++)
+					o2->bit[i] = !o2->bit[i];
+				check_against_oracle(c, o2, "v590: flip_range");
+			}
+			sbm_free(c);
+		}
+		sbm_free(m);
+	}
+
+	/* a remove_range that does not fit fails with ENOSPC, map unchanged */
+	{
+		uint8		buf[64] pg_attribute_aligned(8);
+		Sbm			m;
+		uint8		before[64];
+
+		sbm_init(&m, buf, sizeof(buf));
+		EXPECT_TRUE(sbm_add_range(&m, 4096, 4096 + 2048 * 3));
+		memcpy(before, buf, sizeof(buf));
+		errno = 0;
+		if (!sbm_remove_range(&m, 4096 + 100, 4096 + 2048 * 2 + 100))
+		{
+			EXPECT_TRUE(errno == ENOSPC);
+			EXPECT_TRUE(memcmp(before, buf, sizeof(buf)) == 0);
+		}
+		EXPECT_TRUE(sbm_validate(&m));
+	}
+	pfree(o);
+	pfree(o2);
+}
+
+/*
  * test_sbm_internals: run all of the above.  Returns true; any failure is
  * reported as an ERROR naming the step.
  */
@@ -4428,6 +5119,8 @@ test_sbm_internals(PG_FUNCTION_ARGS)
 	test_difference_align();
 	test_v583_fixes();
 	test_cursor_gap();
+	test_v590_fixes();
+	test_v590_paths();
 	test_lineages();
 	test_binary_ops();
 	PG_RETURN_BOOL(true);

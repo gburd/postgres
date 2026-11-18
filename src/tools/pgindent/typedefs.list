@@ -2781,6 +2781,7 @@ SbmCursor
 SbmCursorCached
 SbmEmitter
 SbmIdx
+SbmLocKey
 SbmLocator
 SbmMembership
 SbmRunIter

@@ -183,27 +183,38 @@ typedef struct SbmCursorCached
 #define SBM_CURSOR_CACHED_INIT	{{0}, {0}, {0}, 0, 0}
 
 /*
- * Transient sqrt(n) directory over a map's chunks.
+ * Transient two-level directory over a map's chunks.
  *
- * Built once over an unmodified map with sbm_locator_build(), it samples
- * every stride-th chunk (stride ~ sqrt(chunk count)) so that membership,
- * rank and select run in O(sqrt n) chunks instead of O(n).  A locator that
- * has gone stale because the map was modified still returns correct
- * answers, by falling back to the plain functions, but loses the speedup;
- * rebuild it after mutating the map.  Treat the struct as opaque.
+ * Built once over an unmodified map with sbm_locator_build(), it records
+ * where every chunk is and how many set bits precede it (about 10 bytes per
+ * chunk), so that membership, rank and select of both values run in O(log
+ * chunks) instead of O(chunks).  Any mutation of the map invalidates the
+ * locator: rebuild it after mutating the map.  A mutation that moves or
+ * resizes chunks is detected, and the queries fall back to the plain
+ * functions; a bit flipped inside an existing chunk is not, so a stale
+ * locator can answer wrong.  Treat the struct as opaque.
  */
 typedef struct SbmLocator
 {
 	const Sbm  *map;			/* the map this locator indexes */
+	const uint8 *data;			/* map->m_data at build (fingerprint) */
+	size_t		used;			/* map->m_data_used at build (fingerprint) */
+	size_t		card_plus1;		/* map's cardinality cache at build, or 0 */
 	size_t		count;			/* chunk count at build time */
-	uint64		first_start;	/* first chunk start (staleness check) */
-	uint64		last_start;		/* last chunk start (staleness check) */
-	size_t		last_offset;	/* byte offset of the last chunk */
-	size_t		stride;			/* chunks per superblock */
-	size_t		n_sb;			/* number of superblocks */
-	uint64	   *sb_start;		/* [n_sb] first index of each superblock */
-	size_t	   *sb_offset;		/* [n_sb] byte offset of each superblock */
-	size_t	   *sb_prefix;		/* [n_sb] set bits before each superblock */
+	uint64		first_start;	/* first chunk start (fingerprint) */
+	uint64		last_start;		/* last chunk start (fingerprint) */
+	size_t		last_offset;	/* base-relative offset of the last chunk */
+	uint64		total;			/* set bits in the whole map */
+	bool		small;			/* map was in small-set mode (no directory) */
+	size_t		n_grp;			/* groups of 16 chunks */
+	uint64	   *g_start;		/* [n_grp] start of each group's first chunk */
+	uint64	   *g_set;			/* [n_grp] set bits before it */
+	size_t	   *g_offset;		/* [n_grp] its base-relative byte offset */
+	size_t	   *g_wide;			/* [n_grp] slot in w_*, or SIZE_MAX */
+	uint64	   *c_rel;			/* [count] packed per-chunk deltas */
+	size_t		n_wide;			/* groups stored in w_start / w_set */
+	uint64	   *w_start;		/* [16 n_wide] absolute starts, wide groups */
+	uint64	   *w_set;			/* [16 n_wide] absolute set prefixes */
 } SbmLocator;
 
 /* Result of sbm_membership() */
@@ -237,7 +248,12 @@ typedef struct SbmStats
 	double		bytes_per_set_bit;	/* bytes_used / bits_set */
 } SbmStats;
 
-/* Sentinel returned by index-valued functions when there is no answer. */
+/*
+ * Sentinel returned by index-valued functions when there is no answer.  It is
+ * never a member: the member universe is [0, 2^64 - 1).  Adding it fails with
+ * EINVAL and changes nothing, the bulk builders reject an input that holds
+ * it, and sbm_validate rejects a buffer that sets it.
+ */
 #define SBM_IDX_MAX			PG_UINT64_MAX
 
 /* True when an index-valued result is a real index. */
@@ -335,7 +351,7 @@ pg_nodiscard extern Sbm *sbm_set_data_size(Sbm *map, uint8 *data,
  */
 pg_nodiscard extern Sbm *sbm_shrink_to_fit(Sbm *map);
 
-/* Map holding exactly idx. */
+/* Map holding exactly idx, or NULL with errno = EINVAL for SBM_IDX_MAX. */
 pg_nodiscard extern Sbm *sbm_create_singleton(uint64 idx);
 
 /* Map holding every index in [lo, hi); an empty range gives an empty map. */
@@ -343,7 +359,8 @@ pg_nodiscard extern Sbm *sbm_create_from_range(uint64 lo, uint64 hi);
 
 /*
  * Map holding the n indexes in arr (any order, duplicates allowed).  Returns
- * NULL with errno = EINVAL if arr is NULL and n > 0.
+ * NULL with errno = EINVAL if arr is NULL and n > 0, or if arr holds
+ * SBM_IDX_MAX.
  */
 pg_nodiscard extern Sbm *sbm_create_from_array(const uint64 *arr, size_t n);
 
@@ -395,7 +412,7 @@ extern bool sbm_contains_cached(const Sbm *map, uint64 idx,
  * Point mutation
  *
  * These return idx on success, or SBM_IDX_MAX with errno = ENOSPC if the
- * buffer is too small (or EINVAL for a NULL map).
+ * buffer is too small (or EINVAL for a NULL map or for idx == SBM_IDX_MAX).
  */
 
 /* Add idx. */
@@ -443,7 +460,8 @@ extern bool sbm_add_many_grow(Sbm **map, const uint64 *arr, size_t n);
 
 /*
  * Add, remove, or complement every index in [lo, hi); lo >= hi is a no-op.
- * Return false (errno = ENOSPC) if the buffer is too small.
+ * Each works run by run, O(runs) regardless of hi - lo.  Return false (errno
+ * = ENOSPC) if the result does not fit the buffer, leaving the map unchanged.
  */
 extern bool sbm_add_range(Sbm *map, uint64 lo, uint64 hi);
 extern bool sbm_remove_range(Sbm *map, uint64 lo, uint64 hi);
@@ -497,8 +515,8 @@ extern uint64 sbm_select(const Sbm *map, uint64 n, bool value);
 extern uint64 sbm_span(const Sbm *map, uint64 start, size_t len, bool value);
 
 /*
- * Build a locator (see SbmLocator) for map.  Returns NULL for a NULL or
- * empty map.  The locator-based queries equal the plain functions.
+ * Build a locator (see SbmLocator) for map.  Returns NULL for a NULL map.
+ * The locator-based queries equal the plain functions on the unmodified map.
  */
 pg_nodiscard extern SbmLocator *sbm_locator_build(const Sbm *map);
 extern void sbm_locator_free(SbmLocator *loc);
@@ -527,8 +545,9 @@ extern uint64 sbm_next_member(const Sbm *map, uint64 prev_idx,
 							  SbmCursor *cur);
 
 /*
- * Largest member < prev_idx; pass SBM_IDX_MAX to start from the end.  The
- * cursor is accepted for symmetry and currently unused.
+ * Largest member < prev_idx; pass SBM_IDX_MAX to start from the end.  A
+ * cursor (initialized with SBM_CURSOR_INIT) makes a descending scan resume in
+ * the chunk of the previous answer.
  */
 extern uint64 sbm_prev_member(const Sbm *map, uint64 prev_idx,
 							  SbmCursor *cur);
