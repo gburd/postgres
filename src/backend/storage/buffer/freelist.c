@@ -356,11 +356,9 @@ ClockSweepTick(ClockSweep *sweep)
  * ClockSweepPartitionIndex
  *		pick the clock-sweep partition to use based on PID and NUMA node
  *
- * With libnuma, use the NUMA node and PID to pick the partition. Otherwise
- * use just PID (as if there's a single NUMA node).
- *
- * XXX This should also check if buffers are NUMA-partitioned, not just if
- * compiled with libnuma.
+ * With shared_buffers_numa, use the NUMA node and PID to pick the partition.
+ * Otherwise the partitions are not tied to nodes, so spread backends over
+ * all of them by PID alone.
  */
 static int
 ClockSweepPartitionIndex(void)
@@ -416,6 +414,15 @@ ClockSweepPartitionIndex(void)
 	 */
 	if ((node < 0) || (node > StrategyControl->num_nodes))
 		elog(ERROR, "node out of range: %d > %u", node, StrategyControl->num_nodes);
+
+	/*
+	 * Without shared_buffers_numa the partitions still exist, one or more per
+	 * configured node, but no backend has a node to prefer.  Picking within
+	 * node 0 would confine every backend to node 0's partitions, which on a
+	 * box with one partition per node is a single partition.
+	 */
+	if (!shared_buffers_numa)
+		return pid % StrategyControl->num_partitions;
 
 	/*
 	 * Calculate the partition index. Nodes have the same number of
