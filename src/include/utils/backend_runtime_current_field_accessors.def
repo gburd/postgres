@@ -1168,6 +1168,15 @@
 #define PgCurrentRIConstraintCacheValidListRef() \
 	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionRIGlobalsRuntimeState, PgCurrentRIConstraintCacheValidListRef, \
 									 constraint_cache_valid_list)
+#define PgCurrentRIExecutingDepthRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionTransactionCleanupRuntimeState, PgCurrentRIExecutingDepthRef, \
+									 ri_executing_depth)
+#define PgCurrentRIExecutingMaxDepthRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionTransactionCleanupRuntimeState, PgCurrentRIExecutingMaxDepthRef, \
+									 ri_executing_maxdepth)
+#define PgCurrentRIExecutingPlansRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionTransactionCleanupRuntimeState, PgCurrentRIExecutingPlansRef, \
+									 ri_executing_plans)
 #define PgCurrentRIFastPathCacheRef() \
 	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionTransactionCleanupRuntimeState, PgCurrentRIFastPathCacheRef, \
 									 ri_fastpath_cache)
@@ -1177,9 +1186,15 @@
 #define PgCurrentRIFastPathFlushingRef() \
 	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionTransactionCleanupRuntimeState, PgCurrentRIFastPathFlushingRef, \
 									 ri_fastpath_flushing)
+#define PgCurrentRIFastPathMetaDeadListRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionTransactionCleanupRuntimeState, PgCurrentRIFastPathMetaDeadListRef, \
+									 ri_fpmeta_dead_list)
 #define PgCurrentRIFastPathXactCallbackRegisteredRef() \
 	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionRIGlobalsRuntimeState, PgCurrentRIFastPathXactCallbackRegisteredRef, \
 									 fastpath_xact_callback_registered)
+#define PgCurrentRIPlanDeadListRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionTransactionCleanupRuntimeState, PgCurrentRIPlanDeadListRef, \
+									 ri_plan_dead_list)
 #define PgCurrentRIQueryCacheRef() \
 	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionRIGlobalsRuntimeState, PgCurrentRIQueryCacheRef, \
 									 query_cache)

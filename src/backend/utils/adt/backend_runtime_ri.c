@@ -88,3 +88,33 @@ PgCurrentRIFastPathFlushingRef(void)
 {
 	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionTransactionCleanupRuntimeState, PgCurrentExecutionTransactionCleanupState)->ri_fastpath_flushing;
 }
+
+struct FastPathMeta **
+PgCurrentRIFastPathMetaDeadListRef(void)
+{
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionTransactionCleanupRuntimeState, PgCurrentExecutionTransactionCleanupState)->ri_fpmeta_dead_list;
+}
+
+struct _SPI_plan ***
+PgCurrentRIExecutingPlansRef(void)
+{
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionTransactionCleanupRuntimeState, PgCurrentExecutionTransactionCleanupState)->ri_executing_plans;
+}
+
+int *
+PgCurrentRIExecutingDepthRef(void)
+{
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionTransactionCleanupRuntimeState, PgCurrentExecutionTransactionCleanupState)->ri_executing_depth;
+}
+
+int *
+PgCurrentRIExecutingMaxDepthRef(void)
+{
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionTransactionCleanupRuntimeState, PgCurrentExecutionTransactionCleanupState)->ri_executing_maxdepth;
+}
+
+List **
+PgCurrentRIPlanDeadListRef(void)
+{
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionTransactionCleanupRuntimeState, PgCurrentExecutionTransactionCleanupState)->ri_plan_dead_list;
+}

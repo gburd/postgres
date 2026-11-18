@@ -230,7 +230,7 @@ typedef struct RI_CompareHashEntry
  * by AtEOXact_RI(), where no such reference can exist.  See
  * InvalidateConstraintCacheCallBack().
  */
-static FastPathMeta *ri_fpmeta_dead_list = NULL;
+#define ri_fpmeta_dead_list (*PgCurrentRIFastPathMetaDeadListRef())
 
 /*
  * Stack of the plans being executed by ri_PerformCheck() calls currently
@@ -246,11 +246,15 @@ static FastPathMeta *ri_fpmeta_dead_list = NULL;
  * is thrown, by restoring the depth it saw at push time, so the stack is
  * exact at all times.  A plan on the stack is never freed until the stack
  * is cut back past it, so no entry can dangle.
+ *
+ * In threaded mode these, like ri_fpmeta_dead_list, belong to the current
+ * PgExecution: AtEOXact_RI() runs at every transaction end, and must see only
+ * the stack and dead lists of the transaction that is ending.
  */
-static SPIPlanPtr *ri_executing_plans = NULL;
-static int	ri_executing_depth = 0;
-static int	ri_executing_maxdepth = 0;
-static List *ri_plan_dead_list = NIL;
+#define ri_executing_plans (*PgCurrentRIExecutingPlansRef())
+#define ri_executing_depth (*PgCurrentRIExecutingDepthRef())
+#define ri_executing_maxdepth (*PgCurrentRIExecutingMaxDepthRef())
+#define ri_plan_dead_list (*PgCurrentRIPlanDeadListRef())
 
 /*
  * Local function prototypes

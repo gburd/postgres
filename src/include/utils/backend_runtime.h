@@ -109,6 +109,7 @@ typedef struct PortalData *Portal;
 typedef struct SPITupleTable SPITupleTable;
 typedef struct _SPI_connection _SPI_connection;
 struct _SPI_plan;
+struct FastPathMeta;
 struct LogicalRepRelMapEntry;
 struct SeqTableData;
 struct pg_ctype_cache;
@@ -1250,6 +1251,11 @@ typedef struct PgExecutionTransactionCleanupState
 	HTAB	   *ri_fastpath_cache;
 	bool		ri_fastpath_callback_registered;
 	bool		ri_fastpath_flushing;
+	struct FastPathMeta *ri_fpmeta_dead_list;
+	struct _SPI_plan **ri_executing_plans;
+	int			ri_executing_depth;
+	int			ri_executing_maxdepth;
+	List	   *ri_plan_dead_list;
 } PgExecutionTransactionCleanupState;
 
 typedef struct PgExecutionReplicationScratchState
@@ -3404,6 +3410,11 @@ extern PgStat_SubXactStatus **PgCurrentPgStatXactStackRef(void);
 extern HTAB **PgCurrentRIFastPathCacheRef(void);
 extern bool *PgCurrentRIFastPathCallbackRegisteredRef(void);
 extern bool *PgCurrentRIFastPathFlushingRef(void);
+extern struct FastPathMeta **PgCurrentRIFastPathMetaDeadListRef(void);
+extern struct _SPI_plan ***PgCurrentRIExecutingPlansRef(void);
+extern int *PgCurrentRIExecutingDepthRef(void);
+extern int *PgCurrentRIExecutingMaxDepthRef(void);
+extern List **PgCurrentRIPlanDeadListRef(void);
 extern EventTriggerQueryState **PgCurrentEventTriggerQueryStateRef(void);
 extern MemoryContext PgCurrentEventTriggerMemoryContext(void);
 extern MemoryContext *PgCurrentEventTriggerMemoryContextRef(void);
