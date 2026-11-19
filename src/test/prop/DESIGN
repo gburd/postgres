@@ -1,0 +1,764 @@
+src/test/prop/DESIGN
+
+Design of the property-based test harness
+=========================================
+
+This document explains how the property-based test (PBT) harness is put
+together and why.  README covers how to run it and when to use it; this is the
+under-the-covers companion.
+
+
+Goals and constraints
+======================
+
+1. Optional and opt-in.  PostgreSQL must build and test exactly as before when
+   the feature is off.  The engine is an external dependency with prebuilt
+   binaries for a limited set of platforms, so it cannot be a mandatory part of
+   the tree.
+
+2. C, not C++.  PostgreSQL is a C project maintained by C programmers.  The
+   engine, libhegel, exposes a stable C ABI; everything in this directory is
+   plain C that calls it.  No C++ appears in the tree.
+
+3. Fits the existing test world.  When enabled, the suite is just more TAP
+   tests, discovered and run by "meson test" / "make check-world" like any
+   other.
+
+4. Reproducible.  Every run has a seed (printed if not supplied); every failure
+   prints a replay blob and shrinks to a minimal counterexample.
+
+
+What Hegel provides
+===================
+
+libhegel is the engine behind Hegel, shipped as a shared library (libhegel_c)
+with a C ABI declared in hegel.h.  It owns the hard parts of property-based
+testing: input generation, the shrinking search, and the example database.  The
+harness drives it through a small slice of that ABI:
+
+* hegel_settings_* -- configure a run (test-case count, seed, verbosity,
+  database path and key).
+
+* hegel_run_start / hegel_next_test_case / hegel_run_result -- the run loop: the
+  engine hands us one test case at a time; we execute the property body against
+  it and report the outcome with hegel_mark_complete.
+
+* hegel_generate_integer / _float / _boolean / _bytes, and
+  hegel_string_generator_text + hegel_generate_string -- the generators the
+  property body draws from.
+
+* hegel_run_result_failure / hegel_failure_reproduction_blob -- the minimal
+  counterexample and its replay blob after a failing run.
+
+* hegel_test_case_from_blob -- replay a counterexample for reporting.
+
+The engine runs in-process: there is no separate server process and it starts no
+threads of its own.  One property run is single-threaded.
+
+
+Shape of the tree
+=================
+
+    pg_prop.h           public harness API: the PG_PROP() macro, draws,
+                        assume/note/fail, isolate(), and the Tier-B SQL helpers.
+    pg_prop.c           the libhegel driver, generators, CLI, TAP output; main().
+    pg_prop_sql.c       libpq oracle helpers (Tier B); isolates the libpq
+                        dependency.
+    prop_<area>.c       one file per area; a set of PG_PROP() properties.
+    sql/                query-level areas that generate whole SQL statements
+                        (query_gen.c plus the TLP, NoREC, cardinality, PQS, and
+                        plan-advice areas).
+    t/001_prop.pl       TAP driver for the in-process (Tier A) areas.
+    t/002_sql_props.pl  TAP driver for the SQL-oracle (Tier B) areas; starts a
+                        node.
+    Makefile            autoconf build (one program, pg_prop).
+    meson.build         meson build (same program) plus test registration.
+
+All areas compile into one program, pg_prop.  The first command-line argument
+selects the area; the rest select individual properties.  One binary (rather
+than one per area) keeps the build small and gives the "pg_prop <area>" dispatch
+the user-facing CLI wants.
+
+
+Relationship to TAP: integrated with, not gated by
+==================================================
+
+PostgreSQL has three test *harnesses* -- pg_regress (SQL golden-master),
+isolation (interleaved sessions), and TAP (Perl scripts emitting the TAP
+protocol).  These are harnesses, not separate categories of truth, and the
+meson/make runner gives TAP suite grouping, parallelism, per-test timeouts, and
+log capture.
+
+Property-based testing is a *methodology*, and the engine is harness-
+independent: pg_prop is a standalone C program that emits the TAP protocol and
+runs on its own -- ./pg_prop <area> [-n N] [-s SEED] for the in-process (Tier A)
+areas, and the same with PGHOST/PGPORT pointed at any cluster for the SQL-oracle
+(Tier B) areas.  It needs neither Perl nor the TAP harness to run.
+
+So the suite is *not gated by* TAP.  The build requires only the opt-in flag
+(-Dprop_tests=enabled / --with-hegel) and libhegel; it does not require
+tap_tests.  When TAP tests are also enabled, the two Perl drivers
+(t/001_prop.pl, t/002_sql_props.pl) are additionally registered as the "prop"
+meson suite (postgresql:prop) for convenience -- they start a throwaway cluster
+and run the binary -- so a reviewer can "meson test --suite prop".  When TAP is
+disabled the binary still builds and is run directly; only the convenience
+driver registration is skipped.  This is the deliberate design: PBT integrates
+with the TAP harness where it helps (test collection, a named suite) without
+inheriting TAP as a hard dependency, and without reinventing a fourth test
+runner.
+
+
+The PG_PROP registry
+--------------------
+
+Each prop_<area>.c does:
+
+    #define PG_PROP_AREA "path"
+    #include "pg_prop.h"
+
+    PG_PROP(canonicalize_idempotent)
+    {
+        ...
+    }
+
+PG_PROP(name) expands to the property function plus a function-pointer
+registration run before main() via __attribute__((constructor)).  Each
+registration records the area (from PG_PROP_AREA), the name, and the function.
+main() then looks up the area named on the command line and runs its properties.
+Because registration is a constructor, simply linking an area file into pg_prop
+makes its properties available -- there is no central table to edit.
+
+
+The run loop and failure reporting
+----------------------------------
+
+For each selected property, run_property():
+
+1. builds a hegel_settings_t from the CLI (test_cases, seed, verbosity, and a
+   database_key of "area/name" so persisted counterexamples are scoped per
+   property);
+
+2. starts a run and pulls test cases until the engine signals completion;
+
+3. for each case, run_one_case() sets up a pg_prop_tc and calls the property body
+   inside sigsetjmp.  The body reports its outcome by not returning normally:
+
+   * returning normally        -> HEGEL_STATUS_VALID (property held),
+   * pg_prop_assume(false)      -> siglongjmp(..., 2) -> HEGEL_STATUS_INVALID
+                                   (case discarded),
+   * pg_prop_fail(...)          -> siglongjmp(..., 1) -> HEGEL_STATUS_INTERESTING
+                                   (counterexample),
+   * a draw past the budget     -> siglongjmp -> HEGEL_STATUS_OVERRUN.
+
+   setjmp/longjmp lets pg_prop_fail be called from arbitrarily deep in a property
+   body and still be pg_noreturn;
+
+4. after the run, if it failed, replays each counterexample's blob through
+   hegel_test_case_from_blob to re-derive the failing message, and prints the
+   "falsified:" line plus the "rerun with" blob as TAP diagnostics.
+
+Output is TAP by default (one ok/not ok per property), so the surrounding "meson
+test" / "prove" consumes it directly; --no-tap switches to plain text for
+interactive use.
+
+
+Seeds and the example database
+------------------------------
+
+If -s is not given, main() picks a seed from the PID and clock and prints
+"# seed: N".  A buildfarm failure is therefore always reproducible with -s N.
+The example database (where Hegel persists counterexamples so a known failure
+replays first) is placed under TESTDATADIR when the TAP wrapper sets it, and
+disabled otherwise, so nothing is written into the source tree.
+
+
+Two tiers
+=========
+
+Backend code -- the planner, executor, type I/O -- cannot be linked into a
+frontend program, so the harness has two tiers that differ only in how the code
+under test is reached.
+
+
+Tier A: in-process
+------------------
+
+src/common and src/port code (path, jsonapi, encoding, unicode_case,
+unicode_norm, pglz, base64, prng, crypto, scram, binaryheap, bitutils) is linked
+directly into pg_prop and called in the property body.  Each case is a function
+call: microseconds.  t/001_prop.pl runs these; no server is needed.
+
+Crash isolation.  Frontend PostgreSQL code reports fatal problems by abort() (a
+failed Assert under cassert) or exit().  In-process, either would take down the
+whole pg_prop process and lose the counterexample.  pg_prop_run_isolated() forks
+a child to run code that might do this and turns a crash, signal, or non-zero
+exit into an ordinary value the property can test and pg_prop_fail on -- with
+the drawn inputs, generated in the parent, still in hand for shrinking.  (The
+current area files mostly do not need it, since their functions return error
+codes rather than aborting, but it is there for code that does and for running
+under a sanitizer.)
+
+
+Tier B: SQL oracle
+------------------
+
+Backend behavior is tested differentially over libpq against a live node: the
+property generates SQL and compares the answer to an oracle that must agree.
+pg_prop_sql.c wraps just enough of libpq -- connect, run a scalar/rowset/DDL
+query, render the result as a comparable string -- and keeps the libpq
+dependency out of the rest of the harness.  t/002_sql_props.pl starts one node,
+exports PGHOST/PGPORT, and runs these areas against it.
+
+The oracles are chosen so a disagreement is unambiguously a bug, never a
+difference of opinion:
+
+* partprune: a partitioned table with pruning on, the same table with pruning
+  off, and an unpartitioned table holding identical rows must all return the
+  same result for any query.  Pruning is a performance optimization that must
+  never change results.
+
+* scan and join differentials (nbtree, indexscan, indexdiff, joinmethods,
+  outerjoin, ...): the same query run under forced scan methods, or forced join
+  methods, or a tiny versus ample work_mem, must return identical rows.
+
+* type algebra (interval, numeric, numfmt, float, cash, date, timestamptz, and
+  the rest): algebraic identities evaluated in SQL -- round-trips, a = q*b + r,
+  distributivity, a total order, text output that re-parses, add/subtract
+  inverses -- that the type is required to satisfy for all finite inputs (with
+  legitimate overflow skipped, and never silently wrapped).
+
+* structured types (jsonb, jsonpath, array, range, multirange, record,
+  tsvector, and friends): round-trips through text and the set/algebra laws of
+  the type's operators (containment, union, intersection, key dedup,
+  aggregate/unnest inverse, builder/accessor inverse, lexicographic ordering),
+  exact because these types normalize on input.
+
+* parsing and formatting (like, tsquery, tochar, bool, char): matching,
+  formatting, and parsing cross-checked against independent builtins
+  (starts_with, length, an explicit unnest membership scan) and the boolean
+  structure of the operators.
+
+Connection hygiene.  A property that fails or is assumed away unwinds by
+longjmp, jumping over its own pg_prop_disconnect().  The driver therefore calls
+pg_prop_sql_cleanup() after every case, which closes any connection a case left
+open; otherwise a long run would exhaust the server's connection slots.  (It is
+a no-op for Tier A.)
+
+
+Query-level areas (sql/)
+========================
+
+The highest-value Tier-B areas do not test one function; they test the query
+processor.  They live in sql/ and share query_gen.c, which builds a random table
+and a random three-valued boolean predicate as SQL text.  Each area wraps that
+in a metamorphic oracle -- a relationship that must hold with no independent
+reference answer, so a disagreement is unambiguously a server bug:
+
+* query_tlp -- Ternary Logic Partitioning (Rigger and Su, OOPSLA 2020).  For
+  any predicate p every row falls in exactly one of WHERE p, WHERE NOT p, WHERE
+  p IS NULL, so the three partitions UNION ALL'd must reconstruct the unfiltered
+  relation.
+
+* query_tlp_agg -- the same ternary partition applied to aggregates: count(*),
+  sum, min and max over the whole table must equal the fold of the three
+  partition aggregates.  Exercises the hash/sorted aggregation paths and the
+  NULL/empty-group folding that plain row return does not.
+
+* query_tlp_distinct -- the ternary partition under DISTINCT and the set
+  operators: DISTINCT distributes over the partition up to UNION, the p and
+  NOT-p partitions are disjoint (INTERSECT is empty), and EXCEPT recovers the
+  p-IS-NULL partition.  Exercises duplicate elimination and set-operation
+  handling.
+
+* query_norec -- compare an optimizable count(*) ... WHERE p against the
+  un-optimizable twin that pulls p into a bare per-row scan; the counts must
+  match.  Variants cover the FALSE partition, a sum under the filter, and the
+  predicate across a self-join (where pushdown interacts with the join).
+
+* query_cardinality -- metamorphic relations on result size rather than
+  contents: adding a conjunct cannot grow and adding a disjunct cannot shrink a
+  result, the ternary partition tiles the table exactly, DISTINCT never grows a
+  projection, and UNION ALL is additive while UNION is no larger.  Cheap (one
+  count per query) yet broad.
+
+* query_pqs -- Pivoted Query Synthesis (Rigger and Su, ESEC/FSE 2020).  Pick a
+  real pivot row, read its values, synthesize a WHERE predicate guaranteed TRUE
+  for it by rectifying every leaf against those values, and require the pivot's
+  id in the result.  Unlike the metamorphic oracles it checks a single query
+  against a single known-true fact, so it catches a bug that corrupts both
+  sides of a comparison identically.
+
+* query_planadvice -- run a generated query with the planner free and again
+  steered by contrib/pg_plan_advice (SEQ_SCAN, NESTED_LOOP_PLAIN, JOIN_ORDER,
+  and so on, via the pg_plan_advice.advice GUC), plus a tiny-work_mem spill
+  variant; the result must not depend on the plan the planner chose.  Advice is
+  used in preference to the blunt enable_* GUCs because it names the exact
+  relation or join to re-shape and the extension rejects advice it cannot
+  honor, so the alternate plan is a targeted legal variant of the same query
+  rather than a global cost distortion.
+
+* query_multi -- the oracles above over a multi-table generated database rather
+  than a self-joined single table.  qg_build_db() creates 2..N related tables
+  with declared primary and foreign keys and correlated data (a child's FK
+  column is drawn from the parent's actual key values), so joins have a real
+  referential structure for the planner to exploit.  Properties: TLP over a FK
+  join, join-cardinality commutativity and the cross-product bound, and that a
+  FK equi-join returns exactly the non-NULL-FK child rows.  The generator has
+  three profiles selected by the PG_PROP_DEEP environment variable: unset (the
+  small, fast, deterministic default the committed TAP run uses); "fast" (a
+  leaner deep profile -- a few bounded-size tables, still multi-table with FKs,
+  subqueries, TOAST and triggers -- cheap enough to run tens of thousands of
+  iterations unattended); and "full" (the maximal profile: many wide tables, up
+  to thousands of rows, heavy TOAST, for a short, heavily-resourced run).  The
+  deep profiles vary TOAST storage mode per column (PLAIN / MAIN / EXTERNAL /
+  EXTENDED) and attach result-neutral BEFORE-row triggers to some tables (they
+  return the row unchanged, so SELECT oracles stay sound while the relation
+  still carries trigger metadata and the write path runs the trigger).
+
+* query_deep -- the oracles over an arbitrary generated query shape, not just a
+  single join.  qg_build_query() walks the foreign-key graph to build a random
+  left-deep join tree (inner and left joins) of configurable depth, projecting
+  a stable key list and exposing one mutable predicate over the anchor relation
+  so a metamorphic oracle can vary just that predicate while the join stays
+  fixed.  Properties: deep_tlp (the predicate partitioned three ways
+  reconstructs the join), deep_norec (the predicate in WHERE versus the same
+  predicate wrapped in a CASE barrier must count the same rows), deep_cte_inline
+  (the filtered query as an inline subquery, a plain CTE, and a MATERIALIZED CTE
+  must return identical rows -- the subquery-pullup and CTE-inlining rewrites),
+  deep_const_fold (ANDing a plan-time-foldable tautology (1=1) and a run-time
+  tautology (col - col = 0) must not change the result -- constant folding), and
+  deep_corr_subquery (a parent-filtered semijoin written as IN, as EXISTS, and
+  as a DISTINCT join must agree -- subquery unnesting).
+
+
+Trait-based access-method areas
+===============================
+
+An access method is described by *traits* -- capabilities it declares and the
+server exposes at runtime -- and the tests are organized along them so that the
+generic part is reusable by any implementation of the trait, in core or out of
+tree.
+
+Index AMs (sql/index_traits.c, driven by sql/prop_index_am.c).  A trait is a
+contract that must hold for ANY index AM claiming it: exact (equality equals a
+seqscan), ordered (ranges, ORDER BY satisfied by the index, backward scan),
+summarizing (BRIN-style lossy block ranges never drop a matching row),
+multicol, include (index-only scans), search_nulls, unique.  The harness takes
+an am_driver (the AM name, its setup DDL, and the indexed column/opclass) and
+runs, for each trait the AM actually claims, that trait's properties -- the
+core oracle throughout being differential: force the plan onto the index, force
+it onto a seqscan, require identical rows.
+
+Crucially the harness asks the server which traits the AM has, at the right
+granularity: pg_indexam_has_property for AM-level traits (can_order, can_unique,
+can_multi_col, can_include), pg_index_has_property for index-level ones
+(index_scan, bitmap_scan, backward_scan), and pg_index_column_has_property for
+column-level ones (asc, orderable, search_nulls).  So prop_index_am.c encodes no
+capability matrix -- it supplies one driver per shipped AM (btree, hash, brin,
+gin, gist) and the server decides what runs.  That is exactly what lets an
+out-of-tree AM reuse the whole applicable suite: BARK, a B+-tree successor to
+nbtree, declares amcanorder/amcanunique/amcaninclude in its amhandler and gets
+the entire ordered + unique + include + exact + search_nulls trait suite by
+adding one am_driver; a summarizing extension AM gets the summarizing suite the
+same way.  AM-specific behaviour that is not a shared trait (nbtree skip scan)
+stays in its own area (prop_nbtree.c).
+
+Table AMs (sql/prop_table_am.c).  The same split: the generic contract every
+table AM must satisfy -- insert/delete/update row-count correctness, MVCC
+visibility and rollback, one distinct ctid per live row, aggregates agreeing
+with the scan -- is written over "CREATE TABLE ... USING <am>" with the AM named
+by PG_PROP_TABLE_AM (default heap).  Another table AM (OrioleDB, the undo-based
+FLUX AM) reuses the whole suite by building the binary with its extension loaded
+and the AM name supplied; nothing in it is heap-specific.
+
+The older indexdiff area is kept as-is: it tests index *features* orthogonal to
+AM traits (partial and expression indexes), which are not AM capabilities, so it
+complements rather than duplicates the trait areas.
+
+The bloom contrib AM is driven by the index trait harness too (it declares
+bitmap-only, lossy, no ordering), so it exercises the exact and summarizing-
+shaped trait checks.  spgist is not in the int-column trait suite (it ships no
+integer opclass); it is a candidate for its own area over the scalar types it
+supports.
+
+
+The procedural-language / SQL boundary (sql/prop_pl_langs.c)
+============================================================
+
+The languages themselves work; what is not obvious is whether they behave
+correctly at the boundary with SQL inside PostgreSQL -- when a PL function runs
+a query via SPI, marshals a composite / array / set across the boundary, fires
+as a trigger during DML, or round-trips a value through the PL's own type
+system.  That boundary, over the generated schemas, is the surface this area
+targets, across PL/pgSQL, PL/Python, PL/Perl and PL/Tcl.  Each property is a
+differential oracle: the PL path must agree with the equivalent pure-SQL path.
+
+  spi_count_matches  -- a PL function that SPI-executes a count query over the
+                       generated table with a generated predicate returns the
+                       same count as the direct SQL query (SPI from the PL).
+  srf_matches_sql    -- a PL set-returning function yielding the matching ids
+                       returns the same multiset as the SQL query (set return
+                       and materialization).
+  roundtrip_jsonb    -- a jsonb passed into a PL function and returned is
+                       unchanged (the PL's jsonb <-> native conversion).
+  trigger_derived    -- a PL BEFORE trigger that maintains a derived column
+                       keeps it consistent with the SQL expression after
+                       arbitrary INSERT/UPDATE churn (trigger firing and NEW-
+                       tuple modification across the boundary).
+
+Each probes its language with pg_prop_require_extension and skips (TAP SKIP)
+when the server was not built with it, so the area runs whatever PLs are
+present.  (Generating source for a whitespace-sensitive language through a SQL
+dollar-quoted literal, and keeping the draw count independent of which PLs the
+server has, both matter for reproducibility; see finding 025.)
+
+
+Integrity oracles (sql/prop_integrity.c)
+========================================
+
+The integrity-checking contrib extensions make powerful oracles: for any table
+and index the generator builds, and after any DML churn it applies, the
+structure the server produced must pass the extension's own self-check.  A
+failure is a storage- or access-method-level corruption bug -- a different and
+valuable class from wrong results.  btree_amcheck (bt_index_check on a freshly
+built index), heap_verify (verify_heapam finds no corruption after churn),
+vm_consistent (pg_check_visible / pg_check_frozen find no wrongly-set
+visibility-map bits after VACUUM FREEZE), and stattuple_bounds (pgstattuple's
+byte accounting is non-negative and bounded by the table size).  Beyond those,
+gin_amcheck (gin_index_check on a GIN index over a generated int[] column),
+btree_amcheck_heapallindexed (bt_index_check with heapallindexed => true, which
+also verifies every heap tuple is represented in the index, over btree /
+multicolumn / expression / partial / covering shapes), and
+pageinspect_header_bounds (a heap page's header offsets satisfy 0 <= lower <=
+upper <= special <= pagesize, and every line pointer's tuple extent stays within
+the page).  Each requires its contrib extension and skips cleanly if absent.
+(A check function that reports via RAISE, like bt_index_check, is invoked as a
+plain top-level SELECT, never buried in a subquery a constant-false outer query
+could optimize away -- that elision would make the oracle vacuous; see finding
+024.)
+
+
+Constraint enforcement (sql/prop_constraints.c)
+===============================================
+
+A constraint is a promise about the data, and the property is that it is
+enforced *exactly*: a candidate row is rejected if and only if it violates the
+constraint.  The oracle for each is a pure-SQL predicate that decides whether a
+row is a violation; the property generates candidate rows, computes which the
+predicate marks as violations, inserts them one at a time, and requires the
+server to reject exactly that set.  A constraint accepting a violator is a
+correctness bug of the most serious kind; rejecting a valid row is an equally
+real false positive.  unique_rejects_dups (UNIQUE/PK, NULLs distinct),
+check_rejects_false (CHECK accepts unless the expression is FALSE -- NULL is
+accepted, per SQL three-valued logic), notnull_rejects_null, fk_rejects_orphan
+(a child is accepted iff its key is NULL or present in the parent), and
+exclusion_rejects_overlap (a range is accepted iff it overlaps no existing one;
+skipped if gist-on-int4range is unavailable).
+
+
+Transaction isolation (sql/prop_isolation.c)
+============================================
+
+Isolation is among the hardest guarantees a database makes and the most
+important to verify.  These properties drive two or three concurrent sessions
+(separate libpq connections) through interleavings and assert the guarantee of
+each level; the oracle is the documented guarantee, not a generated reference.
+ser_write_skew_prevented (under SERIALIZABLE the classic write-skew pair cannot
+both commit -- at least one must fail with a serialization error),
+rr_snapshot_stable (under REPEATABLE READ a repeated read returns the same
+value despite a concurrent committed update), and rc_sees_committed (under READ
+COMMITTED a new statement sees a concurrently committed change and does not see
+an uncommitted one).  Two more: ser_phantom_prevented (SERIALIZABLE's predicate
+locking stops a phantom/write-skew anomaly where each txn reads a range and
+inserts into the other's range from both committing), and
+row_lock_conflict_times_out (a row locked FOR UPDATE by one session blocks a
+conflicting write from another, which with a short lock_timeout fails with
+55P03 rather than waiting forever, and succeeds once the lock is released --
+exercising the row-lock machinery synchronously, without a second thread).  The
+harness's per-case cleanup closes every connection a body opened, so the extra
+sessions never leak across cases.
+
+
+Contrib breadth (sql/prop_contrib.c)
+====================================
+
+A grab-bag of smaller contrib modules, each a bounded invariant with a
+skip-if-absent guard: tablefunc_normal_rand (normal_rand(n, mean, sd) returns
+exactly n finite rows), tsm_system_rows_bound (TABLESAMPLE SYSTEM_ROWS(n)
+returns at most n rows, all genuine table rows), tsm_system_time_bound (every
+SYSTEM_TIME sample is a real table row), walinspect_monotonic (records read
+over a generated LSN range have non-decreasing start_lsn -- WAL is an ordered
+append-only log), and dblink_roundtrip (a value sent through a dblink loopback
+back to this very node -- conninfo built from the server's own
+unix_socket_directories and port -- returns unchanged, exercising connection
+setup and result marshalling).
+
+
+Window functions and grouping sets (sql/prop_query_window.c)
+===========================================================
+
+The planner/executor transformations with the richest wrong-results history,
+as metamorphic oracles over a generated table.  Window: window_count_over_all
+(count(*) OVER () equals the total on every row), window_running_sum (the final
+value of a running sum over a total order equals the plain sum -- taken as
+max(rs) since a non-negative summand makes it monotone -- and it never
+decreases), window_row_number_perm (row_number() is a permutation of 1..n), and
+window_rank_bounds (dense_rank <= rank <= row_number).  Grouping sets:
+rollup_grand_total (the all-NULL grouping row equals the ungrouped aggregate),
+rollup_detail_matches (ROLLUP detail rows equal plain GROUP BY), cube_superset_
+rollup (CUBE returns at least as many grouping rows as ROLLUP), and
+groupingsets_union (GROUPING SETS ((a),(b),()) equals the UNION ALL of the
+three component groupings).
+
+
+SP-GiST (sql/prop_spgist.c)
+===========================
+
+SP-GiST ships no integer opclass, so it is outside the generic int-column index
+trait suite; this AM-specific area exercises the opclasses it does support with
+the same index-vs-seqscan differential: text_prefix (text_ops over equality,
+LIKE prefix and range), point_contains (a box-containment query over point),
+and inet_contains (a network-containment query over inet, skipped if the inet
+opclass is absent).
+
+
+Authorization model (sql/prop_authz.c)
+======================================
+
+The access-control model, where a single wrong answer is a security hole, is
+tested against a catalog oracle over randomly generated roles, memberships and
+grants: grant_then_has (GRANT makes has_table_privilege true, REVOKE makes it
+false -- the exact inverse), privilege_matches_catalog (has_table_privilege
+agrees with information_schema.role_table_grants for every privilege type -- two
+catalog representations of the same fact must match), membership_transitive
+(privileges flow through an a->b->c INHERIT chain iff every link inherits, and a
+NOINHERIT link blocks them), owner_and_public (a table's owner has every
+privilege without a grant; a PUBLIC grant reaches an unrelated role but confers
+only what was granted), and column_privilege_scoped (a SELECT(col) grant is
+visible on that column, not another).  Roles/tables get unique per-case names
+and are dropped per case.
+
+
+Multi-backend concurrency (sql/prop_concurrency.c)
+==================================================
+
+Most areas use one backend; this one orchestrates a POOL of backends whose
+membership churns -- sessions connect, work, and disconnect throughout a case,
+so the system runs under a constantly changing concurrency level -- and asserts
+conservation/consistency laws that hold under any serializable schedule.
+transfer_conserves_total (many concurrent SERIALIZABLE transfers between
+accounts preserve the total balance exactly; a lost update would change it),
+counter_increments_exact (N sessions each do atomic UPDATE c=c+1; the final
+value equals the committed increment count -- no lost updates under row
+locking), and churn_no_orphan_xacts (while sessions open/close every op, the
+visible row count equals committed inserts -- no rolled-back row leaks).  Built
+on the async primitives below.
+
+
+Async statements and the server-side digest
+===========================================
+
+Two harness additions support the areas above.  pg_prop_sql_send /
+pg_prop_sql_await dispatch a statement without waiting and later block for its
+result (with the SQLSTATE), so two sessions can be in flight at once -- needed
+to provoke a real deadlock and let the detector pick exactly one 40P01 victim
+(isolation/deadlock_one_victim), and to drive the concurrency pool.
+pg_prop_sql_rowhash returns an md5 digest of the whole result computed server-
+side, so a row oracle over a deep generated query holds only a 32-char hash
+instead of shipping and rendering the full result -- which can exceed the 1 GB
+StringInfo cap (finding 027).  The deep row oracles (query_deep, query_multi)
+use the digest.
+
+
+The skip / availability framework
+=================================
+
+pg_prop_require_extension(conn, name) checks pg_available_extensions and, if the
+module is installable, loads it with CREATE EXTENSION IF NOT EXISTS, returning
+whether it is now present.  pg_prop_skip(tc, fmt, ...) abandons the whole
+property and reports it as skipped (TAP "ok N # SKIP reason").  Together they
+let an extension or PL area degrade gracefully: it loads what it needs if the
+server offers it, and marks itself skipped -- not failed -- when it does not.
+
+
+Build-system integration
+========================
+
+meson
+-----
+
+* meson_options.txt adds a feature option prop_tests (default disabled).
+
+* The top-level meson.build, right after the TAP-tests block, resolves
+  prop_tests_enabled: it requires tap_tests_enabled, then looks for hegel.h (via
+  postgres_inc, which includes --extra-include-dirs) and the hegel_c library
+  (via postgres_lib_d, i.e. --extra-lib-dirs).  All three present -> enabled;
+  -Dprop_tests=enabled with a piece missing -> hard error; otherwise silently
+  off.  A summary() line reports the result.
+
+* src/test/meson.build descends into prop/ only when prop_tests_enabled.
+  src/test/prop/meson.build builds pg_prop (linking frontend_code, libpq, and
+  libhegel) and registers the two TAP drivers as the "prop" suite.
+
+autoconf
+--------
+
+* configure.ac adds --with-hegel (default no); it errors immediately if
+  --enable-tap-tests was not also given.  Down with the other library probes
+  (where --with-includes/--with-libraries are in effect) it runs
+  AC_CHECK_HEADER(hegel.h) and AC_CHECK_LIB(hegel_c, hegel_version), both hard
+  errors under --with-hegel.  The AC_CHECK_LIB deliberately does not add
+  -lhegel_c to the global LIBS; only pg_prop links it.
+
+* with_hegel flows through Makefile.global.in.  src/test/Makefile adds prop to
+  SUBDIRS when with_hegel = yes (and always to ALWAYS_SUBDIRS so "make clean"
+  recurses).  src/test/prop/Makefile builds the one program and declares
+  TAP_TESTS = 1, so "make check" runs t/*.pl.
+
+
+Measuring the value: coverage and input diversity
+==================================================
+
+Two things were measured on an instrumented build (meson setup ...
+-Db_coverage=true), PostgreSQL src/ only, branch coverage off, comparing the PBT
+suite against "test-world" (the regress and isolation suites).
+
+Line coverage, the number that undersells it:
+
+    configuration                      line coverage         function coverage
+    test-world (regress + isolation)   72.1% (315,641)       77.6%
+    PBT suite only                     32.6% (130,227)       42.4%
+    union (test-world + PBT)           72.8% (327,606)       79.0%
+
+The PBTs add 1,293 server lines test-world never reaches (+0.41% relative).
+That is small, and honestly so: test-world already touches almost every adt/*.c
+line at least once.
+
+Execution depth per line, what we hoped for and did not find.  It is tempting to
+argue the PBTs at least execute the shared lines far more often -- more inputs
+per line.  Measured directly with gcov execution counts, the honest result is
+no, not in raw count.  Run for run, the dense regression corpus executes the hot
+type-I/O and planner lines more than a 100-iteration PBT pass, and even a single
+area at 8,000 iterations executes src/common/jsonapi.c only about 0.2x as many
+times total as the json/jsonb regression tests do.  Per hot file the PBT/world
+execution-count ratios ran from about 0.1x (formatting.c, selfuncs.c) to about
+2.7x (nodeAgg.c); there is no "orders of magnitude" effect and none is claimed.
+
+Input diversity via differential coverage, the real measured gain.  The gain is
+on a different axis: the generators reach different lines, not the same lines
+more.  Measured on the file each area targets, the jsonapi area at 8,000
+iterations covers 527 lines of src/common/jsonapi.c, of which 242 are lines the
+json and jsonb regression tests never reach (test-world covers 464).  Those 242
+lines are overwhelmingly the incremental-parser state machine, which only
+executes when a value is delivered one byte at a time -- precisely what the
+generator does and what no hand-written case enumerates.  This is the same
+mechanism that caught the reverted jsonapi "0.0" bug.
+
+To reproduce the measurement, build with -Db_coverage=true, zero the counters
+(find ... -name '*.gcda' -delete), run one suite, capture with lcov (adding
+--ignore-errors inconsistent,corrupt), extract the PostgreSQL src/ paths, repeat
+for the other suite, and compare the per-line DA: counts and the covered-line
+sets between the two tracefiles.
+
+Function and branch coverage of the query-level areas.  The query-generation
+areas (sql/) are measured separately because their value is executing planner
+and executor paths, where branch coverage is the metric that matters -- a wrong
+turn at a branch is exactly how a plan produces wrong rows.  On a branch-enabled
+coverage build (lcov --rc branch_coverage=1), the seven query areas alone,
+measured over src/backend/{optimizer,executor,parser} and nbtree, reach:
+
+    subtree                            lines    functions   branches
+    optimizer + executor + parser      29.2%    42.3%       20.1%
+
+and drive the specific files the oracles target:
+
+    file                               lines    functions   branches
+    optimizer/path/clausesel.c         85.2%    100%        72.4%
+    optimizer/prep/prepunion.c         77.3%    91.7%       55.8%
+    optimizer/plan/planner.c           43.8%    59.7%       31.0%
+    executor/nodeAgg.c                 53.8%    61.1%       36.4%
+    executor/nodeNestloop.c            69.2%    75.0%       47.2%
+    executor/nodeHashjoin.c            35.0%    35.3%       14.3%
+    executor/nodeMergejoin.c           57.6%    63.6%       29.5%
+
+clausesel.c and prepunion.c are high precisely because the predicate generator
+and the TLP/distinct set-operation oracles hammer them.  nodeMergejoin.c was at
+0% until a plan-advice property steering MERGE_JOIN_PLAIN was added -- branch
+coverage, not line or function, is what surfaced that the file was never entered
+at all, and the single new property took it to 57.6%/63.6%/29.5%.  The remaining
+nodeHashjoin.c branches are the spill paths, which the tiny-work_mem variants
+reach only intermittently at this table size.
+
+The takeaway for a reviewer: judge this suite by which code it reaches and by
+the standing differential net, not by a coverage-percentage delta or a
+depth-per-line multiplier -- the latter does not favor PBT and we do not claim
+it does.
+
+Whole-suite lift over the regression tests.  On a branch-coverage build,
+measured over src/backend + src/common, the core regression suite alone covers
+70.0% of lines, 73.3% of functions and 53.4% of branches; adding the full PBT
+suite on top raises that to 72.0% / 76.3% / 54.7%.  The property suite executes
+544 backend/common functions and 7,933 lines the entire regression suite never
+reaches, plus 3,082 additional branches.  Branch coverage moves least, as
+expected -- the regression suite already drives most hot branches, so the PBT
+win is breadth (new functions and lines, in the incremental jsonapi parser, the
+access-method trait paths, and the deep planner transformations) more than
+depth on branches already covered.  This is the concrete argument for carrying
+the suite in core: not to replace the golden-master tests (the union is what
+matters) but to reach a standing slice of the backend they structurally do not,
+with generated rather than hand-enumerated inputs.
+
+
+Why this shape
+==============
+
+* One binary, area-dispatched.  Matches the "pg_prop <area>" CLI, keeps the
+  build to a single target, and lets a developer run or debug exactly one
+  property with a fixed seed.
+
+* C ABI, not the C++ frontend.  Keeps the tree C-only; the only non-C artifact
+  is the prebuilt engine library itself.
+
+* setjmp for fail/assume.  Lets assertions sit naturally deep in a property body
+  and keeps pg_prop_fail pg_noreturn.
+
+* Differential oracles for backend code.  Avoids running the engine inside a
+  backend (which would need PG_TRY shims to keep longjmp out of the engine's
+  frames -- not needed here, and not worth the complexity until a round-trip
+  through SQL becomes a measured bottleneck).
+
+* Default 100 iterations.  Keeps check-world cheap; the iteration count is a knob
+  (-n / PG_PROP_ITERATIONS) you turn up when hunting.
+
+
+Limitations and future work
+===========================
+
+* Platform coverage is whatever libhegel ships a prebuilt library for (Linux
+  x86_64/arm64, macOS arm64, Windows at the time of writing); other platforms
+  would need a source build of the engine.  The opt-in default keeps this from
+  affecting anyone who does not ask for it.
+
+* Beta engine.  Hegel is pre-1.0; its API can change and replay blobs are only
+  guaranteed to reproduce on the same engine version.  The configure checks pin
+  to the header and library actually installed.
+
+* In-backend properties (running the engine inside a running backend, for
+  cheaper backend coverage than round-tripping SQL) are deliberately not
+  attempted yet; they would require PG_TRY-based shims so a longjmp cannot cross
+  the engine's frames.  Worth revisiting only if the SQL round-trip cost becomes
+  the bottleneck.
+
+* Stateful and model testing (sequences of operations checked against a
+  reference model) is supported by Hegel but not yet used here; the data
+  structures in src/backend/lib (for example the radix tree and the TID store)
+  are the natural first customers.
+
+* More query-generation oracles remain a growth area.  Implemented so far: TLP
+  (rows, aggregates, DISTINCT/set-ops), NoREC, plan-advice metamorphic testing
+  (scan/join method, join order, spill), result-cardinality monotonicity, and
+  Pivoted Query Synthesis.  Still open and likely to find a live wrong-results
+  bug: a multi-table generator for richer join-order and subquery-unnesting
+  equivalence, constant-folding metamorphic checks, and correlated-subquery
+  rewrites.  A larger/deeper generator (wider joins, more columns, correlated
+  data) run at high iteration is the lever most likely to turn one up.

@@ -1,0 +1,1760 @@
+/*-------------------------------------------------------------------------
+ *
+ * query_gen.c
+ *	  Shared SQL query generator for the query-level property areas.
+ *
+ * See query_gen.h for the contract.  The generator produces well-typed,
+ * parseable SQL text only; it never decides what is correct -- that is each
+ * area's oracle.  Keeping generation here means the TLP, NoREC, cardinality,
+ * PQS and plan-advice areas all draw from the same distribution of tables and
+ * predicates, so a counterexample found by one is reproducible shape-for-shape
+ * in the others.
+ *
+ * The table shape is a schema assembled once per process: core registers a
+ * fixed set of typed columns, and the "query_gen.column" / "query_gen.predicate"
+ * extension points let a contrib type add its own columns and predicate leaves
+ * (see pg_prop.h).  Everything downstream -- row generation, predicate drawing,
+ * the oracles -- is schema-driven, so adding a type needs no oracle changes.
+ *
+ * Copyright (c) 2026, PostgreSQL Global Development Group
+ *
+ * IDENTIFICATION
+ *	  src/test/prop/sql/query_gen.c
+ *
+ *-------------------------------------------------------------------------
+ */
+#include "postgres_fe.h"
+
+#include "query_gen.h"
+
+/* ---- deterministic internal PRNG (task #1: deep-generator reproducibility) --
+ *
+ * The deep multi-table generator makes hundreds of data-dependent draws per
+ * case (a draw's range depends on prior drawn values: parent row counts,
+ * column counts, table counts).  Threaded straight through the engine, that
+ * long, variable-shape draw sequence did not replay from a fixed seed
+ * (finding 041): the engine's failure-replay could rebuild a different query,
+ * so a deep counterexample could not be reproduced.
+ *
+ * The fix: the generator draws ONE 64-bit integer from the engine per deep
+ * case (so the engine still seeds, shrinks that one value, and replays it)
+ * and drives every structural and value choice from a small deterministic
+ * PRNG (splitmix64) seeded by it.  The engine therefore sees a single,
+ * fixed-shape draw per case -- trivially reproducible regardless of its
+ * internal buffer semantics -- while the generator keeps its rich
+ * data-dependent branching.
+ *
+ * This is opt-in via qg_rng_begin()/qg_rng_end() around a generation region.
+ * While a region is active, qg_draw_int/bool pull from the PRNG; outside one
+ * they fall through to the engine unchanged, so the single-table generator
+ * and every existing property behave exactly as before.  The tradeoff is
+ * coarser shrinking of deep structure (the engine can only shrink the seed),
+ * which for a hunt/review tool is worth far less than the ability to replay
+ * a hit at all.
+ */
+static bool qg_rng_active = false;
+static uint64 qg_rng_state = 0;
+
+static inline uint64
+qg_splitmix64(void)
+{
+	uint64		z = (qg_rng_state += UINT64CONST(0x9E3779B97F4A7C15));
+
+	z = (z ^ (z >> 30)) * UINT64CONST(0xBF58476D1CE4E5B9);
+	z = (z ^ (z >> 27)) * UINT64CONST(0x94D049BB133111EB);
+	return z ^ (z >> 31);
+}
+
+/*
+ * Begin a deterministic generation region: draw one engine integer as the
+ * seed and switch qg_draw_* to the PRNG.
+ *
+ * Default policy (learned from CF vetting, where replaying a hit matters more
+ * than the engine's structural shrinking -- which it cannot do for a deep
+ * multi-table query anyway):
+ *   - a DEEP profile (PG_PROP_DEEP set) defaults the PRNG ON, so a deep
+ *     counterexample is reproducible by construction regardless of libhegel's
+ *     draw-replay behaviour;
+ *   - the default single-table profile leaves it OFF, so the engine's
+ *     shrinking of the short, fixed-shape draw sequence still works well.
+ * PG_PROP_GEN_PRNG overrides either way: =1 forces on, =0 forces off.
+ */
+static void
+qg_rng_begin(pg_prop_tc *tc)
+{
+	const char *v = getenv("PG_PROP_GEN_PRNG");
+	const char *deep = getenv("PG_PROP_DEEP");
+	bool		want;
+
+	if (v != NULL && v[0] != '\0')
+		want = (strcmp(v, "0") != 0);		/* explicit override */
+	else
+		want = (deep != NULL && deep[0] != '\0' && strcmp(deep, "0") != 0);
+
+	if (!want)
+	{
+		qg_rng_active = false;
+		return;
+	}
+	qg_rng_state = (uint64) pg_prop_draw_int(tc, INT64_MIN, INT64_MAX);
+	qg_rng_active = true;
+}
+
+static void
+qg_rng_end(void)
+{
+	qg_rng_active = false;
+}
+
+/*
+ * Draw an integer in [min,max].  Inside a qg_rng region this is deterministic
+ * from the region seed (unbiased rejection sampling over splitmix64 output);
+ * outside, it is the engine draw.  A degenerate or inverted range returns min
+ * rather than asking the engine for an empty interval (which was itself a
+ * non-determinism hazard).
+ */
+static int64
+qg_draw_int(pg_prop_tc *tc, int64 min, int64 max)
+{
+	if (max <= min)
+		return min;
+	if (!qg_rng_active)
+		return pg_prop_draw_int(tc, min, max);
+	{
+		uint64		span = (uint64) (max - min) + 1;
+		uint64		limit = span == 0 ? 0 : (UINT64_MAX - (UINT64_MAX % span));
+		uint64		r;
+
+		if (span == 0)			/* full 64-bit range */
+			return (int64) qg_splitmix64();
+		do
+			r = qg_splitmix64();
+		while (limit != 0 && r >= limit);
+		return min + (int64) (r % span);
+	}
+}
+
+static bool
+qg_draw_bool(pg_prop_tc *tc)
+{
+	if (!qg_rng_active)
+		return pg_prop_draw_bool(tc);
+	return (qg_splitmix64() & 1) != 0;
+}
+
+/* ---- patch-biased generation (task #3) ------------------------------------
+ *
+ * cf-features.py scans a commitfest patch's diff and emits PG_PROP_GEN_BIAS, a
+ * comma-separated list of feature tags for the SQL surface the patch touches
+ * (joins, setops, aggregation, window, distinct, subquery, nulls, collation,
+ * numeric, partition, toast, index, constraint, cast).  The generator reads
+ * it once and, at the handful of "which shape" draws that matter, boosts the
+ * weight of shapes exercising a wanted tag.  Biasing only reweights; every
+ * shape is still reachable, so a biased run focuses on the patched surface
+ * without losing the neighbouring-bug coverage that an unbiased run gives.
+ *
+ * qg_bias_wants(tag) answers "did the patch touch this surface".  qg_biased()
+ * is a weighted pick over a small set of options, each labelled with the tag
+ * it exercises (or NULL for "neutral"); a wanted tag's options get WEIGHT
+ * extra draws' worth of probability.  It uses qg_draw_int so it stays inside
+ * the deterministic region.
+ */
+#define QG_BIAS_WEIGHT 4
+
+static bool qg_bias_inited = false;
+static char qg_bias_tags[256];
+
+static bool
+qg_bias_wants(const char *tag)
+{
+	const char *v;
+
+	if (!qg_bias_inited)
+	{
+		v = getenv("PG_PROP_GEN_BIAS");
+		snprintf(qg_bias_tags, sizeof(qg_bias_tags), ",%s,", v ? v : "");
+		qg_bias_inited = true;
+	}
+	if (tag == NULL || qg_bias_tags[1] == '\0')
+		return false;
+	{
+		char		needle[40];
+
+		snprintf(needle, sizeof(needle), ",%s,", tag);
+		return strstr(qg_bias_tags, needle) != NULL;
+	}
+}
+
+/*
+ * Weighted pick over n options.  opt_tags[i] is the feature tag option i
+ * exercises, or NULL if neutral.  Each wanted option is entered
+ * QG_BIAS_WEIGHT times in the lottery; others once.  Returns the chosen index
+ * 0..n-1.  With no bias active (no wanted tag present) this is a uniform draw
+ * in [0, n-1], identical to the unbiased generator.
+ */
+static int
+qg_biased(pg_prop_tc *tc, int n, const char *const opt_tags[])
+{
+	int			weights[32];
+	int			total = 0;
+	int			i;
+	int			r;
+
+	if (n > 32)
+		n = 32;
+	for (i = 0; i < n; i++)
+	{
+		weights[i] = qg_bias_wants(opt_tags[i]) ? QG_BIAS_WEIGHT : 1;
+		total += weights[i];
+	}
+	if (total == n)				/* nothing wanted: plain uniform draw */
+		return (int) qg_draw_int(tc, 0, n - 1);
+	r = (int) qg_draw_int(tc, 0, total - 1);
+	for (i = 0; i < n; i++)
+	{
+		if (r < weights[i])
+			return i;
+		r -= weights[i];
+	}
+	return n - 1;
+}
+
+/*
+ * Value domains deliberately favour the cases that break planners and
+ * executors, not uniform small noise: boundary integers (INT_MIN/MAX, 0, +-1),
+ * heavy NULL, and skew (one value dominating) so selectivity estimates diverge
+ * from reality and plan choice flips.  Legible counterexamples still shrink
+ * because the engine prefers the small/boundary draws.
+ */
+#define QG_VAL_MIN (-5)
+#define QG_VAL_MAX 5
+
+/* INT_MIN / INT_MAX as SQL text (INT_MIN written to avoid the unary-minus
+ * literal-overflow trap). */
+#define SQL_INT_MIN "(-2147483647 - 1)"
+#define SQL_INT_MAX "2147483647"
+
+/* ---- core column value generators ------------------------------------ */
+
+/*
+ * Draw an int as SQL text with an adversarial, skewed distribution:
+ *   ~18% NULL,
+ *   ~22% a boundary value (INT_MIN, INT_MAX, 0, -1, 1),
+ *   ~35% the skew value 0 (so one value dominates -> bad selectivity est),
+ *   else a small value in [-5,5].
+ */
+static void
+draw_int_or_null(pg_prop_tc *tc, StringInfo buf)
+{
+	int			roll = (int) qg_draw_int(tc, 0, 99);
+
+	if (roll < 18)
+		appendStringInfoString(buf, "NULL");
+	else if (roll < 40)
+	{
+		static const char *const edge[] =
+		{SQL_INT_MIN, SQL_INT_MAX, "0", "(-1)", "1"};
+
+		appendStringInfoString(buf, edge[qg_draw_int(tc, 0, 4)]);
+	}
+	else if (roll < 75)
+		appendStringInfoString(buf, "0");	/* skew: 0 dominates */
+	else
+		appendStringInfo(buf, "%d",
+						 (int) qg_draw_int(tc, QG_VAL_MIN, QG_VAL_MAX));
+}
+
+/*
+ * Draw a text literal, adversarial: ~18% NULL, ~15% empty string, often a
+ * repeated short run (skew + collation edge cases), occasionally a value with
+ * a trailing space or an upper-case letter (case/space sensitivity).
+ */
+static void
+draw_text_or_null(pg_prop_tc *tc, StringInfo buf)
+{
+	int			roll = (int) qg_draw_int(tc, 0, 99);
+	int			len;
+	int			i;
+
+	if (roll < 18)
+	{
+		appendStringInfoString(buf, "NULL");
+		return;
+	}
+	if (roll < 33)
+	{
+		appendStringInfoString(buf, "''");	/* empty string (distinct from NULL) */
+		return;
+	}
+	if (roll < 55)
+	{
+		appendStringInfoString(buf, "'a'");	/* skew: 'a' dominates */
+		return;
+	}
+	len = (int) qg_draw_int(tc, 0, 3);
+	appendStringInfoChar(buf, '\'');
+	for (i = 0; i < len; i++)
+	{
+		/* mostly a-c; occasionally an uppercase letter or a trailing space */
+		int			k = (int) qg_draw_int(tc, 0, 9);
+
+		if (k == 0)
+			appendStringInfoChar(buf, (char) ('A' + qg_draw_int(tc, 0, 2)));
+		else if (k == 1)
+			appendStringInfoChar(buf, ' ');
+		else
+			appendStringInfoChar(buf, (char) ('a' + qg_draw_int(tc, 0, 2)));
+	}
+	appendStringInfoChar(buf, '\'');
+}
+
+/* float8: adversarial -- NULL, +-0.0, +-Infinity, NaN, or a small value. */
+static void
+draw_float_or_null(pg_prop_tc *tc, StringInfo buf)
+{
+	int			roll = (int) qg_draw_int(tc, 0, 99);
+
+	if (roll < 15)
+		appendStringInfoString(buf, "NULL");
+	else if (roll < 35)
+	{
+		static const char *const edge[] =
+		{"'0'::float8", "'-0'::float8", "'Infinity'::float8",
+			"'-Infinity'::float8", "'NaN'::float8"};
+
+		appendStringInfoString(buf, edge[qg_draw_int(tc, 0, 4)]);
+	}
+	else
+		appendStringInfo(buf, "%d.%d",
+						 (int) qg_draw_int(tc, QG_VAL_MIN, QG_VAL_MAX),
+						 (int) qg_draw_int(tc, 0, 9));
+}
+
+/* numeric: NULL, boundary (0, huge, tiny-scale), or a scaled value. */
+static void
+draw_numeric_or_null(pg_prop_tc *tc, StringInfo buf)
+{
+	int			roll = (int) qg_draw_int(tc, 0, 99);
+
+	if (roll < 15)
+		appendStringInfoString(buf, "NULL");
+	else if (roll < 30)
+	{
+		static const char *const edge[] =
+		{"0", "0.00", "999.99", "-999.99", "'NaN'::numeric"};
+
+		appendStringInfoString(buf, edge[qg_draw_int(tc, 0, 4)]);
+	}
+	else
+		appendStringInfo(buf, "%d.%02d",
+						 (int) qg_draw_int(tc, QG_VAL_MIN, QG_VAL_MAX),
+						 (int) qg_draw_int(tc, 0, 99));
+}
+
+/* boolean literal or SQL NULL (balanced three-valued). */
+static void
+draw_bool_or_null(pg_prop_tc *tc, StringInfo buf)
+{
+	int			k = (int) qg_draw_int(tc, 0, 2);
+
+	appendStringInfoString(buf, k == 0 ? "NULL" : k == 1 ? "true" : "false");
+}
+
+/* ---- schema assembly ------------------------------------------------- */
+
+void
+qg_add_column(qg_schema *s, const char *name, const char *sqltype,
+			  qg_value_fn draw, bool is_text_like, bool is_numeric_like)
+{
+	if (s->ncols >= QG_MAX_COLS)
+		return;					/* stay bounded; silently drop extras */
+	s->cols[s->ncols].name = name;
+	s->cols[s->ncols].sqltype = sqltype;
+	s->cols[s->ncols].draw = draw;
+	s->cols[s->ncols].is_text_like = is_text_like;
+	s->cols[s->ncols].is_numeric_like = is_numeric_like;
+	s->cols[s->ncols].nondet_collation = false;
+	s->ncols++;
+}
+
+/*
+ * The process-wide schema, built lazily on first use.  id (the primary key)
+ * is implicit and not in cols[].  Core columns a, b, c, f are kept with their
+ * historical names and types so PQS and the hand-written join predicates stay
+ * valid; d (numeric) and g (bool) widen the type coverage.
+ */
+static qg_schema the_schema;
+static bool schema_built = false;
+
+static const qg_schema *
+build_schema(pg_prop_tc *tc)
+{
+	if (schema_built)
+		return &the_schema;
+
+	the_schema.ncols = 0;
+	qg_add_column(&the_schema, "a", "int", draw_int_or_null, false, true);
+	qg_add_column(&the_schema, "b", "int", draw_int_or_null, false, true);
+	qg_add_column(&the_schema, "c", "text", draw_text_or_null, true, false);
+	qg_add_column(&the_schema, "f", "float8", draw_float_or_null, false, true);
+	qg_add_column(&the_schema, "d", "numeric(5,2)", draw_numeric_or_null, false, true);
+	qg_add_column(&the_schema, "g", "boolean", draw_bool_or_null, false, false);
+
+	/* let extensions add their own columns */
+	pg_prop_run_hooks(tc, "query_gen.column", &the_schema);
+
+	schema_built = true;
+	return &the_schema;
+}
+
+const qg_schema *
+qg_current_schema(pg_prop_tc *tc)
+{
+	return build_schema(tc);
+}
+
+/* ---- table build ----------------------------------------------------- */
+
+void
+qg_build_table(pg_prop_tc *tc, pg_prop_conn *conn, int *nrows)
+{
+	char	   *err = NULL;
+	StringInfoData ddl;
+	const qg_schema *s = build_schema(tc);
+	int			n;
+	int			r;
+	int			col;
+
+	/*
+	 * Let extensions run one-time-per-case setup DDL (typically CREATE
+	 * EXTENSION) so any types their columns use exist before the table is
+	 * built.  The ctx is the live connection; a contributor runs idempotent
+	 * DDL (CREATE EXTENSION IF NOT EXISTS).
+	 */
+	pg_prop_run_hooks(tc, "query_gen.setup", conn);
+
+	initStringInfo(&ddl);
+	appendStringInfoString(&ddl,
+						   "DROP TABLE IF EXISTS " QG_TABLE "; "
+						   "CREATE TABLE " QG_TABLE " (id int PRIMARY KEY");
+	for (col = 0; col < s->ncols; col++)
+		appendStringInfo(&ddl, ", %s %s", s->cols[col].name, s->cols[col].sqltype);
+	appendStringInfoString(&ddl, "); ");
+
+	n = (int) qg_draw_int(tc, 0, QG_MAX_ROWS);
+	for (r = 1; r <= n; r++)
+	{
+		appendStringInfo(&ddl, "INSERT INTO " QG_TABLE " VALUES (%d", r);
+		for (col = 0; col < s->ncols; col++)
+		{
+			appendStringInfoString(&ddl, ", ");
+			s->cols[col].draw(tc, &ddl);
+		}
+		appendStringInfoString(&ddl, "); ");
+	}
+
+	/*
+	 * Under the deep-hunt profiles, sometimes append a server-generated bulk
+	 * of rows after the drawn ones.  A planner does not consider an index for
+	 * a 40-row table, so without volume the index, bitmap, parallel and spill
+	 * paths a differential oracle wants to compare never get chosen.  The bulk
+	 * is skewed the same way the drawn values are (a dominant 0, NULLs, the
+	 * int extremes) and deterministic in the drawn size, so cases replay.
+	 */
+	if (qg_deep_requested() && qg_draw_bool(tc))
+	{
+		int			bulk = (int) qg_draw_int(tc, 500, 20000);
+
+		appendStringInfo(&ddl,
+						 "INSERT INTO " QG_TABLE " (id, a, b, c, d, f, g) "
+						 "SELECT %d + i, "
+						 "CASE WHEN i %% 10 < 6 THEN 0 WHEN i %% 10 = 6 THEN NULL "
+						 "WHEN i %% 97 = 0 THEN 2147483647 WHEN i %% 89 = 0 THEN (-2147483647 - 1) "
+						 "ELSE (hashint4(i) %% 1000) END, "
+						 "CASE WHEN i %% 7 = 0 THEN NULL ELSE hashint4(i * 31) %% 50 END, "
+						 "CASE WHEN i %% 11 = 0 THEN NULL WHEN i %% 3 = 0 THEN 'a' "
+						 "ELSE chr(97 + abs(hashint4(i)) %% 3) || repeat('b', i %% 3) END, "
+						 "CASE WHEN i %% 13 = 0 THEN NULL ELSE ((hashint4(i * 7) %% 99999) / 100.0)::numeric(5,2) END, "
+						 "CASE WHEN i %% 17 = 0 THEN NULL WHEN i %% 101 = 0 THEN 'NaN'::float8 "
+						 "ELSE (hashint4(i * 13) %% 1000) / 10.0 END, "
+						 "CASE WHEN i %% 5 = 0 THEN NULL ELSE i %% 2 = 0 END "
+						 "FROM generate_series(1, %d) i; ",
+						 n, bulk);
+		n += bulk;
+	}
+
+	/*
+	 * Secondary indexes, drawn per case: without them the planner has a single
+	 * path for a one-table query (seqscan), and a differential oracle compares
+	 * a plan with itself.  Single-column, composite, partial and expression
+	 * indexes open index, index-only, bitmap-AND/OR and presorted paths.
+	 */
+	if (qg_draw_bool(tc))
+		appendStringInfoString(&ddl, "CREATE INDEX ON " QG_TABLE " (a); ");
+	if (qg_draw_bool(tc))
+		appendStringInfoString(&ddl, "CREATE INDEX ON " QG_TABLE " (b, a); ");
+	if (qg_draw_bool(tc))
+		appendStringInfoString(&ddl, "CREATE INDEX ON " QG_TABLE " (c); ");
+	if (qg_draw_int(tc, 0, 2) == 0)
+		appendStringInfoString(&ddl, "CREATE INDEX ON " QG_TABLE " (d) WHERE d IS NOT NULL; ");
+	if (qg_draw_int(tc, 0, 2) == 0)
+		appendStringInfoString(&ddl, "CREATE INDEX ON " QG_TABLE " ((coalesce(a, 0)::bigint + 1)); ");
+
+	/* ANALYZE so the planner has stats and will actually consider plans. */
+	appendStringInfoString(&ddl, "ANALYZE " QG_TABLE ";");
+
+	if (!pg_prop_sql_exec(conn, ddl.data, &err))
+		pg_prop_fail(tc, "generator DDL/DML failed: %s", err ? err : "");
+
+	pfree(ddl.data);
+	*nrows = n;
+}
+
+/* ---- predicate drawing ----------------------------------------------- */
+
+/* Pick a core numeric-like column name (a, b, or f) for a leaf. */
+static const char *
+pick_num_col(pg_prop_tc *tc)
+{
+	int			col = (int) qg_draw_int(tc, 0, 2);
+
+	return (col == 0) ? "a" : (col == 1) ? "b" : "f";
+}
+
+/*
+ * One leaf comparison. The grammar is deliberately rich: besides the plain
+ * comparisons it emits three-valued-logic edge forms (IS DISTINCT FROM, IS
+ * NULL/NOT NULL), CASE expressions, and cross-type comparisons -- exactly the
+ * type-interaction and NULL-handling code where planner/executor bugs hide.
+ */
+static void
+draw_leaf(pg_prop_tc *tc, StringInfo buf)
+{
+	static const char *const cmp[] = {"=", "<>", "<", "<=", ">", ">="};
+	int			have_ext = pg_prop_hooks_count("query_gen.predicate") > 0 ? 1 : 0;
+	/* kinds 0..10 are built-in; 11 is the extension leaf when present. */
+	int			n_builtin = 11;
+	int			kind = (int) qg_draw_int(tc, 0, n_builtin - 1 + have_ext);
+	const char *colname;
+
+	switch (kind)
+	{
+		case 0:					/* col IS NULL */
+			appendStringInfo(buf, "%s IS NULL", pick_num_col(tc));
+			break;
+		case 1:					/* col IS NOT NULL */
+			appendStringInfo(buf, "%s IS NOT NULL", pick_num_col(tc));
+			break;
+		case 2:					/* c comparison against text */
+			appendStringInfoString(buf, "c ");
+			appendStringInfoString(buf, cmp[qg_draw_int(tc, 0, 5)]);
+			appendStringInfoChar(buf, ' ');
+			draw_text_or_null(tc, buf);
+			break;
+		case 3:					/* col IN (list) */
+			colname = pick_num_col(tc);
+			appendStringInfo(buf, "%s IN (", colname);
+			{
+				int			m = (int) qg_draw_int(tc, 1, 3);
+				int			i;
+
+				for (i = 0; i < m; i++)
+				{
+					if (i > 0)
+						appendStringInfoString(buf, ", ");
+					if (strcmp(colname, "f") == 0)
+						draw_float_or_null(tc, buf);
+					else
+						draw_int_or_null(tc, buf);
+				}
+			}
+			appendStringInfoChar(buf, ')');
+			break;
+		case 4:					/* col BETWEEN lo AND hi */
+			appendStringInfo(buf, "%s BETWEEN %d AND %d", pick_num_col(tc),
+							 (int) qg_draw_int(tc, QG_VAL_MIN, QG_VAL_MAX),
+							 (int) qg_draw_int(tc, QG_VAL_MIN, QG_VAL_MAX));
+			break;
+		case 5:					/* numeric column d compared, or bool g */
+			if (qg_draw_bool(tc))
+				appendStringInfo(buf, "d %s %d.%02d",
+								 cmp[qg_draw_int(tc, 0, 5)],
+								 (int) qg_draw_int(tc, QG_VAL_MIN, QG_VAL_MAX),
+								 (int) qg_draw_int(tc, 0, 99));
+			else
+				appendStringInfo(buf, "g IS %s",
+								 qg_draw_bool(tc) ? "TRUE" : "NOT TRUE");
+			break;
+		case 7:					/* col IS [NOT] DISTINCT FROM const (3VL edge) */
+			colname = pick_num_col(tc);
+			appendStringInfo(buf, "%s IS %sDISTINCT FROM ", colname,
+							 qg_draw_bool(tc) ? "" : "NOT ");
+			if (strcmp(colname, "f") == 0)
+				draw_float_or_null(tc, buf);
+			else
+				draw_int_or_null(tc, buf);
+			break;
+		case 8:					/* CASE expression used as a boolean */
+			appendStringInfoString(buf, "(CASE WHEN ");
+			appendStringInfo(buf, "a %s ", cmp[qg_draw_int(tc, 0, 5)]);
+			draw_int_or_null(tc, buf);
+			appendStringInfoString(buf, " THEN b ELSE ");
+			draw_int_or_null(tc, buf);
+			appendStringInfo(buf, " END) %s ", cmp[qg_draw_int(tc, 0, 5)]);
+			draw_int_or_null(tc, buf);
+			break;
+		case 9:					/* cross-type: int column vs numeric/text cast */
+			if (qg_draw_bool(tc))
+				appendStringInfo(buf, "a::numeric %s %d.%02d",
+								 cmp[qg_draw_int(tc, 0, 5)],
+								 (int) qg_draw_int(tc, QG_VAL_MIN, QG_VAL_MAX),
+								 (int) qg_draw_int(tc, 0, 99));
+			else
+				appendStringInfo(buf, "a::text %s c",
+								 cmp[qg_draw_int(tc, 0, 5)]);
+			break;
+		case 10:				/* COALESCE in the comparison (NULL coalescing) */
+			appendStringInfo(buf, "coalesce(a, b, %d) %s ",
+							 (int) qg_draw_int(tc, QG_VAL_MIN, QG_VAL_MAX),
+							 cmp[qg_draw_int(tc, 0, 5)]);
+			draw_int_or_null(tc, buf);
+			break;
+		case 11:				/* extension-contributed leaf */
+			{
+				qg_pred_ctx pctx;
+				int			n = pg_prop_hooks_count("query_gen.predicate");
+
+				pctx.schema = &the_schema;
+				pctx.buf = buf;
+				pg_prop_run_hook_n(tc, "query_gen.predicate",
+								   (int) qg_draw_int(tc, 0, n - 1), &pctx);
+			}
+			break;
+		default:				/* col <cmp> const */
+			colname = pick_num_col(tc);
+			appendStringInfo(buf, "%s %s ", colname, cmp[qg_draw_int(tc, 0, 5)]);
+			if (strcmp(colname, "f") == 0)
+				draw_float_or_null(tc, buf);
+			else
+				draw_int_or_null(tc, buf);
+			break;
+	}
+}
+
+static void
+draw_predicate_rec(pg_prop_tc *tc, StringInfo buf, int depth)
+{
+	int			kind;
+
+	if (depth >= 3)
+		kind = 0;
+	else
+		kind = (int) qg_draw_int(tc, 0, 4);
+
+	switch (kind)
+	{
+		case 1:					/* NOT (sub) */
+			appendStringInfoString(buf, "NOT (");
+			draw_predicate_rec(tc, buf, depth + 1);
+			appendStringInfoChar(buf, ')');
+			break;
+		case 2:					/* (l AND r) */
+			appendStringInfoChar(buf, '(');
+			draw_predicate_rec(tc, buf, depth + 1);
+			appendStringInfoString(buf, " AND ");
+			draw_predicate_rec(tc, buf, depth + 1);
+			appendStringInfoChar(buf, ')');
+			break;
+		case 3:					/* (l OR r) */
+			appendStringInfoChar(buf, '(');
+			draw_predicate_rec(tc, buf, depth + 1);
+			appendStringInfoString(buf, " OR ");
+			draw_predicate_rec(tc, buf, depth + 1);
+			appendStringInfoChar(buf, ')');
+			break;
+		default:				/* leaf */
+			draw_leaf(tc, buf);
+			break;
+	}
+}
+
+void
+qg_draw_predicate(pg_prop_tc *tc, StringInfo buf)
+{
+	build_schema(tc);			/* ensure hooks counted before drawing */
+	draw_predicate_rec(tc, buf, 0);
+}
+
+void
+qg_draw_int_expr(pg_prop_tc *tc, StringInfo buf)
+{
+	int			kind = (int) qg_draw_int(tc, 0, 4);
+
+	switch (kind)
+	{
+		case 0:
+			appendStringInfoString(buf, "a");
+			break;
+		case 1:
+			appendStringInfoString(buf, "b");
+			break;
+		case 2:
+			appendStringInfo(buf, "%d",
+							 (int) qg_draw_int(tc, QG_VAL_MIN, QG_VAL_MAX));
+			break;
+		case 3:
+			/* coalesce so NULLs don't dominate; a + b, bigint-safe vs INT_MAX */
+			appendStringInfoString(buf, "(coalesce(a::bigint,0) + coalesce(b::bigint,0))");
+			break;
+		default:
+			appendStringInfoString(buf, "(coalesce(a::bigint,0) * 2)");
+			break;
+	}
+}
+
+/* ---- multi-table database model (Phase 0) ---------------------------- *
+ *
+ * Everything below builds a small random database of related tables for the
+ * deep oracles.  It is independent of the single-table generator above; the
+ * existing areas do not use it.
+ */
+
+/* A low-cardinality int column: tiny domain, so values repeat heavily. */
+static void
+draw_lowcard_or_null(pg_prop_tc *tc, StringInfo buf)
+{
+	if (qg_draw_int(tc, 0, 9) == 0)
+		appendStringInfoString(buf, "NULL");
+	else
+		appendStringInfo(buf, "%d", (int) qg_draw_int(tc, 0, 2));
+}
+
+/* A high-cardinality int column: wide domain, so values are near-unique. */
+static void
+draw_highcard_or_null(pg_prop_tc *tc, StringInfo buf)
+{
+	if (qg_draw_int(tc, 0, 19) == 0)
+		appendStringInfoString(buf, "NULL");
+	else
+		appendStringInfo(buf, "%d", (int) qg_draw_int(tc, 0, 100000));
+}
+
+/*
+ * TOAST pressure.  toast_profile selects how often this text column's value is
+ * large enough to be stored out-of-line/compressed (threshold ~2KB): 0 never,
+ * 1 ~10%, 2 ~50%, 3 always.  Large values are a repeated short run so they
+ * also compress, exercising the compressed-TOAST path; the value is still
+ * deterministic given the draws so a counterexample replays.
+ */
+static int qg_toast_profile = 0;
+
+static void
+draw_toast_text_or_null(pg_prop_tc *tc, StringInfo buf)
+{
+	int			roll;
+	bool		big;
+	int			reps;
+	int			i;
+
+	if (qg_draw_int(tc, 0, 9) == 0)
+	{
+		appendStringInfoString(buf, "NULL");
+		return;
+	}
+	roll = (int) qg_draw_int(tc, 0, 9);
+	switch (qg_toast_profile)
+	{
+		case 0:
+			big = false;
+			break;
+		case 1:
+			big = (roll == 0);
+			break;
+		case 2:
+			big = (roll < 5);
+			break;
+		default:
+			big = true;
+			break;
+	}
+	appendStringInfoChar(buf, '\'');
+	if (big)
+	{
+		/* ~3KB of a repeated unit -> past the 2KB TOAST threshold */
+		reps = 600 + (int) qg_draw_int(tc, 0, 400);
+		for (i = 0; i < reps; i++)
+			appendStringInfoString(buf, "xy");
+	}
+	else
+	{
+		int			len = (int) qg_draw_int(tc, 0, 4);
+
+		for (i = 0; i < len; i++)
+			appendStringInfoChar(buf, (char) ('a' + qg_draw_int(tc, 0, 2)));
+	}
+	appendStringInfoChar(buf, '\'');
+}
+
+void
+qg_db_params_default(qg_db_params *p)
+{
+	p->min_tables = 2;
+	p->max_tables = 3;
+	p->min_cols = 2;
+	p->max_cols = 4;
+	p->min_rows = 0;
+	p->max_rows = 30;
+	p->allow_fk = true;
+	p->allow_triggers = false;
+	p->allow_inherit = false;
+	p->toast_profile = 0;
+	p->cardinality_bias = 0;
+	p->allow_nondet_collation = false;
+}
+
+void
+qg_db_params_deep(qg_db_params *p)
+{
+	p->min_tables = 3;
+	p->max_tables = QG_MAX_TABLES;
+	p->min_cols = 4;
+	p->max_cols = 32;			/* wide tables */
+	p->min_rows = 0;
+	p->max_rows = 2000;			/* volume extremes: some empty, some large */
+	p->allow_fk = true;
+	p->allow_triggers = true;	/* result-neutral triggers in the deep hunt */
+	p->allow_inherit = true;
+	p->toast_profile = 2;
+	p->cardinality_bias = 0;
+	p->allow_nondet_collation = true;
+}
+
+/*
+ * A leaner deep profile: still multi-table with FKs, subquery/unnest shapes,
+ * TOAST and triggers, but with bounded table and row counts so the per-case
+ * DDL cost and memory stay low enough to run tens of thousands of iterations
+ * unattended on a modest box.  This is the profile the opt-in high-iteration
+ * hunt should use; qg_db_params_deep() is the "everything maximal" profile for
+ * a short, heavily-resourced run.
+ */
+void
+qg_db_params_deep_fast(qg_db_params *p)
+{
+	p->min_tables = 2;
+	p->max_tables = 6;
+	p->min_cols = 3;
+	p->max_cols = 10;
+	p->min_rows = 0;
+	p->max_rows = 200;
+	p->allow_fk = true;
+	p->allow_triggers = true;
+	p->allow_inherit = true;
+	p->toast_profile = 1;		/* ~10% large values: TOAST path, less bulk */
+	p->cardinality_bias = 0;
+	p->allow_nondet_collation = true;
+}
+
+/*
+ * Choose the profile for a query area honouring the PG_PROP_DEEP environment
+ * variable: unset/0 -> the fast, deterministic default (committed TAP run);
+ * "fast" -> the leaner deep profile; "full" or any other non-empty value ->
+ * the maximal deep profile.  Areas call this instead of hard-coding a profile
+ * so the same binary runs the quick suite and the deep hunt.
+ */
+/* true when PG_PROP_DEEP asks for one of the deep-hunt profiles */
+bool
+qg_deep_requested(void)
+{
+	const char *v = getenv("PG_PROP_DEEP");
+
+	return !(v == NULL || v[0] == '\0' || strcmp(v, "0") == 0);
+}
+
+void
+qg_db_params_for_env(qg_db_params *p)
+{
+	const char *v = getenv("PG_PROP_DEEP");
+
+	if (v == NULL || v[0] == '\0' || strcmp(v, "0") == 0)
+		qg_db_params_default(p);
+	else if (strcmp(v, "fast") == 0)
+		qg_db_params_deep_fast(p);
+	else
+		qg_db_params_deep(p);
+}
+
+/*
+ * Fill one table's schema with id (implicit PK), an optional FK column, and
+ * ncols drawn data columns of mixed types and cardinalities.  Column names are
+ * c0, c1, ...  Returns the FK column index (or -1) via *fkcol.
+ */
+static void
+build_table_schema(pg_prop_tc *tc, qg_table *t, int ncols, int fkref,
+				   int cardinality_bias, bool nondet)
+{
+	char	   *namebuf;
+	int			i;
+
+	t->schema.ncols = 0;
+	t->fkcol = -1;
+	t->fkref = fkref;
+
+	if (fkref >= 0)
+	{
+		/* FK column references parent's id; correlated at populate time. */
+		qg_add_column(&t->schema, "fk", "int", draw_int_or_null, false, true);
+		t->fkcol = 0;
+	}
+
+	for (i = 0; i < ncols; i++)
+	{
+		int			kind = (int) qg_draw_int(tc, 0, 5);
+		qg_value_fn draw;
+		const char *type;
+		bool		textlike = false;
+		bool		numlike = false;
+
+		/* a cardinality bias favours low-card columns for grouping stress */
+		if (cardinality_bias == 1 && qg_draw_bool(tc))
+			kind = 0;
+
+		switch (kind)
+		{
+			case 0:				/* low-cardinality int */
+				draw = draw_lowcard_or_null;
+				type = "int";
+				numlike = true;
+				break;
+			case 1:				/* high-cardinality int */
+				draw = draw_highcard_or_null;
+				type = "int";
+				numlike = true;
+				break;
+			case 2:				/* small int */
+				draw = draw_int_or_null;
+				type = "int";
+				numlike = true;
+				break;
+			case 3:				/* text */
+				draw = draw_text_or_null;
+				type = "text";
+				textlike = true;
+				break;
+			case 4:				/* numeric */
+				draw = draw_numeric_or_null;
+				type = "numeric(6,2)";
+				numlike = true;
+				break;
+			default:			/* TOAST-eligible text */
+				draw = draw_toast_text_or_null;
+				type = "text";
+				textlike = true;
+				break;
+		}
+		namebuf = psprintf("c%d", i);
+
+		/*
+		 * Occasionally make a plain-text column use the nondeterministic
+		 * (case-insensitive ICU) collation qg_ci.  Only plain draw_text_or_null
+		 * columns qualify: the collation reaches equality, grouping, join and
+		 * index code without the TOAST-sized values that would make the leaf
+		 * allow-list (6.3) harder to reason about.  The column is marked so
+		 * draw_leaf_on restricts it to the nondeterministic-safe operators.
+		 */
+		if (nondet && draw == draw_text_or_null && qg_draw_int(tc, 0, 2) == 0)
+		{
+			qg_add_column(&t->schema, namebuf, "text COLLATE qg_ci", draw,
+						  textlike, numlike);
+			t->schema.cols[t->schema.ncols - 1].nondet_collation = true;
+		}
+		else
+			qg_add_column(&t->schema, namebuf, type, draw, textlike, numlike);
+	}
+}
+
+/*
+ * Emit SET STORAGE for the varlena (text/numeric) columns of a table, cycling
+ * through PLAIN/MAIN/EXTERNAL/EXTENDED so the TOAST storage machinery is
+ * exercised in all its modes.  PLAIN forbids out-of-line storage (so a large
+ * value would error) -- so only choose PLAIN for columns the generator keeps
+ * small; the TOAST-eligible text columns (draw == draw_toast_text_or_null) get
+ * EXTERNAL (uncompressed out-of-line) or EXTENDED (compressed), never PLAIN.
+ */
+static void
+emit_storage_modes(pg_prop_tc *tc, StringInfo ddl, const qg_table *t)
+{
+	int			col;
+
+	for (col = 0; col < t->schema.ncols; col++)
+	{
+		const qg_column *c = &t->schema.cols[col];
+		const char *mode;
+		bool		toastable = c->is_text_like || !c->is_numeric_like;
+
+		/* only varlena columns have a meaningful STORAGE setting */
+		if (!c->is_text_like &&
+			strncmp(c->sqltype, "numeric", 7) != 0)
+			continue;
+
+		if (c->draw == draw_toast_text_or_null)
+			mode = qg_draw_bool(tc) ? "EXTERNAL" : "EXTENDED";
+		else
+		{
+			static const char *const modes[] = {"PLAIN", "MAIN",
+				"EXTERNAL", "EXTENDED"};
+
+			mode = modes[qg_draw_int(tc, 0, 3)];
+		}
+		(void) toastable;
+		appendStringInfo(ddl, "ALTER TABLE %s ALTER COLUMN %s SET STORAGE %s; ",
+						 t->name, c->name, mode);
+	}
+}
+
+/*
+ * Does this server have ICU (so a nondeterministic ICU collation can be
+ * created)?  Probed once per process and cached: 1 yes, 0 no, -1 unknown.
+ */
+static int qg_has_icu = -1;
+
+static bool
+qg_server_has_icu(pg_prop_tc *tc, pg_prop_conn *conn)
+{
+	bool		failed = false;
+	char	   *v;
+
+	(void) tc;
+	if (qg_has_icu >= 0)
+		return qg_has_icu == 1;
+	v = pg_prop_sql_scalar(conn,
+						   "SELECT EXISTS (SELECT 1 FROM pg_collation WHERE collprovider = 'i')",
+						   &failed, NULL);
+	qg_has_icu = (!failed && v && strcmp(v, "t") == 0) ? 1 : 0;
+	if (v)
+		pg_free(v);
+	return qg_has_icu == 1;
+}
+
+qg_db *
+qg_build_db(pg_prop_tc *tc, pg_prop_conn *conn, const qg_db_params *p)
+{
+	qg_db	   *db = palloc0(sizeof(qg_db));
+	StringInfoData ddl;
+	char	   *err = NULL;
+	int			nt;
+	int			ti;
+	bool		nondet;
+
+	qg_toast_profile = p->toast_profile;
+
+	/*
+	 * Nondeterministic collations need ICU.  Probe once per process; if the
+	 * server has no ICU-provided collation, drop the feature for this run
+	 * rather than failing every case with "collation ... does not exist".
+	 */
+	nondet = p->allow_nondet_collation && qg_server_has_icu(tc, conn);
+
+	/*
+	 * Enter a deterministic generation region (task #1): one engine draw seeds
+	 * the PRNG, all structural choices below come from it.  No-op unless
+	 * PG_PROP_GEN_PRNG is set, so default behaviour is unchanged.
+	 */
+	qg_rng_begin(tc);
+
+	nt = (int) qg_draw_int(tc, p->min_tables, p->max_tables);
+	if (nt < 1)
+		nt = 1;
+	if (nt > QG_MAX_TABLES)
+		nt = QG_MAX_TABLES;
+	db->ntables = nt;
+
+	initStringInfo(&ddl);
+
+	/*
+	 * Create the nondeterministic (case-insensitive, accent-sensitive) ICU
+	 * collation this case will use, if it does not already exist.  Dropping
+	 * it is not worth the churn: it is harmless to leave behind and reused
+	 * across cases.
+	 */
+	if (nondet)
+		appendStringInfoString(&ddl,
+							   "DO $qg$ BEGIN "
+							   "IF NOT EXISTS (SELECT 1 FROM pg_collation WHERE collname = 'qg_ci') THEN "
+							   "CREATE COLLATION qg_ci (provider = icu, locale = 'und-u-ks-level2', "
+							   "deterministic = false); END IF; END $qg$; ");
+
+	/*
+	 * A result-neutral trigger function: it fires on write but returns the
+	 * row unchanged, so it changes nothing a SELECT can observe while still
+	 * forcing the relation to carry trigger metadata and the executor to run
+	 * the trigger-firing path (which disables some optimisations, e.g.
+	 * tuple-routing and HOT shortcuts).  Created idempotently.
+	 */
+	if (p->allow_triggers)
+		appendStringInfoString(&ddl,
+							   "CREATE OR REPLACE FUNCTION qg_noop_trig() "
+							   "RETURNS trigger LANGUAGE plpgsql AS "
+							   "$$ BEGIN RETURN NEW; END $$; ");
+
+	for (ti = 0; ti < nt; ti++)
+	{
+		qg_table   *t = &db->tables[ti];
+		int			ncols;
+		int			fkref;
+		int			col;
+
+		snprintf(t->name, QG_NAME_LEN, "qg_t%d", ti);
+
+		/* a child may reference any earlier table (so parents build first) */
+		fkref = -1;
+		if (p->allow_fk && ti > 0 && qg_draw_bool(tc))
+			fkref = (int) qg_draw_int(tc, 0, ti - 1);
+
+		ncols = (int) qg_draw_int(tc, p->min_cols, p->max_cols);
+		build_table_schema(tc, t, ncols, fkref, p->cardinality_bias, nondet);
+
+		/* DROP first (reverse order handled by qg_drop_db; here just reset) */
+		appendStringInfo(&ddl, "DROP TABLE IF EXISTS %s CASCADE; ", t->name);
+		appendStringInfo(&ddl, "CREATE TABLE %s (id int PRIMARY KEY", t->name);
+		for (col = 0; col < t->schema.ncols; col++)
+			appendStringInfo(&ddl, ", %s %s",
+							 t->schema.cols[col].name,
+							 t->schema.cols[col].sqltype);
+		/* declare the FK (references the parent's dense id) */
+		if (t->fkref >= 0)
+			appendStringInfo(&ddl,
+							 ", FOREIGN KEY (fk) REFERENCES %s(id)",
+							 db->tables[t->fkref].name);
+		appendStringInfoString(&ddl, "); ");
+
+		/* 0b: vary TOAST storage modes on the varlena columns */
+		emit_storage_modes(tc, &ddl, t);
+
+		/*
+		 * 0c: attach a result-neutral BEFORE INSERT/UPDATE row trigger to some
+		 * tables, so the relation carries trigger metadata and the write path
+		 * runs the trigger.  Result-neutral, so SELECT oracles stay sound.
+		 */
+		if (p->allow_triggers && qg_draw_bool(tc))
+			appendStringInfo(&ddl,
+							 "CREATE TRIGGER %s_trig BEFORE INSERT OR UPDATE ON %s "
+							 "FOR EACH ROW EXECUTE FUNCTION qg_noop_trig(); ",
+							 t->name, t->name);
+	}
+
+	/* populate parents before children (ascending ti == build order) */
+	for (ti = 0; ti < nt; ti++)
+	{
+		qg_table   *t = &db->tables[ti];
+		int			n = (int) qg_draw_int(tc, p->min_rows, p->max_rows);
+		int			parent_rows = (t->fkref >= 0) ? db->tables[t->fkref].nrows : 0;
+		int			r;
+		int			col;
+
+		t->nrows = n;
+		for (r = 1; r <= n; r++)
+		{
+			appendStringInfo(&ddl, "INSERT INTO %s VALUES (%d", t->name, r);
+			for (col = 0; col < t->schema.ncols; col++)
+			{
+				appendStringInfoString(&ddl, ", ");
+				if (col == t->fkcol)
+				{
+					/*
+					 * Correlated FK: draw from the parent's actual key range
+					 * 1..parent_rows, with a slice of NULLs.  (The FK is
+					 * enforced, so no orphans -- a referenced id always
+					 * exists.)  If the parent is empty, the only satisfiable
+					 * value is NULL.
+					 */
+					if (parent_rows == 0 || qg_draw_int(tc, 0, 4) == 0)
+						appendStringInfoString(&ddl, "NULL");
+					else
+						appendStringInfo(&ddl, "%d",
+										 (int) qg_draw_int(tc, 1, parent_rows));
+				}
+				else
+					t->schema.cols[col].draw(tc, &ddl);
+			}
+			appendStringInfoString(&ddl, "); ");
+		}
+
+		/*
+		 * Secondary indexes.  Without them the planner has nothing to choose
+		 * between on a single relation (seqscan is the only path), so most of
+		 * a differential oracle's forced configurations collapse onto the same
+		 * plan.  An index on the FK and on one or two data columns (sometimes
+		 * composite, sometimes partial) opens index, index-only, bitmap and
+		 * merge-join-on-presorted paths, plus Memoize over a parameterized
+		 * inner index scan.
+		 */
+		if (t->fkcol >= 0 && qg_draw_int(tc, 0, 3) != 0)
+			appendStringInfo(&ddl, "CREATE INDEX ON %s (%s); ", t->name,
+							 t->schema.cols[t->fkcol].name);
+		for (col = 0; col < t->schema.ncols; col++)
+		{
+			int			k;
+
+			/*
+			 * Text-like columns can carry TOAST-sized values that exceed the
+			 * btree tuple limit, so only scalar columns are indexed.
+			 */
+			if (col == t->fkcol || t->schema.cols[col].is_text_like ||
+				qg_draw_int(tc, 0, 2) != 0)
+				continue;
+			k = (int) qg_draw_int(tc, 0, 2);
+			if (k == 1 && (col + 1 >= t->schema.ncols ||
+						   t->schema.cols[col + 1].is_text_like))
+				k = 0;
+			if (k == 0)
+				appendStringInfo(&ddl, "CREATE INDEX ON %s (%s); ", t->name,
+								 t->schema.cols[col].name);
+			else if (k == 1)
+				appendStringInfo(&ddl, "CREATE INDEX ON %s (%s, %s); ", t->name,
+								 t->schema.cols[col].name,
+								 t->schema.cols[col + 1].name);
+			else
+				appendStringInfo(&ddl,
+								 "CREATE INDEX ON %s (%s) WHERE %s IS NOT NULL; ",
+								 t->name, t->schema.cols[col].name,
+								 t->schema.cols[col].name);
+		}
+
+		/*
+		 * Inheritance child.  Some tables get a child holding a few rows that
+		 * duplicate the parent's ids (a parent PRIMARY KEY does not constrain
+		 * its children).  A query over the parent scans both, so a planner
+		 * proof that leans on the parent's unique index -- self-join
+		 * elimination, uniqueness-based join removal, DISTINCT elision -- is
+		 * unsound there, while "ONLY parent" must still see only the parent.
+		 */
+		if (p->allow_inherit && n > 0 && qg_draw_int(tc, 0, 2) == 0)
+		{
+			int			m = (int) qg_draw_int(tc, 1, n < 5 ? n : 5);
+
+			appendStringInfo(&ddl, "CREATE TABLE %s_c () INHERITS (%s); ",
+							 t->name, t->name);
+			for (r = 1; r <= m; r++)
+			{
+				appendStringInfo(&ddl, "INSERT INTO %s_c VALUES (%d", t->name,
+								 (int) qg_draw_int(tc, 1, n));
+				for (col = 0; col < t->schema.ncols; col++)
+				{
+					appendStringInfoString(&ddl, ", ");
+					if (col == t->fkcol)
+						appendStringInfoString(&ddl, "NULL");	/* FK not inherited */
+					else
+						t->schema.cols[col].draw(tc, &ddl);
+				}
+				appendStringInfoString(&ddl, "); ");
+			}
+			appendStringInfo(&ddl, "ANALYZE %s_c; ", t->name);
+		}
+		appendStringInfo(&ddl, "ANALYZE %s; ", t->name);
+	}
+
+	qg_rng_end();				/* all structural draws done */
+	if (!pg_prop_sql_exec(conn, ddl.data, &err))
+		pg_prop_fail(tc, "database DDL/DML failed: %s", err ? err : "");
+
+	pfree(ddl.data);
+	return db;
+}
+
+void
+qg_drop_db(pg_prop_tc *tc, pg_prop_conn *conn, qg_db *db)
+{
+	StringInfoData ddl;
+	char	   *err = NULL;
+	int			ti;
+
+	initStringInfo(&ddl);
+	/* drop children before parents: reverse build order, CASCADE for safety */
+	for (ti = db->ntables - 1; ti >= 0; ti--)
+		appendStringInfo(&ddl, "DROP TABLE IF EXISTS %s CASCADE; ",
+						 db->tables[ti].name);
+	(void) pg_prop_sql_exec(conn, ddl.data, &err);
+	if (err)
+		pg_free(err);
+	pfree(ddl.data);
+	pfree(db);
+}
+
+/*
+ * Schema- and alias-aware predicate leaf/tree over a specific table.  Mirrors
+ * draw_leaf/draw_predicate_rec but qualifies every column with "alias." and
+ * only references columns that exist in this table's schema.
+ */
+static void
+draw_leaf_on(pg_prop_tc *tc, StringInfo buf, const qg_table *t,
+			 const char *alias)
+{
+	static const char *const cmp[] = {"=", "<>", "<", "<=", ">", ">="};
+	const qg_column *c;
+	int			ci;
+
+	if (t->schema.ncols == 0)
+	{
+		/* no data columns: fall back to a key predicate */
+		appendStringInfo(buf, "%s.id %s %d", alias,
+						 cmp[qg_draw_int(tc, 0, 5)],
+						 (int) qg_draw_int(tc, 0, 10));
+		return;
+	}
+	ci = (int) qg_draw_int(tc, 0, t->schema.ncols - 1);
+	c = &t->schema.cols[ci];
+
+	/*
+	 * A nondeterministic-collation column admits only the operators that do
+	 * not distinguish values the collation treats as equal and do not error
+	 * (false_positives.md 6.3): the six comparisons and IS [NOT] DISTINCT
+	 * FROM against a bare text literal (which takes the column's collation),
+	 * plus the null tests.  No cast to another collation, no array ANY/ALL
+	 * (whose element comparison re-derives a collation), no LIKE / pattern /
+	 * function.  The literal is drawn to hit the equal-but-different-bytes
+	 * case ('a' vs 'A') so the collation's merging actually matters.
+	 */
+	if (c->nondet_collation)
+	{
+		switch ((int) qg_draw_int(tc, 0, 3))
+		{
+			case 0:
+				appendStringInfo(buf, "%s.%s IS NULL", alias, c->name);
+				break;
+			case 1:
+				appendStringInfo(buf, "%s.%s IS NOT NULL", alias, c->name);
+				break;
+			case 2:
+				appendStringInfo(buf, "%s.%s IS %sDISTINCT FROM ", alias, c->name,
+								 qg_draw_bool(tc) ? "NOT " : "");
+				draw_text_or_null(tc, buf);
+				break;
+			default:
+				appendStringInfo(buf, "%s.%s %s ", alias, c->name,
+								 cmp[qg_draw_int(tc, 0, 5)]);
+				draw_text_or_null(tc, buf);
+				break;
+		}
+		return;
+	}
+
+	switch (qg_biased(tc, 8, (const char *const[])
+					  {"nulls", "nulls", "nulls", "nulls", "cast", NULL, NULL, NULL}))
+	{
+		case 0:
+			appendStringInfo(buf, "%s.%s IS NULL", alias, c->name);
+			break;
+		case 1:
+			appendStringInfo(buf, "%s.%s IS NOT NULL", alias, c->name);
+			break;
+		case 2:					/* IS [NOT] DISTINCT FROM: null-safe equality */
+			appendStringInfo(buf, "%s.%s IS %sDISTINCT FROM ", alias, c->name,
+							 qg_draw_bool(tc) ? "NOT " : "");
+			if (c->is_text_like)
+				draw_text_or_null(tc, buf);
+			else
+				draw_int_or_null(tc, buf);
+			break;
+		case 3:					/* = ANY / <> ALL over an array that may hold NULL */
+			{
+				int			n = (int) qg_draw_int(tc, 0, 3);
+				bool		any = qg_draw_bool(tc);
+
+				appendStringInfo(buf, "%s.%s %s (ARRAY[", alias, c->name,
+								 any ? "= ANY" : "<> ALL");
+				for (int i = 0; i < n; i++)
+				{
+					if (i > 0)
+						appendStringInfoString(buf, ", ");
+					if (c->is_text_like)
+						draw_text_or_null(tc, buf);
+					else
+						draw_int_or_null(tc, buf);
+				}
+				/* typed so an empty / all-NULL array still resolves */
+				appendStringInfo(buf, "]::%s[])",
+								 c->is_text_like ? "text" : (strstr(c->sqltype, "numeric") ? "numeric" : "int"));
+			}
+			break;
+		case 4:					/* cross-type: compare through a cast */
+			if (c->is_text_like)
+				appendStringInfo(buf, "%s.%s::varchar %s 'b'", alias, c->name,
+								 cmp[qg_draw_int(tc, 0, 5)]);
+			else
+				appendStringInfo(buf, "%s.%s::numeric %s %d.5", alias, c->name,
+								 cmp[qg_draw_int(tc, 0, 5)],
+								 (int) qg_draw_int(tc, -3, 9));
+			break;
+		default:
+			appendStringInfo(buf, "%s.%s %s ", alias, c->name,
+							 cmp[qg_draw_int(tc, 0, 5)]);
+			if (c->is_text_like)
+				draw_text_or_null(tc, buf);
+			else
+				draw_int_or_null(tc, buf);
+			break;
+	}
+}
+
+static void
+draw_predicate_on_rec(pg_prop_tc *tc, StringInfo buf, const qg_table *t,
+					  const char *alias, int depth)
+{
+	int			kind = (depth >= 2) ? 0 : (int) qg_draw_int(tc, 0, 4);
+
+	switch (kind)
+	{
+		case 1:
+			appendStringInfoString(buf, "NOT (");
+			draw_predicate_on_rec(tc, buf, t, alias, depth + 1);
+			appendStringInfoChar(buf, ')');
+			break;
+		case 2:
+			appendStringInfoChar(buf, '(');
+			draw_predicate_on_rec(tc, buf, t, alias, depth + 1);
+			appendStringInfoString(buf, " AND ");
+			draw_predicate_on_rec(tc, buf, t, alias, depth + 1);
+			appendStringInfoChar(buf, ')');
+			break;
+		case 3:
+			appendStringInfoChar(buf, '(');
+			draw_predicate_on_rec(tc, buf, t, alias, depth + 1);
+			appendStringInfoString(buf, " OR ");
+			draw_predicate_on_rec(tc, buf, t, alias, depth + 1);
+			appendStringInfoChar(buf, ')');
+			break;
+		default:
+			draw_leaf_on(tc, buf, t, alias);
+			break;
+	}
+}
+
+void
+qg_draw_predicate_on(pg_prop_tc *tc, StringInfo buf, const qg_table *t,
+					 const char *alias)
+{
+	draw_predicate_on_rec(tc, buf, t, alias, 0);
+}
+
+/* ---- deep query builder (Phase 1) ------------------------------------ */
+
+/*
+ * Build a left-deep join chain starting at table "start", following FK edges:
+ * each step joins in the table that "start"'s current frontier references (its
+ * parent) or a child that references the frontier.  Aliases are r0, r1, ...
+ * The chain is at most max_joins long and stops when no further FK edge is
+ * available.  Appends the "<tbl> r0 JOIN <tbl> r1 ON ..." text to "from" and
+ * records each alias's table in used[] / aliases[].
+ *
+ * Returns the number of tables in the chain (>= 1).
+ */
+static int
+build_join_chain(pg_prop_tc *tc, const qg_db *db, int start, int max_joins,
+				 StringInfo from, const qg_table *used[], char aliases[][QG_NAME_LEN])
+{
+	int			n = 0;
+	int			cur = start;
+
+	/*
+	 * exposes_fk[i]: member i's alias has an fk column.  A plain or ONLY
+	 * member has whatever its table has; a derived member has only what it
+	 * projects.  The walk continues through a member's fk only if exposed.
+	 */
+	bool		exposes_fk[QG_MAX_TABLES];
+
+	used[0] = &db->tables[cur];
+	snprintf(aliases[0], QG_NAME_LEN, "r0");
+	appendStringInfo(from, "%s r0", db->tables[cur].name);
+	n = 1;
+
+	exposes_fk[0] = db->tables[cur].fkcol >= 0;
+
+	while (n <= max_joins)
+	{
+		const qg_table *frontier = used[n - 1];
+		int			nexttab = -1;
+		bool		frontier_is_child = false;
+
+		/* prefer the frontier's own parent (frontier.fk -> parent.id) */
+		if (frontier->fkref >= 0 && exposes_fk[n - 1])
+		{
+			nexttab = frontier->fkref;
+			frontier_is_child = true;
+		}
+		else
+		{
+			/* else find any child that references the frontier */
+			for (int i = 0; i < db->ntables; i++)
+				if (db->tables[i].fkref >= 0 &&
+					&db->tables[db->tables[i].fkref] == frontier)
+				{
+					nexttab = i;
+					frontier_is_child = false;
+					break;
+				}
+		}
+		if (nexttab < 0)
+			break;
+
+		used[n] = &db->tables[nexttab];
+		snprintf(aliases[n], QG_NAME_LEN, "r%d", n);
+		exposes_fk[n] = db->tables[nexttab].fkcol >= 0;
+
+		/*
+		 * The join member is not always a plain relation.  The planner's most
+		 * fragile code is in pulling up subqueries, translating appendrel
+		 * (UNION ALL / inheritance) members, and placing lateral references --
+		 * so the member is drawn from those shapes too.  Every shape exposes
+		 * the columns id and fk under the member alias, so the join clause,
+		 * the key projection and the predicates stay unchanged.
+		 *
+		 *   0  plain relation (inner or LEFT join, as before)
+		 *   1  ONLY relation (excludes any inheritance child)
+		 *   2  derived table with DISTINCT (subquery with sorted paths)
+		 *   3  UNION ALL of two filtered halves of the relation (appendrel)
+		 *   4  LATERAL subquery correlated to the previous member, OFFSET 0
+		 *      so it is not flattened
+		 *   5  LATERAL UNION ALL whose first arm is itself a DISTINCT subquery
+		 *      and whose correlation references the previous member
+		 */
+		{
+			const char *tn = db->tables[nexttab].name;
+			const char *prev = aliases[n - 1];
+			/*
+			 * Member shape: 0 plain, 1 ONLY, 2 DISTINCT-derived, 3 UNION ALL,
+			 * 4/5 LATERAL, 6 LATERAL UNION ALL.  Bias toward the subquery /
+			 * appendrel shapes when the patch touches those surfaces.
+			 */
+			static const char *const shape_tags[] = {
+				"joins", "joins", "distinct", "setops", "subquery", "subquery", "subquery"
+			};
+			int			shape = qg_biased(tc, 7, shape_tags);
+			/* derived shapes expose id, plus fk when the table has one */
+			const char *cols = db->tables[nexttab].fkcol >= 0 ? "id, fk" : "id";
+			const char *xcols = db->tables[nexttab].fkcol >= 0 ? "x.id, x.fk" : "x.id";
+
+			/*
+			 * Join type.  INNER / LEFT apply to any shape.  RIGHT and FULL
+			 * null-extend the *left* input, which the planner's outer-join
+			 * reduction, qual placement and PlaceHolderVar machinery handle
+			 * on a different path than LEFT -- the source of many recent
+			 * wrong-results fixes (false_positives.md 7.7).  They are only
+			 * legal where the right side does not reference the left, so they
+			 * are drawn only for the non-lateral shapes (0-3 and default); the
+			 * LATERAL shapes (4-6) stay INNER / LEFT.  A FULL/RIGHT join can
+			 * leave every projected key NULL in an unmatched row, so the
+			 * oracle must compare the row multiset, not a key-ordered
+			 * sequence (rowhash_unordered); the deep oracles do.  The join
+			 * type is biased toward the outer joins when the patch touches
+			 * join planning.
+			 */
+			static const char *const jts[] = {"", "LEFT", "RIGHT", "FULL"};
+			static const char *const jt_tags[] = {NULL, "joins", "joins", "joins"};
+			bool		lateral = (shape == 4 || shape == 5 || shape == 6);
+			const char *jt = lateral
+				? (qg_draw_bool(tc) ? "" : "LEFT")
+				: jts[qg_biased(tc, 4, jt_tags)];
+
+			switch (shape)
+			{
+				case 1:
+					appendStringInfo(from, " %s JOIN ONLY %s %s ON ", jt, tn,
+									 aliases[n]);
+					break;
+				case 2:
+					appendStringInfo(from,
+									 " %s JOIN (SELECT DISTINCT %s FROM %s) %s ON ",
+									 jt, cols, tn, aliases[n]);
+					break;
+				case 3:
+					appendStringInfo(from,
+									 " %s JOIN (SELECT %s FROM %s WHERE id %% 2 = 0 "
+									 "UNION ALL SELECT %s FROM %s WHERE id %% 2 <> 0) %s ON ",
+									 jt, cols, tn, cols, tn, aliases[n]);
+					break;
+				case 4:
+				case 5:
+					{
+						/*
+						 * The correlation is the FK equality itself, moved
+						 * inside the lateral subquery; the outer ON is TRUE.
+						 * Same rows as the plain join, different tree.
+						 */
+						StringInfoData corr;
+
+						initStringInfo(&corr);
+						if (frontier_is_child)
+							appendStringInfo(&corr, "%s.fk = x.id", prev);
+						else
+							appendStringInfo(&corr, "x.fk = %s.id", prev);
+						if (shape == 4)
+							appendStringInfo(from,
+											 " %s JOIN LATERAL (SELECT %s FROM %s x "
+											 "WHERE %s OFFSET 0) %s ON true",
+											 jt, xcols, tn, corr.data, aliases[n]);
+						else
+							appendStringInfo(from,
+											 " %s JOIN LATERAL (SELECT %s FROM "
+											 "(SELECT DISTINCT %s FROM %s) x WHERE %s "
+											 "AND x.id %% 2 = 0 "
+											 "UNION ALL SELECT %s FROM %s x WHERE %s "
+											 "AND x.id %% 2 <> 0) %s ON true",
+											 jt, xcols, cols, tn, corr.data,
+											 xcols, tn, corr.data, aliases[n]);
+						pfree(corr.data);
+						n++;
+						continue;	/* join condition already placed */
+					}
+				case 6:
+					{
+						/*
+						 * LATERAL UNION ALL whose first arm is an uncorrelated
+						 * sorted subquery (a DISTINCT ... ORDER BY ... LIMIT 1)
+						 * projecting only the outer reference.  After pull-up
+						 * the appendrel child's translated tlist is a Var of
+						 * the outer rel, and the child has sorted paths, which
+						 * is the combination find_var_for_subquery_tle
+						 * mishandled (assertion failure in cassert builds,
+						 * possible wrong Var match otherwise; fixed upstream in
+						 * 11b56ee2731).  The arm must not be correlated or
+						 * filtered, or the planner never builds that path.
+						 *
+						 * Rows stay those of the plain FK join.  The first arm
+						 * yields the outer key exactly once when the member
+						 * table is non-empty (LIMIT 1 over a DISTINCT); the
+						 * second arm is the member's rows with that key, so the
+						 * union is {prev.fk} plus every matching member row.
+						 * The second arm is filtered to an impossible id so the
+						 * union is {prev.fk} alone, and the ON clause keeps it
+						 * only where a member row with that id exists -- which
+						 * the enforced FK guarantees for every non-NULL fk.
+						 * Used only where the frontier holds the FK (prev.fk =
+						 * new.id), so that argument applies.
+						 */
+						/*
+						 * The member projects only id; exposes_fk records that
+						 * so the walk never continues through this.fk.
+						 */
+						if (!frontier_is_child || db->tables[nexttab].nrows == 0)
+						{
+							appendStringInfo(from, " %s JOIN %s %s ON ", jt, tn,
+											 aliases[n]);
+							break;
+						}
+						appendStringInfo(from,
+										 " %s JOIN LATERAL ("
+										 "SELECT %s.fk AS id FROM "
+										 "(SELECT DISTINCT id FROM %s ORDER BY id LIMIT 1) s "
+										 "UNION ALL SELECT id FROM %s WHERE id < 0"
+										 ") %s ON %s.fk = %s.id",
+										 jt, prev, tn, tn,
+										 aliases[n], prev, aliases[n]);
+						exposes_fk[n] = false;	/* projects id only */
+						n++;
+						continue;
+					}
+				default:
+					appendStringInfo(from, " %s JOIN %s %s ON ", jt, tn,
+									 aliases[n]);
+					break;
+			}
+		}
+		if (frontier_is_child)
+			/* frontier.fk = new.id */
+			appendStringInfo(from, "%s.fk = %s.id", aliases[n - 1], aliases[n]);
+		else
+			/* new.fk = frontier.id */
+			appendStringInfo(from, "%s.fk = %s.id", aliases[n], aliases[n - 1]);
+		n++;
+	}
+	return n;
+}
+
+bool
+qg_build_query(pg_prop_tc *tc, const qg_db *db, int max_depth, qg_query *q)
+{
+	const qg_table *used[QG_MAX_TABLES];
+	char		aliases[QG_MAX_TABLES][QG_NAME_LEN];
+	StringInfoData from;
+	StringInfoData keys;
+	StringInfoData sel;
+	int			start;
+	int			nchain;
+	int			maxj;
+	int			i;
+
+	if (db->ntables == 0)
+		return false;
+
+	qg_rng_begin(tc);			/* deterministic region for the query shape */
+	start = (int) qg_draw_int(tc, 0, db->ntables - 1);
+	maxj = (max_depth < 1) ? 1 : max_depth;
+	if (maxj > db->ntables - 1)
+		maxj = db->ntables - 1;
+	if (maxj < 0)
+		maxj = 0;
+
+	initStringInfo(&from);
+	nchain = build_join_chain(tc, db, start, maxj, &from, used, aliases);
+
+	/*
+	 * Project each joined table's id as the stable key list, aliased k0, k1,
+	 * ... so the output column names are unique (two relations both have a
+	 * column named id) and an outer query that wraps select_from can order by
+	 * and reference the keys by those names.
+	 */
+	initStringInfo(&keys);		/* SELECT target list: r0.id AS k0, ... */
+	{
+		StringInfoData keynames;	/* k0, k1, ... for ORDER BY / outer refs */
+
+		initStringInfo(&keynames);
+		for (i = 0; i < nchain; i++)
+		{
+			if (i > 0)
+			{
+				appendStringInfoString(&keys, ", ");
+				appendStringInfoString(&keynames, ", ");
+			}
+			appendStringInfo(&keys, "%s.id AS k%d", aliases[i], i);
+			appendStringInfo(&keynames, "k%d", i);
+		}
+
+		/* the mutable predicate ranges over the anchor r0 */
+		q->pred_table = used[0];
+		snprintf(q->pred_alias, QG_NAME_LEN, "%s", aliases[0]);
+
+		/*
+		 * The builder returns the plain join tree: select_from is always
+		 * "SELECT <keys> FROM <join>" with the mutable predicate ranging over
+		 * the anchor alias r0.  Wrapping in a derived table or CTE is left to
+		 * the oracles that want it (deep_cte_inline builds the inline / CTE /
+		 * materialized forms on top of this), which keeps string assembly free
+		 * of nested-WITH and alias collisions.  keys holds the k-named output
+		 * columns, so an outer wrapper orders by and selects them by name.
+		 */
+		initStringInfo(&sel);
+		appendStringInfo(&sel, "SELECT %s FROM %s", keys.data, from.data);
+		q->select_from = pstrdup(sel.data);
+		q->keys = pstrdup(keynames.data);
+		q->order_by = psprintf("ORDER BY %s", keynames.data);
+		pfree(keynames.data);
+	}
+
+	pfree(from.data);
+	pfree(keys.data);
+	pfree(sel.data);
+	qg_rng_end();
+	return true;
+}
+
+void
+qg_free_query(qg_query *q)
+{
+	if (q->select_from)
+		pfree(q->select_from);
+	if (q->order_by)
+		pfree(q->order_by);
+	if (q->keys)
+		pfree(q->keys);
+	q->select_from = q->order_by = q->keys = NULL;
+}
