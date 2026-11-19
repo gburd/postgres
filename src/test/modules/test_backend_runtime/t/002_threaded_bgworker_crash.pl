@@ -25,22 +25,13 @@ $node->start;
 is($node->safe_psql('postgres', 'SHOW multithreaded'), 'on',
 	'threaded runtime enabled for crash escalation fixture');
 
-$node->safe_psql(
-	'postgres',
-	q{
-CREATE FUNCTION test_backend_runtime_crash_thread_bgworker()
-RETURNS bool
-AS 'test_backend_runtime_threaded',
-   'test_backend_runtime_crash_thread_bgworker'
-LANGUAGE C;
-});
-
 my $postmaster_pid = slurp_file($node->data_dir . '/postmaster.pid');
 $postmaster_pid =~ s/\n.*//s;
 
+$node->safe_psql('postgres', 'CREATE EXTENSION test_backend_runtime_threaded');
+
 # A user message laid out like a DOWN must not count as a crash: only a
 # DOWN the library sent may escalate to a fail-stop.
-$node->safe_psql('postgres', 'CREATE EXTENSION test_backend_runtime_threaded');
 my $forged_start = -s $node->logfile;
 is($node->safe_psql('postgres', 'SELECT test_backend_runtime_send_forged_down()'),
 	't', 'forged DOWN delivered to the carrier supervisor');
