@@ -287,3 +287,10 @@ CREATE FUNCTION test_sbm_bms_shapes(
     OUT bms_bytes bigint, OUT sbm_bytes bigint)
 RETURNS SETOF record
 AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
+
+CREATE FUNCTION test_sbm_ops_bench(
+    n bigint, universe bigint, pattern int, nq bigint, reps int,
+    OUT op text, OUT ns double precision, OUT members bigint,
+    OUT chunks bigint, OUT bytes bigint)
+RETURNS SETOF record
+AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
