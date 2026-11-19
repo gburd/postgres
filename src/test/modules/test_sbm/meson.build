@@ -4,6 +4,7 @@ test_sbm_sources = files(
   'test_sbm.c',
   'test_sbm_intset_bench.c',
   'test_sbm_bms_shapes.c',
+  'test_sbm_ops_bench.c',
 )
 
 if host_system == 'windows'

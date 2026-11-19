@@ -19,6 +19,8 @@
 #include "access/xloginsert.h"
 #include "commands/vacuum.h"
 #include "lib/integerset.h"
+#include "lib/sbm.h"
+#include "portability/instr_time.h"
 #include "miscadmin.h"
 #include "storage/indexfsm.h"
 #include "storage/lmgr.h"
@@ -41,7 +43,30 @@ typedef struct
 	IntegerSet *internal_page_set;
 	IntegerSet *empty_leaf_set;
 	MemoryContext page_set_context;
+
+	/*
+	 * MEASUREMENT ONLY (wip/bms-census): with GIST_PAGESET=sbm in the
+	 * environment the two page sets are sbm maps instead, built through one
+	 * ascending cursor each and probed through a locator.  set_ns totals the
+	 * time spent in set operations either way.
+	 */
+	bool		use_sbm;
+	Sbm		   *sbm_internal;
+	Sbm		   *sbm_empty;
+	SbmCursor	cur_internal;
+	SbmCursor	cur_empty;
+	double		set_ns;
 } GistVacState;
+
+#define PAGESET_TIMED(vs, stmt) \
+	do { \
+		instr_time	t0_, t1_; \
+		INSTR_TIME_SET_CURRENT(t0_); \
+		stmt; \
+		INSTR_TIME_SET_CURRENT(t1_); \
+		INSTR_TIME_SUBTRACT(t1_, t0_); \
+		(vs)->set_ns += (double) INSTR_TIME_GET_NANOSEC(t1_); \
+	} while (0)
 
 static void gistvacuumscan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 						   IndexBulkDeleteCallback callback, void *callback_state);
@@ -170,6 +195,13 @@ gistvacuumscan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 													  16 * 1024,
 													  16 * 1024);
 	oldctx = MemoryContextSwitchTo(vstate.page_set_context);
+	vstate.use_sbm = getenv("GIST_PAGESET") != NULL &&
+		strcmp(getenv("GIST_PAGESET"), "sbm") == 0;
+	vstate.set_ns = 0;
+	vstate.sbm_internal = NULL;
+	vstate.sbm_empty = NULL;
+	vstate.cur_internal = (SbmCursor) SBM_CURSOR_INIT;
+	vstate.cur_empty = (SbmCursor) SBM_CURSOR_INIT;
 	vstate.internal_page_set = intset_create();
 	vstate.empty_leaf_set = intset_create();
 	MemoryContextSwitchTo(oldctx);
@@ -288,6 +320,20 @@ gistvacuumscan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	 * they can be reused.
 	 */
 	gistvacuum_delete_empty_pages(info, &vstate);
+
+	elog(LOG, "GIST_PAGESET %s: internal=%llu empty=%llu set_ns=%.0f bytes=%zu",
+		 vstate.use_sbm ? "sbm" : "intset",
+		 (unsigned long long) (vstate.use_sbm ?
+							   sbm_cardinality(vstate.sbm_internal) :
+							   intset_num_entries(vstate.internal_page_set)),
+		 (unsigned long long) (vstate.use_sbm ?
+							   sbm_cardinality(vstate.sbm_empty) :
+							   intset_num_entries(vstate.empty_leaf_set)),
+		 vstate.set_ns,
+		 vstate.use_sbm ?
+		 sbm_get_capacity(vstate.sbm_internal) + sbm_get_capacity(vstate.sbm_empty) :
+		 (size_t) (intset_memory_usage(vstate.internal_page_set) +
+				   intset_memory_usage(vstate.empty_leaf_set)));
 
 	/* we don't need the internal and empty page sets anymore */
 	MemoryContextDelete(vstate.page_set_context);
@@ -433,7 +479,18 @@ restart:
 			 * it up.
 			 */
 			if (blkno == orig_blkno)
-				intset_add_member(vstate->empty_leaf_set, blkno);
+			{
+				if (vstate->use_sbm)
+				{
+					MemoryContext o = MemoryContextSwitchTo(vstate->page_set_context);
+
+					PAGESET_TIMED(vstate, sbm_add_grow_cursor(&vstate->sbm_empty, blkno,
+															  &vstate->cur_empty));
+					MemoryContextSwitchTo(o);
+				}
+				else
+					PAGESET_TIMED(vstate, intset_add_member(vstate->empty_leaf_set, blkno));
+			}
 		}
 		else
 			vstate->stats->num_index_tuples += nremain;
@@ -471,7 +528,18 @@ restart:
 		 * parents of empty leaf pages.
 		 */
 		if (blkno == orig_blkno)
-			intset_add_member(vstate->internal_page_set, blkno);
+		{
+			if (vstate->use_sbm)
+			{
+				MemoryContext o = MemoryContextSwitchTo(vstate->page_set_context);
+
+				PAGESET_TIMED(vstate, sbm_add_grow_cursor(&vstate->sbm_internal, blkno,
+														  &vstate->cur_internal));
+				MemoryContextSwitchTo(o);
+			}
+			else
+				PAGESET_TIMED(vstate, intset_add_member(vstate->internal_page_set, blkno));
+		}
 	}
 
 	UnlockReleaseBuffer(buffer);
@@ -505,14 +573,39 @@ gistvacuum_delete_empty_pages(IndexVacuumInfo *info, GistVacState *vstate)
 	Relation	rel = info->index;
 	BlockNumber empty_pages_remaining;
 	uint64		blkno;
+	SbmLocator *loc = NULL;
+	SbmCursor	icur = SBM_CURSOR_INIT;
+	bool		more;
 
 	/*
 	 * Rescan all inner pages to find those that have empty child pages.
 	 */
-	empty_pages_remaining = intset_num_entries(vstate->empty_leaf_set);
-	intset_begin_iterate(vstate->internal_page_set);
-	while (empty_pages_remaining > 0 &&
-		   intset_iterate_next(vstate->internal_page_set, &blkno))
+
+	if (vstate->use_sbm)
+	{
+		MemoryContext o = MemoryContextSwitchTo(vstate->page_set_context);
+
+		PAGESET_TIMED(vstate, loc = sbm_locator_build(vstate->sbm_empty));
+		MemoryContextSwitchTo(o);
+		empty_pages_remaining = sbm_cardinality(vstate->sbm_empty);
+		blkno = SBM_IDX_MAX;
+	}
+	else
+	{
+		empty_pages_remaining = intset_num_entries(vstate->empty_leaf_set);
+		intset_begin_iterate(vstate->internal_page_set);
+	}
+	for (;;)
+	{
+		if (empty_pages_remaining == 0)
+			break;
+		if (vstate->use_sbm)
+			PAGESET_TIMED(vstate, more = (blkno = sbm_next_member(vstate->sbm_internal,
+																  blkno, &icur)) != SBM_IDX_MAX);
+		else
+			PAGESET_TIMED(vstate, more = intset_iterate_next(vstate->internal_page_set, &blkno));
+		if (!more)
+			break;
 	{
 		Buffer		buffer;
 		Page		page;
@@ -554,8 +647,16 @@ gistvacuum_delete_empty_pages(IndexVacuumInfo *info, GistVacState *vstate)
 			IndexTuple	idxtuple = (IndexTuple) PageGetItem(page, iid);
 			BlockNumber leafblk;
 
+			bool		is_empty;
+
 			leafblk = ItemPointerGetBlockNumber(&(idxtuple->t_tid));
-			if (intset_is_member(vstate->empty_leaf_set, leafblk))
+			if (vstate->use_sbm)
+				PAGESET_TIMED(vstate, is_empty = loc != NULL &&
+							  sbm_locator_contains(loc, leafblk));
+			else
+				PAGESET_TIMED(vstate, is_empty =
+							  intset_is_member(vstate->empty_leaf_set, leafblk));
+			if (is_empty)
 			{
 				leafs_to_delete[ntodelete] = leafblk;
 				todelete[ntodelete++] = off;
@@ -611,6 +712,7 @@ gistvacuum_delete_empty_pages(IndexVacuumInfo *info, GistVacState *vstate)
 		 * we were not able to remove them all.
 		 */
 		empty_pages_remaining -= ntodelete;
+	}
 	}
 }
 
