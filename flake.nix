@@ -9,17 +9,15 @@
     # Defaults to GitHub; for local development point it at a checkout with
     #   nix develop --override-input libxtc path:$HOME/ws/xtc
     libxtc = {
-      # v2.2.0 (tag object 6d45d849, commit 2e2e10b0, 2026-11-18): the first
-      # release of the 2.2 line.  SONAME stays libxtc.so.2; the 2.1.2 ABI is
-      # kept at XTC_2.0 and the new API is in XTC_2.2.  It contains the
-      # stale-readiness generation-token fix (the fd107 XTC_E_INVAL root
-      # cause), the DOWN-classification fix (a contained fault reports
-      # XTC_DOWN_KIND_SIGNAL whatever code the fiber passed to xtc_exit_self;
-      # a kill reports XTC_DOWN_KIND_KILLED), xtc_sup_opts_t.on_child_down,
-      # and the xtc_reg value API (xtc_reg_put / xtc_reg_visit).  2.2 renames
-      # part of the API with the old names kept until 3.0 (libxtc
-      # docs/deprecations.md); this tree uses the new names.
-      url = "github:gburd/libxtc?rev=2e2e10b00a9a2c4d66892153498bf5a7c067f44b";
+      # libxtc main d51d9c8a (2026-11-19), 17 commits after v2.2.0 and not yet
+      # tagged.  On top of v2.2.0 it adds the XTC_2.3 receive calls
+      # (xtc_recv_mark, xtc_recv_match_since, xtc_recv_match_ex) and fixes
+      # three receive paths this tree relies on: a NOCONNECTION DOWN no
+      # longer decodes as SIGNAL 4 (432f2f17); supervisors, the registry
+      # reaper and xtc_svr_call accept only DOWN and ack messages the
+      # library sent (81a553e4); a failed receive copy-out keeps mailbox
+      # order (46c6a019).  Re-pin to the release tag that carries XTC_2.3.
+      url = "github:gburd/libxtc?rev=d51d9c8a7865e6d306ce8d43543aaf31bdbcee3d";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.flake-utils.follows = "flake-utils";
     };
