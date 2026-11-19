@@ -1,0 +1,13 @@
+round,mode,vacuum_ms,detail
+1,intset,431,intset: internal=253 empty=23936 set_ns=2547711 bytes=26616
+1,sbm,432,sbm: internal=253 empty=23936 set_ns=2464827 bytes=5120
+2,sbm,433,sbm: internal=253 empty=23936 set_ns=2423311 bytes=5120
+2,intset,437,intset: internal=253 empty=23936 set_ns=2569783 bytes=26616
+3,intset,434,intset: internal=253 empty=23936 set_ns=2573023 bytes=26616
+3,sbm,432,sbm: internal=253 empty=23936 set_ns=2450312 bytes=5120
+4,sbm,433,sbm: internal=253 empty=23936 set_ns=2427088 bytes=5120
+4,intset,432,intset: internal=253 empty=23936 set_ns=2548777 bytes=26616
+5,intset,435,intset: internal=253 empty=23936 set_ns=2599059 bytes=26616
+5,sbm,433,sbm: internal=253 empty=23936 set_ns=2432534 bytes=5120
+6,sbm,434,sbm: internal=253 empty=23936 set_ns=2455003 bytes=5120
+6,intset,433,intset: internal=253 empty=23936 set_ns=2549370 bytes=26616
