@@ -49,6 +49,7 @@ PG_FUNCTION_INFO_V1(test_backend_runtime_custom_guc_init_count);
 PG_FUNCTION_INFO_V1(test_backend_runtime_carrier_total_steals);
 PG_FUNCTION_INFO_V1(test_backend_runtime_emit_fatal);
 PG_FUNCTION_INFO_V1(test_backend_runtime_crash_current_backend);
+PG_FUNCTION_INFO_V1(test_backend_runtime_send_forged_down);
 PG_FUNCTION_INFO_V1(test_backend_runtime_wait_completion_enabled);
 PG_FUNCTION_INFO_V1(test_backend_runtime_wait_completion_snapshot);
 PG_FUNCTION_INFO_V1(test_backend_runtime_protocol_park_snapshot);
@@ -485,6 +486,21 @@ test_backend_runtime_emit_fatal(PG_FUNCTION_ARGS)
 	ereport(FATAL,
 			(errmsg("test_backend_runtime requested FATAL")));
 	pg_unreachable();
+}
+
+/*
+ * Send this loop's carrier supervisor a forged DOWN that claims the calling
+ * backend died of SIGSEGV.  Returns whether the message was sent; whether the
+ * server survives is the test.
+ */
+Datum
+test_backend_runtime_send_forged_down(PG_FUNCTION_ARGS)
+{
+#ifdef USE_XTC_CARRIER
+	PG_RETURN_BOOL(xtc_pg_carrier_send_forged_down(SIGSEGV));
+#else
+	PG_RETURN_BOOL(false);
+#endif
 }
 
 /*

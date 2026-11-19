@@ -534,13 +534,30 @@ xtc_carrier_supervisor_proc(void *arg)
 		void	   *msg = NULL;
 		size_t		len = 0;
 		xtc_down_info_t di = XTC_DOWN_INFO_INIT;
+		bool		from_library;
 		int			rc;
 
+#ifdef HAVE_XTC_RECV_MATCH_EX
+		xtc_msg_info_t info = XTC_MSG_INFO_INIT;
+
+		/* block until a message arrives; NULL predicate takes the first */
+		rc = xtc_recv_match_ex(0, NULL, NULL, &msg, &len, &info, -1);
+
+		/*
+		 * A DOWN's byte layout is public, so a payload that decodes as a DOWN
+		 * proves nothing by itself; only the library can set XTC_MSG_SYS.
+		 * Without this check any proc could make the supervisor report a live
+		 * backend as crashed and fail-stop the server.
+		 */
+		from_library = (info.flags & XTC_MSG_SYS) != 0;
+#else
 		rc = xtc_recv(&msg, &len, -1);	/* block until a message arrives */
+		from_library = true;
+#endif
 		if (rc != XTC_OK || msg == NULL)
 			continue;
 
-		if (xtc_down_decode_ex(msg, len, &di) == XTC_OK)
+		if (from_library && xtc_down_decode_ex(msg, len, &di) == XTC_OK)
 		{
 			xtc_pid_t	down_pid = di.pid;
 
@@ -763,7 +780,8 @@ xtc_carrier_supervisor_proc(void *arg)
 				}
 			}
 		}
-		else if (len == sizeof(xtc_sup_spawn_msg) &&
+		else if (!from_library &&
+				 len == sizeof(xtc_sup_spawn_msg) &&
 				 ((const xtc_sup_spawn_msg *) msg)->magic == XTC_SUP_SPAWN_MAGIC)
 		{
 			xtc_sup_spawn_msg sp;
@@ -805,8 +823,57 @@ xtc_carrier_supervisor_proc(void *arg)
 			 * process.  entry_arg is the stable launch_backend.c-owned
 			 * BackendThreadStart *; no heap allocation on this bare fiber.
 			 */
-			if (xtc_proc_spawn_monitor(my_loop, xtc_carrier_proc, sp.entry_arg,
-									   &po, &bpid, &ref) == XTC_OK)
+			if (xtc_carrier_use_orc && my_loop_idx < g_xtc_n_orc_sups &&
+				g_xtc_orc_sup[my_loop_idx] != NULL)
+			{
+				/*
+				 * Hand the backend to this loop's xtc_orc supervisor as a
+				 * TEMPORARY child: it is never restarted, and its exit reaches
+				 * xtc_carrier_orc_child_down, which is then the escalation path.
+				 * This fiber is a proc and is not the supervisor, so
+				 * xtc_sup_add_child may run here (sup.c refuses only off-proc
+				 * callers and the supervisor itself).  An add that fails or
+				 * times out leaves the backend unstarted; the postmaster sees the
+				 * launch never register and fails the connection as it would
+				 * for a failed spawn.
+				 */
+				xtc_child_spec_t spec = XTC_CHILD_SPEC_INIT;
+				int			arc;
+
+				spec.name = "pg-backend";
+				spec.fn = xtc_carrier_proc;
+				spec.arg = sp.entry_arg;
+				spec.policy = XTC_RESTART_TEMPORARY;
+				spec.migratable = po.migratable;
+				spec.stack_size = XTC_PG_FIBER_STACK;
+				arc = xtc_sup_add_child(g_xtc_orc_sup[my_loop_idx], &spec, &bpid);
+				if (arc == XTC_OK)
+				{
+					char		sbuf[128];
+					int			sn;
+
+					sn = snprintf(sbuf, sizeof(sbuf),
+								  "xtc: orc added backend fiber pid=(loop=%u,local=%u,gen=" UINT64_FORMAT ") migratable=%d\n",
+								  bpid.loop_id, bpid.local_id, (uint64) bpid.gen, po.migratable);
+					if (sn > 0)
+						xtc_diag_write(STDERR_FILENO, sbuf,
+									   Min((size_t) sn, sizeof(sbuf)));
+				}
+				else
+				{
+					char		sbuf[96];
+					int			sn;
+
+					sn = snprintf(sbuf, sizeof(sbuf),
+								  "xtc: orc xtc_sup_add_child failed rc=%d on loop %d\n",
+								  arc, my_loop_idx);
+					if (sn > 0)
+						xtc_diag_write(STDERR_FILENO, sbuf,
+									   Min((size_t) sn, sizeof(sbuf)));
+				}
+			}
+			else if (xtc_proc_spawn_monitor(my_loop, xtc_carrier_proc, sp.entry_arg,
+											&po, &bpid, &ref) == XTC_OK)
 			{
 				char		sbuf[128];
 				int			sn;
@@ -969,6 +1036,16 @@ xtc_carrier_orc_child_down(xtc_supervisor_t *sup,
 		 * contract.
 		 */
 		Latch	   *pml;
+		char		buf[160];
+		int			n;
+
+		/* raw write: elog is unsafe from the supervisor fiber */
+		n = snprintf(buf, sizeof(buf),
+					 "xtc: ORC observed GENUINE-CRASH backend fiber DOWN pid=(loop=%u,local=%u,gen=" UINT64_FORMAT ") signal=%d\n",
+					 info->pid.loop_id, info->pid.local_id,
+					 (uint64) info->pid.gen, info->signal);
+		if (n > 0)
+			xtc_diag_write(STDERR_FILENO, buf, Min((size_t) n, sizeof(buf)));
 
 		atomic_store(&g_xtc_genuine_crash, 1);
 		pml = atomic_load(&g_xtc_postmaster_latch);
@@ -1456,7 +1533,7 @@ xtc_pg_carrier_start(void)
 		 * presence, not a child count.
 		 */
 		if (xtc_carrier_use_orc)
-			elog(LOG, "xtc: xtc_orc supervisor scaffold up (%d supervisor%s, 0 children; on_child_down hook installed, escalation still on the hand-rolled classifier)",
+			elog(LOG, "xtc: xtc_orc supervisors up (%d supervisor%s); backend fibers are TEMPORARY children and on_child_down is the escalation path",
 				 g_xtc_n_orc_sups, g_xtc_n_orc_sups == 1 ? "" : "s");
 	}
 
@@ -1802,6 +1879,37 @@ xtc_pg_backend_fiber_is_migratable(void)
  * lock-free snapshot of relaxed atomics -- exactness across a running executor
  * is not guaranteed, which is fine for a "did any steal happen" probe.
  */
+bool
+xtc_pg_carrier_send_forged_down(int signo)
+{
+	xtc_pid_t	sup;
+	int			loop;
+
+	/* The wire layout of a DOWN, as libxtc's proc.c sends it. */
+	struct
+	{
+		uint8_t		kind;
+		uint64_t	ref;
+		xtc_pid_t	pid;
+		int			reason;
+		uint8_t		exit_kind;
+	}			pg_attribute_packed() down;
+
+	loop = xtc_exec_loop_id();
+	if (loop < 0 || loop >= g_xtc_n_sups)
+		return false;
+	sup = g_xtc_sup_pid[loop];
+	if (xtc_pid_is_none(sup))
+		return false;
+
+	down.kind = 'D';
+	down.ref = 1;
+	down.pid = xtc_self();
+	down.reason = signo;
+	down.exit_kind = (uint8_t) XTC_DOWN_KIND_SIGNAL;
+	return xtc_send(sup, &down, sizeof(down)) == XTC_OK;
+}
+
 uint64
 xtc_pg_carrier_total_steals(void)
 {

@@ -88,6 +88,7 @@ tests += {
       't/025_wire_cancel.pl',
       't/026_fallback_guc_bootstrap.pl',
       't/030_ri_check_ownership.pl',
+      't/031_orc_supervision.pl',
     ],
   },
 }

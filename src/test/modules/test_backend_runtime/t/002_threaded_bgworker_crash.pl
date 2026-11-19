@@ -37,6 +37,19 @@ LANGUAGE C;
 
 my $postmaster_pid = slurp_file($node->data_dir . '/postmaster.pid');
 $postmaster_pid =~ s/\n.*//s;
+
+# A user message laid out like a DOWN must not count as a crash: only a
+# DOWN the library sent may escalate to a fail-stop.
+$node->safe_psql('postgres', 'CREATE EXTENSION test_backend_runtime_threaded');
+my $forged_start = -s $node->logfile;
+is($node->safe_psql('postgres', 'SELECT test_backend_runtime_send_forged_down()'),
+	't', 'forged DOWN delivered to the carrier supervisor');
+is($node->safe_psql('postgres', 'SELECT 1'),
+	'1', 'server survives a forged DOWN');
+unlike(slurp_file($node->logfile, $forged_start),
+	qr/GENUINE-CRASH|terminating threaded server runtime/,
+	'forged DOWN did not escalate');
+
 my $log_start = -s $node->logfile;
 
 my ($ret, $stdout, $stderr) = $node->psql(

@@ -1141,6 +1141,15 @@ xtc = dependency('xtc', version: '>=2.2.0', required: xtcopt)
 if xtc.found()
   cdata.set('USE_XTC_CARRIER', 1)
 
+  # xtc_recv_match_ex (symbol node XTC_2.3) shows the receiver whether the
+  # library sent a message.  The carrier supervisor uses it so that only a
+  # library-sent DOWN can escalate to a fail-stop.  Development snapshots of
+  # libxtc carry it before their version number changes, so probe the symbol
+  # rather than the version.
+  if cc.has_function('xtc_recv_match_ex', dependencies: [xtc])
+    cdata.set('HAVE_XTC_RECV_MATCH_EX', 1)
+  endif
+
   # Phase 19 Increment 2: a session that needs a process-only extension under
   # multithreaded=on is served by a forked+exec'd process-fallback backend
   # (the carrier process is multithreaded, so plain fork() is unsafe; only

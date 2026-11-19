@@ -76,6 +76,15 @@ extern bool xtc_pg_backend_fiber_is_migratable(void);
 extern uint64 xtc_pg_carrier_total_steals(void);
 
 /*
+ * Test hook: send this loop's supervisor a user message laid out exactly like
+ * a library DOWN reporting that the calling backend fiber died of signal
+ * `signo`.  The supervisor must ignore it, because a user xtc_send cannot
+ * carry XTC_MSG_SYS.  Returns false when no supervisor is reachable.  Must be
+ * called from a backend fiber.
+ */
+extern bool xtc_pg_carrier_send_forged_down(int signo);
+
+/*
  * Per-loop libxtc scheduler stats snapshot for the pg_stat_xtc_carriers view
  * (libxtc fusion roadmap F0b).  Mirrors xtc_loop_stats_t plus the loop index.
  */

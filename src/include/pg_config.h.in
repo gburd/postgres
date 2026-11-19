@@ -722,6 +722,10 @@
  * -DUSE_XTC_PROCESS_FALLBACK.  Keep both build systems in sync. */
 #undef USE_XTC_PROCESS_FALLBACK
 
+/* Define to 1 if libxtc has xtc_recv_match_ex() (symbol node XTC_2.3).  Set by
+ * the meson build; a make build without it uses plain xtc_recv(). */
+#undef HAVE_XTC_RECV_MATCH_EX
+
 /* Define to 1 to build with XML support. (--with-libxml) */
 #undef USE_LIBXML
 
