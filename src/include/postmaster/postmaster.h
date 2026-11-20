@@ -16,7 +16,6 @@
 #include "lib/ilist.h"
 #include "miscadmin.h"
 #include "port/atomics.h"
-#include "port/pg_thread.h"
 #include "utils/global_lifetime.h"
 
 struct Latch;
@@ -46,23 +45,21 @@ struct PgBackend;
 typedef enum PMChildCarrierKind
 {
 	PM_CHILD_CARRIER_PROCESS,
-	PM_CHILD_CARRIER_THREAD,
 	PM_CHILD_CARRIER_FIBER
 } PMChildCarrierKind;
 
 typedef struct
 {
-	PMChildCarrierKind carrier_kind;	/* process, thread, or future carrier */
+	PMChildCarrierKind carrier_kind;	/* process or fiber */
 	pid_t		pid;			/* process id, if process-backed */
 	pid_t		logical_signal_pid;	/* visible signal/stat id, if published */
-	PgThread	thread;			/* native thread handle, if thread-backed */
 	struct PgBackend *logical_backend;	/* protected by PMChild APIs */
-	int			thread_exitstatus;	/* waitpid-style status for threads */
+	int			thread_exitstatus;	/* waitpid-style status for fibers */
 	pid_t		thread_exit_logical_signal_pid;	/* id captured at exit */
 	Size		thread_exit_top_memory_allocated;	/* retained top memory */
 	Size		thread_exit_top_memory_reclaimed;	/* freed top memory */
 	pg_atomic_uint32 thread_startup_complete; /* set when startup completes */
-	pg_atomic_uint32 thread_exited;	/* set when a thread carrier exits */
+	pg_atomic_uint32 thread_exited;	/* set when a fiber exits */
 	int			child_slot;		/* PMChildSlot for this backend, if any */
 	BackendType bkend_type;		/* child process flavor, see above */
 	struct RegisteredBgWorker *rw;	/* bgworker info, if this is a bgworker */
@@ -169,12 +166,10 @@ extern void InitPostmasterChildSlots(void);
 extern PMChild *AssignPostmasterChildSlot(BackendType btype);
 extern PMChild *AllocDeadEndChild(void);
 extern bool PostmasterChildIsProcess(const PMChild *pmchild);
-extern bool PostmasterChildIsThread(const PMChild *pmchild);
 extern bool PostmasterChildIsFiber(const PMChild *pmchild);
 extern bool PostmasterChildHasLogicalBackendPublication(const PMChild *pmchild);
 extern pid_t PostmasterChildSignalPid(const PMChild *pmchild);
 extern void PostmasterChildSetProcess(PMChild *pmchild, pid_t pid);
-extern void PostmasterChildSetThread(PMChild *pmchild, const PgThread *thread);
 extern void PostmasterChildSetFiber(PMChild *pmchild);
 extern void PostmasterChildPublishLogicalBackend(PMChild *pmchild,
 												 struct PgBackend *backend);
@@ -184,8 +179,6 @@ extern bool PostmasterChildRaiseThreadInterrupt(PMChild *pmchild,
 extern bool PostmasterChildWakeThreadBackend(PMChild *pmchild);
 extern void PostmasterChildPublishLogicalStartupComplete(PMChild *pmchild,
 														 struct Latch *postmaster_latch);
-extern void PostmasterChildPublishThreadStartupComplete(PMChild *pmchild,
-														struct Latch *postmaster_latch);
 extern bool PostmasterChildHasStartupComplete(PMChild *pmchild);
 extern void PostmasterChildPublishFiberExit(PMChild *pmchild,
 											int exitstatus,
@@ -197,16 +190,6 @@ extern bool PostmasterChildHasExitedFiber(PMChild *pmchild,
 										  Size *top_memory_allocated,
 										  Size *top_memory_reclaimed,
 										  pid_t *signal_pid);
-extern void PostmasterChildPublishThreadExit(PMChild *pmchild, int exitstatus,
-											 Size top_memory_allocated,
-											 Size top_memory_reclaimed,
-											 struct Latch *postmaster_latch);
-extern bool PostmasterChildHasExitedThread(PMChild *pmchild, int *exitstatus,
-										   Size *top_memory_allocated,
-										   Size *top_memory_reclaimed,
-										   pid_t *signal_pid);
-extern void PostmasterChildRetryThreadExit(PMChild *pmchild);
-extern int	PostmasterChildJoinThread(PMChild *pmchild);
 extern bool ReleasePostmasterChildSlot(PMChild *pmchild);
 extern PMChild *FindPostmasterChildByPid(int pid);
 

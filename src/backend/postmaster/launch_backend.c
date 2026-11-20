@@ -683,11 +683,10 @@ xtc_carrier_migratable(BackendType child_type)
 #endif
 
 /*
- * Start a regular backend carrier thread.
+ * Start a postmaster child as an xtc fiber on the carrier.
  *
- * Phase 10 supports one OS thread per regular client backend.  Server-owned
- * worker families are still process-backed or disabled until Phase 11 provides
- * worker thread carriers.
+ * A child type that xtc_carrier_eligible() does not list is refused with
+ * ENOSYS; there is no other threaded carrier.
  */
 static bool
 postmaster_backend_thread_launch(PMChild *pmchild,
@@ -696,8 +695,6 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 								 const ClientSocket *client_sock)
 {
 	BackendThreadStart *thread_start;
-	PgThread	thread;
-	int			rc;
 
 	if (child_type != B_ARCHIVER &&
 		child_type != B_BACKEND &&
@@ -835,15 +832,15 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 #ifdef USE_XTC_CARRIER
 	/*
 	 * xtc-carrier: run this backend/worker as an xtc fiber on the carrier
-	 * loop pool instead of a raw pthread.  The fiber body is the tree's own
-	 * backend_thread_entry, so all thread-per-session/worker init is reused
-	 * unchanged; only the carrier differs.  Blocking waits route through the
-	 * xtc loop (see waiteventset.c).  For B_BACKEND the dup()'d
+	 * loop pool.  The fiber body is backend_thread_entry.  Blocking waits
+	 * route through the xtc loop (see waiteventset.c).  For B_BACKEND the dup()'d
 	 * MyClientSocket->sock is the wait fd; worker families have no client
 	 * socket.
 	 */
 	if (xtc_carrier_eligible(child_type))
 	{
+		int			rc;
+
 		rc = xtc_pg_launch_backend_fiber(backend_thread_entry, thread_start);
 		if (rc != 0)
 		{
@@ -856,12 +853,10 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 			 PostmasterChildName(child_type), child_slot);
 		postmaster_thread_carriers_started = true;
 		/*
-		 * No PgThread handle for the fiber path: the fiber runs on a shared
-		 * carrier loop, not a dedicated joinable pthread.  Classify it as a
-		 * fiber child so the postmaster reaper releases the slot via
-		 * process_pm_fiber_exit() (no pthread_join) when the fiber exits,
-		 * letting shutdown's PM_WAIT_BACKENDS complete.  Publish the logical
-		 * backend so signal/wake routing still targets it.
+		 * Classify it as a fiber child so the postmaster reaper releases the
+		 * slot via process_pm_fiber_exit() when the fiber exits, letting
+		 * shutdown's PM_WAIT_BACKENDS complete.  Publish the logical backend
+		 * so signal/wake routing targets it.
 		 */
 		PostmasterChildSetFiber(pmchild);
 		PostmasterChildPublishLogicalBackend(pmchild,
@@ -880,22 +875,10 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 	}
 #endif
 
-	rc = pg_thread_create(&thread, "postgres backend",
-						  backend_thread_entry, thread_start);
-	if (rc != 0)
-	{
-		/* client_sock is closed by backend_thread_start_release */
-		backend_thread_start_release(thread_start);
-		errno = rc;
-		return false;
-	}
-
-	postmaster_thread_carriers_started = true;
-	PostmasterChildSetThread(pmchild, &thread);
-	PostmasterChildPublishLogicalBackend(pmchild,
-										 &thread_start->runtime_state.logical.backend);
-	pg_atomic_write_u32(&thread_start->launch_registered, 1);
-	return true;
+	/* client_sock is closed by backend_thread_start_release */
+	backend_thread_start_release(thread_start);
+	errno = ENOSYS;
+	return false;
 #endif
 }
 
@@ -976,9 +959,8 @@ backend_thread_entry(void *arg)
 
 #ifdef USE_XTC_CARRIER
 	/*
-	 * xtc-carrier: this path was designed for a fresh pthread that dies after
-	 * one backend.  When run as an xtc fiber, one carrier OS thread hosts many
-	 * backend fibers in sequence, so the previous fiber's thread-local runtime
+	 * xtc-carrier: one carrier OS thread hosts many backend fibers in
+	 * sequence, so the previous fiber's thread-local runtime
 	 * state (hot current-cells, current-work bindings, early-session fallback
 	 * flags) is still present.  Restore the fresh-thread invariant before
 	 * touching any session/GUC/timezone accessor below.
@@ -1352,10 +1334,10 @@ backend_thread_exit(int code)
 	if (publication == NULL)
 	{
 #ifdef USE_XTC_CARRIER
-		if (xtc_pg_in_backend_fiber())
-			xtc_pg_backend_fiber_exit(backend_thread_exitstatus(code));
+		xtc_pg_backend_fiber_exit(backend_thread_exitstatus(code));
+#else
+		elog(PANIC, "threaded backend exit without a carrier");
 #endif
-		pg_thread_exit();
 	}
 
 	backend_thread_finish(code);
@@ -1371,29 +1353,9 @@ backend_thread_finish(int code)
 	Size		top_memory_allocated = 0;
 	Size		top_memory_accounted = 0;
 	Size		top_memory_reclaimed = 0;
-#ifdef USE_XTC_CARRIER
-	bool		is_fiber;
-#endif
 
 	Assert(thread_start != NULL);
-
-#ifdef USE_XTC_CARRIER
-
-	/*
-	 * Decide fiber vs dedicated-thread exit from the DURABLE PMChild
-	 * classification (carrier_kind, set at launch by PostmasterChildSetFiber
-	 * and owned by the postmaster main thread), NOT the per-OS-thread
-	 * xtc_in_backend_fiber flag.  That flag is __thread state on the carrier
-	 * loop thread, set true at fiber entry and cleared when a fiber leaves; a
-	 * fiber that parks in xtc_pg_wait_fd can be resumed on the same carrier
-	 * thread AFTER a sibling fiber cleared the flag on its own exit, so the
-	 * flag can read false here even though this exit belongs to a fiber.  Under
-	 * immediate stop that misread routed a fiber bgworker (e.g. the logical-
-	 * replication ApplyLauncher) into PostmasterChildPublishThreadExit, which
-	 * asserts PostmasterChildIsThread and traps.  The carrier_kind never lies.
-	 */
-	is_fiber = PostmasterChildIsFiber(thread_start->publication.pmchild);
-#endif
+	Assert(PostmasterChildIsFiber(thread_start->publication.pmchild));
 
 	exit_state = PgCurrentBackendExitStateRef();
 	retained_top_context = exit_state->retained_top_memory_context;
@@ -1418,8 +1380,7 @@ backend_thread_finish(int code)
 	 * thread_start (the postmaster may still be mid-reap reading it); just leave
 	 * the fiber.
 	 */
-	if (is_fiber &&
-		pg_atomic_exchange_u32(&thread_start->exit_claimed, 1) != 0)
+	if (pg_atomic_exchange_u32(&thread_start->exit_claimed, 1) != 0)
 	{
 		ShutdownWaitEventSupport();
 		backend_thread_set_current_start(NULL);
@@ -1457,33 +1418,24 @@ backend_thread_finish(int code)
 		exit_state->retained_top_memory_context = NULL;
 		top_memory_allocated = 0;
 	}
-#ifdef USE_XTC_CARRIER
-	if (is_fiber)
-		PostmasterChildPublishFiberExit(thread_start->publication.pmchild,
-										exitstatus,
-										top_memory_allocated,
-										top_memory_reclaimed,
-										thread_start->publication.postmaster_latch);
-	else
-#endif
-	PostmasterChildPublishThreadExit(thread_start->publication.pmchild, exitstatus,
-									 top_memory_allocated,
-									 top_memory_reclaimed,
-									 thread_start->publication.postmaster_latch);
+	PostmasterChildPublishFiberExit(thread_start->publication.pmchild,
+									exitstatus,
+									top_memory_allocated,
+									top_memory_reclaimed,
+									thread_start->publication.postmaster_latch);
 
 	ShutdownWaitEventSupport();
 	backend_thread_set_current_start(NULL);
 #ifdef USE_XTC_CARRIER
 	/* userdata borrows the carrier embedded in thread_start. */
-	if (is_fiber)
-		(void) xtc_proc_set_userdata(NULL);
+	(void) xtc_proc_set_userdata(NULL);
 #endif
 	backend_thread_start_release(thread_start);
 #ifdef USE_XTC_CARRIER
-	if (is_fiber)
-		xtc_pg_backend_fiber_exit(exitstatus);
+	xtc_pg_backend_fiber_exit(exitstatus);
+#else
+	elog(PANIC, "threaded backend exit without a carrier");
 #endif
-	pg_thread_exit();
 }
 
 static int

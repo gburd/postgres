@@ -79,11 +79,10 @@ static bool PostmasterChildHasExited(PMChild *pmchild, int *exitstatus,
 static void PostmasterChildWakePostmaster(Latch *postmaster_latch);
 
 /*
- * Thread-backed PMChild ownership contract:
+ * Fiber-backed PMChild ownership contract:
  *
  * - ActiveChildList membership, slot assignment/release, carrier_kind, bkend
- *   type, bgworker metadata, and native-thread join are owned by the
- *   postmaster main thread.
+ *   type, and bgworker metadata are owned by the postmaster main thread.
  * - logical_backend, logical_signal_pid, and thread-exit payload fields are
  *   the cross-thread publication surface between a logical backend and the
  *   postmaster.  They must be read or written only by the helper APIs in this
@@ -355,12 +354,6 @@ PostmasterChildIsProcess(const PMChild *pmchild)
 }
 
 bool
-PostmasterChildIsThread(const PMChild *pmchild)
-{
-	return pmchild->carrier_kind == PM_CHILD_CARRIER_THREAD;
-}
-
-bool
 PostmasterChildIsFiber(const PMChild *pmchild)
 {
 	return pmchild->carrier_kind == PM_CHILD_CARRIER_FIBER;
@@ -369,8 +362,7 @@ PostmasterChildIsFiber(const PMChild *pmchild)
 bool
 PostmasterChildHasLogicalBackendPublication(const PMChild *pmchild)
 {
-	return PostmasterChildIsThread(pmchild) ||
-		PostmasterChildIsFiber(pmchild);
+	return PostmasterChildIsFiber(pmchild);
 }
 
 pid_t
@@ -397,17 +389,6 @@ PostmasterChildSetProcess(PMChild *pmchild, pid_t pid)
 	pmchild->carrier_kind = PM_CHILD_CARRIER_PROCESS;
 	pmchild->pid = pid;
 	PMChildResetLogicalPublicationState(pmchild, pid);
-}
-
-void
-PostmasterChildSetThread(PMChild *pmchild, const PgThread *thread)
-{
-	Assert(thread != NULL);
-
-	pmchild->carrier_kind = PM_CHILD_CARRIER_THREAD;
-	pmchild->pid = 0;
-	pmchild->thread = *thread;
-	PMChildResetLogicalPublicationState(pmchild, 0);
 }
 
 void
@@ -438,8 +419,6 @@ PostmasterChildUnpublishLogicalBackend(PMChild *pmchild)
 	Assert(PostmasterChildHasLogicalBackendPublication(pmchild));
 
 	PMChildLogicalBackendLock();
-	if (PostmasterChildIsThread(pmchild))
-		pmchild->thread_exit_logical_signal_pid = pmchild->logical_signal_pid;
 	pmchild->logical_backend = NULL;
 	pmchild->logical_signal_pid = 0;
 	PMChildLogicalBackendUnlock();
@@ -502,15 +481,6 @@ PostmasterChildPublishLogicalStartupComplete(PMChild *pmchild,
 	PostmasterChildWakePostmaster(postmaster_latch);
 }
 
-void
-PostmasterChildPublishThreadStartupComplete(PMChild *pmchild,
-											Latch *postmaster_latch)
-{
-	Assert(PostmasterChildIsThread(pmchild));
-
-	PostmasterChildPublishLogicalStartupComplete(pmchild, postmaster_latch);
-}
-
 bool
 PostmasterChildHasStartupComplete(PMChild *pmchild)
 {
@@ -568,18 +538,6 @@ PostmasterChildPublishFiberExit(PMChild *pmchild, int exitstatus,
 							   top_memory_reclaimed, postmaster_latch);
 }
 
-void
-PostmasterChildPublishThreadExit(PMChild *pmchild, int exitstatus,
-								 Size top_memory_allocated,
-								 Size top_memory_reclaimed,
-								 Latch *postmaster_latch)
-{
-	Assert(PostmasterChildIsThread(pmchild));
-
-	PostmasterChildPublishExit(pmchild, exitstatus, top_memory_allocated,
-							   top_memory_reclaimed, postmaster_latch);
-}
-
 static bool
 PostmasterChildHasExited(PMChild *pmchild, int *exitstatus,
 						 Size *top_memory_allocated,
@@ -613,48 +571,6 @@ PostmasterChildHasExitedFiber(PMChild *pmchild, int *exitstatus,
 
 	return PostmasterChildHasExited(pmchild, exitstatus, top_memory_allocated,
 									top_memory_reclaimed, signal_pid);
-}
-
-bool
-PostmasterChildHasExitedThread(PMChild *pmchild, int *exitstatus,
-							   Size *top_memory_allocated,
-							   Size *top_memory_reclaimed,
-							   pid_t *signal_pid)
-{
-	if (!PostmasterChildIsThread(pmchild))
-		return false;
-
-	return PostmasterChildHasExited(pmchild, exitstatus, top_memory_allocated,
-									top_memory_reclaimed, signal_pid);
-}
-
-void
-PostmasterChildRetryThreadExit(PMChild *pmchild)
-{
-	Assert(PostmasterChildIsThread(pmchild));
-
-	/*
-	 * The postmaster claims a thread-exit report before joining the native
-	 * carrier.  If that join fails, keep the PMChild active and make the exit
-	 * report visible again so a later postmaster loop can retry instead of
-	 * releasing a slot whose carrier was not joined.
-	 */
-	pg_memory_barrier();
-	pg_atomic_write_u32(&pmchild->thread_exited, 1);
-}
-
-int
-PostmasterChildJoinThread(PMChild *pmchild)
-{
-	Assert(PostmasterChildIsThread(pmchild));
-
-	/*
-	 * The native thread handle is postmaster-owned: SetThread stores it before
-	 * the carrier can publish startup or exit, and slot release happens only
-	 * after a successful join.  Keep the join behind the PMChild API boundary
-	 * so callers do not grow direct access to thread-carrier fields.
-	 */
-	return pg_thread_join(&pmchild->thread);
 }
 
 /*

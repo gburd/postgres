@@ -148,7 +148,7 @@ fiber_identity_supervisor(void *arg)
 	FIBER_IDENTITY_CHECK(test, xtc_loop_stop(test->loop) == XTC_OK);
 }
 
-static void
+static void *
 fiber_identity_thread(void *arg)
 {
 	FiberIdentityTest *test = arg;
@@ -157,7 +157,7 @@ fiber_identity_thread(void *arg)
 	if (xtc_loop_create(&test->loop) != XTC_OK)
 	{
 		test->failures++;
-		return;
+		return NULL;
 	}
 	if (xtc_proc_spawn(test->loop, fiber_identity_supervisor, test, NULL, NULL) == XTC_OK)
 		FIBER_IDENTITY_CHECK(test, xtc_loop_run(test->loop) == XTC_OK);
@@ -166,6 +166,7 @@ fiber_identity_thread(void *arg)
 	FIBER_IDENTITY_CHECK(test, !xtc_pg_in_backend_fiber());
 	FIBER_IDENTITY_CHECK(test, test->completed == 1 && test->exited == 2);
 	xtc_loop_destroy(test->loop);
+	return NULL;
 }
 #endif
 
@@ -175,14 +176,14 @@ test_carrier_fiber_identity(PG_FUNCTION_ARGS)
 {
 #ifdef USE_XTC_CARRIER
 	FiberIdentityTest test = {0};
-	PgThread	thread;
+	pthread_t	thread;
 	int			rc;
 
 	/* Do not nest a loop in the SQL caller's possibly active backend fiber. */
-	rc = pg_thread_create(&thread, "fiber identity test", fiber_identity_thread, &test);
+	rc = pthread_create(&thread, NULL, fiber_identity_thread, &test);
 	if (rc != 0)
 		elog(ERROR, "could not create fiber identity test thread: %d", rc);
-	rc = pg_thread_join(&thread);
+	rc = pthread_join(thread, NULL);
 	if (rc != 0)
 		elog(ERROR, "could not join fiber identity test thread: %d", rc);
 	if (test.failures != 0)

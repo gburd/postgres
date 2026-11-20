@@ -15,14 +15,6 @@ CREATE FUNCTION test_backend_interrupt_wakes_target_latch()
 	RETURNS pg_catalog.bool
 	AS 'MODULE_PATHNAME' LANGUAGE C;
 
-CREATE FUNCTION test_backend_thread_create_join()
-	RETURNS pg_catalog.bool
-	AS 'MODULE_PATHNAME' LANGUAGE C;
-
-CREATE FUNCTION test_backend_thread_exit_join()
-	RETURNS pg_catalog.bool
-	AS 'MODULE_PATHNAME' LANGUAGE C;
-
 CREATE FUNCTION test_backend_thread_runtime_state()
 	RETURNS pg_catalog.bool
 	AS 'MODULE_PATHNAME' LANGUAGE C;
@@ -415,11 +407,7 @@ CREATE FUNCTION test_backend_aio_state_is_backend_local()
 	RETURNS pg_catalog.bool
 	AS 'MODULE_PATHNAME' LANGUAGE C;
 
-CREATE FUNCTION test_pmchild_thread_backend_signal_api()
-	RETURNS pg_catalog.bool
-	AS 'MODULE_PATHNAME' LANGUAGE C;
-
-CREATE FUNCTION test_pmchild_thread_backend_reset_api()
+CREATE FUNCTION test_pmchild_fiber_backend_reset_api()
 	RETURNS pg_catalog.bool
 	AS 'MODULE_PATHNAME' LANGUAGE C;
 
@@ -427,7 +415,7 @@ CREATE FUNCTION test_pmchild_fiber_backend_signal_api()
 	RETURNS pg_catalog.bool
 	AS 'MODULE_PATHNAME' LANGUAGE C;
 
-CREATE FUNCTION test_pmchild_thread_backend_publication_race()
+CREATE FUNCTION test_pmchild_fiber_backend_publication_race()
 	RETURNS pg_catalog.bool
 	AS 'MODULE_PATHNAME' LANGUAGE C;
 

@@ -65,10 +65,9 @@ static PG_GLOBAL_RUNTIME pg_atomic_uint64 next_backend_id;
 /*
  * Threaded backend registry on libxtc's xtc_reg value API (libxtc 2.2).
  *
- * Replaces the hand-rolled PgBackendId -> PgBackend* list + raw pthread mutex
- * with xtc_reg_put (name -> (pid, value)) + xtc_reg_visit (the lookup+use runs
- * under the registry's own lock).  The name is "backend:<PgBackendId>"; the
- * value is the PgBackend*; the pid slot is DELIBERATELY XTC_PID_NONE -- see
+ * Maps PgBackendId -> PgBackend* with xtc_reg_put (name -> (pid, value)) and
+ * xtc_reg_visit (the lookup+use runs under the registry's own lock).  The name
+ * is "backend:<PgBackendId>"; the value is the PgBackend*; the pid slot is DELIBERATELY XTC_PID_NONE -- see
  * PgBackendRegisterThreadedBackend for why our dispatch does not use it.
  *
  * The registry is process-global and created once, lazily, on the first
@@ -76,8 +75,7 @@ static PG_GLOBAL_RUNTIME pg_atomic_uint64 next_backend_id;
  * (potentially concurrently for parallel spawns), which is not an xtc proc, so
  * a bare xtc_reg_create at an xtc-only init hook would be awkward and the once
  * guard makes the create thread-safe without a new init site.  It is
- * process-lifetime and never destroyed (one bringup per process; mirrors the
- * old PTHREAD_MUTEX_INITIALIZER static that was likewise never torn down).
+ * process-lifetime and never destroyed (one bringup per process).
  */
 static PG_GLOBAL_RUNTIME xtc_reg_t *g_backends = NULL;
 static PG_GLOBAL_RUNTIME pthread_once_t g_backends_once = PTHREAD_ONCE_INIT;
@@ -108,16 +106,6 @@ ThreadedBackendRegistryName(char *buf, size_t buflen, PgBackendId backend_id)
 {
 	snprintf(buf, buflen, "backend:%llu", (unsigned long long) backend_id);
 }
-#elif !defined(WIN32)
-typedef struct ThreadedBackendRegistryEntry
-{
-	PgBackendId backend_id;
-	PgBackend  *backend;
-	struct ThreadedBackendRegistryEntry *next;
-} ThreadedBackendRegistryEntry;
-
-static PG_GLOBAL_RUNTIME pthread_mutex_t ThreadedBackendRegistryMutex = PTHREAD_MUTEX_INITIALIZER;
-static PG_GLOBAL_RUNTIME ThreadedBackendRegistryEntry *ThreadedBackendRegistry = NULL;
 #endif
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackend early_backend_fallback = {
 	.core = {
@@ -314,66 +302,6 @@ PgBackendAssignId(void)
 	return pg_atomic_add_fetch_u64(&next_backend_id, 1);
 }
 
-#if !defined(WIN32) && !defined(USE_XTC_CARRIER)
-/*
- * Hand-rolled threaded backend registry -- the NON-xtc threaded build only.
- *
- * When libxtc is linked (USE_XTC_CARRIER) the registry lives on xtc_reg (see
- * the g_backends block at the top of this file); this hand-rolled list + raw
- * pthread mutex is retained for the threaded build WITHOUT libxtc, where
- * backends run on raw pthreads (launch_backend.c's pg_thread_create path) and
- * there is no xtc_reg to lean on.
- *
- * The mutex is a RAW pthread mutex on purpose: unlike the GUC critical section
- * (guc.c, moved to xtc_amutex because GUC code can park a fiber while holding
- * it), nothing held under this mutex parks -- the only work done while locked
- * is a list walk plus SendInterrupt(), which is non-parking (an atomic fetch_or
- * on the pending mask plus a latch/eventfd wake through the PgBackend struct;
- * see interrupt.c).  In the non-xtc build there are no fibers at all, so there
- * is nothing to park.  (Under xtc_reg the same "nothing under this lock may
- * park" invariant moves into xtc_reg_visit's documented contract.)
- */
-static void
-ThreadedBackendRegistryLock(void)
-{
-	int			rc;
-
-	rc = pthread_mutex_lock(&ThreadedBackendRegistryMutex);
-	if (rc != 0)
-	{
-		errno = rc;
-		elog(FATAL, "could not lock threaded backend registry: %m");
-	}
-}
-
-static void
-ThreadedBackendRegistryUnlock(void)
-{
-	int			rc;
-
-	rc = pthread_mutex_unlock(&ThreadedBackendRegistryMutex);
-	if (rc != 0)
-	{
-		errno = rc;
-		elog(FATAL, "could not unlock threaded backend registry: %m");
-	}
-}
-
-static PgBackend *
-ThreadedBackendRegistryLookupLocked(PgBackendId backend_id)
-{
-	for (ThreadedBackendRegistryEntry *entry = ThreadedBackendRegistry;
-		 entry != NULL;
-		 entry = entry->next)
-	{
-		if (entry->backend_id == backend_id)
-			return entry->backend;
-	}
-
-	return NULL;
-}
-#endif
-
 static void
 PgBackendRegisterThreadedBackend(PgBackend *backend)
 {
@@ -405,7 +333,7 @@ PgBackendRegisterThreadedBackend(PgBackend *backend)
 	 *
 	 * flags 0 means a unique name; a taken name returns XTC_E_EXIST.  A unique
 	 * PgBackendId should never collide, so treat a duplicate as the
-	 * "already registered" FATAL the hand-rolled path raised.
+	 * "already registered" FATAL.
 	 */
 	rc = xtc_reg_put(ThreadedBackendRegistry(), name, XTC_PID_NONE,
 					 backend, 0);
@@ -415,44 +343,6 @@ PgBackendRegisterThreadedBackend(PgBackend *backend)
 	else if (rc != XTC_OK)
 		elog(FATAL, "could not register threaded backend id %llu (xtc_reg_put rc=%d)",
 			 (unsigned long long) backend->id, rc);
-#elif !defined(WIN32)
-	ThreadedBackendRegistryEntry *entry;
-
-	Assert(backend != NULL);
-
-	if (!PgRuntimeIsThreadBacked(backend->runtime))
-		return;
-
-	entry = malloc(sizeof(*entry));
-	if (entry == NULL)
-		elog(FATAL, "out of memory registering threaded backend");
-	entry->backend_id = backend->id;
-	entry->backend = backend;
-
-	ThreadedBackendRegistryLock();
-	for (ThreadedBackendRegistryEntry *existing = ThreadedBackendRegistry;
-		 existing != NULL;
-		 existing = existing->next)
-	{
-		if (existing->backend_id != backend->id)
-			continue;
-
-		if (existing->backend != backend)
-		{
-			ThreadedBackendRegistryUnlock();
-			free(entry);
-			elog(FATAL, "threaded backend id %llu is already registered",
-				 (unsigned long long) backend->id);
-		}
-
-		ThreadedBackendRegistryUnlock();
-		free(entry);
-		return;
-	}
-
-	entry->next = ThreadedBackendRegistry;
-	ThreadedBackendRegistry = entry;
-	ThreadedBackendRegistryUnlock();
 #endif
 }
 
@@ -480,27 +370,6 @@ PgBackendUnregisterThreadedBackend(PgBackend *backend)
 	 */
 	ThreadedBackendRegistryName(name, sizeof(name), backend->id);
 	(void) xtc_reg_del(ThreadedBackendRegistry(), name, XTC_PID_NONE);
-#elif !defined(WIN32)
-	Assert(backend != NULL);
-
-	if (!PgRuntimeIsThreadBacked(backend->runtime))
-		return;
-
-	ThreadedBackendRegistryLock();
-	for (ThreadedBackendRegistryEntry **link = &ThreadedBackendRegistry;
-		 *link != NULL;
-		 link = &(*link)->next)
-	{
-		ThreadedBackendRegistryEntry *entry = *link;
-
-		if (entry->backend_id == backend->id && entry->backend == backend)
-		{
-			*link = entry->next;
-			free(entry);
-			break;
-		}
-	}
-	ThreadedBackendRegistryUnlock();
 #endif
 }
 
@@ -563,22 +432,6 @@ PgBackendSendInterruptById(PgBackendId backend_id,
 					  PgBackendInterruptVisit, &arg, NULL) == XTC_E_NOTFOUND)
 		return false;
 	return true;
-#elif !defined(WIN32)
-	PgBackend  *backend = NULL;
-
-	ThreadedBackendRegistryLock();
-	backend = ThreadedBackendRegistryLookupLocked(backend_id);
-
-	if (backend != NULL)
-	{
-		if (interrupt_type == PG_BACKEND_INTERRUPT_PROC_DIE)
-			PgBackendRaiseProcDieInterrupt(backend, sender_pid, sender_uid);
-		else
-			SendInterrupt(backend, interrupt_type);
-	}
-	ThreadedBackendRegistryUnlock();
-
-	return backend != NULL;
 #else
 	(void) backend_id;
 	(void) interrupt_type;
@@ -1802,42 +1655,6 @@ PgBackendSnapshotWaitCompletionById(PgBackendId backend_id,
 					  PgBackendWaitSnapshotVisit, &arg, NULL) == XTC_E_NOTFOUND)
 		return false;
 	return true;
-#elif defined(PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION) && !defined(WIN32)
-	PgBackend  *backend = NULL;
-	bool		found = false;
-
-	if (snapshot != NULL)
-		PgWaitCompletionInitialize(snapshot);
-	if (waiting != NULL)
-		*waiting = 0;
-
-	ThreadedBackendRegistryLock();
-	backend = ThreadedBackendRegistryLookupLocked(backend_id);
-
-	if (backend != NULL)
-	{
-		PgWaitCompletion *completion = &backend->wait_state.completion;
-
-		if (snapshot != NULL)
-		{
-			snapshot->spec = completion->spec;
-			snapshot->backend = completion->backend;
-			snapshot->session = completion->session;
-			snapshot->execution = completion->execution;
-			pg_atomic_init_u32(&snapshot->state,
-							   pg_atomic_read_u32(&completion->state));
-			pg_atomic_init_u32(&snapshot->ready_events,
-							   pg_atomic_read_u32(&completion->ready_events));
-			pg_atomic_init_u32(&snapshot->interrupt_events,
-							   pg_atomic_read_u32(&completion->interrupt_events));
-		}
-		if (waiting != NULL)
-			*waiting = pg_atomic_read_u32(&backend->wait_state.waiting);
-		found = true;
-	}
-	ThreadedBackendRegistryUnlock();
-
-	return found;
 #else
 	(void) backend_id;
 	(void) snapshot;
@@ -1932,17 +1749,6 @@ PgBackendWakeWaitCompletionById(PgBackendId backend_id, uint32 ready_events)
 					  PgBackendWakeWaitVisit, &arg, NULL) == XTC_E_NOTFOUND)
 		return false;
 	return true;
-#elif defined(PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION) && !defined(WIN32)
-	PgBackend  *backend = NULL;
-
-	ThreadedBackendRegistryLock();
-	backend = ThreadedBackendRegistryLookupLocked(backend_id);
-
-	if (backend != NULL)
-		(void) PgBackendWakeWaitCompletion(backend, ready_events);
-	ThreadedBackendRegistryUnlock();
-
-	return backend != NULL;
 #else
 	(void) backend_id;
 	(void) ready_events;

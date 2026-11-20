@@ -13,11 +13,10 @@ use Time::HiRes qw(usleep);
 
 my $repo_root = abs_path("$FindBin::Bin/../../../../..");
 my $node = PostgreSQL::Test::Cluster->new('threaded_runtime');
-# Both thread-backed and fiber children reclaim TopMemoryContext at exit and
-# log it through the postmaster; count both wordings so the
-# reclamation-accounting assertions do not undercount fiber exits.
+# Fiber children reclaim TopMemoryContext at exit and log it through the
+# postmaster.
 my $top_reclaim_re =
-  qr/(?:thread-backed child|fiber backend) \d+ reclaimed [1-9]\d* bytes from TopMemoryContext at exit/;
+  qr/fiber backend \d+ reclaimed [1-9]\d* bytes from TopMemoryContext at exit/;
 
 sub install_contrib_extensions
 {
@@ -200,6 +199,15 @@ $node->start;
 
 is($node->safe_psql('postgres', 'SHOW multithreaded'), 'on',
 	'threaded runtime enabled');
+
+# The carrier starts before the first auxiliary worker, so the checkpointer,
+# background writer, and startup process are fibers from the start.
+foreach my $aux ('checkpointer', 'background writer', 'startup')
+{
+	like(slurp_file($node->logfile),
+		qr/xtc: \Q$aux\E launched as xtc fiber/,
+		"$aux launched as an xtc fiber");
+}
 
 $node->safe_psql(
 	'postgres',

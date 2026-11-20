@@ -55,7 +55,9 @@
 #include "postmaster/bgworker.h"
 #include "postmaster/postmaster.h"
 #include "port/atomics.h"
-#include "port/pg_thread.h"
+#ifndef WIN32
+#include "port/pg_pthread.h"
+#endif
 #include "replication/reorderbuffer.h"
 #include "replication/slot.h"
 #include "replication/syncrep.h"

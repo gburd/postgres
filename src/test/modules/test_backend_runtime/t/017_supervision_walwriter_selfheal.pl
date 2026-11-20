@@ -68,9 +68,8 @@ $node->safe_psql('postgres', q{
 is($node->safe_psql('postgres', 'SELECT v FROM selfheal_probe WHERE id = 1'),
 	'before', 'baseline row visible before the WAL writer is touched');
 
-# Find the WAL writer's signal pid via pg_stat_activity (works whether it is
-# a dedicated thread carrier or a fiber -- PostmasterChildSignalPid publishes
-# the same logical id either way).
+# Find the WAL writer's signal pid via pg_stat_activity
+# (PostmasterChildSignalPid publishes the fiber's logical id).
 sub walwriter_pid
 {
 	return $node->safe_psql('postgres',

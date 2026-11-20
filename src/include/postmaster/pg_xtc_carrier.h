@@ -42,9 +42,8 @@ extern int	xtc_pg_wait_fd(int fd, int interest_pg, long timeout_ms);
 
 /*
  * Backend exit seam.  When a backend runs as an xtc fiber, its proc_exit
- * teardown must NOT end in pg_thread_exit() (pthread_exit on the carrier
- * thread would kill the whole scheduler, not just this fiber).  Instead the
- * fiber returns control to the xtc loop via xtc_exit_self(), releasing its
+ * teardown must NOT end in pthread_exit() (that would kill the whole carrier
+ * thread, not just this fiber).  Instead the fiber returns control to the xtc loop via xtc_exit_self(), releasing its
  * proc slot so the Nth backend behaves exactly like the 1st.  Does not
  * return.  Valid after the PG owner was cleared on the final exit path too.
  */
@@ -214,7 +213,7 @@ extern void xtc_pg_verify_snapshot_is_self(const struct PgCurrentWorkSnapshot *s
 #else							/* !USE_XTC_CARRIER */
 
 /*
- * Process build and non-carrier threaded build: the no-steal tripwire is
+ * Build without libxtc (process mode only): the no-steal tripwire is
  * inert.  Defining the brackets as no-ops here lets affine sites in shared
  * code (be-secure-openssl.c, postgres.c) carry the annotation unconditionally
  * without an #ifdef at every call site, and keeps those TUs byte-for-byte

@@ -444,7 +444,6 @@ static void process_pm_shutdown_request(void);
 static void dummy_handler(SIGNAL_ARGS);
 static void process_pm_thread_startup_complete(void);
 static void process_pm_fiber_exit(void);
-static void process_pm_thread_exit(void);
 static void CleanupBackend(PMChild *bp, int exitstatus);
 static bool cleanup_archiver_child(PMChild *child, int exitstatus);
 static bool cleanup_autovac_launcher_child(PMChild *child, int exitstatus);
@@ -1880,7 +1879,6 @@ ServerLoop(void)
 		 */
 		process_pm_thread_startup_complete();
 		process_pm_fiber_exit();
-		process_pm_thread_exit();
 #ifdef USE_XTC_CARRIER
 		if (xtc_pg_consume_genuine_crash())
 		{
@@ -1932,7 +1930,6 @@ ServerLoop(void)
 			process_pm_pmsignal();
 		process_pm_thread_startup_complete();
 		process_pm_fiber_exit();
-		process_pm_thread_exit();
 #ifdef USE_XTC_CARRIER
 		/*
 		 * #7 Stage 1b: a per-loop supervisor fiber may have observed a genuine
@@ -2838,8 +2835,7 @@ process_pm_child_exit(void)
  * pointer -- WalWriterPMChild, CheckpointerPMChild, etc.), else fall back to
  * CleanupBackend() for regular backends and background workers.
  *
- * Shared by process_pm_thread_exit() (dedicated-thread carriers) and
- * process_pm_fiber_exit() (fibers): an aux worker that runs as a fiber is
+ * Called from process_pm_fiber_exit(): an aux worker that runs as a fiber is
  * reaped through the fiber path, and it MUST still run its per-type cleanup
  * or the postmaster's global aux pointer is left dangling and
  * PostmasterStateMachine trips e.g. Assert(WalWriterPMChild == NULL) at
@@ -2889,7 +2885,7 @@ reap_aux_or_backend_child(PMChild *pmchild, int exitstatus)
 /*
  * Cleanup after a fiber backend reports exit.  The carrier thread that ran
  * the session remains alive; the postmaster owns PMChild list mutation and
- * slot release just like process and thread-backed children.
+ * slot release just like process-backed children.
  */
 static void
 process_pm_fiber_exit(void)
@@ -2920,58 +2916,6 @@ process_pm_fiber_exit(void)
 					(errmsg_internal("fiber backend %d reclaimed %zu bytes from TopMemoryContext at exit",
 									 signal_pid, top_memory_reclaimed)));
 
-		reap_aux_or_backend_child(pmchild, exitstatus);
-		reaped = true;
-	}
-
-	if (reaped)
-		PostmasterStateMachine();
-}
-
-/*
- * Cleanup after any thread-backed child reports exit.  The exiting thread only
- * marks its PMChild entry and wakes the postmaster latch; list mutation and
- * PMChild slot release stay in the postmaster main thread.
- */
-static void
-process_pm_thread_exit(void)
-{
-	dlist_mutable_iter iter;
-	bool		reaped = false;
-
-	dlist_foreach_modify(iter, &ActiveChildList)
-	{
-		PMChild    *pmchild = dlist_container(PMChild, elem, iter.cur);
-		int			exitstatus;
-		int			join_rc;
-		pid_t		signal_pid;
-		Size		top_memory_allocated;
-		Size		top_memory_reclaimed;
-
-		if (!PostmasterChildHasExitedThread(pmchild, &exitstatus,
-											&top_memory_allocated,
-											&top_memory_reclaimed,
-											&signal_pid))
-			continue;
-
-		if (top_memory_allocated > 0)
-			ereport(WARNING,
-					(errmsg_internal("thread-backed child %d retained %zu bytes in TopMemoryContext at exit",
-									 signal_pid, top_memory_allocated)));
-		if (top_memory_reclaimed > 0)
-			ereport(DEBUG1,
-					(errmsg_internal("thread-backed child %d reclaimed %zu bytes from TopMemoryContext at exit",
-									 signal_pid, top_memory_reclaimed)));
-
-		join_rc = PostmasterChildJoinThread(pmchild);
-		if (join_rc != 0)
-		{
-			errno = join_rc;
-			elog(LOG, "could not join thread-backed child %d: %m",
-				 signal_pid);
-			PostmasterChildRetryThreadExit(pmchild);
-			continue;
-		}
 		reap_aux_or_backend_child(pmchild, exitstatus);
 		reaped = true;
 	}

@@ -11,7 +11,7 @@ use Time::HiRes qw(usleep);
 
 my $node = PostgreSQL::Test::Cluster->new('threaded_milestone_w');
 my $top_reclaim_re =
-  qr/(?:thread-backed child|fiber backend) \d+ reclaimed [1-9]\d* bytes from TopMemoryContext at exit/;
+  qr/fiber backend \d+ reclaimed [1-9]\d* bytes from TopMemoryContext at exit/;
 
 sub start_psql_script
 {
@@ -250,7 +250,7 @@ like(
 like(
 	slurp_file($node->logfile),
 	qr/starting background worker thread carrier/,
-	'Milestone W smoke uses a thread carrier for worker handoff');
+	'Milestone W smoke runs the background worker on the carrier');
 
 is($node->safe_psql(
 		'postgres',

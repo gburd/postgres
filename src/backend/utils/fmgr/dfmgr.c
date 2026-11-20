@@ -18,7 +18,6 @@
 
 #ifndef WIN32
 #include <dlfcn.h>
-#include <pthread.h>
 #ifdef USE_XTC_CARRIER
 #include "xtc_sync.h"			/* xtc_amutex_* -- fiber-aware dfmgr critical section */
 #include "postmaster/pg_xtc_carrier.h"	/* XtcPgVerifyCurrentWorkIsSelf */
@@ -86,7 +85,7 @@ static PG_GLOBAL_RUNTIME DynamicFileList *file_tail = NULL;
  * calls call_module_init_function(), which runs the loaded module's arbitrary
  * _PG_init(), and essentially every real extension's _PG_init() calls
  * DefineCustomXXXVariable()/MarkGUCPrefixReserved(), which take the threaded
- * GUC critical section.  Under USE_XTC_CARRIER that GUC lock is a fiber-aware
+ * GUC critical section.  That GUC lock is a fiber-aware
  * xtc_amutex that PARKS (yields the carrier loop) on contention rather than
  * blocking the OS thread.  If dfmgr's own lock were a raw pthread mutex held
  * across that nested park, another fiber scheduled onto the same carrier OS
@@ -94,16 +93,12 @@ static PG_GLOBAL_RUNTIME DynamicFileList *file_tail = NULL;
  * and deadlock the carrier (the pthread mutex never blocks the *loop*, only
  * the current fiber's OS thread -- but the parked owner cannot make progress
  * to release it because the scheduler cannot resume it off-loop).  Use
- * xtc_amutex here for exactly the same reason guc.c does; without
- * USE_XTC_CARRIER (no threaded runtime build) keep the plain pthread mutex,
- * matching reloptions.c's non-carrier fallback.
+ * xtc_amutex here for exactly the same reason guc.c does.  A build without
+ * libxtc cannot run multithreaded, so there the critical section compiles to
+ * nothing.
  */
 #ifndef WIN32
-#ifdef USE_XTC_CARRIER
 #define THREADED_DFMGR_AMUTEX_SLOT 1u	/* GUC owns slot 0; see guc.c */
-#else
-static PG_GLOBAL_RUNTIME pthread_mutex_t ThreadedDfmgrMutex = PTHREAD_MUTEX_INITIALIZER;
-#endif
 #define ThreadedDfmgrMutexDepth (*PgCurrentThreadedDfmgrMutexDepthRef())
 #endif
 
@@ -249,7 +244,7 @@ lookup_external_function(void *filehandle, const char *funcname)
 static bool
 ThreadedDfmgrLock(void)
 {
-#ifndef WIN32
+#if defined(USE_XTC_CARRIER) && !defined(WIN32)
 	int			rc;
 
 	if (!multithreaded)
@@ -264,7 +259,6 @@ ThreadedDfmgrLock(void)
 	 * until the outermost unlock.
 	 */
 	HOLD_INTERRUPTS();
-#ifdef USE_XTC_CARRIER
 
 	/*
 	 * SEAM the amutex park, exactly as ThreadedGUCLock() does (guc.c) and for
@@ -284,9 +278,6 @@ ThreadedDfmgrLock(void)
 		PgRuntimeRestoreCurrentWork(&snap);
 		XtcPgVerifyCurrentWorkIsSelf();
 	}
-#else
-	rc = pthread_mutex_lock(&ThreadedDfmgrMutex);
-#endif
 	if (rc != 0)
 	{
 		ThreadedDfmgrMutexDepth--;
@@ -305,7 +296,7 @@ ThreadedDfmgrLock(void)
 static void
 ThreadedDfmgrUnlock(bool locked)
 {
-#ifndef WIN32
+#if defined(USE_XTC_CARRIER) && !defined(WIN32)
 	int			rc;
 
 	/*
@@ -328,11 +319,7 @@ ThreadedDfmgrUnlock(bool locked)
 
 	/* outermost release */
 	Assert(locked);
-#ifdef USE_XTC_CARRIER
 	rc = xtc_amutex_unlock(xtc_amutex_static(THREADED_DFMGR_AMUTEX_SLOT));
-#else
-	rc = pthread_mutex_unlock(&ThreadedDfmgrMutex);
-#endif
 
 	/*
 	 * Normally the matching call here would be RESUME_INTERRUPTS(), undoing

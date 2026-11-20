@@ -6,8 +6,8 @@
  *	The multithreaded-postgres tree already runs each B_BACKEND on its own
  *	OS thread (backend_thread_entry in launch_backend.c), having solved the
  *	PG-globals wall that blocked the earlier fork-based xtc spike.  This
- *	module changes only the *carrier*: instead of pg_thread_create() making
- *	a pthread, the backend's entry function runs as a fiber on an xtc loop
+ *	module provides the *carrier*: the backend's entry function runs as a
+ *	fiber on an xtc loop
  *	hosted on a dedicated pthread.  Because the fiber runs the tree's own
  *	backend_thread_entry() verbatim, all the thread-per-session init is
  *	reused, and MyClientSocket->sock (the fd the tree dup()'d once) is the
@@ -124,10 +124,10 @@ xtc_pg_log_sink(void *user, xtc_log_level_t lvl, const char *buf, size_t len)
 }
 
 /*
- * PostgreSQL backends need a large stack (pg_thread.c uses 8 MiB for its
- * pthreads; max_stack_depth defaults to ~2 MB).  The xtc default fiber stack
- * is only 64 KiB, which overflows immediately in parser/planner recursion.
- * Match the tree's pthread stack.  Tune here if a deeper path faults.
+ * PostgreSQL backends need a large stack (max_stack_depth defaults to ~2 MB).
+ * The xtc default fiber stack is only 64 KiB, which overflows immediately in
+ * parser/planner recursion.  Use 8 MiB, the usual platform thread stack.  Tune
+ * here if a deeper path faults.
  */
 #define XTC_PG_FIBER_STACK	((size_t) 8 * 1024 * 1024)
 
@@ -1245,9 +1245,8 @@ xtc_pg_carrier_start(void)
 		 * belt-and-suspenders for our own pthread_create and is the reason
 		 * process-directed control signals stay with the postmaster main thread).
 		 * Backend fibers re-block via backend_thread_entry and route their own
-		 * interrupts through latches, not OS signals.  Mirrors pg_thread_create()
-		 * and fork_process(), which block signals around thread/process creation
-		 * for exactly this reason.
+		 * interrupts through latches, not OS signals.  Mirrors fork_process(),
+		 * which blocks signals around process creation for exactly this reason.
 		 */
 		sigprocmask(SIG_SETMASK, &BlockSig, &save_mask);
 		masked = true;
@@ -1613,8 +1612,8 @@ xtc_pg_launch_backend_fiber(xtc_carrier_entry_fn entry, void *entry_arg)
 }
 
 /*
- * Backend exit seam (see header).  Called from backend_thread_finish() at the
- * point a pthread carrier would call pg_thread_exit().  The backend's
+ * Backend exit seam (see header).  Called from backend_thread_finish() as the
+ * last step of a fiber backend's exit.  The backend's
  * proc_exit cleanup has already run (socket closed, logical backend
  * unpublished, scheduler carrier unregistered, retained memory reclaimed,
  * PMChild thread-exit published, thread_start released).  All that remains is

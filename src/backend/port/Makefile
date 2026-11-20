@@ -23,7 +23,6 @@ include $(top_builddir)/src/Makefile.global
 
 OBJS = \
 	atomics.o \
-	pg_thread.o \
 	pg_sema.o \
 	pg_shmem.o
 
