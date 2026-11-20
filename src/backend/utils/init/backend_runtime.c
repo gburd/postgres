@@ -1437,9 +1437,8 @@ PgRuntimeShouldThreadBackend(BackendType backend_type)
 		return false;
 
 	/*
-	 * Phase 10 is scoped to regular client backends.  Phase 11 incrementally
-	 * moves in-tree server-owned worker families onto the same carrier
-	 * infrastructure as they get dedicated signal and lifecycle conversion.
+	 * Every child type the threaded postmaster starts runs on the carrier,
+	 * except the syslogger, which stays a process so it outlives a crash.
 	 */
 	return backend_type == B_BACKEND ||
 
@@ -1464,7 +1463,6 @@ PgRuntimeShouldThreadBackend(BackendType backend_type)
 		backend_type == B_AUTOVAC_WORKER ||
 		backend_type == B_BG_WRITER ||
 		backend_type == B_CHECKPOINTER ||
-		backend_type == B_LOGGER ||
 		backend_type == B_STARTUP ||
 		backend_type == B_WAL_RECEIVER ||
 		backend_type == B_SLOTSYNC_WORKER ||

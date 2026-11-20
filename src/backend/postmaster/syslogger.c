@@ -133,7 +133,6 @@ static PG_GLOBAL_RUNTIME CRITICAL_SECTION sysloggerSection;
  * Flags set by interrupt handlers for later service in the main loop.
  */
 static PG_GLOBAL_RUNTIME volatile sig_atomic_t rotation_requested = false;
-static PG_GLOBAL_RUNTIME volatile sig_atomic_t syslogger_handoff_requested = false;
 
 
 /* Local subroutines */
@@ -157,7 +156,6 @@ static bool logfile_rotate_dest(bool time_based_rotation,
 static char *logfile_getname(pg_time_t timestamp, const char *suffix);
 static void set_next_rotation_time(void);
 static void sigUsr1Handler(SIGNAL_ARGS);
-static void sigUsr2Handler(SIGNAL_ARGS);
 static void update_metainfo_datafile(void);
 
 typedef struct
@@ -183,10 +181,6 @@ SysLoggerMain(const void *startup_data, size_t startup_data_len)
 	int			currentLogRotationAge;
 	pg_time_t	now;
 	WaitEventSet *wes;
-	bool		threaded_logger;
-
-	threaded_logger = PgRuntimeIsThreadBacked(CurrentPgRuntime);
-	syslogger_handoff_requested = false;
 
 #ifndef EXEC_BACKEND
 
@@ -225,7 +219,7 @@ SysLoggerMain(const void *startup_data, size_t startup_data_len)
 	 * Now that we're done reading the startup data, release postmaster's
 	 * working memory context.
 	 */
-	if (!threaded_logger && PostmasterContext)
+	if (PostmasterContext)
 	{
 		MemoryContextDelete(PostmasterContext);
 		PostmasterContext = NULL;
@@ -242,7 +236,7 @@ SysLoggerMain(const void *startup_data, size_t startup_data_len)
 	 * assumes that all interesting messages generated in the syslogger will
 	 * come through elog.c and will be sent to write_syslogger_file.
 	 */
-	if (!threaded_logger && redirection_done)
+	if (redirection_done)
 	{
 		int			fd = open(DEVNULL, O_WRONLY, 0);
 
@@ -300,20 +294,17 @@ SysLoggerMain(const void *startup_data, size_t startup_data_len)
 	 * broken backends...
 	 */
 
-	if (!threaded_logger)
-	{
-		pqsignal(SIGHUP, SignalHandlerForConfigReload); /* set flag to read
-														 * config file */
-		pqsignal(SIGINT, PG_SIG_IGN);
-		pqsignal(SIGTERM, PG_SIG_IGN);
-		pqsignal(SIGQUIT, PG_SIG_IGN);
-		pqsignal(SIGALRM, PG_SIG_IGN);
-		pqsignal(SIGPIPE, PG_SIG_IGN);
-		pqsignal(SIGUSR1, sigUsr1Handler);	/* request log rotation */
-		pqsignal(SIGUSR2, multithreaded ? sigUsr2Handler : PG_SIG_IGN);
+	pqsignal(SIGHUP, SignalHandlerForConfigReload); /* set flag to read config
+													 * file */
+	pqsignal(SIGINT, PG_SIG_IGN);
+	pqsignal(SIGTERM, PG_SIG_IGN);
+	pqsignal(SIGQUIT, PG_SIG_IGN);
+	pqsignal(SIGALRM, PG_SIG_IGN);
+	pqsignal(SIGPIPE, PG_SIG_IGN);
+	pqsignal(SIGUSR1, sigUsr1Handler);	/* request log rotation */
+	pqsignal(SIGUSR2, PG_SIG_IGN);
 
-		sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
-	}
+	sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
 
 #ifdef WIN32
 	/* Fire up separate data transfer thread */
@@ -385,31 +376,10 @@ SysLoggerMain(const void *startup_data, size_t startup_data_len)
 		/*
 		 * Process any requests or signals received recently.
 		 */
-		if (threaded_logger && CurrentPgBackend != NULL)
-		{
-			PgBackendInterruptMask pending;
-
-			pending = PgBackendConsumeInterrupts(CurrentPgBackend);
-			if (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_CONFIG_RELOAD))
-				ConfigReloadPending = true;
-			if (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_LOG_ROTATE))
-				rotation_requested = true;
-		}
-
-		if (syslogger_handoff_requested)
-		{
-#ifndef WIN32
-			flush_pipe_input(logbuffer, &bytes_in_logbuffer);
-#endif
-			proc_exit(0);
-		}
-
 		if (ConfigReloadPending)
 		{
 			ConfigReloadPending = false;
-
-			if (!threaded_logger)
-				ProcessConfigFile(PGC_SIGHUP);
+			ProcessConfigFile(PGC_SIGHUP);
 
 			/*
 			 * Check if the log directory or filename pattern changed in
@@ -740,19 +710,12 @@ SysLogger_Start(PMChild *pmchild)
 	}
 
 #ifdef EXEC_BACKEND
-	if (multithreaded && PostmasterThreadCarriersStarted())
-		started = postmaster_child_launch_carrier(pmchild, B_LOGGER,
-												  pmchild->child_slot,
-												  NULL, 0, NULL);
-	else
-	{
-		startup_data.syslogFile = syslogger_fdget(syslogFile);
-		startup_data.csvlogFile = syslogger_fdget(csvlogFile);
-		startup_data.jsonlogFile = syslogger_fdget(jsonlogFile);
-		started = postmaster_child_launch_carrier(pmchild, B_LOGGER,
-												  pmchild->child_slot,
-												  &startup_data, sizeof(startup_data), NULL);
-	}
+	startup_data.syslogFile = syslogger_fdget(syslogFile);
+	startup_data.csvlogFile = syslogger_fdget(csvlogFile);
+	startup_data.jsonlogFile = syslogger_fdget(jsonlogFile);
+	started = postmaster_child_launch_carrier(pmchild, B_LOGGER,
+											  pmchild->child_slot,
+											  &startup_data, sizeof(startup_data), NULL);
 #else
 	started = postmaster_child_launch_carrier(pmchild, B_LOGGER,
 											  pmchild->child_slot,
@@ -826,25 +789,18 @@ SysLogger_Start(PMChild *pmchild)
 		redirection_done = true;
 	}
 
-	/*
-	 * A process-backed syslogger got its own copies of the FILE objects at
-	 * fork/exec time, so the postmaster can close its copies.  A thread-backed
-	 * syslogger owns the shared FILE objects in this address space.
-	 */
-	if (PostmasterChildIsProcess(pmchild))
+	/* postmaster will never write the file(s); close 'em */
+	fclose(syslogFile);
+	syslogFile = NULL;
+	if (csvlogFile != NULL)
 	{
-		fclose(syslogFile);
-		syslogFile = NULL;
-		if (csvlogFile != NULL)
-		{
-			fclose(csvlogFile);
-			csvlogFile = NULL;
-		}
-		if (jsonlogFile != NULL)
-		{
-			fclose(jsonlogFile);
-			jsonlogFile = NULL;
-		}
+		fclose(csvlogFile);
+		csvlogFile = NULL;
+	}
+	if (jsonlogFile != NULL)
+	{
+		fclose(jsonlogFile);
+		jsonlogFile = NULL;
 	}
 	return true;
 }
@@ -1656,13 +1612,5 @@ static void
 sigUsr1Handler(SIGNAL_ARGS)
 {
 	rotation_requested = true;
-	SetLatch(MyLatch);
-}
-
-/* SIGUSR2: request process-to-thread handoff in multithreaded mode */
-static void
-sigUsr2Handler(SIGNAL_ARGS)
-{
-	syslogger_handoff_requested = true;
 	SetLatch(MyLatch);
 }

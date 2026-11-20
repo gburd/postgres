@@ -424,10 +424,6 @@ static PG_GLOBAL_RUNTIME DNSServiceRef bonjour_sdref = NULL;
 static PG_GLOBAL_RUNTIME TimestampTz io_worker_launch_next_time = 0;
 static PG_GLOBAL_RUNTIME int io_worker_count = 0;
 static PG_GLOBAL_RUNTIME PMChild *io_worker_children[MAX_IO_WORKERS];
-static PG_GLOBAL_RUNTIME bool io_worker_thread_handoff_pending[MAX_IO_WORKERS];
-static PG_GLOBAL_RUNTIME bool syslogger_thread_handoff_pending = false;
-static PG_GLOBAL_RUNTIME bool bgwriter_thread_handoff_pending = false;
-static PG_GLOBAL_RUNTIME bool checkpointer_thread_handoff_pending = false;
 
 /*
  * postmaster.c - function prototypes
@@ -495,8 +491,6 @@ static int	CountChildren(BackendTypeMask targetMask);
 static void LaunchMissingBackgroundProcesses(void);
 static void maybe_start_bgworkers(void);
 static bool maybe_reap_io_worker(int pid);
-static void maybe_handoff_syslogger(void);
-static void maybe_handoff_io_workers(void);
 static void maybe_start_io_workers(void);
 static TimestampTz maybe_start_io_workers_scheduled_at(void);
 static bool CreateOptsFile(int argc, char *argv[], char *fullprogname);
@@ -940,6 +934,23 @@ PostmasterMain(int argc, char *argv[])
 					 MaxConnections);
 		ExitPostmaster(1);
 	}
+#ifndef USE_XTC_CARRIER
+	if (multithreaded)
+		ereport(FATAL,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("multithreaded mode requires a build with libxtc")));
+#endif
+
+	/*
+	 * The archiver runs as a fiber in threaded mode, and both archive_command
+	 * (system()) and an archive library may block its carrier loop for the
+	 * whole archive cycle, stalling every sibling fiber on that loop.
+	 */
+	if (multithreaded && XLogArchiveMode > ARCHIVE_MODE_OFF)
+		ereport(FATAL,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("archiving is not yet supported with multithreaded=on"),
+				 errhint("Set \"archive_mode\" to \"off\", or set \"multithreaded\" to \"off\".")));
 	if (XLogArchiveMode > ARCHIVE_MODE_OFF && wal_level == WAL_LEVEL_MINIMAL)
 		ereport(ERROR,
 				(errmsg("WAL archival cannot be enabled when \"wal_level\" is \"minimal\"")));
@@ -1551,6 +1562,19 @@ PostmasterMain(int argc, char *argv[])
 
 	UpdatePMState(PM_STARTUP);
 
+#ifdef USE_XTC_CARRIER
+
+	/*
+	 * In threaded mode every child started from here on is a fiber, except
+	 * process-fallback backends.  The syslogger was forked above, before any
+	 * thread exists.  Start the carrier now so that the checkpointer,
+	 * background writer, and startup process, which launch next, land on it.
+	 */
+	if (multithreaded && xtc_pg_carrier_start() != 0)
+		ereport(FATAL,
+				(errmsg("could not start the threaded runtime carrier")));
+#endif
+
 	/* Make sure we can perform I/O while starting up. */
 	maybe_start_io_workers();
 
@@ -1849,11 +1873,10 @@ ServerLoop(void)
 		time_t		now;
 
 		/*
-		 * A startup-era thread carrier can publish completion before the
-		 * postmaster has finished creating the wait set and recorded a latch
-		 * pointer for direct wakeups.  Drain thread handoff state before
-		 * blocking so such early publications cannot sleep until the next
-		 * timeout.
+		 * A startup-era fiber can publish completion before the postmaster
+		 * has finished creating the wait set and recorded a latch pointer for
+		 * direct wakeups.  Drain published fiber state before blocking so such
+		 * early publications cannot sleep until the next timeout.
 		 */
 		process_pm_thread_startup_complete();
 		process_pm_fiber_exit();
@@ -1891,12 +1914,12 @@ ServerLoop(void)
 		 * requests where the latch happens to appear later in events[] or will
 		 * be reported by a later call to WaitEventSetWait().
 		 *
-		 * In threaded mode, process-era auxiliary workers can exit as part of
-		 * the startup-to-thread handoff while later server activity is driven
-		 * by thread-carrier latch notifications and socket readiness.  Drain
-		 * process child exits opportunistically once thread carriers exist so
-		 * a missed or coalesced SIGCHLD cannot leave a zombie PMChild that
-		 * blocks shutdown-state accounting.
+		 * In threaded mode, server activity is driven by fiber latch
+		 * notifications and socket readiness, while the syslogger and
+		 * process-fallback backends are still processes.  Drain process child
+		 * exits opportunistically once the carrier is up so a missed or
+		 * coalesced SIGCHLD cannot leave a zombie PMChild that blocks
+		 * shutdown-state accounting.
 		 */
 		if (pending_pm_shutdown_request)
 			process_pm_shutdown_request();
@@ -2719,7 +2742,20 @@ process_pm_child_exit(void)
 		/* Was it the system logger?  If so, try to start a new one */
 		if (SysLoggerPMChild && pid == SysLoggerPMChild->pid)
 		{
-			syslogger_thread_handoff_pending = false;
+			/*
+			 * Once the carrier is up a replacement logger cannot be plainly
+			 * forked from this multithreaded process.  Fail-stop instead, as
+			 * for any other child crash in threaded mode.
+			 */
+			if (multithreaded && PostmasterThreadCarriersStarted())
+			{
+				LogChildExit(LOG, _("system logger process"), pid, exitstatus);
+				ereport(LOG,
+						(errmsg("terminating threaded server runtime after system logger exit"),
+						 errdetail("The system logger cannot be restarted once the threaded runtime is running.")));
+				ExitPostmaster(1);
+			}
+
 			ReleasePostmasterChildSlot(SysLoggerPMChild);
 			SysLoggerPMChild = NULL;
 
@@ -2831,19 +2867,6 @@ reap_aux_or_backend_child(PMChild *pmchild, int exitstatus)
 			return;
 		case B_IO_WORKER:
 			(void) cleanup_io_worker_child(pmchild);
-			return;
-		case B_LOGGER:
-			syslogger_thread_handoff_pending = false;
-			ReleasePostmasterChildSlot(pmchild);
-			SysLoggerPMChild = NULL;
-
-			/* for safety's sake, launch new logger *first* */
-			if (Logging_collector)
-				StartSysLogger();
-
-			if (!EXIT_STATUS_0(exitstatus))
-				LogChildExit(LOG, _("system logger process"),
-							 0, exitstatus);
 			return;
 		case B_SLOTSYNC_WORKER:
 			(void) cleanup_slot_sync_worker_child(pmchild, exitstatus, 0);
@@ -3768,7 +3791,6 @@ LaunchMissingBackgroundProcesses(void)
 	/* Syslogger is active in all states */
 	if (SysLoggerPMChild == NULL && Logging_collector)
 		StartSysLogger();
-	maybe_handoff_syslogger();
 
 	/*
 	 * The number of configured workers might have changed, or a prior start
@@ -3778,7 +3800,6 @@ LaunchMissingBackgroundProcesses(void)
 	 * A config file change will always lead to this function being called, so
 	 * we always will process the config change in a timely manner.
 	 */
-	maybe_handoff_io_workers();
 	maybe_start_io_workers();
 
 	/*
@@ -3793,26 +3814,6 @@ LaunchMissingBackgroundProcesses(void)
 	if (pmState == PM_RUN || pmState == PM_RECOVERY ||
 		pmState == PM_HOT_STANDBY || pmState == PM_STARTUP)
 	{
-		if (multithreaded && pmState == PM_RUN &&
-			PostmasterThreadCarriersStarted())
-		{
-			if (CheckpointerPMChild != NULL &&
-				PostmasterChildIsProcess(CheckpointerPMChild) &&
-				!checkpointer_thread_handoff_pending)
-			{
-				checkpointer_thread_handoff_pending = true;
-				signal_child(CheckpointerPMChild, SIGUSR2);
-			}
-
-			if (BgWriterPMChild != NULL &&
-				PostmasterChildIsProcess(BgWriterPMChild) &&
-				!bgwriter_thread_handoff_pending)
-			{
-				bgwriter_thread_handoff_pending = true;
-				signal_child(BgWriterPMChild, SIGTERM);
-			}
-		}
-
 		if (CheckpointerPMChild == NULL)
 			CheckpointerPMChild = StartChildProcess(B_CHECKPOINTER);
 		if (BgWriterPMChild == NULL)
@@ -5148,8 +5149,6 @@ cleanup_bgwriter_child(PMChild *child, int exitstatus, int crash_pid)
 	Assert(child == BgWriterPMChild);
 	Assert(child->bkend_type == B_BG_WRITER);
 
-	bgwriter_thread_handoff_pending = false;
-
 	ReleasePostmasterChildSlot(BgWriterPMChild);
 	BgWriterPMChild = NULL;
 	if (!EXIT_STATUS_0(exitstatus))
@@ -5162,14 +5161,9 @@ cleanup_bgwriter_child(PMChild *child, int exitstatus, int crash_pid)
 static bool
 cleanup_checkpointer_child(PMChild *child, int exitstatus, int crash_pid)
 {
-	bool		thread_handoff;
-
 	Assert(child != NULL);
 	Assert(child == CheckpointerPMChild);
 	Assert(child->bkend_type == B_CHECKPOINTER);
-
-	thread_handoff = checkpointer_thread_handoff_pending;
-	checkpointer_thread_handoff_pending = false;
 
 	ReleasePostmasterChildSlot(CheckpointerPMChild);
 	CheckpointerPMChild = NULL;
@@ -5185,14 +5179,6 @@ cleanup_checkpointer_child(PMChild *child, int exitstatus, int crash_pid)
 		UpdatePMState(PM_WAIT_DEAD_END);
 		ConfigurePostmasterWaitSet(false);
 		SignalChildren(SIGTERM, btmask_all_except(B_LOGGER));
-	}
-	else if (EXIT_STATUS_0(exitstatus) && thread_handoff && pmState == PM_RUN)
-	{
-		/*
-		 * The startup-era process checkpointer exited on request so it can be
-		 * relaunched as a thread carrier now that normal threaded operation
-		 * has begun.
-		 */
 	}
 	else
 	{
@@ -5218,7 +5204,6 @@ cleanup_io_worker_child(PMChild *child)
 
 			--io_worker_count;
 			io_worker_children[i] = NULL;
-			io_worker_thread_handoff_pending[i] = false;
 			return true;
 		}
 	}
@@ -5411,56 +5396,6 @@ cleanup_wal_summarizer_child(PMChild *child, int exitstatus)
 		HandleChildCrash(0, exitstatus, _("WAL summarizer process"));
 
 	return true;
-}
-
-/*
- * The startup syslogger must be process-backed because it is started before
- * the startup process and other startup-era children are forked.  In threaded
- * mode, once a normal thread carrier exists, ask that process logger to exit.
- * The child-exit path will launch the replacement through the carrier-aware
- * path, which selects a thread carrier after runtime startup.
- */
-static void
-maybe_handoff_syslogger(void)
-{
-	if (!multithreaded || pmState != PM_RUN || Shutdown != NoShutdown ||
-		!PostmasterThreadCarriersStarted())
-		return;
-
-	if (SysLoggerPMChild != NULL &&
-		PostmasterChildIsProcess(SysLoggerPMChild) &&
-		!syslogger_thread_handoff_pending)
-	{
-		syslogger_thread_handoff_pending = true;
-		signal_child(SysLoggerPMChild, SIGUSR2);
-	}
-}
-
-/*
- * Initial I/O workers are started before regular backend threads can exist.
- * In threaded mode, ask those startup-era process workers to exit after the
- * postmaster reaches PM_RUN. maybe_start_io_workers() will then fill the
- * minimum worker count through the normal thread-carrier launch path.
- */
-static void
-maybe_handoff_io_workers(void)
-{
-	if (!multithreaded || pmState != PM_RUN || Shutdown != NoShutdown ||
-		!PostmasterThreadCarriersStarted())
-		return;
-
-	for (int i = 0; i < MAX_IO_WORKERS; ++i)
-	{
-		PMChild    *child = io_worker_children[i];
-
-		if (child != NULL &&
-			PostmasterChildIsProcess(child) &&
-			!io_worker_thread_handoff_pending[i])
-		{
-			io_worker_thread_handoff_pending[i] = true;
-			signal_child(child, SIGUSR2);
-		}
-	}
 }
 
 /*

@@ -371,20 +371,7 @@ postmaster_child_launch_carrier(PMChild *pmchild,
 	 * do, so we do not launch one.
 	 */
 
-	/*
-	 * The logger, checkpointer, and background writer are needed before the
-	 * startup process is forked, so their initial startup carriers must
-	 * remain processes.  After normal running begins and another thread
-	 * carrier has made fork-without-exec unsafe, the postmaster hands them off
-	 * and relaunches them through the runtime-selected thread carrier path.
-	 */
-	if (multithreaded &&
-		!postmaster_thread_carriers_started &&
-		(child_type == B_LOGGER ||
-		 child_type == B_CHECKPOINTER || child_type == B_BG_WRITER))
-		launch_model = PG_BACKEND_LAUNCH_PROCESS;
-	else
-		launch_model = PgRuntimeGetBackendLaunchModel(child_type);
+	launch_model = PgRuntimeGetBackendLaunchModel(child_type);
 
 	if (launch_model == PG_BACKEND_LAUNCH_THREAD)
 	{
@@ -394,11 +381,10 @@ postmaster_child_launch_carrier(PMChild *pmchild,
 	}
 
 	/*
-	 * Once the postmaster has created any thread carrier, later fork-without-
-	 * exec process launches are unsafe.  Phase 10 only supports regular client
-	 * backend threads; Phase 11 must replace server-owned worker process
-	 * launches with worker thread carriers before they can run in normal
-	 * threaded mode.
+	 * Once the carrier is up this process is multithreaded, and a
+	 * fork-without-exec child would inherit locked sibling-thread mutexes.
+	 * The syslogger is the only child type that still reaches here in
+	 * threaded mode, and it is forked before the carrier starts.
 	 */
 	if (multithreaded && postmaster_thread_carriers_started)
 	{
@@ -461,25 +447,10 @@ backend_thread_start_release(BackendThreadStart *thread_start)
 
 #ifdef USE_XTC_CARRIER
 /*
- * xtc-carrier: which thread-carrier child types may run as xtc fibers on the
- * shared carrier loop pool instead of dedicated pthreads.
- *
- * Start conservative: only regular client backends run as xtc fibers today.
- * They reach postmaster_backend_thread_launch() as thread carriers, run the
- * common backend_thread_entry(), yield through the waiteventset xtc intercept,
- * and reap as fiber PMChildren.
- *
- * Server-owned worker families (bgworker, io worker, autovacuum, WAL, etc.)
- * are deferred: a bare pthread->fiber carrier swap is not enough -- their
- * crash/terminate/restart and shutdown-ordering protocols (and, for io
- * workers, the AIO PM_WAIT_IO_WORKERS handshake, item #6) need fiber-aware
- * handling.  Widen this allowlist one family at a time, each validated under
- * the full threaded-runtime TAP (not just happy-path smoke) on a disk-backed
- * host.  Deferred, not rejected.
- *
- * ponytail: hand-picked allowlist, not a broad opt-in.  Widen one family at a
- * time as each is shown to yield at every blocking wait (never blocks the
- * carrier loop) and to tear down cleanly as a fiber PMChild.
+ * xtc-carrier: which child types run as xtc fibers on the shared carrier loop
+ * pool.  In threaded mode every postmaster child that is not the syslogger or
+ * a process-fallback backend is one of these; a type that reaches
+ * postmaster_backend_thread_launch() without being listed here is refused.
  */
 static bool
 xtc_carrier_eligible(BackendType child_type)
@@ -487,6 +458,7 @@ xtc_carrier_eligible(BackendType child_type)
 	switch (child_type)
 	{
 		case B_BACKEND:
+		case B_DEAD_END_BACKEND:
 			return true;
 		case B_BG_WORKER:
 
@@ -546,28 +518,23 @@ xtc_carrier_eligible(BackendType child_type)
 		case B_ARCHIVER:
 
 			/*
-			 * #5 widening -- Tier C: the WAL archiver runs in-process but as a
-			 * dedicated THREAD CARRIER, not a fiber (return false here ->
-			 * PgRuntimeShouldThreadBackend includes B_ARCHIVER -> PG_BACKEND_LAUNCH_
-			 * THREAD).  Rationale (2026-07-09): the archiver runs archive_command
-			 * via system() (shell_archive.c), which fork()+exec()+waitpid()s and
-			 * BLOCKS the calling thread for the entire command.  As a fiber that
-			 * would stall the shared carrier loop -- freezing every sibling client
-			 * backend fiber on that loop for the whole (possibly multi-second)
-			 * archive command.  A dedicated thread carrier confines the blocking
-			 * system()/waitpid to the archiver's own OS thread, so sibling fibers
-			 * keep running.  (This matches checkpointer/bgwriter/startup, which are
-			 * also thread carriers.)  Everything else about the archiver is
-			 * unchanged and already validated as a thread carrier: it is a
-			 * PM_RUN/PM_HOT_STANDBY singleton, parks on WaitLatch routed through the
-			 * intercept, drains via ProcessPgArchInterrupts(), and its two-step
-			 * shutdown (SIGTERM->SHUTDOWN_REQUEST, SIGUSR2->WAKEUP_STOP, SIGQUIT->
-			 * PROC_DIE) is wired in thread_child_signal_interrupt.  It is still
-			 * in-process (no fork of the archiver itself), so no forked-completer
-			 * wake problem.  An archive_library (C API, no system()) would be
-			 * fiber-safe, but the default archive_command path needs the thread.
+			 * The archiver is a fiber, but archive_command and archive
+			 * libraries may block its carrier loop, so the postmaster refuses
+			 * archive_mode with multithreaded=on (see PostmasterMain).
 			 */
-			return false;
+			return true;
+		case B_CHECKPOINTER:
+		case B_BG_WRITER:
+		case B_STARTUP:
+
+			/*
+			 * Started before normal running, on the carrier PostmasterMain
+			 * brings up first.  Their waits go through WaitLatch and the xtc
+			 * intercept and their fsyncs park through xtc_aio.  They are long
+			 * CPU/IO-bound loops, so xtc_carrier_migratable() keeps them
+			 * pinned to their spawn loop.
+			 */
+			return true;
 		case B_SLOTSYNC_WORKER:
 
 			/*
@@ -618,18 +585,8 @@ xtc_carrier_eligible(BackendType child_type)
 		default:
 
 			/*
-			 * Remaining server-owned worker families are NOT yet
-			 * fiber-eligible.  B_IO_WORKER additionally needs the AIO shutdown
-			 * protocol (PM_WAIT_IO_WORKERS) handled on fibers -- that belongs
-			 * with the xtc_aio work (item #6).  The auxiliary families
-			 * (logger, checkpointer, bgwriter -- which must start as processes
-			 * before thread carriers exist -- plus archiver, ...) each have
-			 * their own start/shutdown-ordering and restart protocols; widen
-			 * one at a time once its full lifecycle is validated on a fiber
-			 * under the threaded-runtime TAP.  Deferred, not rejected.
-			 * (B_BACKEND, B_BG_WORKER, autovacuum, B_WAL_WRITER,
-			 * B_WAL_SUMMARIZER, B_SLOTSYNC_WORKER, and B_WAL_RECEIVER are
-			 * handled above.)
+			 * The syslogger stays a process, and io workers are never started
+			 * in threaded mode (io_method=worker is remapped to xtc).
 			 */
 			return false;
 	}
