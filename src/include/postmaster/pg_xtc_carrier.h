@@ -76,6 +76,13 @@ extern bool xtc_pg_backend_fiber_is_migratable(void);
 extern uint64 xtc_pg_carrier_total_steals(void);
 
 /*
+ * Number of carrier loops the executor starts with: PG_XTC_CARRIER_LOOPS if
+ * set, else one per online CPU, capped.  Safe to call before the carrier is
+ * up; the threaded allocator sizes its arena cap from it.
+ */
+extern int	xtc_pg_carrier_loop_count(void);
+
+/*
  * Test hook: send this loop's supervisor a user message laid out exactly like
  * a library DOWN reporting that the calling backend fiber died of signal
  * `signo`.  The supervisor must ignore it, because a user xtc_send cannot

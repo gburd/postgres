@@ -59,6 +59,7 @@
 #include "parser/parse_expr.h"
 #include "postmaster/pgarch.h"
 #include "postmaster/interrupt.h"
+#include "postmaster/pg_xtc_carrier.h"
 #include "regex/regex.h"
 #include "replication/logical.h"
 #include "replication/reorderbuffer.h"
@@ -1038,15 +1039,24 @@ PgRuntimeConfigureThreadedAllocator(void)
 	 * allocations that land in the same arena behind that arena's lock.  Unlike
 	 * process mode, where each backend is a separate process with private
 	 * arenas, the carrier loop threads share one address space, so too few
-	 * arenas make them contend on the arena lock under a malloc-heavy load.
-	 * Keep glibc's default 8*ncpu explosion out with a modest cap.  Retained
-	 * memory is held down by arena free-list reuse plus the malloc_trim(0) on
-	 * backend teardown (backend_thread_maybe_trim_reclaimed_memory), so total
-	 * retained memory is a plateau bounded by the arena cap, not a ramp.  An
-	 * operator MALLOC_ARENA_MAX wins.
+	 * arenas make them contend on the arena lock under a malloc-heavy load:
+	 * measured on 8 loops, a single arena gave 197k tps and 64 gave 265k.
+	 * One arena per loop removes the cross-loop serialization without glibc's
+	 * default 8*ncpu explosion.  Retained memory is held down by arena
+	 * free-list reuse plus the malloc_trim(0) on backend teardown
+	 * (backend_thread_maybe_trim_reclaimed_memory), so total retained memory
+	 * is a plateau bounded by the arena cap, not a ramp.  An operator
+	 * MALLOC_ARENA_MAX wins.
 	 */
 	if (getenv("MALLOC_ARENA_MAX") == NULL)
-		(void) mallopt(M_ARENA_MAX, 4);
+	{
+		int			arena_max = 4;
+
+#ifdef USE_XTC_CARRIER
+		arena_max = Max(arena_max, xtc_pg_carrier_loop_count());
+#endif
+		(void) mallopt(M_ARENA_MAX, arena_max);
+	}
 
 	/*
 	 * Large-allocation policy for the shared address space.  In process mode
@@ -1481,11 +1491,6 @@ PgRuntimeSetExtensionBackendModel(PgBackendModel backend_model)
 	if (CurrentPgRuntime == NULL)
 		return;
 
-	/*
-	 * PG_BACKEND_MODEL_POOLED_SCHEDULER is a transitional generic marker.  The
-	 * protocol-boundary scheduler uses stricter protocol-affine and migratable
-	 * module promises before claiming Phase 15 carrier-pool compatibility.
-	 */
 	check_loaded_modules_backend_model(backend_model);
 	CurrentPgRuntime->extension_backend_model = backend_model;
 }

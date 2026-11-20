@@ -244,8 +244,8 @@ static xtc_carrier_entry_fn g_xtc_backend_entry;
  * cooperative).  Upgrade path if a workload proves it matters: elastic loop
  * growth.
  */
-static int
-xtc_carrier_loop_count(void)
+int
+xtc_pg_carrier_loop_count(void)
 {
 	const char *env = getenv("PG_XTC_CARRIER_LOOPS");
 	long		ncpus;
@@ -1319,7 +1319,7 @@ xtc_pg_carrier_start(void)
 			}
 		}
 
-		g_xtc_n_loops = xtc_carrier_loop_count();
+		g_xtc_n_loops = xtc_pg_carrier_loop_count();
 
 		opts.name = "pg-xtc-carrier";
 		opts.n_loops = g_xtc_n_loops;
