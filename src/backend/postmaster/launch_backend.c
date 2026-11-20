@@ -294,6 +294,8 @@ static bool postmaster_process_fallback_launch(PMChild *pmchild,
 											   const ClientSocket *client_sock);
 static BackendThreadStart *backend_thread_start_alloc(void);
 static void backend_thread_start_release(BackendThreadStart *thread_start);
+/* The fiber body; a build without libxtc launches no fibers. */
+pg_attribute_unused()
 static void backend_thread_entry(void *arg);
 #ifdef USE_XTC_CARRIER
 static bool xtc_carrier_eligible(BackendType child_type);
@@ -322,6 +324,17 @@ bool
 PostmasterThreadCarriersStarted(void)
 {
 	return postmaster_thread_carriers_started;
+}
+
+/*
+ * Record that the carrier threads exist.  From here on the postmaster process
+ * is multithreaded, so no child may be started with fork-without-exec, and a
+ * child crash fail-stops the server instead of starting a crash-restart cycle.
+ */
+void
+PostmasterSetThreadCarriersStarted(void)
+{
+	postmaster_thread_carriers_started = true;
 }
 
 /*
@@ -529,8 +542,10 @@ xtc_carrier_eligible(BackendType child_type)
 
 			/*
 			 * Started before normal running, on the carrier PostmasterMain
-			 * brings up first.  Their waits go through WaitLatch and the xtc
-			 * intercept and their fsyncs park through xtc_aio.  They are long
+			 * brings up first.  Their latch waits go through the xtc
+			 * intercept and their fsyncs park through xtc_aio; a few short
+			 * pg_usleep() calls (recovery-conflict waits, the checkpointer's
+			 * delay-chkpt loop) still block the loop briefly.  They are long
 			 * CPU/IO-bound loops, so xtc_carrier_migratable() keeps them
 			 * pinned to their spawn loop.
 			 */
@@ -704,8 +719,6 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 		child_type != B_BG_WRITER &&
 		child_type != B_BG_WORKER &&
 		child_type != B_CHECKPOINTER &&
-		child_type != B_IO_WORKER &&
-		child_type != B_LOGGER &&
 		child_type != B_SLOTSYNC_WORKER &&
 		child_type != B_STARTUP &&
 		child_type != B_WAL_RECEIVER &&
@@ -729,8 +742,6 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 		 child_type == B_BG_WRITER ||
 		 child_type == B_BG_WORKER ||
 		 child_type == B_CHECKPOINTER ||
-		 child_type == B_IO_WORKER ||
-		 child_type == B_LOGGER ||
 		 child_type == B_SLOTSYNC_WORKER ||
 		 child_type == B_STARTUP ||
 		 child_type == B_WAL_RECEIVER ||
@@ -851,7 +862,6 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 		}
 		elog(LOG, "xtc: %s launched as xtc fiber (child_slot=%d)",
 			 PostmasterChildName(child_type), child_slot);
-		postmaster_thread_carriers_started = true;
 		/*
 		 * Classify it as a fiber child so the postmaster reaper releases the
 		 * slot via process_pm_fiber_exit() when the fiber exits, letting

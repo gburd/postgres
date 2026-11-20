@@ -1,28 +1,22 @@
 /*-------------------------------------------------------------------------
- * pg_xtc_carrier.c -- run a threaded PostgreSQL client backend as an
- *	xtc_proc (a cooperatively scheduled fiber on an xtc_loop) instead of a
- *	raw pthread.  OUT-OF-TREE, throwaway, gated behind USE_XTC_CARRIER.
+ * pg_xtc_carrier.c -- the libxtc carrier: run every postmaster child of a
+ *	multithreaded server as an xtc_proc (a cooperatively scheduled fiber) on
+ *	a fixed-size xtc executor, one OS thread per loop.  Compiled only with
+ *	USE_XTC_CARRIER.
  *
- *	The multithreaded-postgres tree already runs each B_BACKEND on its own
- *	OS thread (backend_thread_entry in launch_backend.c), having solved the
- *	PG-globals wall that blocked the earlier fork-based xtc spike.  This
- *	module provides the *carrier*: the backend's entry function runs as a
- *	fiber on an xtc loop
- *	hosted on a dedicated pthread.  Because the fiber runs the tree's own
- *	backend_thread_entry() verbatim, all the thread-per-session init is
- *	reused, and MyClientSocket->sock (the fd the tree dup()'d once) is the
- *	SAME fd registered into FeBeWaitSet -- so the read fd and the wait fd
- *	never diverge (the exact bug that stalled the fork spike).
+ *	Each fiber runs backend_thread_entry() from launch_backend.c, which does
+ *	the per-backend initialization.  For a client backend, MyClientSocket->sock
+ *	is the fd registered in FeBeWaitSet, so the read fd and the wait fd are
+ *	the same.
  *
  *	The runtime seam is in waiteventset.c: while xtc_pg_in_backend_fiber() is
  *	true, WaitEventSetWaitBlock() waits on set->epoll_fd via
  *	xtc_proc_wait_fd() (yielding the fiber to the xtc loop) instead of a
  *	blocking epoll_wait() that would monopolize the carrier thread.
  *
- *	SINGLE CARRIER, SINGLE-LOOP: one xtc loop on one scheduler thread runs
- *	all backend fibers.  Concurrency is cooperative -- a fiber only yields
- *	at a wait point.  This is enough to prove "select 1 through xtc"; a
- *	real pool (many carriers) is future work.
+ *	Concurrency is cooperative: a fiber yields only at a wait point.  Each
+ *	loop has a supervisor fiber that spawns the fibers placed on it and
+ *	classifies their exits; a genuine crash fail-stops the server.
  *-------------------------------------------------------------------------
  */
 
@@ -1149,7 +1143,7 @@ xtc_carrier_proc(void *arg)
 
 /*
  * Start the xtc scheduler on a dedicated thread inside the postmaster.
- * Idempotent; called from the postmaster before the first backend launch.
+ * Idempotent; called from PostmasterMain before the first child launch.
  * Returns 0 on success, -1 on failure.
  */
 int
@@ -1161,8 +1155,7 @@ xtc_pg_carrier_start(void)
 
 	/*
 	 * Capture the postmaster's process latch on the first call (this runs on
-	 * the postmaster thread via the launch path, so MyLatch is the
-	 * postmaster's own latch).  The supervisor uses it to wake the postmaster
+	 * the postmaster thread, so MyLatch is the postmaster's own latch).  The supervisor uses it to wake the postmaster
 	 * on a genuine crash.
 	 */
 	if (atomic_load(&g_xtc_postmaster_latch) == NULL && MyLatch != NULL)

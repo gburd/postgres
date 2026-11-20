@@ -145,6 +145,7 @@ extern bool postmaster_child_launch_carrier(PMChild *pmchild,
 											size_t startup_data_len,
 											const struct ClientSocket *client_sock);
 extern bool PostmasterThreadCarriersStarted(void);
+extern void PostmasterSetThreadCarriersStarted(void);
 extern void ThreadedBackendStartupComplete(void);
 #ifdef USE_XTC_CARRIER
 extern bool ReapOrphanedThreadedWorker(BackendType child_type, int min_age_ms);

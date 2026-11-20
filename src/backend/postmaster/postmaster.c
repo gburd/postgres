@@ -908,10 +908,9 @@ PostmasterMain(int argc, char *argv[])
 	 * SelectConfigFiles() has finalized multithreaded, avoids the boot-value
 	 * ordering hazard where the io_method assign hook runs before multithreaded
 	 * is known.  An explicit io_method=sync/io_uring/xtc is respected;
-	 * multithreaded=off (process mode) is untouched.  Remove once io workers run
-	 * in-process as thread carriers (Tier D/F hand-off, including a
-	 * PM_HOT_STANDBY hand-off for standbys), after which io_method=worker wakes
-	 * fibers via the wired xtc_proc_wake.
+	 * multithreaded=off (process mode) is untouched.  io workers are separate
+	 * processes and cannot wake a fiber, so they are never started in
+	 * threaded mode.
 	 */
 	if (multithreaded && io_method == IOMETHOD_WORKER)
 	{
@@ -1569,9 +1568,13 @@ PostmasterMain(int argc, char *argv[])
 	 * thread exists.  Start the carrier now so that the checkpointer,
 	 * background writer, and startup process, which launch next, land on it.
 	 */
-	if (multithreaded && xtc_pg_carrier_start() != 0)
-		ereport(FATAL,
-				(errmsg("could not start the threaded runtime carrier")));
+	if (multithreaded)
+	{
+		if (xtc_pg_carrier_start() != 0)
+			ereport(FATAL,
+					(errmsg("could not start the threaded runtime carrier")));
+		PostmasterSetThreadCarriersStarted();
+	}
 #endif
 
 	/* Make sure we can perform I/O while starting up. */
@@ -3642,6 +3645,18 @@ PostmasterStateMachine(void)
 	 */
 	if (FatalError && pmState == PM_NO_CHILDREN)
 	{
+		/*
+		 * Shared memory cannot be reinitialized under live carrier threads,
+		 * so a threaded server fail-stops here, as HandleChildCrash does, and
+		 * leaves the restart to external supervision.
+		 */
+		if (multithreaded && PostmasterThreadCarriersStarted())
+		{
+			ereport(LOG,
+					(errmsg("terminating threaded server runtime instead of reinitializing after a fatal error")));
+			ExitPostmaster(1);
+		}
+
 		ereport(LOG,
 				(errmsg("all server processes terminated; reinitializing")));
 

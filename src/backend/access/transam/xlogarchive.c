@@ -77,6 +77,16 @@ RestoreArchivedFile(char *path, const char *xlogfname,
 		goto not_available;
 
 	/*
+	 * In threaded mode the startup process is a fiber, and system() would
+	 * block every fiber on its carrier loop for the whole command.
+	 */
+	if (multithreaded)
+		ereport(FATAL,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("\"restore_command\" is not yet supported with multithreaded=on"),
+				 errhint("Use streaming replication, or set \"multithreaded\" to \"off\".")));
+
+	/*
 	 * When doing archive recovery, we always prefer an archived log file even
 	 * if a file of the same name exists in XLOGDIR.  The reason is that the
 	 * file in XLOGDIR could be an old, un-filled or partly-filled version
@@ -304,6 +314,15 @@ ExecuteRecoveryCommand(const char *command, const char *commandName,
 	TimeLineID	restartTli;
 
 	Assert(command && commandName);
+
+	/* See RestoreArchivedFile: a shell command would block the carrier loop. */
+	if (multithreaded)
+	{
+		ereport(WARNING,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("\"%s\" is not run with multithreaded=on", commandName)));
+		return;
+	}
 
 	/*
 	 * Calculate the archive file cutoff point for use during log shipping
