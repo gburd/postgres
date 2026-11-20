@@ -202,24 +202,6 @@ PgCurrentFirstDomainTypeEntryRef(void)
 	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSessionCatalogLookupState)->typcache_first_domain_type_entry;
 }
 
-Oid **
-PgCurrentTypCacheInProgressListRef(void)
-{
-	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSessionCatalogLookupState)->typcache_in_progress_list;
-}
-
-int *
-PgCurrentTypCacheInProgressListLenRef(void)
-{
-	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSessionCatalogLookupState)->typcache_in_progress_list_len;
-}
-
-int *
-PgCurrentTypCacheInProgressListMaxLenRef(void)
-{
-	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSessionCatalogLookupState)->typcache_in_progress_list_maxlen;
-}
-
 HTAB **
 PgCurrentRecordCacheHashRef(void)
 {
@@ -513,9 +495,6 @@ PgSessionResetCatalogLookupClosedState(PgSession *session)
 	session->catalog_lookup.typcache_type_cache_hash = NULL;
 	session->catalog_lookup.typcache_relid_to_typeid_hash = NULL;
 	session->catalog_lookup.typcache_first_domain_type_entry = NULL;
-	session->catalog_lookup.typcache_in_progress_list = NULL;
-	session->catalog_lookup.typcache_in_progress_list_len = 0;
-	session->catalog_lookup.typcache_in_progress_list_maxlen = 0;
 	session->catalog_lookup.typcache_record_cache_hash = NULL;
 	session->catalog_lookup.typcache_record_cache_array = NULL;
 	session->catalog_lookup.typcache_record_cache_array_len = 0;

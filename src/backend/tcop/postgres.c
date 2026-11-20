@@ -27,10 +27,6 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 
-#if defined(__GLIBC__)
-#include <malloc.h>
-#endif
-
 #ifdef USE_VALGRIND
 #include <valgrind/valgrind.h>
 #endif
@@ -5167,54 +5163,6 @@ PgSessionRun(PgSession *session)
 
 	for (;;)
 		PgSessionStepUnprotected(session);
-}
-
-/*
- * Release memory an idle threaded session does not need between commands.
- *
- * Threaded sessions share one address space, so the working set an idle
- * session keeps resident (its transaction-abort reserve, receive buffer,
- * private buffer-pin tracking, and pending statistics) adds up across every
- * idle connection.  This hands that memory back and trims the allocator.
- *
- * NB: callers must invoke this only from the idle command-read boundary, with
- * no transaction open, and must call RestoreBufferManagerIdleMemory() before
- * the session runs its next command.  Process mode keeps its working set: an
- * idle process backend's memory is private and returned at exit.
- */
-void
-PgSessionReleaseIdleMemory(PgSession *session)
-{
-	MemoryContext *abort_context;
-
-	Assert(session != NULL);
-
-	if (!PgRuntimeIsThreadBacked(CurrentPgRuntime))
-		return;
-	if (IsTransactionOrTransactionBlock() || IsAbortedTransactionBlockState())
-		return;
-
-	/*
-	 * TransactionAbortContext is a deliberately preallocated OOM reserve while
-	 * a transaction is active.  Between transactions the pointer can stay
-	 * lazy, so AtStart_Memory() reserves it again for the next transaction.
-	 */
-	abort_context = PgCurrentTransactionAbortContextRef();
-	if (*abort_context != NULL)
-	{
-		Assert(CurrentMemoryContext != *abort_context);
-		MemoryContextDelete(*abort_context);
-		*abort_context = NULL;
-	}
-
-	PgConnectionReleaseIdleRecvBuffer(session->connection);
-
-	ReleaseBufferManagerIdleMemory();
-	pgstat_release_idle_memory();
-
-#if defined(__GLIBC__)
-	(void) malloc_trim(0);
-#endif
 }
 
 /*

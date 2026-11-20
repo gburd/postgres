@@ -418,33 +418,6 @@ pgstat_detach_shmem(void)
 	}
 }
 
-void
-pgstat_detach_idle_memory(void)
-{
-	if (pgStatLocal.num_var_hashes == 0)
-		return;
-
-	pgstat_detach_shmem();
-}
-
-void
-pgstat_release_shared_ref_memory(void)
-{
-	if (pgStatEntryRefHash != NULL)
-		pgstat_release_all_entry_refs(false);
-
-	if (pgStatEntryRefHashContext != NULL)
-	{
-		MemoryContextDelete(pgStatEntryRefHashContext);
-		pgStatEntryRefHashContext = NULL;
-	}
-	if (pgStatSharedRefContext != NULL)
-	{
-		MemoryContextDelete(pgStatSharedRefContext);
-		pgStatSharedRefContext = NULL;
-	}
-}
-
 
 /* ------------------------------------------------------------
  * Maintenance of shared memory stats entries

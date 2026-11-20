@@ -2574,7 +2574,6 @@ PgCurrentSessionCatalogLookupState(void)
 	if (likely(catalog_lookup != NULL))
 		return catalog_lookup;
 
-	PG_RUNTIME_BRIDGE_COUNT_FALLBACK(session_catalog_lookup);
 	if (CurrentPgSession == NULL)
 		return &early_session_catalog_lookup;
 

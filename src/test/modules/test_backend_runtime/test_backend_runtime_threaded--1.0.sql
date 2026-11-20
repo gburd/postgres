@@ -75,36 +75,6 @@ CREATE FUNCTION test_backend_runtime_crash_current_backend()
 	   'test_backend_runtime_crash_current_backend'
 	LANGUAGE C;
 
-CREATE FUNCTION test_backend_runtime_wait_completion_enabled()
-	RETURNS pg_catalog.bool
-	AS 'MODULE_PATHNAME',
-	   'test_backend_runtime_wait_completion_enabled'
-	LANGUAGE C;
-
-CREATE FUNCTION test_backend_runtime_wait_completion_snapshot(pg_catalog.int4)
-	RETURNS pg_catalog.text
-	AS 'MODULE_PATHNAME',
-	   'test_backend_runtime_wait_completion_snapshot'
-	LANGUAGE C;
-
-CREATE FUNCTION test_backend_runtime_wait_on_condition_variable(pg_catalog.int4)
-	RETURNS pg_catalog.bool
-	AS 'MODULE_PATHNAME',
-	   'test_backend_runtime_wait_on_condition_variable'
-	LANGUAGE C;
-
-CREATE FUNCTION test_backend_runtime_hold_lwlock(pg_catalog.int4)
-	RETURNS pg_catalog.bool
-	AS 'MODULE_PATHNAME',
-	   'test_backend_runtime_hold_lwlock'
-	LANGUAGE C;
-
-CREATE FUNCTION test_backend_runtime_wait_on_lwlock()
-	RETURNS pg_catalog.bool
-	AS 'MODULE_PATHNAME',
-	   'test_backend_runtime_wait_on_lwlock'
-	LANGUAGE C;
-
 CREATE FUNCTION test_backend_runtime_bgworker_startup_publication(pg_catalog.text)
 	RETURNS pg_catalog.text
 	AS 'MODULE_PATHNAME',

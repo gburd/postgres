@@ -3988,7 +3988,6 @@ GetCurrentAfterTriggersDataRefFast(void)
 	if (likely(after_triggers_data != NULL))
 		return after_triggers_data;
 
-	PG_RUNTIME_BRIDGE_COUNT_FALLBACK(after_triggers);
 	return PgCurrentAfterTriggersDataRef();
 }
 

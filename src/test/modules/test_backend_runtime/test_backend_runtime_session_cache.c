@@ -94,9 +94,6 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 	HTAB	   *saved_type_cache_hash;
 	HTAB	   *saved_relid_to_typeid_cache_hash;
 	TypeCacheEntry *saved_first_domain_type_entry;
-	Oid		   *saved_typcache_in_progress_list;
-	int			saved_typcache_in_progress_list_len;
-	int			saved_typcache_in_progress_list_maxlen;
 	HTAB	   *saved_record_cache_hash;
 	RecordCacheArrayEntry *saved_record_cache_array;
 	int32		saved_record_cache_array_len;
@@ -131,8 +128,6 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 	HTAB	   *session2_opclass_marker;
 	TypeCacheEntry *session1_typentry_marker;
 	TypeCacheEntry *session2_typentry_marker;
-	Oid		   *session1_oid_array_marker;
-	Oid		   *session2_oid_array_marker;
 	RecordCacheArrayEntry *session1_record_array_marker;
 	RecordCacheArrayEntry *session2_record_array_marker;
 	bool		ok = true;
@@ -162,11 +157,6 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 	saved_type_cache_hash = *PgCurrentTypeCacheHashRef();
 	saved_relid_to_typeid_cache_hash = *PgCurrentRelIdToTypeIdCacheHashRef();
 	saved_first_domain_type_entry = *PgCurrentFirstDomainTypeEntryRef();
-	saved_typcache_in_progress_list = *PgCurrentTypCacheInProgressListRef();
-	saved_typcache_in_progress_list_len =
-		*PgCurrentTypCacheInProgressListLenRef();
-	saved_typcache_in_progress_list_maxlen =
-		*PgCurrentTypCacheInProgressListMaxLenRef();
 	saved_record_cache_hash = *PgCurrentRecordCacheHashRef();
 	saved_record_cache_array = *PgCurrentRecordCacheArrayRef();
 	saved_record_cache_array_len = *PgCurrentRecordCacheArrayLenRef();
@@ -209,8 +199,6 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 	session2_opclass_marker = (HTAB *) &fake_session2;
 	session1_typentry_marker = (TypeCacheEntry *) &fake_session1;
 	session2_typentry_marker = (TypeCacheEntry *) &fake_session2;
-	session1_oid_array_marker = (Oid *) &fake_session1;
-	session2_oid_array_marker = (Oid *) &fake_session2;
 	session1_record_array_marker = (RecordCacheArrayEntry *) &fake_session1;
 	session2_record_array_marker = (RecordCacheArrayEntry *) &fake_session2;
 
@@ -235,9 +223,6 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentTypeCacheHashRef() == NULL;
 		ok = ok && *PgCurrentRelIdToTypeIdCacheHashRef() == NULL;
 		ok = ok && *PgCurrentFirstDomainTypeEntryRef() == NULL;
-		ok = ok && *PgCurrentTypCacheInProgressListRef() == NULL;
-		ok = ok && *PgCurrentTypCacheInProgressListLenRef() == 0;
-		ok = ok && *PgCurrentTypCacheInProgressListMaxLenRef() == 0;
 		ok = ok && *PgCurrentRecordCacheHashRef() == NULL;
 		ok = ok && *PgCurrentRecordCacheArrayRef() == NULL;
 		ok = ok && *PgCurrentRecordCacheArrayLenRef() == 0;
@@ -270,9 +255,6 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 		*PgCurrentTypeCacheHashRef() = session1_hash_marker;
 		*PgCurrentRelIdToTypeIdCacheHashRef() = session1_hash_marker;
 		*PgCurrentFirstDomainTypeEntryRef() = session1_typentry_marker;
-		*PgCurrentTypCacheInProgressListRef() = session1_oid_array_marker;
-		*PgCurrentTypCacheInProgressListLenRef() = 1;
-		*PgCurrentTypCacheInProgressListMaxLenRef() = 2;
 		*PgCurrentRecordCacheHashRef() = session1_hash_marker;
 		*PgCurrentRecordCacheArrayRef() = session1_record_array_marker;
 		*PgCurrentRecordCacheArrayLenRef() = 3;
@@ -308,9 +290,6 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentTypeCacheHashRef() == NULL;
 		ok = ok && *PgCurrentRelIdToTypeIdCacheHashRef() == NULL;
 		ok = ok && *PgCurrentFirstDomainTypeEntryRef() == NULL;
-		ok = ok && *PgCurrentTypCacheInProgressListRef() == NULL;
-		ok = ok && *PgCurrentTypCacheInProgressListLenRef() == 0;
-		ok = ok && *PgCurrentTypCacheInProgressListMaxLenRef() == 0;
 		ok = ok && *PgCurrentRecordCacheHashRef() == NULL;
 		ok = ok && *PgCurrentRecordCacheArrayRef() == NULL;
 		ok = ok && *PgCurrentRecordCacheArrayLenRef() == 0;
@@ -343,9 +322,6 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 		*PgCurrentTypeCacheHashRef() = session2_hash_marker;
 		*PgCurrentRelIdToTypeIdCacheHashRef() = session2_hash_marker;
 		*PgCurrentFirstDomainTypeEntryRef() = session2_typentry_marker;
-		*PgCurrentTypCacheInProgressListRef() = session2_oid_array_marker;
-		*PgCurrentTypCacheInProgressListLenRef() = 11;
-		*PgCurrentTypCacheInProgressListMaxLenRef() = 12;
 		*PgCurrentRecordCacheHashRef() = session2_hash_marker;
 		*PgCurrentRecordCacheArrayRef() = session2_record_array_marker;
 		*PgCurrentRecordCacheArrayLenRef() = 13;
@@ -384,10 +360,6 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentTypeCacheHashRef() == session1_hash_marker;
 		ok = ok && *PgCurrentRelIdToTypeIdCacheHashRef() == session1_hash_marker;
 		ok = ok && *PgCurrentFirstDomainTypeEntryRef() == session1_typentry_marker;
-		ok = ok && *PgCurrentTypCacheInProgressListRef() ==
-			session1_oid_array_marker;
-		ok = ok && *PgCurrentTypCacheInProgressListLenRef() == 1;
-		ok = ok && *PgCurrentTypCacheInProgressListMaxLenRef() == 2;
 		ok = ok && *PgCurrentRecordCacheHashRef() == session1_hash_marker;
 		ok = ok && *PgCurrentRecordCacheArrayRef() ==
 			session1_record_array_marker;
@@ -427,10 +399,6 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentTypeCacheHashRef() == session2_hash_marker;
 		ok = ok && *PgCurrentRelIdToTypeIdCacheHashRef() == session2_hash_marker;
 		ok = ok && *PgCurrentFirstDomainTypeEntryRef() == session2_typentry_marker;
-		ok = ok && *PgCurrentTypCacheInProgressListRef() ==
-			session2_oid_array_marker;
-		ok = ok && *PgCurrentTypCacheInProgressListLenRef() == 11;
-		ok = ok && *PgCurrentTypCacheInProgressListMaxLenRef() == 12;
 		ok = ok && *PgCurrentRecordCacheHashRef() == session2_hash_marker;
 		ok = ok && *PgCurrentRecordCacheArrayRef() ==
 			session2_record_array_marker;
@@ -475,11 +443,6 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 		*PgCurrentTypeCacheHashRef() = saved_type_cache_hash;
 		*PgCurrentRelIdToTypeIdCacheHashRef() = saved_relid_to_typeid_cache_hash;
 		*PgCurrentFirstDomainTypeEntryRef() = saved_first_domain_type_entry;
-		*PgCurrentTypCacheInProgressListRef() = saved_typcache_in_progress_list;
-		*PgCurrentTypCacheInProgressListLenRef() =
-			saved_typcache_in_progress_list_len;
-		*PgCurrentTypCacheInProgressListMaxLenRef() =
-			saved_typcache_in_progress_list_maxlen;
 		*PgCurrentRecordCacheHashRef() = saved_record_cache_hash;
 		*PgCurrentRecordCacheArrayRef() = saved_record_cache_array;
 		*PgCurrentRecordCacheArrayLenRef() = saved_record_cache_array_len;
@@ -525,11 +488,6 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 		*PgCurrentTypeCacheHashRef() = saved_type_cache_hash;
 		*PgCurrentRelIdToTypeIdCacheHashRef() = saved_relid_to_typeid_cache_hash;
 		*PgCurrentFirstDomainTypeEntryRef() = saved_first_domain_type_entry;
-		*PgCurrentTypCacheInProgressListRef() = saved_typcache_in_progress_list;
-		*PgCurrentTypCacheInProgressListLenRef() =
-			saved_typcache_in_progress_list_len;
-		*PgCurrentTypCacheInProgressListMaxLenRef() =
-			saved_typcache_in_progress_list_maxlen;
 		*PgCurrentRecordCacheHashRef() = saved_record_cache_hash;
 		*PgCurrentRecordCacheArrayRef() = saved_record_cache_array;
 		*PgCurrentRecordCacheArrayLenRef() = saved_record_cache_array_len;

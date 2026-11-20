@@ -159,9 +159,6 @@ function_name(object_type *object_arg) \
 	} while (0)
 
 extern PgCarrier *PgCurrentCarrierState(void);
-extern void PgRuntimeFlushCurrentHotMirrors(void);
-extern void PgRuntimeReloadCurrentHotMirrors(void);
-extern void PgRuntimeFlushCurrentHotCells(void);
 extern void PgRuntimeReloadCurrentHotCells(void);
 extern void PgBackendInitializeIdCounter(void);
 extern void PgBackendInitializeRuntimeObject(PgBackend *backend,

@@ -228,7 +228,6 @@ PgThreadedInterruptsPendingFast(void)
 
 	if (unlikely(backend_mask == NULL))
 	{
-		PG_RUNTIME_BRIDGE_COUNT_FALLBACK(interrupts);
 		return PgCurrentBackendHasPendingInterrupts();
 	}
 
@@ -336,7 +335,6 @@ extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool pg_backend_was_forkexeced;
 #define PG_BACKEND_WAS_FORKEXECED	(pg_backend_was_forkexeced)
 #endif
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool threaded_lazy_relcache_init_file;
-extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool xtc_xproc_watchdog_demo;
 
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int commit_timestamp_buffers;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int multixact_member_buffers;

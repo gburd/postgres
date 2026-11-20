@@ -185,7 +185,6 @@ static void pgstat_write_statsfile(void);
 static void pgstat_read_statsfile(void);
 
 static void pgstat_init_snapshot_fixed(void);
-static void pgstat_release_snapshot_memory(void);
 
 static void pgstat_reset_after_failure(void);
 
@@ -815,30 +814,6 @@ pgstat_force_next_flush(void)
 	pgStatForceNextFlush = true;
 }
 
-void
-pgstat_release_idle_memory(void)
-{
-	if (!pgstat_is_initialized || pgstat_is_shutdown)
-		return;
-
-	pgstat_assert_is_up();
-	Assert(!IsTransactionOrTransactionBlock());
-
-	(void) pgstat_report_stat(true);
-	Assert(dlist_is_empty(&pgStatPending));
-
-	if (pgStatPendingContext != NULL)
-	{
-		MemoryContextDelete(pgStatPendingContext);
-		pgStatPendingContext = NULL;
-		dlist_init(&pgStatPending);
-	}
-
-	pgstat_release_shared_ref_memory();
-	pgstat_release_snapshot_memory();
-	pgstat_detach_idle_memory();
-}
-
 /*
  * Only for use by pgstat_reset_counters()
  */
@@ -1157,25 +1132,6 @@ pgstat_init_snapshot_fixed(void)
 			MemoryContextAlloc(fixed_snapshot_context,
 							   kind_info->shared_data_len);
 	}
-}
-
-static void
-pgstat_release_snapshot_memory(void)
-{
-	PgStat_LocalState *local;
-
-	local = PgCurrentPgStatLocalState();
-	if (local->snapshot == NULL)
-		return;
-
-	pgstat_clear_snapshot();
-	if (*PgCurrentPgStatFixedSnapshotContextRef() != NULL)
-	{
-		MemoryContextDelete(*PgCurrentPgStatFixedSnapshotContextRef());
-		*PgCurrentPgStatFixedSnapshotContextRef() = NULL;
-	}
-	pfree(local->snapshot);
-	local->snapshot = NULL;
 }
 
 static void

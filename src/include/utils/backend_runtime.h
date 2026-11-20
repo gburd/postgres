@@ -67,7 +67,6 @@ typedef struct PgRuntime PgRuntime;
 typedef struct PgCarrier PgCarrier;
 typedef struct PgBackend PgBackend;
 typedef struct PgBackendStatus PgBackendStatus;
-typedef struct PgWaitCompletion PgWaitCompletion;
 typedef struct BackgroundWorker BackgroundWorker;
 typedef struct IncrementalBackupInfo IncrementalBackupInfo;
 typedef struct LagTracker LagTracker;
@@ -130,7 +129,6 @@ struct AutoPrewarmSharedState;
 struct pgsa_shared_state;
 typedef struct dsm_segment dsm_segment;
 typedef void (*PgBackendExitContinuation) (int code);
-typedef int (*PgSuspendCallback) (void *callback_arg);
 
 typedef enum PgRuntimeKind
 {
@@ -201,67 +199,14 @@ typedef uint32 PgBackendInterruptMask;
 typedef struct PgBackendInterruptMailbox
 {
 	pg_atomic_uint32 pending_mask;
-	pg_atomic_uint32 notify_generation;
 	volatile int proc_die_sender_pid;
 	volatile int proc_die_sender_uid;
 } PgBackendInterruptMailbox;
 
-typedef enum PgWaitKind
-{
-	PG_WAIT_KIND_NONE,
-	PG_WAIT_KIND_EVENT_SET,
-	PG_WAIT_KIND_SEMAPHORE
-} PgWaitKind;
-
-typedef struct PgWaitSpec
-{
-	PgWaitKind	kind;
-	uint32		wait_event_info;
-	uint32		wake_events;
-	pgsocket	socket;
-	long		timeout;
-} PgWaitSpec;
-
-/*
- * Phase 13 wait-completion record.
- *
- * Logical events still flow through backend interrupts.  Wait readiness is
- * recorded here and wakes the owning backend's latch in the thread-per-session
- * fallback.  Phase 14/15 protocol scheduling must not treat this record as a
- * carrier-release continuation for deep waits.
- */
-typedef enum PgWaitCompletionState
-{
-	PG_WAIT_COMPLETION_INACTIVE = 0,
-	PG_WAIT_COMPLETION_WAITING,
-	PG_WAIT_COMPLETION_READY,
-	PG_WAIT_COMPLETION_CANCELLED
-} PgWaitCompletionState;
-
-typedef enum PgWaitCompletionInterrupt
-{
-	PG_WAIT_COMPLETION_INTERRUPT_CANCEL = (1 << 0),
-	PG_WAIT_COMPLETION_INTERRUPT_TERMINATE = (1 << 1)
-} PgWaitCompletionInterrupt;
-
-struct PgWaitCompletion
-{
-	PgWaitSpec	spec;
-	PgBackend  *backend;
-	PgSession  *session;
-	PgExecution *execution;
-	pg_atomic_uint32 state;
-	pg_atomic_uint32 ready_events;
-	pg_atomic_uint32 interrupt_events;
-};
-
 typedef struct PgBackendWaitState
 {
-	PgWaitSpec	spec;
-	PgWaitCompletion completion;
 	uint32		local_wait_event_info;
 	uint32	   *wait_event_info_ptr;
-	pg_atomic_uint32 waiting;
 } PgBackendWaitState;
 
 typedef struct PgBackendCoreState
@@ -739,7 +684,6 @@ typedef struct PgBackendBufferState
 	int			reserved_ref_count_slot;
 	int			private_ref_count_entry_last;
 	uint32		max_proportional_pins;
-	bool		private_ref_count_released_while_idle;
 } PgBackendBufferState;
 
 typedef struct PgBackendStorageState
@@ -1792,9 +1736,6 @@ typedef struct PgSessionCatalogLookupState
 	HTAB	   *typcache_type_cache_hash;
 	HTAB	   *typcache_relid_to_typeid_hash;
 	TypeCacheEntry *typcache_first_domain_type_entry;
-	Oid		   *typcache_in_progress_list;
-	int			typcache_in_progress_list_len;
-	int			typcache_in_progress_list_maxlen;
 	HTAB	   *typcache_record_cache_hash;
 	RecordCacheArrayEntry *typcache_record_cache_array;
 	int32		typcache_record_cache_array_len;
@@ -2781,9 +2722,6 @@ extern HTAB **PgCurrentOpClassCacheRef(void);
 extern HTAB **PgCurrentTypeCacheHashRef(void);
 extern HTAB **PgCurrentRelIdToTypeIdCacheHashRef(void);
 extern TypeCacheEntry **PgCurrentFirstDomainTypeEntryRef(void);
-extern Oid **PgCurrentTypCacheInProgressListRef(void);
-extern int *PgCurrentTypCacheInProgressListLenRef(void);
-extern int *PgCurrentTypCacheInProgressListMaxLenRef(void);
 extern HTAB **PgCurrentRecordCacheHashRef(void);
 extern RecordCacheArrayEntry **PgCurrentRecordCacheArrayRef(void);
 extern int32 *PgCurrentRecordCacheArrayLenRef(void);
@@ -3058,10 +2996,6 @@ extern void InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *s
 												 struct Latch *interrupt_latch);
 extern void PreInstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state);
 extern void InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state);
-extern void InitializePgThreadBackendRuntime(PgThreadBackendRuntimeState *state,
-											 BackendType backend_type,
-											 struct Port *port,
-											 struct Latch *interrupt_latch);
 extern void PgSetCurrentRuntime(PgRuntime *runtime);
 extern void PgSetCurrentCarrier(PgCarrier *carrier);
 extern void PgSetCurrentBackend(PgBackend *backend);
@@ -3097,7 +3031,6 @@ extern void PgCarrierAttachBackend(PgCarrier *carrier, PgBackend *backend,
 								   PgConnection *connection,
 								   PgExecution *execution);
 extern void PgCarrierDetachBackend(PgCarrier *carrier, PgBackend *backend);
-extern void PgRuntimeReportBridgeFallbackStats(void);
 extern bool PgCurrentSessionOwnsPointer(const void *ptr);
 extern bool PgCurrentOrEarlySessionOwnsPointer(const void *ptr);
 extern void PgBackendResetClosedState(PgBackend *backend);
@@ -3330,7 +3263,6 @@ extern void PgBackendUnregisterThreadedBackend(PgBackend *backend);
 extern bool PgBackendSendInterruptById(PgBackendId backend_id,
 									  PgBackendInterruptType interrupt_type,
 									  int sender_pid, int sender_uid);
-extern uint64 PgBackendNotifyInterruptGeneration(PgBackend *backend);
 /*
  * Logical backend interrupts are for backend events such as cancel, die,
  * notify, and proc-signal-derived work. Wait readiness should remain with
@@ -3352,25 +3284,6 @@ extern void PgBackendConsumeProcDieSender(PgBackend *backend, int *sender_pid,
 										  int *sender_uid);
 extern bool PgCurrentBackendHasPendingInterrupts(void);
 extern void PgCurrentBackendApplyInterrupts(void);
-/*
- * Generic wait-completion publication is diagnostic-only.  Production builds
- * leave PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION undefined, making these
- * APIs no-op/false except for local wait-state initialization.
- */
-extern bool PgSetWaitCompletionPublication(bool enabled);
-extern PgWaitCompletion *PgBackendCurrentWaitCompletion(PgBackend *backend);
-extern bool PgBackendSnapshotWaitCompletionById(PgBackendId backend_id,
-												PgWaitCompletion *snapshot,
-												uint32 *waiting);
-extern void PgBackendMarkWaitCompletionInterrupt(PgBackend *backend,
-												 PgWaitCompletionInterrupt interrupt);
-extern bool PgBackendWakeWaitCompletion(PgBackend *backend,
-										uint32 ready_events);
-extern bool PgBackendWakeWaitCompletionById(PgBackendId backend_id,
-											uint32 ready_events);
-extern bool PgBackendShouldPublishWaitCompletion(PgBackend *backend);
-extern int	PgSuspend(const PgWaitSpec *wait_spec,
-					  PgSuspendCallback callback, void *callback_arg);
 pg_noreturn extern void PgSessionRun(PgSession *session);
 
 #define PG_RUNTIME_FAST_BUCKET_ACCESSOR(variable, fallback) \
@@ -3380,7 +3293,6 @@ pg_noreturn extern void PgSessionRun(PgSession *session);
  \
 		if (unlikely(pg_runtime_bucket == NULL)) \
 		{ \
-			PG_RUNTIME_BRIDGE_COUNT_FALLBACK(fast_bucket); \
 			pg_runtime_bucket = fallback(); \
 		} \
 		pg_runtime_bucket; \
@@ -3394,7 +3306,6 @@ pg_noreturn extern void PgSessionRun(PgSession *session);
 		if (unlikely(pg_runtime_bucket == NULL || \
 					 !pg_runtime_bucket->initialized)) \
 		{ \
-			PG_RUNTIME_BRIDGE_COUNT_FALLBACK(fast_initialized_bucket); \
 			pg_runtime_bucket = fallback(); \
 		} \
 		pg_runtime_bucket; \
@@ -3408,7 +3319,6 @@ pg_noreturn extern void PgSessionRun(PgSession *session);
 		if (unlikely(pg_runtime_bucket == NULL || \
 					 !pg_runtime_bucket->initialized_member)) \
 		{ \
-			PG_RUNTIME_BRIDGE_COUNT_FALLBACK(fast_initialized_bucket); \
 			pg_runtime_bucket = fallback(); \
 		} \
 		pg_runtime_bucket; \
@@ -3420,7 +3330,7 @@ pg_noreturn extern void PgSessionRun(PgSession *session);
 		typeof(variable) pg_runtime_bucket = (variable); \
  \
 		unlikely(pg_runtime_bucket == NULL) ? \
-		(PG_RUNTIME_BRIDGE_COUNT_FALLBACK_EXPR(fast_bucket), (fallback)()) : \
+		(fallback)() : \
 		&pg_runtime_bucket->member; \
 	})
 
@@ -3431,8 +3341,7 @@ pg_noreturn extern void PgSessionRun(PgSession *session);
  \
 		unlikely(pg_runtime_bucket == NULL || \
 				 !pg_runtime_bucket->initialized_member) ? \
-		(PG_RUNTIME_BRIDGE_COUNT_FALLBACK_EXPR(fast_initialized_bucket), \
-		 (fallback)()) : \
+		(fallback)() : \
 		&pg_runtime_bucket->member; \
 	})
 
@@ -3442,7 +3351,7 @@ pg_noreturn extern void PgSessionRun(PgSession *session);
 		typeof(variable) pg_runtime_bucket = (variable); \
  \
 		unlikely(pg_runtime_bucket == NULL) ? \
-		(PG_RUNTIME_BRIDGE_COUNT_FALLBACK_EXPR(fast_bucket), (fallback)()) : \
+		(fallback)() : \
 		&pg_runtime_bucket->head ## tail; \
 	})
 
@@ -3453,8 +3362,7 @@ pg_noreturn extern void PgSessionRun(PgSession *session);
  \
 		unlikely(pg_runtime_bucket == NULL || \
 				 !pg_runtime_bucket->initialized) ? \
-		(PG_RUNTIME_BRIDGE_COUNT_FALLBACK_EXPR(fast_initialized_bucket), \
-		 (fallback)()) : \
+		(fallback)() : \
 		&pg_runtime_bucket->member; \
 	})
 
@@ -3465,8 +3373,7 @@ pg_noreturn extern void PgSessionRun(PgSession *session);
  \
 		unlikely(pg_runtime_bucket == NULL || \
 				 !pg_runtime_bucket->initialized) ? \
-		(PG_RUNTIME_BRIDGE_COUNT_FALLBACK_EXPR(fast_initialized_bucket), \
-		 (fallback)()) : \
+		(fallback)() : \
 		&pg_runtime_bucket->head ## tail; \
 	})
 
@@ -3476,7 +3383,7 @@ pg_noreturn extern void PgSessionRun(PgSession *session);
 		typeof(variable) pg_runtime_bucket = (variable); \
  \
 		unlikely(pg_runtime_bucket == NULL) ? \
-		(PG_RUNTIME_BRIDGE_COUNT_FALLBACK_EXPR(fast_bucket), (fallback)()) : \
+		(fallback)() : \
 		pg_runtime_bucket->member; \
 	})
 
@@ -3486,7 +3393,7 @@ pg_noreturn extern void PgSessionRun(PgSession *session);
 		typeof(variable) pg_runtime_bucket = (variable); \
  \
 		unlikely(pg_runtime_bucket == NULL) ? \
-		(PG_RUNTIME_BRIDGE_COUNT_FALLBACK_EXPR(fast_bucket), (fallback)()) : \
+		(fallback)() : \
 		pg_runtime_bucket->head ## tail; \
 	})
 
@@ -3497,8 +3404,7 @@ pg_noreturn extern void PgSessionRun(PgSession *session);
  \
 		unlikely(pg_runtime_bucket == NULL || \
 				 !pg_runtime_bucket->initialized) ? \
-		(PG_RUNTIME_BRIDGE_COUNT_FALLBACK_EXPR(fast_initialized_bucket), \
-		 (fallback)()) : \
+		(fallback)() : \
 		pg_runtime_bucket->member; \
 	})
 
@@ -3509,7 +3415,7 @@ pg_noreturn extern void PgSessionRun(PgSession *session);
 			PgRuntimeCurrentBridgeState.root; \
  \
 		unlikely(pg_runtime_owner == NULL) ? \
-		(PG_RUNTIME_BRIDGE_COUNT_FALLBACK_EXPR(fast_bucket), (fallback)()) : \
+		(fallback)() : \
 		&pg_runtime_owner->member; \
 	})
 
@@ -3520,7 +3426,7 @@ pg_noreturn extern void PgSessionRun(PgSession *session);
 			PgRuntimeCurrentBridgeState.root; \
  \
 		unlikely(pg_runtime_owner == NULL) ? \
-		(PG_RUNTIME_BRIDGE_COUNT_FALLBACK_EXPR(fast_bucket), (fallback)()) : \
+		(fallback)() : \
 		pg_runtime_owner->member; \
 	})
 
@@ -3530,7 +3436,7 @@ pg_noreturn extern void PgSessionRun(PgSession *session);
 		PgCarrier  *pg_runtime_carrier = PgRuntimeCurrentBridgeState.carrier; \
  \
 		unlikely(pg_runtime_carrier == NULL) ? \
-		(PG_RUNTIME_BRIDGE_COUNT_FALLBACK_EXPR(carrier), (fallback)()) : \
+		(fallback)() : \
 		&pg_runtime_carrier->member; \
 	})
 

@@ -808,7 +808,6 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	repack->repacked_rel_locator.relNumber = InvalidOid;
 	repack->repacked_rel_toast_locator.relNumber = InvalidOid;
 	dlist_init(&pgstat_pending->pending);
-	pg_atomic_init_u32(&wait_state->waiting, 0);
 
 	MemSet(&hash_ctl, 0, sizeof(hash_ctl));
 	hash_ctl.keysize = sizeof(Oid);
@@ -1214,13 +1213,7 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	pgstat_pending->transaction_idle_time = 32;
 	INSTR_TIME_SET_CURRENT(pgstat_pending->func_total_time);
 
-	wait_state->spec.kind = PG_WAIT_KIND_EVENT_SET;
-	wait_state->spec.wait_event_info = 0x01020304;
-	wait_state->spec.wake_events = 33;
-	wait_state->spec.socket = PGINVALID_SOCKET;
-	wait_state->spec.timeout = 34;
 	wait_state->local_wait_event_info = 0x05060708;
-	pg_atomic_write_u32(&wait_state->waiting, 1);
 
 	fake_backend.memory_manager.log_memory_context_in_progress = true;
 	fake_backend.exit_state.retained_top_memory_context =
@@ -1551,15 +1544,9 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && pgstat_pending->block_write_time == 0;
 	ok = ok && pgstat_pending->active_time == 0;
 	ok = ok && pgstat_pending->transaction_idle_time == 0;
-	ok = ok && wait_state->spec.kind == PG_WAIT_KIND_NONE;
-	ok = ok && wait_state->spec.wait_event_info == 0;
-	ok = ok && wait_state->spec.wake_events == 0;
-	ok = ok && wait_state->spec.socket == 0;
-	ok = ok && wait_state->spec.timeout == 0;
 	ok = ok && wait_state->local_wait_event_info == 0;
 	ok = ok && wait_state->wait_event_info_ptr ==
 		&wait_state->local_wait_event_info;
-	ok = ok && pg_atomic_read_u32(&wait_state->waiting) == 0;
 	ok = ok && !fake_backend.memory_manager.log_memory_context_in_progress;
 	ok = ok && !utility->notify_interrupt_pending;
 	ok = ok && utility->seq_scan_tables[0] == NULL;

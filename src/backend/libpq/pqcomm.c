@@ -1461,28 +1461,6 @@ pq_startmsgread_getbyte(void)
 	return pq_getbyte_from(io);
 }
 
-void
-PgConnectionReleaseIdleRecvBuffer(PgConnection *connection)
-{
-	PgConnectionSocketIOState *io;
-
-	if (connection == NULL)
-		return;
-
-	io = &connection->socket_io;
-	if (io->recv_buffer == NULL)
-		return;
-	if (io->comm_reading_msg)
-		return;
-	if (io->recv_pointer < io->recv_length)
-		return;
-
-	pfree(io->recv_buffer);
-	io->recv_buffer = NULL;
-	io->recv_pointer = 0;
-	io->recv_length = 0;
-}
-
 /* --------------------------------
  *		pq_endmsgread	- finish reading message.
  *

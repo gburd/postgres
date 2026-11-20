@@ -256,24 +256,16 @@ PG_SYSROOT = @PG_SYSROOT@
 
 override CPPFLAGS += $(ICU_CFLAGS) $(LIBNUMA_CFLAGS) $(LIBURING_CFLAGS)
 
-# xtc-carrier (OUT-OF-TREE spike): run threaded B_BACKEND fibers on an xtc
-# scheduler.  Gated so the stock build is untouched when USE_XTC_CARRIER is
-# unset.  Enable with:  make USE_XTC_CARRIER=1 XTC_ROOT=/path/to/libxtc ...
-#
-# XTC_ROOT points at a libxtc source tree with a built static library at
-# $(XTC_ROOT)/build_unix/libxtc.a (cd libxtc && mkdir -p build_unix &&
-# cd build_unix && ../dist/configure && make -j).  Override it on the make
-# command line or in the environment -- do NOT rely on the default path.
-# Alternatively vendor the single-file amalgamation: build it with
-# libxtc's dist/mkamalgamation.py, drop xtc.c + xtc.h into a directory,
-# and set XTC_ROOT to point -I at it and LIBS to compile xtc.c in -- no
-# separate libxtc build, no liburing/openssl link deps (the amalgamation
-# uses the ucontext substrate).  See docs in libxtc dist/mkamalgamation.py.
-XTC_ROOT ?= /home/gburd/ws/xtc
+# Run threaded backends as libxtc fibers.  Gated so the stock build is
+# untouched when USE_XTC_CARRIER is unset.  Enable with
+# make USE_XTC_CARRIER=1; libxtc is found through pkg-config (set
+# PKG_CONFIG_PATH for an uninstalled libxtc).
 ifdef USE_XTC_CARRIER
 # Match the meson build's '#define USE_XTC_CARRIER 1' so this -D does not
 # collide with the '#undef USE_XTC_CARRIER' documented in pg_config.h.in.
-override CPPFLAGS += -DUSE_XTC_CARRIER=1 -I$(XTC_ROOT)/src/inc
+XTC_CFLAGS := $(shell pkg-config --cflags xtc)
+XTC_LIBS := $(shell pkg-config --libs xtc)
+override CPPFLAGS += -DUSE_XTC_CARRIER=1 $(XTC_CFLAGS)
 # Phase 19 Increment 2: compile the fork+exec process-fallback machinery on
 # non-Windows carrier builds (mirrors the meson build).  Availability only; no
 # runtime default changes.
@@ -330,9 +322,7 @@ AR = @AR@
 AROPT = crs
 LIBS = @LIBS@
 ifdef USE_XTC_CARRIER
-# libxtc pulls in liburing + openssl; -lssl/-lcrypto resolve via NIX_LDFLAGS in
-# the openssl-providing nix-shell used for the link.
-LIBS += $(XTC_ROOT)/build_unix/libxtc.a -luring -lssl -lcrypto
+LIBS += $(XTC_LIBS)
 endif
 LDAP_LIBS_FE = @LDAP_LIBS_FE@
 LDAP_LIBS_BE = @LDAP_LIBS_BE@

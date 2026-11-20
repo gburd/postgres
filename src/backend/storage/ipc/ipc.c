@@ -362,7 +362,6 @@ PgBackendExitCleanup(int code)
 	if (CurrentPgConnection != NULL)
 		PgConnectionResetClosedState(CurrentPgConnection);
 	PgSessionResetClosedState(CurrentPgSession);
-	PgRuntimeReportBridgeFallbackStats();
 	PgBackendResetClosedState(CurrentPgBackend);
 	PgExecutionResetClosedState(CurrentPgExecution);
 

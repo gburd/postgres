@@ -80,29 +80,6 @@ PgBackendWakeup(PgBackend *backend)
 	PgBackendWakeForInterrupt(backend);
 }
 
-static uint32
-PgBackendAdvanceNotifyGeneration(PgBackend *backend)
-{
-	uint32		generation;
-
-	generation =
-		pg_atomic_add_fetch_u32(&backend->interrupts.notify_generation, 1);
-	if (unlikely(generation == 0))
-		generation =
-			pg_atomic_add_fetch_u32(&backend->interrupts.notify_generation, 1);
-
-	return generation;
-}
-
-uint64
-PgBackendNotifyInterruptGeneration(PgBackend *backend)
-{
-	if (backend == NULL)
-		return 0;
-
-	return pg_atomic_read_u32(&backend->interrupts.notify_generation);
-}
-
 void
 SendInterrupt(PgBackend *backend, PgBackendInterruptType interrupt_type)
 {
@@ -116,25 +93,12 @@ SendInterrupt(PgBackend *backend, PgBackendInterruptType interrupt_type)
 		return;
 
 	notify_interrupt = interrupt_type == PG_BACKEND_INTERRUPT_NOTIFY;
-	if (notify_interrupt)
-		(void) PgBackendAdvanceNotifyGeneration(backend);
 
 	interrupt_mask = PG_BACKEND_INTERRUPT_MASK(interrupt_type);
 	old_mask = pg_atomic_fetch_or_u32(&backend->interrupts.pending_mask,
 									  interrupt_mask);
 	if ((old_mask & interrupt_mask) == 0 || notify_interrupt)
-	{
-#ifdef PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION
-		if (interrupt_type == PG_BACKEND_INTERRUPT_QUERY_CANCEL)
-			PgBackendMarkWaitCompletionInterrupt(backend,
-												 PG_WAIT_COMPLETION_INTERRUPT_CANCEL);
-		else if (interrupt_type == PG_BACKEND_INTERRUPT_PROC_DIE)
-			PgBackendMarkWaitCompletionInterrupt(backend,
-												 PG_WAIT_COMPLETION_INTERRUPT_TERMINATE);
-#endif
-
 		PgBackendWakeForInterrupt(backend);
-	}
 }
 
 void

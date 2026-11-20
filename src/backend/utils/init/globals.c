@@ -115,15 +115,6 @@ bool		xtc_carrier_use_orc = false;
 PG_GLOBAL_RUNTIME bool pg_backend_was_forkexeced = false;
 PG_GLOBAL_RUNTIME bool threaded_lazy_relcache_init_file = true;
 
-/*
- * Developer-only DEMONSTRATION knob (default off): when on in threaded mode,
- * the carrier runs a self-contained xtc_xproc cross-fork watchdog demo at
- * carrier start (pg_xtc_xproc_demo.c).  It is a demo of the restart-after-
- * crash USAGE pattern only; the real PG backend crash policy stays fail-stop
- * and this knob never touches it.  Off => zero production impact.
- */
-PG_GLOBAL_RUNTIME bool xtc_xproc_watchdog_demo = false;
-
 /* configurable SLRU buffer sizes */
 PG_GLOBAL_RUNTIME int commit_timestamp_buffers = 0;
 PG_GLOBAL_RUNTIME int multixact_member_buffers = 32;

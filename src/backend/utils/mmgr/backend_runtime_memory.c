@@ -42,7 +42,6 @@ PgCurrentExecutionMemoryContexts(void)
 	if (likely(memory_contexts != NULL))
 		return memory_contexts;
 
-	PG_RUNTIME_BRIDGE_COUNT_FALLBACK(memory_contexts);
 	return &PgCurrentOrEarlyExecution()->memory_contexts;
 }
 

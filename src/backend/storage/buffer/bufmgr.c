@@ -258,7 +258,6 @@ static inline int32 GetPrivateRefCountFor(PgBackendBufferState *state,
 static void ForgetPrivateRefCountEntryFor(PgBackendBufferState *state,
 										  PrivateRefCountEntry *ref);
 static void InitPrivateRefCountAccess(PgBackendBufferState *state);
-static bool PrivateRefCountStateIsIdle(PgBackendBufferState *state);
 static pg_always_inline ResourceOwner *PgBufferResourceOwnerFastRef(void);
 static pg_always_inline BufferUsage *PgBufferUsageFastRef(void);
 
@@ -4314,50 +4313,6 @@ InitBufferManagerAccess(void)
 	on_shmem_exit(AtProcExit_Buffers, 0);
 }
 
-/*
- * Restore private shared-buffer pin tracking after
- * ReleaseBufferManagerIdleMemory() released it at the idle command-read
- * boundary.
- */
-void
-RestoreBufferManagerIdleMemory(void)
-{
-	PgBackendBufferState *state = PrivateRefCountState();
-
-	if (!state->private_ref_count_released_while_idle)
-		return;
-
-	InitPrivateRefCountAccess(state);
-}
-
-/*
- * Release private shared-buffer pin tracking while a session is idle between
- * commands.  An idle session cannot hold buffer pins; if anything suggests
- * otherwise, leave the state resident instead of risking corruption.
- */
-void
-ReleaseBufferManagerIdleMemory(void)
-{
-	PgBackendBufferState *state = PrivateRefCountState();
-
-	if (state->buffer_context == NULL)
-		return;
-	if (!PrivateRefCountStateIsIdle(state))
-		return;
-
-	MemoryContextDelete(state->buffer_context);
-	state->buffer_context = NULL;
-	state->backend_writeback_context = NULL;
-	state->private_ref_count_array_keys = NULL;
-	state->private_ref_count_array = NULL;
-	state->private_ref_count_hash = NULL;
-	state->private_ref_count_overflowed = 0;
-	state->private_ref_count_clock = 0;
-	state->reserved_ref_count_slot = -1;
-	state->private_ref_count_entry_last = -1;
-	state->private_ref_count_released_while_idle = true;
-}
-
 static void
 InitPrivateRefCountAccess(PgBackendBufferState *state)
 {
@@ -4396,7 +4351,6 @@ InitPrivateRefCountAccess(PgBackendBufferState *state)
 	state->private_ref_count_clock = 0;
 	state->reserved_ref_count_slot = -1;
 	state->private_ref_count_entry_last = -1;
-	state->private_ref_count_released_while_idle = false;
 
 	if (state->private_ref_count_hash != NULL)
 		refcount_reset((refcount_hash *) state->private_ref_count_hash);
@@ -4416,34 +4370,6 @@ InitPrivateRefCountAccess(PgBackendBufferState *state)
 			MemoryContextAllocZero(buffer_context, sizeof(WritebackContext));
 	WritebackContextInit(state->backend_writeback_context,
 						 &backend_flush_after);
-}
-
-static bool
-PrivateRefCountStateIsIdle(PgBackendBufferState *state)
-{
-	Buffer	   *array_keys;
-	PrivateRefCountEntry *array;
-
-	Assert(state != NULL);
-
-	if (state->private_ref_count_overflowed != 0)
-		return false;
-	if (state->private_ref_count_array_keys == NULL ||
-		state->private_ref_count_array == NULL)
-		return false;
-
-	array_keys = (Buffer *) state->private_ref_count_array_keys;
-	array = (PrivateRefCountEntry *) state->private_ref_count_array;
-
-	for (int i = 0; i < REFCOUNT_ARRAY_ENTRIES; i++)
-	{
-		if (array_keys[i] != InvalidBuffer ||
-			array[i].buffer != InvalidBuffer ||
-			array[i].data.refcount != 0)
-			return false;
-	}
-
-	return true;
 }
 
 /*

@@ -1467,18 +1467,10 @@ PgExecutionResetClosedState(PgExecution *execution)
 	if (execution == NULL)
 		return;
 
-	if (execution == CurrentPgExecution)
-		PgRuntimeFlushCurrentHotCells();
-	if (execution == CurrentPgExecution)
-		PgRuntimeFlushCurrentHotMirrors();
-
 #define PG_EXECUTION_BUCKET(field, init, adopt, reset) \
 	do { reset; } while (0);
 #include "backend_runtime_execution_buckets.def"
 #undef PG_EXECUTION_BUCKET
 
 	if (execution == CurrentPgExecution)
-		PgRuntimeReloadCurrentHotCells();
-	if (execution == CurrentPgExecution)
-		PgRuntimeReloadCurrentHotMirrors();
-}
+		PgRuntimeReloadCurrentHotCells();}

@@ -132,12 +132,6 @@ typedef struct PgRuntimeCurrentBridge
 #include "utils/backend_runtime_hot_buckets.def"
 #undef PG_RUNTIME_HOT_BUCKET
 
-#define PG_RUNTIME_HOT_MIRROR(variable, owner, owner_type, type, field) \
-	type		variable; \
-	const void *variable##Owner;
-#include "utils/backend_runtime_hot_mirrors.def"
-#undef PG_RUNTIME_HOT_MIRROR
-
 #define PG_RUNTIME_HOT_FIELD(variable, owner, type, expr) \
 	type	   *variable; \
 	const void *variable##Owner;
@@ -147,65 +141,6 @@ typedef struct PgRuntimeCurrentBridge
 
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgRuntimeCurrentBridge
 			PgRuntimeCurrentBridgeState;
-
-typedef struct PgRuntimeBridgeFallbackStats
-{
-	uint64		hot_cell;
-	uint64		hot_mirror;
-	uint64		hot_field;
-	uint64		hot_bucket;
-	uint64		fast_bucket;
-	uint64		fast_initialized_bucket;
-	uint64		carrier;
-	uint64		interrupts;
-	uint64		memory_contexts;
-	uint64		session_catalog_lookup;
-	uint64		after_triggers;
-} PgRuntimeBridgeFallbackStats;
-
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER
-			PgRuntimeBridgeFallbackStats PgRuntimeBridgeFallbackStatsState;
-
-#define PG_RUNTIME_BRIDGE_COUNT_FALLBACK(member) \
-	do { \
-		PgRuntimeBridgeFallbackStatsState.member++; \
-	} while (0)
-#define PG_RUNTIME_BRIDGE_COUNT_FALLBACK_EXPR(member) \
-	((void) (PgRuntimeBridgeFallbackStatsState.member++))
-
-typedef enum PgRuntimeHotCurrentCellMode
-{
-	PG_RUNTIME_HOT_CURRENT_CELLS_FALLBACK = 0,
-	PG_RUNTIME_HOT_CURRENT_CELLS_PROCESS = 1,
-	PG_RUNTIME_HOT_CURRENT_CELLS_THREAD = 2
-} PgRuntimeHotCurrentCellMode;
-
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER int PgRuntimeHotCurrentCellModeState;
-
-#define PG_RUNTIME_CURRENT_ROOT_REF_DECL(name, type) \
-extern PGDLLIMPORT PG_GLOBAL_RUNTIME type *name##ProcessRef; \
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER type *name##ThreadRef;
-PG_RUNTIME_CURRENT_ROOT_REF_DECL(PgCurrentRuntimeHotRef, PgRuntime *)
-PG_RUNTIME_CURRENT_ROOT_REF_DECL(PgCurrentCarrierHotRef, PgCarrier *)
-PG_RUNTIME_CURRENT_ROOT_REF_DECL(PgCurrentBackendHotRef, PgBackend *)
-PG_RUNTIME_CURRENT_ROOT_REF_DECL(PgCurrentSessionHotRef, PgSession *)
-PG_RUNTIME_CURRENT_ROOT_REF_DECL(PgCurrentConnectionHotRef, PgConnection *)
-PG_RUNTIME_CURRENT_ROOT_REF_DECL(PgCurrentExecutionHotRef, PgExecution *)
-#undef PG_RUNTIME_CURRENT_ROOT_REF_DECL
-
-#define PG_RUNTIME_HOT_CELL(variable, owner, owner_type, type, field) \
-extern PGDLLIMPORT PG_GLOBAL_RUNTIME type *variable##ProcessCell; \
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER type *variable##ThreadCell;
-#include "utils/backend_runtime_hot_cells.def"
-#undef PG_RUNTIME_HOT_CELL
-
-#define PG_RUNTIME_HOT_FIELD(variable, owner, type, expr) \
-extern PGDLLIMPORT PG_GLOBAL_RUNTIME type *variable##ProcessRef; \
-extern PGDLLIMPORT PG_GLOBAL_RUNTIME const void *variable##ProcessOwner; \
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER type *variable##ThreadRef; \
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER const void *variable##ThreadOwner;
-#include "utils/backend_runtime_hot_fields.def"
-#undef PG_RUNTIME_HOT_FIELD
 
 #define PG_RUNTIME_CURRENT_ROOT_REF(name, type, field) \
 static inline type * \
@@ -238,27 +173,10 @@ variable##MaybeRef(type *(*fallback) (void)) \
 	if (likely(slot != NULL)) \
 		return slot; \
  \
-	PG_RUNTIME_BRIDGE_COUNT_FALLBACK(hot_cell); \
 	return fallback(); \
 }
 #include "utils/backend_runtime_hot_cells.def"
 #undef PG_RUNTIME_HOT_CELL
-
-#define PG_RUNTIME_HOT_MIRROR(variable, owner, owner_type, type, field) \
-static inline type * \
-variable##MaybeRef(type *(*fallback) (void)) \
-{ \
-	PgRuntimeCurrentBridge *bridge = &PgRuntimeCurrentBridgeState; \
- \
-	if (likely(bridge->variable##Owner != NULL && \
-			   bridge->variable##Owner == (const void *) bridge->owner)) \
-		return &bridge->variable; \
- \
-	PG_RUNTIME_BRIDGE_COUNT_FALLBACK(hot_mirror); \
-	return fallback(); \
-}
-#include "utils/backend_runtime_hot_mirrors.def"
-#undef PG_RUNTIME_HOT_MIRROR
 
 #define PG_RUNTIME_HOT_FIELD(variable, owner, type, expr) \
 static inline type * \
@@ -273,7 +191,6 @@ variable##MaybeRef(type *(*fallback) (void)) \
 			   (const void *) bridge->owner)) \
 		return slot; \
  \
-	PG_RUNTIME_BRIDGE_COUNT_FALLBACK(hot_field); \
 	return fallback(); \
 }
 #include "utils/backend_runtime_hot_fields.def"
@@ -296,7 +213,6 @@ variable##Maybe(void) \
 	if (likely(bucket != NULL)) \
 		return bucket; \
  \
-	PG_RUNTIME_BRIDGE_COUNT_FALLBACK(hot_bucket); \
 	return NULL; \
 }
 #include "utils/backend_runtime_hot_buckets.def"

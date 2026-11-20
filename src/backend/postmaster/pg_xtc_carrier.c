@@ -41,7 +41,6 @@
 #include "storage/latch.h"
 #include "libpq/pqsignal.h"	/* BlockSig */
 #include "postmaster/pg_xtc_carrier.h"
-#include "postmaster/pg_xtc_xproc_demo.h"	/* xtc_xproc watchdog DEMO (GUC-gated) */
 #include "utils/backend_runtime.h"	/* PgCurrentWorkSnapshot, save/restore-lazy */
 
 /* xtc public API */
@@ -188,8 +187,6 @@ static _Atomic uint32_t g_xtc_genuine_crash;
  */
 static Latch *_Atomic g_xtc_postmaster_latch;
 
-/* Debug-only fault-injection entry counter (PG_XTC_INJECT_CRASH). */
-static _Atomic unsigned g_xtc_inject_entry_count;
 static int	g_xtc_n_sups = 0;
 
 /*
@@ -1031,18 +1028,6 @@ xtc_carrier_start_orc_supervisors(void)
 }
 
 /*
- * Loop 0 of the carrier (the single/supervisor loop).  Returns NULL before
- * the scheduler is up.  Exposed for the xtc_xproc watchdog DEMO, which must
- * spawn its demo fiber on a real loop; keep it a plain accessor so the demo
- * stays self-contained and does not reach into these file-static roots.
- */
-xtc_loop_t *
-xtc_pg_carrier_loop0(void)
-{
-	return g_xtc_loop;
-}
-
-/*
  * ---------------------------------------------------------------------------
  * Crash-safe affine-section depth reset at backend-fiber exit (Phase B).
  *
@@ -1149,39 +1134,6 @@ xtc_carrier_proc(void *arg)
 	 */
 	(void) xtc_proc_at_exit(xtc_pg_affine_reset_at_exit, NULL);
 #endif
-
-	/*
-	 * Debug-only fault injection (AGENTS_XTC #7 Stage 1b test hook).  If
-	 * PG_XTC_INJECT_CRASH=N is set, the Nth backend fiber to enter (1-based,
-	 * counted across the whole pool) faults HERE.  libxtc v1.2.1 auto-arms the
-	 * default recovery frame at the fiber's first scheduling point, so we yield
-	 * once (xtc_proc_sleep(0)) before faulting -- matching a real backend, which
-	 * always yields (socket recv, I/O) long before it could crash.  R1
-	 * containment then turns the SIGSEGV into a DOWN(reason=11) to the
-	 * supervisor, which flags a GENUINE crash so the postmaster terminates the
-	 * runtime.  Never set in production.
-	 */
-	{
-		const char *inj = getenv("PG_XTC_INJECT_CRASH");
-
-		if (inj != NULL && inj[0] != '\0')
-		{
-			long		target = strtol(inj, NULL, 10);
-			unsigned	nth = atomic_fetch_add(&g_xtc_inject_entry_count, 1) + 1;
-
-			if (target > 0 && (unsigned) target == nth)
-			{
-				volatile uintptr_t addr = 0x10;
-
-				xtc_diag_write(STDERR_FILENO,
-							 "xtc: INJECT_CRASH faulting this fiber before clean exit\n",
-							 56);
-				/* Yield once so libxtc's auto-armed recovery frame is active. */
-				(void) xtc_proc_sleep(0);
-				*(volatile int *) addr = 1;	/* SIGSEGV -> contained -> DOWN reason=11 */
-			}
-		}
-	}
 
 	/*
 	 * backend_thread_entry() runs the tree's full thread-per-session init
@@ -1439,16 +1391,6 @@ xtc_pg_carrier_start(void)
 		 */
 		if (xtc_carrier_use_orc)
 			xtc_carrier_start_orc_supervisors();
-
-		/*
-		 * xtc_xproc cross-fork watchdog DEMONSTRATION (developer GUC
-		 * xtc_xproc_watchdog_demo; default off).  No-op unless the GUC is on;
-		 * when on, spawns one demo fiber that drives the xtc_xproc
-		 * spawn/monitor/decode/restart/destroy dance against a throwaway child.
-		 * This is a DEMO of the in-tree restart-after-crash pattern only -- it
-		 * is NOT the PG backend crash policy, which stays fail-stop.
-		 */
-		xtc_xproc_watchdog_demo_kick();
 
 		elog(LOG, "xtc: carrier scheduler thread up (%d loop%s, %d supervisor%s, %s)",
 			 g_xtc_n_loops, g_xtc_n_loops == 1 ? "" : "s",

@@ -129,7 +129,6 @@ pg_noreturn extern void PostgresSingleUserMain(int argc, char *argv[],
 											   const char *username);
 extern PgSession *PostgresBootstrapSession(const char *dbname,
 										   const char *username);
-extern void PgSessionReleaseIdleMemory(PgSession *session);
 pg_noreturn extern void PostgresRunSession(PgSession *session);
 pg_noreturn extern void PostgresMain(const char *dbname,
 									 const char *username);

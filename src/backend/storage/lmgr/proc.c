@@ -2418,18 +2418,12 @@ ProcSemaphoreWaitFiber(PGPROC *proc)
  * ProcWaitOnSemaphore - wait on a PGPROC-owned semaphore.
  *
  * This is the scheduler-visible wrapper for semaphore-backed waits such as
- * LWLocks, buffer content locks, and group-update waits.  When diagnostic
- * wait-completion publication is compiled in, the logical backend's current
- * wait-completion record exposes the wait event and owner.  The actual wait
- * remains carrier-pinned in PGSemaphoreLock().
+ * LWLocks, buffer content locks, and group-update waits.
  */
 void
 ProcWaitOnSemaphore(PGPROC *proc, uint32 wait_event_info)
 {
 	ProcSemaphoreWaitArgs args;
-#ifdef PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION
-	PgWaitSpec	wait_spec;
-#endif
 
 	Assert(proc != NULL);
 
@@ -2451,58 +2445,22 @@ ProcWaitOnSemaphore(PGPROC *proc, uint32 wait_event_info)
 	 */
 	if (proc == MyProc && proc->sem_fiber_backed && proc->sem_wake_fd >= 0)
 	{
-#ifdef PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION
-		PgWaitSpec	fiber_spec;
-
-		fiber_spec.kind = PG_WAIT_KIND_SEMAPHORE;
-		fiber_spec.wait_event_info = wait_event_info;
-		fiber_spec.wake_events = 0;
-		fiber_spec.socket = PGINVALID_SOCKET;
-		fiber_spec.timeout = -1;
-		(void) fiber_spec;		/* published by the carrier wait machinery */
-#endif
 		ProcSemaphoreWaitFiber(proc);
 		return;
 	}
 #endif
 
-#ifdef PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION
-	wait_spec.kind = PG_WAIT_KIND_SEMAPHORE;
-	wait_spec.wait_event_info = wait_event_info;
-	wait_spec.wake_events = 0;
-	wait_spec.socket = PGINVALID_SOCKET;
-	wait_spec.timeout = -1;
-
-	(void) PgSuspend(&wait_spec, ProcSemaphoreWaitCallback, &args);
-#else
 	(void) wait_event_info;
 	(void) ProcSemaphoreWaitCallback(&args);
-#endif
 }
 
 /*
  * ProcWakeSemaphore - wake a backend blocked on its PGPROC semaphore.
- *
- * Mark the diagnostic wait-completion record before the legacy semaphore wake
- * when that publication path is compiled in.  Phase 14/15 use this as wait
- * observability only; semaphore waits remain carrier-pinned until a later
- * explicit deep-wait continuation design exists.
  */
 void
 ProcWakeSemaphore(PGPROC *proc)
 {
-#ifdef PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION
-	PgBackend  *backend = CurrentPgBackend;
-#endif
-
 	Assert(proc != NULL);
-
-#ifdef PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION
-	if (backend != NULL &&
-		PgRuntimeIsThreadBacked(backend->runtime) &&
-		proc->backendId != 0)
-		(void) PgBackendWakeWaitCompletionById(proc->backendId, 0);
-#endif
 
 #ifdef USE_XTC_CARRIER
 	/*

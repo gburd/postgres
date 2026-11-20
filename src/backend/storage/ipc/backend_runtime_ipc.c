@@ -29,7 +29,6 @@ PgCurrentCarrierStateFast(void)
 	if (likely(carrier != NULL))
 		return carrier;
 
-	PG_RUNTIME_BRIDGE_COUNT_FALLBACK(carrier);
 	return PgCurrentCarrierState();
 }
 
@@ -112,7 +111,6 @@ PgCurrentMyWaitEventInfoRef(void)
 
 	if (unlikely(wait_state == NULL || wait_state->wait_event_info_ptr == NULL))
 	{
-		PG_RUNTIME_BRIDGE_COUNT_FALLBACK(fast_initialized_bucket);
 		wait_state = PgCurrentBackendWaitState();
 	}
 
@@ -126,7 +124,6 @@ PgCurrentLocalWaitEventInfoRef(void)
 
 	if (unlikely(wait_state == NULL || wait_state->wait_event_info_ptr == NULL))
 	{
-		PG_RUNTIME_BRIDGE_COUNT_FALLBACK(fast_initialized_bucket);
 		wait_state = PgCurrentBackendWaitState();
 	}
 

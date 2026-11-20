@@ -32,7 +32,6 @@ OBJS = \
 
 ifdef USE_XTC_CARRIER
 OBJS += pg_xtc_carrier.o
-OBJS += pg_xtc_xproc_demo.o
 endif
 
 include $(top_srcdir)/src/backend/common.mk
