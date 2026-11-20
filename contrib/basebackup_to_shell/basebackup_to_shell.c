@@ -23,7 +23,7 @@
 PG_MODULE_MAGIC_EXT(
 					.name = "basebackup_to_shell",
 					.version = PG_VERSION,
-					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_SAFE
 );
 
 #define BASEBACKUP_TO_SHELL_SESSION_STATE_KEY "basebackup_to_shell.session"

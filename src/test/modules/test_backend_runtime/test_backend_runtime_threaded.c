@@ -32,7 +32,7 @@
 PG_MODULE_MAGIC_EXT(
 					.name = "test_backend_runtime_threaded",
 					.version = PG_VERSION,
-					PG_MODULE_MAGIC_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_SAFE
 );
 
 PG_FUNCTION_INFO_V1(test_backend_runtime_bgworker_startup_publication);
@@ -93,16 +93,8 @@ test_backend_runtime_model_name(PgBackendModel model)
 	{
 		case PG_BACKEND_MODEL_PROCESS:
 			return "process";
-		case PG_BACKEND_MODEL_THREAD_PER_SESSION:
-			return "thread-per-session";
-		case PG_BACKEND_MODEL_POOLED_SCHEDULER:
-			return "pooled-scheduler";
-		case PG_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE:
-			return "pooled-protocol-affine";
-		case PG_BACKEND_MODEL_POOLED_PROTOCOL_MIGRATABLE:
-			return "pooled-protocol-migratable";
-		case PG_BACKEND_MODEL_TASK_REENTRANT:
-			return "task-reentrant";
+		case PG_BACKEND_MODEL_THREAD_SAFE:
+			return "thread-safe";
 	}
 
 	return "unknown";
@@ -196,7 +188,7 @@ test_backend_runtime_launch_thread_bgworker(PG_FUNCTION_ARGS)
 
 	memset(&worker, 0, sizeof(worker));
 	worker.bgw_flags = BGWORKER_SHMEM_ACCESS;
-	worker.bgw_backend_model = BgWorkerBackendThreadPerSession;
+	worker.bgw_backend_model = BgWorkerBackendThreadSafe;
 	worker.bgw_start_time = BgWorkerStart_RecoveryFinished;
 	worker.bgw_restart_time = BGW_NEVER_RESTART;
 	snprintf(worker.bgw_library_name, MAXPGPATH, "test_backend_runtime_threaded");
@@ -238,7 +230,7 @@ test_backend_runtime_restart_thread_bgworker(PG_FUNCTION_ARGS)
 
 	memset(&worker, 0, sizeof(worker));
 	worker.bgw_flags = BGWORKER_SHMEM_ACCESS;
-	worker.bgw_backend_model = BgWorkerBackendThreadPerSession;
+	worker.bgw_backend_model = BgWorkerBackendThreadSafe;
 	worker.bgw_start_time = BgWorkerStart_RecoveryFinished;
 	worker.bgw_restart_time = 1;
 	snprintf(worker.bgw_library_name, MAXPGPATH, "test_backend_runtime_threaded");
@@ -306,7 +298,7 @@ test_backend_runtime_crash_thread_bgworker(PG_FUNCTION_ARGS)
 
 	memset(&worker, 0, sizeof(worker));
 	worker.bgw_flags = BGWORKER_SHMEM_ACCESS;
-	worker.bgw_backend_model = BgWorkerBackendThreadPerSession;
+	worker.bgw_backend_model = BgWorkerBackendThreadSafe;
 	worker.bgw_start_time = BgWorkerStart_RecoveryFinished;
 	worker.bgw_restart_time = BGW_NEVER_RESTART;
 	snprintf(worker.bgw_library_name, MAXPGPATH, "test_backend_runtime_threaded");
@@ -552,7 +544,7 @@ startup_register(dsm_handle handle, bool missing_entry)
 	BackgroundWorkerHandle *result;
 
 	worker.bgw_flags = BGWORKER_SHMEM_ACCESS;
-	worker.bgw_backend_model = BgWorkerBackendThreadPerSession;
+	worker.bgw_backend_model = BgWorkerBackendThreadSafe;
 	worker.bgw_start_time = BgWorkerStart_RecoveryFinished;
 	worker.bgw_restart_time = BGW_NEVER_RESTART;
 	strlcpy(worker.bgw_library_name, "test_backend_runtime_threaded", MAXPGPATH);

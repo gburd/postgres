@@ -3905,7 +3905,7 @@ start_repack_decoding_worker(Oid relid)
 	snprintf(bgw.bgw_type, BGW_MAXLEN, "REPACK decoding worker");
 	bgw.bgw_flags = BGWORKER_SHMEM_ACCESS |
 		BGWORKER_BACKEND_DATABASE_CONNECTION;
-	bgw.bgw_backend_model = BgWorkerBackendThreadPerSession;
+	bgw.bgw_backend_model = BgWorkerBackendThreadSafe;
 	bgw.bgw_start_time = BgWorkerStart_RecoveryFinished;
 	bgw.bgw_restart_time = BGW_NEVER_RESTART;
 	snprintf(bgw.bgw_library_name, MAXPGPATH, "postgres");

@@ -68,7 +68,7 @@ tests += {
       't/003_milestone_w_core_smoke.pl',
       't/010_phase16_fiber_crash_recovery.pl',
       't/011_phase16_fiber_plan_cache_teardown.pl',
-      't/012_phase16_fiber_plperl_shared_loop.pl',
+      't/012_threaded_plperl_refused.pl',
       't/013_phase19_process_fallback_crash.pl',
       't/014_phase_c_d_forced_migration.pl',
       't/015_phase_c_concurrent_startup_storm.pl',

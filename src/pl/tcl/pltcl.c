@@ -43,23 +43,15 @@
 
 
 /*
- * Backend model: pooled-protocol-affine.  Audited safe --
- * - All mutable session state (the per-userid interpreter hash, proc hash,
- *   held interpreter, current call state, start_proc) is relocated per session
- *   via the PgCurrentPLTcl* accessors, so sessions that share a carrier OS
- *   thread never see each other's Tcl interpreters or call state.
- * - Unlike plperl (which relies on a thread-global my_perl via
- *   PERL_SET_CONTEXT that would diverge from per-session state when sessions
- *   interleave on a carrier), Tcl takes the Tcl_Interp * explicitly on every
- *   call, so there is no thread-global "current interpreter" to corrupt.
- * - The only process-global init (Tcl_FindExecutable) is guarded by the
- *   set-once-read-only pltcl_pm_init_done; remaining file-scope data is const
- *   lookup tables.
+ * Backend model: process.  pltcl is not safe on a fiber that can move between
+ * OS threads.  In a threaded Tcl build an interpreter may be used only by the
+ * OS thread that created it, and a session's fiber may resume on another
+ * thread after any wait inside the server.
  */
 PG_MODULE_MAGIC_EXT(
 					.name = "pltcl",
 					.version = PG_VERSION,
-					PG_MODULE_MAGIC_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE
+					PG_MODULE_MAGIC_BACKEND_MODEL_PROCESS
 );
 
 #define HAVE_TCL_VERSION(maj,min) \

@@ -733,7 +733,7 @@ static bool
 module_backend_model_is_valid(PgBackendModel backend_model)
 {
 	return backend_model >= PG_BACKEND_MODEL_PROCESS &&
-		backend_model <= PG_BACKEND_MODEL_TASK_REENTRANT;
+		backend_model <= PG_BACKEND_MODEL_THREAD_SAFE;
 }
 
 static bool
@@ -744,13 +744,10 @@ module_backend_model_is_compatible(PgBackendModel module_backend_model,
 		!module_backend_model_is_valid(required_backend_model))
 		return false;
 
-	/*
-	 * This ordinal rule predates the protocol-boundary scheduler split.  Do not
-	 * use PG_BACKEND_MODEL_POOLED_SCHEDULER as the Phase 14/15 runtime
-	 * requirement; it cannot distinguish protocol-affine from migratable
-	 * sessions.
-	 */
-	return module_backend_model >= required_backend_model;
+	if (required_backend_model == PG_BACKEND_MODEL_PROCESS)
+		return true;
+
+	return module_backend_model == PG_BACKEND_MODEL_THREAD_SAFE;
 }
 
 static const char *
@@ -760,16 +757,8 @@ module_backend_model_name(PgBackendModel backend_model)
 	{
 		case PG_BACKEND_MODEL_PROCESS:
 			return "process";
-		case PG_BACKEND_MODEL_THREAD_PER_SESSION:
-			return "thread-per-session";
-		case PG_BACKEND_MODEL_POOLED_SCHEDULER:
-			return "pooled-scheduler";
-		case PG_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE:
-			return "pooled-protocol-affine";
-		case PG_BACKEND_MODEL_POOLED_PROTOCOL_MIGRATABLE:
-			return "pooled-protocol-migratable";
-		case PG_BACKEND_MODEL_TASK_REENTRANT:
-			return "task-reentrant";
+		case PG_BACKEND_MODEL_THREAD_SAFE:
+			return "thread-safe";
 	}
 
 	return "unknown";
@@ -808,41 +797,19 @@ incompatible_module_backend_model_error(const char *libname,
 						   module_backend_model)));
 
 	/*
-	 * Distinguish the two ways a module can be incompatible with the active
-	 * threaded/pooled runtime, because they call for different operator action
-	 * (and, in a future release, different routing -- see Phase 19,
-	 * process-fallback backend, in plan_docs/MULTITHREADED_PLAN.md):
-	 *
-	 *  - process-only module (the default for unmarked/legacy third-party
-	 *    extensions): not a mis-declaration, the module simply has not been
-	 *    audited/adapted for a shared-address-space carrier.  It can still be
-	 *    used by running the server in process mode, or (Phase 19) by routing
-	 *    the session that needs it to an isolated process-fallback backend.
-	 *
-	 *  - a module that declares SOME threaded model but weaker than this
-	 *    runtime demands (e.g. thread-per-session-only in a pooled backend): a
-	 *    genuine capability gap the module author must close.
-	 *
-	 * In both cases we still refuse to dlopen the module into the carrier
-	 * address space -- the gate stays fail-closed; only the guidance differs.
+	 * A valid module is incompatible only when it is process-only and the
+	 * runtime is threaded.  The module is never loaded into the shared address
+	 * space; the hint tells the operator how to use it anyway.
 	 */
-	if (module_backend_model == PG_BACKEND_MODEL_PROCESS)
-		ereport(ERROR,
-				(errmsg("library \"%s\" is not supported in the threaded backend runtime",
-						libname),
-				 errdetail("The active backend model is \"%s\", but the library is process-only.",
-						   module_backend_model_name(required_backend_model)),
-				 errhint("Run the server with multithreaded=off to use this extension, "
-						 "or adapt the module for the threaded runtime and mark it with "
-						 "threaded backend model metadata after auditing it.")));
-
+	Assert(module_backend_model == PG_BACKEND_MODEL_PROCESS);
 	ereport(ERROR,
-			(errmsg("incompatible library \"%s\": backend model mismatch",
+			(errmsg("library \"%s\" is not supported in the threaded backend runtime",
 					libname),
-			 errdetail("Active backend model is \"%s\", but library supports \"%s\".",
-					   module_backend_model_name(required_backend_model),
-					   module_backend_model_name(module_backend_model)),
-			 errhint("Audit the module before marking it with a stronger threaded backend model.")));
+			 errdetail("The active backend model is \"%s\", but the library is process-only.",
+					   module_backend_model_name(required_backend_model)),
+			 errhint("Run the server with multithreaded=off to use this extension, "
+					 "or adapt the module for the threaded runtime and mark it with "
+					 "threaded backend model metadata after auditing it.")));
 }
 
 static DynamicFileList *

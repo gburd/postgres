@@ -102,7 +102,7 @@ typedef enum
 typedef enum
 {
 	BgWorkerBackendProcess = 0,
-	BgWorkerBackendThreadPerSession,
+	BgWorkerBackendThreadSafe,
 } BgWorkerBackendModel;
 
 #define BGW_DEFAULT_RESTART_INTERVAL	60

@@ -15,7 +15,7 @@
 PG_MODULE_MAGIC_EXT(
 					.name = "test_backend_runtime_prefix",
 					.version = PG_VERSION,
-					PG_MODULE_MAGIC_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_SAFE
 );
 
 PGDLLEXPORT void _PG_init(void);

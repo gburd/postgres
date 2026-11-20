@@ -1047,7 +1047,7 @@ PostmasterMain(int argc, char *argv[])
 	 * than a server-wide preload -- via the Phase 19 process-fallback route.)
 	 */
 	if (multithreaded)
-		check_loaded_modules_backend_model(PG_BACKEND_MODEL_THREAD_PER_SESSION);
+		check_loaded_modules_backend_model(PG_BACKEND_MODEL_THREAD_SAFE);
 
 	/*
 	 * Initialize SSL library, if specified.

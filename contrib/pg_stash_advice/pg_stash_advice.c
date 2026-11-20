@@ -26,7 +26,7 @@
 PG_MODULE_MAGIC_EXT(
 					.name = "pg_stash_advice",
 					.version = PG_VERSION,
-					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_SAFE
 );
 
 /* Backend-local memory context. */
@@ -748,7 +748,7 @@ pgsa_start_worker(void)
 	pid_t		pid;
 
 	worker.bgw_flags = BGWORKER_SHMEM_ACCESS;
-	worker.bgw_backend_model = BgWorkerBackendThreadPerSession;
+	worker.bgw_backend_model = BgWorkerBackendThreadSafe;
 	worker.bgw_start_time = BgWorkerStart_ConsistentState;
 	worker.bgw_restart_time = BGW_DEFAULT_RESTART_INTERVAL;
 	strcpy(worker.bgw_library_name, "pg_stash_advice");

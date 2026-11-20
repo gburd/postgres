@@ -704,7 +704,7 @@ SanityCheckBackgroundWorker(BackgroundWorker *worker, int elevel)
 	}
 
 	if (worker->bgw_backend_model < BgWorkerBackendProcess ||
-		worker->bgw_backend_model > BgWorkerBackendThreadPerSession)
+		worker->bgw_backend_model > BgWorkerBackendThreadSafe)
 	{
 		ereport(elevel,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -754,7 +754,7 @@ BackgroundWorkerCanUseThreadCarrier(const BackgroundWorker *worker)
 	if (worker == NULL)
 		return false;
 
-	return worker->bgw_backend_model == BgWorkerBackendThreadPerSession;
+	return worker->bgw_backend_model == BgWorkerBackendThreadSafe;
 }
 
 static bool

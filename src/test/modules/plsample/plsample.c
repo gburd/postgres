@@ -30,7 +30,7 @@
 PG_MODULE_MAGIC_EXT(
 					.name = "plsample",
 					.version = PG_VERSION,
-					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_SAFE
 );
 
 PG_FUNCTION_INFO_V1(plsample_call_handler);

@@ -21,7 +21,7 @@
 PG_MODULE_MAGIC_EXT(
 					.name = "pgrepack",
 					.version = PG_VERSION,
-					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_SAFE
 );
 
 static void repack_startup(LogicalDecodingContext *ctx,

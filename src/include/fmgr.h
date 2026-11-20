@@ -500,36 +500,26 @@ typedef struct
 /*
  * Backend execution models that an extension library declares it supports.
  *
- * The values are ordered from least to most reentrant.  A module marked for a
- * stronger model can be loaded by a weaker runtime model, but not vice versa.
+ * PG_BACKEND_MODEL_PROCESS, the default for an unmarked module, means the
+ * module may run only in a backend that is its own OS process.
+ *
+ * PG_BACKEND_MODEL_THREAD_SAFE means that all of the module's mutable state is
+ * per session or per runtime, and that the module holds no OS-thread-bound
+ * state across a call into the server that can wait.  The session's fiber may
+ * resume on another OS thread after any such wait.
+ *
+ * A threaded runtime loads only THREAD_SAFE modules; process mode loads both.
  */
 typedef enum PgBackendModel
 {
 	PG_BACKEND_MODEL_PROCESS = 0,
-	PG_BACKEND_MODEL_THREAD_PER_SESSION,
-	/*
-	 * Transitional generic marker.  This is intentionally weaker than the
-	 * protocol-boundary promises below; it must not be used as the runtime
-	 * requirement for Phase 15 pooled protocol scheduling.
-	 */
-	PG_BACKEND_MODEL_POOLED_SCHEDULER,
-	PG_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE,
-	PG_BACKEND_MODEL_POOLED_PROTOCOL_MIGRATABLE,
-	PG_BACKEND_MODEL_TASK_REENTRANT
+	PG_BACKEND_MODEL_THREAD_SAFE
 } PgBackendModel;
 
 #define PG_MODULE_MAGIC_BACKEND_MODEL_PROCESS \
 	.backend_model = PG_BACKEND_MODEL_PROCESS
-#define PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION \
-	.backend_model = PG_BACKEND_MODEL_THREAD_PER_SESSION
-#define PG_MODULE_MAGIC_BACKEND_MODEL_POOLED_SCHEDULER \
-	.backend_model = PG_BACKEND_MODEL_POOLED_SCHEDULER
-#define PG_MODULE_MAGIC_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE \
-	.backend_model = PG_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE
-#define PG_MODULE_MAGIC_BACKEND_MODEL_POOLED_PROTOCOL_MIGRATABLE \
-	.backend_model = PG_BACKEND_MODEL_POOLED_PROTOCOL_MIGRATABLE
-#define PG_MODULE_MAGIC_BACKEND_MODEL_TASK_REENTRANT \
-	.backend_model = PG_BACKEND_MODEL_TASK_REENTRANT
+#define PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_SAFE \
+	.backend_model = PG_BACKEND_MODEL_THREAD_SAFE
 
 /* Definition of the magic block structure */
 typedef struct
@@ -594,7 +584,7 @@ extern int no_such_variable
  *	PG_MODULE_MAGIC_EXT(
  *		.name = "some string",
  *		.version = "some string",
- *		PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION
+ *		PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_SAFE
  *	);
  */
 #define PG_MODULE_MAGIC_EXT(...) \

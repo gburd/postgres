@@ -31,7 +31,7 @@
 PG_MODULE_MAGIC_EXT(
 					.name = "pg_plan_advice",
 					.version = PG_VERSION,
-					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_SAFE
 );
 
 #define PG_PLAN_ADVICE_SESSION_STATE_KEY "pg_plan_advice.session"

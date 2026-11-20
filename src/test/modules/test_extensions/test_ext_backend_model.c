@@ -16,7 +16,7 @@
 PG_MODULE_MAGIC_EXT(
 					.name = "test_ext_backend_model",
 					.version = PG_VERSION,
-					PG_MODULE_MAGIC_BACKEND_MODEL_POOLED_SCHEDULER
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_SAFE
 );
 
 PG_FUNCTION_INFO_V1(test_ext_backend_model_get);
@@ -226,16 +226,8 @@ test_ext_backend_model_name(PgBackendModel backend_model)
 	{
 		case PG_BACKEND_MODEL_PROCESS:
 			return "process";
-		case PG_BACKEND_MODEL_THREAD_PER_SESSION:
-			return "thread-per-session";
-		case PG_BACKEND_MODEL_POOLED_SCHEDULER:
-			return "pooled-scheduler";
-		case PG_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE:
-			return "pooled-protocol-affine";
-		case PG_BACKEND_MODEL_POOLED_PROTOCOL_MIGRATABLE:
-			return "pooled-protocol-migratable";
-		case PG_BACKEND_MODEL_TASK_REENTRANT:
-			return "task-reentrant";
+		case PG_BACKEND_MODEL_THREAD_SAFE:
+			return "thread-safe";
 	}
 
 	return "unknown";
@@ -246,16 +238,8 @@ test_ext_backend_model_parse(const char *name)
 {
 	if (pg_strcasecmp(name, "process") == 0)
 		return PG_BACKEND_MODEL_PROCESS;
-	if (pg_strcasecmp(name, "thread-per-session") == 0)
-		return PG_BACKEND_MODEL_THREAD_PER_SESSION;
-	if (pg_strcasecmp(name, "pooled-scheduler") == 0)
-		return PG_BACKEND_MODEL_POOLED_SCHEDULER;
-	if (pg_strcasecmp(name, "pooled-protocol-affine") == 0)
-		return PG_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE;
-	if (pg_strcasecmp(name, "pooled-protocol-migratable") == 0)
-		return PG_BACKEND_MODEL_POOLED_PROTOCOL_MIGRATABLE;
-	if (pg_strcasecmp(name, "task-reentrant") == 0)
-		return PG_BACKEND_MODEL_TASK_REENTRANT;
+	if (pg_strcasecmp(name, "thread-safe") == 0)
+		return PG_BACKEND_MODEL_THREAD_SAFE;
 
 	ereport(ERROR,
 			(errcode(ERRCODE_INVALID_PARAMETER_VALUE),

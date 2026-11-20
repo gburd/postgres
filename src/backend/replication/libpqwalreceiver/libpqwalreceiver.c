@@ -40,15 +40,15 @@
 #include "utils/tuplestore.h"
 
 /*
- * Affine-safe: the only file-scope datum is PQWalReceiverFunctions, a const
+ * Thread-safe: the only file-scope datum is PQWalReceiverFunctions, a const
  * function table.  All connection state lives in a per-caller
  * WalReceiverConn allocated by libpqrcv_connect().  The walreceiver itself is
- * a fiber-eligible backend, so this loads under the pooled runtime too.
+ * a fiber-eligible backend, so this loads under the threaded runtime too.
  */
 PG_MODULE_MAGIC_EXT(
 					.name = "libpqwalreceiver",
 					.version = PG_VERSION,
-					PG_MODULE_MAGIC_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_SAFE
 );
 
 struct WalReceiverConn

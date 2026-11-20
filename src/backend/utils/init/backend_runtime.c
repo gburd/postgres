@@ -729,7 +729,7 @@ InitializePgThreadRuntime(PgBackendExitContinuation exit_backend)
 
 		thread_runtime.kind = PG_RUNTIME_THREAD_PER_SESSION;
 		thread_runtime.extension_backend_model =
-			PG_BACKEND_MODEL_THREAD_PER_SESSION;
+			PG_BACKEND_MODEL_THREAD_SAFE;
 		/*
 		 * Carry the early-runtime extension-module state into thread_runtime.
 		 * shared_preload_libraries modules registered runtime-scoped private
@@ -1095,7 +1095,7 @@ void
 PgRuntimeSetExtensionBackendModel(PgBackendModel backend_model)
 {
 	if (backend_model < PG_BACKEND_MODEL_PROCESS ||
-		backend_model > PG_BACKEND_MODEL_TASK_REENTRANT)
+		backend_model > PG_BACKEND_MODEL_THREAD_SAFE)
 		elog(ERROR, "invalid backend model: %d", backend_model);
 
 	if (CurrentPgRuntime == NULL)

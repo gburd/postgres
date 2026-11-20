@@ -30,7 +30,7 @@
 PG_MODULE_MAGIC_EXT(
 					.name = "passwordcheck",
 					.version = PG_VERSION,
-					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_SAFE
 );
 
 #define PASSWORDCHECK_SESSION_STATE_KEY "passwordcheck.session"

@@ -21,7 +21,7 @@
 PG_MODULE_MAGIC_EXT(
 					.name = "auth_delay",
 					.version = PG_VERSION,
-					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_SAFE
 );
 
 #define AUTH_DELAY_SESSION_STATE_KEY "auth_delay.session"

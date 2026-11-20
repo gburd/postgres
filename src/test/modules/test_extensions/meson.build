@@ -96,7 +96,6 @@ tests += {
       'test_extensions',
       'test_extdepend',
       'test_ext_backend_model',
-      'test_ext_backend_model_pooled',
     ],
     'regress_args': ['--no-locale'],
   },

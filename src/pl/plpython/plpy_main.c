@@ -30,26 +30,18 @@
  */
 
 /*
- * Backend model: process (the default).  plpython embeds a single CPython
- * interpreter whose state is process-global and GIL-serialized: the embedded
- * interpreter, the PLy_* type objects, PLy_interp_globals, the
- * PLy_execution_contexts stack, and explicit_subtransactions are all
- * unrelocated file-scope globals shared across the whole process.  None of
- * this is per-session or per-thread, so plpython is unsafe under any threaded
- * backend model and the backend-model gate correctly keeps it in
- * process-backed backends only.
- *
- * Defer with invariant: threaded plpython would need either per-session Python
- * sub-interpreters (PEP 684 / 3.12+ per-interpreter GIL) or the whole embedded
- * interpreter and PLy_* globals relocated per session -- a substantial effort
- * gated behind this PROCESS marker.  Owned by Phase 16 (bundled procedural
- * languages beyond PL/pgSQL); intentionally last of the three PLs given the
- * GIL/embedded-interpreter constraints.
+ * Backend model: process.  plpython is not safe on a fiber that can move
+ * between OS threads.  It holds the GIL through PyGILState_Ensure() for the
+ * whole call, and PyGILState is keyed by OS thread and reentrant.  If a fiber
+ * waits inside SPI while holding the GIL, another session on the same thread
+ * acquires it again recursively and runs Python on the same thread state, and
+ * a fiber that resumes on another thread releases the GIL from the wrong
+ * thread.
  */
 PG_MODULE_MAGIC_EXT(
 					.name = "plpython",
 					.version = PG_VERSION,
-					PG_MODULE_MAGIC_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE
+					PG_MODULE_MAGIC_BACKEND_MODEL_PROCESS
 );
 
 PG_FUNCTION_INFO_V1(plpython3_validator);

@@ -612,7 +612,7 @@ LaunchParallelWorkers(ParallelContext *pcxt)
 	worker.bgw_flags =
 		BGWORKER_SHMEM_ACCESS | BGWORKER_BACKEND_DATABASE_CONNECTION
 		| BGWORKER_CLASS_PARALLEL;
-	worker.bgw_backend_model = BgWorkerBackendThreadPerSession;
+	worker.bgw_backend_model = BgWorkerBackendThreadSafe;
 	worker.bgw_start_time = BgWorkerStart_ConsistentState;
 	worker.bgw_restart_time = BGW_NEVER_RESTART;
 	sprintf(worker.bgw_library_name, "postgres");

@@ -56,7 +56,7 @@ test_backend_thread_runtime_state(PG_FUNCTION_ARGS)
 		CHECK_THREAD_RUNTIME_STATE(!PgRuntimeIsThreadBacked(NULL));
 		CHECK_THREAD_RUNTIME_STATE(PgRuntimeIsThreadBacked(state.logical.backend.runtime));
 		CHECK_THREAD_RUNTIME_STATE(state.logical.backend.runtime->extension_backend_model ==
-								   PG_BACKEND_MODEL_THREAD_PER_SESSION);
+								   PG_BACKEND_MODEL_THREAD_SAFE);
 		CHECK_THREAD_RUNTIME_STATE(state.carrier.kind == PG_CARRIER_THREAD);
 		CHECK_THREAD_RUNTIME_STATE(state.carrier.current_backend == &state.logical.backend);
 		CHECK_THREAD_RUNTIME_STATE(state.carrier.current_session == &state.logical.session);

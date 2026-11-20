@@ -22,7 +22,7 @@
 PG_MODULE_MAGIC_EXT(
 					.name = "sslinfo",
 					.version = PG_VERSION,
-					PG_MODULE_MAGIC_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_SAFE
 );
 
 static Datum X509_NAME_field_to_text(const X509_NAME *name, text *fieldName);
