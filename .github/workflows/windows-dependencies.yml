@@ -1,0 +1,597 @@
+name: Build Windows Dependencies
+
+# Cost optimization: This workflow skips expensive Windows builds when only
+# "pristine" commits are pushed (dev setup/version commits or .github/ changes only).
+# Pristine commits: "dev setup", "dev v1", "dev v2", etc., or commits only touching .github/
+# Manual triggers and scheduled builds always run regardless.
+
+on:
+  # Manual trigger for building specific dependencies
+  workflow_dispatch:
+    inputs:
+      dependency:
+        description: 'Dependency to build'
+        required: true
+        type: choice
+        options:
+          - all
+          - openssl
+          - zlib
+          - libxml2
+          - libxslt
+          - icu
+          - gettext
+          - libiconv
+      vs_version:
+        description: 'Visual Studio version'
+        required: false
+        default: '2022'
+        type: choice
+        options:
+          - '2019'
+          - '2022'
+
+  # Trigger on pull requests to ensure dependencies are available for PR testing
+  # The check-changes job determines if expensive builds should run
+  # Skips builds for pristine commits (dev setup/version or .github/-only changes)
+  pull_request:
+    branches:
+      - master
+
+  # Weekly schedule to refresh artifacts (90-day retention)
+  schedule:
+    - cron: '0 4 * * 0'  # Every Sunday at 4 AM UTC
+
+jobs:
+  check-changes:
+    name: Check if Build Needed
+    runs-on: ubuntu-latest
+    # Only check changes on PR events (skip for manual dispatch and schedule)
+    if: github.event_name == 'pull_request'
+    outputs:
+      should_build: ${{ steps.check.outputs.should_build }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 10  # Fetch enough commits to check recent changes
+
+      - name: Check for substantive changes
+        id: check
+        run: |
+          # Check commits in PR for pristine-only changes
+          SHOULD_BUILD="true"
+
+          # Get commit range for this PR
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          COMMIT_RANGE="${BASE_SHA}..${HEAD_SHA}"
+
+          echo "Checking PR commit range: $COMMIT_RANGE"
+          echo "Base: ${BASE_SHA}"
+          echo "Head: ${HEAD_SHA}"
+
+          # Count total commits in range
+          TOTAL_COMMITS=$(git rev-list --count $COMMIT_RANGE 2>/dev/null || echo "1")
+          echo "Total commits in PR: $TOTAL_COMMITS"
+
+          # Check each commit for pristine-only changes
+          PRISTINE_COMMITS=0
+
+          for commit in $(git rev-list $COMMIT_RANGE); do
+            COMMIT_MSG=$(git log --format=%s -n 1 $commit)
+            echo "Checking commit $commit: $COMMIT_MSG"
+
+            # Check if commit message starts with "dev setup" or "dev v" (dev version)
+            if echo "$COMMIT_MSG" | grep -iEq "^dev (setup|v[0-9])"; then
+              echo "  ✓ Dev setup/version commit (skippable)"
+              PRISTINE_COMMITS=$((PRISTINE_COMMITS + 1))
+              continue
+            fi
+
+            # Check if commit only modifies .github/ files
+            NON_GITHUB_FILES=$(git diff-tree --no-commit-id --name-only -r $commit | grep -v "^\.github/" | wc -l)
+            if [ "$NON_GITHUB_FILES" -eq 0 ]; then
+              echo "  ✓ Only .github/ changes (skippable)"
+              PRISTINE_COMMITS=$((PRISTINE_COMMITS + 1))
+            else
+              echo "  → Contains substantive changes (build needed)"
+              git diff-tree --no-commit-id --name-only -r $commit | grep -v "^\.github/" | head -5
+            fi
+          done
+
+          # If all commits are pristine-only, skip build
+          if [ "$PRISTINE_COMMITS" -eq "$TOTAL_COMMITS" ] && [ "$TOTAL_COMMITS" -gt 0 ]; then
+            echo "All commits are pristine-only (dev setup/version or .github/), skipping expensive Windows builds"
+            SHOULD_BUILD="false"
+          else
+            echo "Found substantive changes, Windows build needed"
+            SHOULD_BUILD="true"
+          fi
+
+          echo "should_build=$SHOULD_BUILD" >> $GITHUB_OUTPUT
+
+  build-matrix:
+    name: Determine Build Matrix
+    runs-on: ubuntu-latest
+    # Skip if check-changes determined no build needed
+    # Always run for manual dispatch and schedule
+    needs: [check-changes]
+    if: |
+      always() &&
+      (github.event_name != 'pull_request' || needs.check-changes.outputs.should_build == 'true')
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      build_all: ${{ steps.check-input.outputs.build_all }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check Input
+        id: check-input
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "build_all=${{ github.event.inputs.dependency == 'all' }}" >> $GITHUB_OUTPUT
+            echo "dependency=${{ github.event.inputs.dependency }}" >> $GITHUB_OUTPUT
+          else
+            echo "build_all=true" >> $GITHUB_OUTPUT
+            echo "dependency=all" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Generate Build Matrix
+        id: set-matrix
+        run: |
+          # Read manifest and generate matrix
+          python3 << 'EOF'
+          import json
+          import os
+
+          with open('.github/windows/manifest.json', 'r') as f:
+              manifest = json.load(f)
+
+          dependency_input = os.environ.get('DEPENDENCY', 'all')
+          build_all = dependency_input == 'all'
+
+          # Core dependencies that should always be built
+          core_deps = ['openssl', 'zlib']
+
+          # Optional but commonly used dependencies
+          optional_deps = ['libxml2', 'libxslt', 'icu', 'gettext', 'libiconv']
+
+          if build_all:
+              deps_to_build = core_deps + optional_deps
+          elif dependency_input in manifest['dependencies']:
+              deps_to_build = [dependency_input]
+          else:
+              print(f"Unknown dependency: {dependency_input}")
+              deps_to_build = core_deps
+
+          matrix_items = []
+          for dep in deps_to_build:
+              if dep in manifest['dependencies']:
+                  dep_info = manifest['dependencies'][dep]
+                  matrix_items.append({
+                      'name': dep,
+                      'version': dep_info['version'],
+                      'required': dep_info.get('required', False)
+                  })
+
+          matrix = {'include': matrix_items}
+          print(f"matrix={json.dumps(matrix)}")
+
+          # Write to GITHUB_OUTPUT
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f"matrix={json.dumps(matrix)}\n")
+          EOF
+        env:
+          DEPENDENCY: ${{ steps.check-input.outputs.dependency }}
+
+  build-openssl:
+    name: Build OpenSSL ${{ matrix.version }}
+    needs: build-matrix
+    if: contains(needs.build-matrix.outputs.matrix, 'openssl')
+    runs-on: windows-2022
+    strategy:
+      matrix:
+        include:
+          - name: openssl
+            version: "3.0.13"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Cache Build
+        id: cache
+        uses: actions/cache@v3
+        with:
+          path: C:\openssl
+          key: openssl-${{ matrix.version }}-win64-${{ hashFiles('.github/windows/manifest.json') }}
+
+      - name: Download Source
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $version = "${{ matrix.version }}"
+          $urls = @(
+            "https://www.openssl.org/source/openssl-$version.tar.gz",
+            "https://github.com/openssl/openssl/releases/download/openssl-$version/openssl-$version.tar.gz"
+          )
+
+          $downloaded = $false
+          foreach ($url in $urls) {
+            Write-Host "Trying: $url"
+            try {
+              curl.exe -f -L -o openssl.tar.gz $url
+              if ($LASTEXITCODE -eq 0 -and (Test-Path openssl.tar.gz) -and ((Get-Item openssl.tar.gz).Length -gt 100000)) {
+                Write-Host "Successfully downloaded from $url"
+                $downloaded = $true
+                break
+              }
+            } catch {
+              Write-Host "Failed to download from $url"
+            }
+          }
+
+          if (-not $downloaded) {
+            Write-Error "Failed to download OpenSSL from any mirror"
+            exit 1
+          }
+
+          tar -xzf openssl.tar.gz
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Failed to extract openssl.tar.gz"
+            exit 1
+          }
+
+      - name: Configure
+        if: steps.cache.outputs.cache-hit != 'true'
+        working-directory: openssl-${{ matrix.version }}
+        run: |
+          perl Configure VC-WIN64A no-asm --prefix=C:\openssl no-ssl3 no-comp
+
+      - name: Build
+        if: steps.cache.outputs.cache-hit != 'true'
+        working-directory: openssl-${{ matrix.version }}
+        run: nmake
+
+      - name: Test
+        if: steps.cache.outputs.cache-hit != 'true'
+        working-directory: openssl-${{ matrix.version }}
+        run: nmake test
+        continue-on-error: true  # Tests can be flaky on Windows
+
+      - name: Install
+        if: steps.cache.outputs.cache-hit != 'true'
+        working-directory: openssl-${{ matrix.version }}
+        run: nmake install
+
+      - name: Create Package Info
+        shell: pwsh
+        run: |
+          $info = @{
+            name = "openssl"
+            version = "${{ matrix.version }}"
+            build_date = Get-Date -Format "yyyy-MM-dd"
+            architecture = "x64"
+            vs_version = "2022"
+          }
+          $info | ConvertTo-Json | Out-File -FilePath C:\openssl\BUILD_INFO.json
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openssl-${{ matrix.version }}-win64
+          path: C:\openssl
+          retention-days: 90
+          if-no-files-found: error
+
+  build-zlib:
+    name: Build zlib ${{ matrix.version }}
+    needs: build-matrix
+    if: contains(needs.build-matrix.outputs.matrix, 'zlib')
+    runs-on: windows-2022
+    strategy:
+      matrix:
+        include:
+          - name: zlib
+            version: "1.3.1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Cache Build
+        id: cache
+        uses: actions/cache@v3
+        with:
+          path: C:\zlib
+          key: zlib-${{ matrix.version }}-win64-${{ hashFiles('.github/windows/manifest.json') }}
+
+      - name: Download Source
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $version = "${{ matrix.version }}"
+          $urls = @(
+            "https://github.com/madler/zlib/releases/download/v$version/zlib-$version.tar.gz",
+            "https://zlib.net/zlib-$version.tar.gz",
+            "https://sourceforge.net/projects/libpng/files/zlib/$version/zlib-$version.tar.gz/download"
+          )
+
+          $downloaded = $false
+          foreach ($url in $urls) {
+            Write-Host "Trying: $url"
+            try {
+              curl.exe -f -L -o zlib.tar.gz $url
+              if ($LASTEXITCODE -eq 0 -and (Test-Path zlib.tar.gz) -and ((Get-Item zlib.tar.gz).Length -gt 50000)) {
+                Write-Host "Successfully downloaded from $url"
+                $downloaded = $true
+                break
+              }
+            } catch {
+              Write-Host "Failed to download from $url"
+            }
+          }
+
+          if (-not $downloaded) {
+            Write-Error "Failed to download zlib from any mirror"
+            exit 1
+          }
+
+          tar -xzf zlib.tar.gz
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Failed to extract zlib.tar.gz"
+            exit 1
+          }
+
+      - name: Build
+        if: steps.cache.outputs.cache-hit != 'true'
+        working-directory: zlib-${{ matrix.version }}
+        run: |
+          nmake /f win32\Makefile.msc
+
+      - name: Install
+        if: steps.cache.outputs.cache-hit != 'true'
+        working-directory: zlib-${{ matrix.version }}
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path C:\zlib\bin
+          New-Item -ItemType Directory -Force -Path C:\zlib\lib
+          New-Item -ItemType Directory -Force -Path C:\zlib\include
+
+          Copy-Item zlib1.dll C:\zlib\bin\
+          Copy-Item zlib.lib C:\zlib\lib\
+          Copy-Item zdll.lib C:\zlib\lib\
+          Copy-Item zlib.h C:\zlib\include\
+          Copy-Item zconf.h C:\zlib\include\
+
+      - name: Create Package Info
+        shell: pwsh
+        run: |
+          $info = @{
+            name = "zlib"
+            version = "${{ matrix.version }}"
+            build_date = Get-Date -Format "yyyy-MM-dd"
+            architecture = "x64"
+            vs_version = "2022"
+          }
+          $info | ConvertTo-Json | Out-File -FilePath C:\zlib\BUILD_INFO.json
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zlib-${{ matrix.version }}-win64
+          path: C:\zlib
+          retention-days: 90
+          if-no-files-found: error
+
+  build-libxml2:
+    name: Build libxml2 ${{ matrix.version }}
+    needs: [build-matrix, build-zlib]
+    if: contains(needs.build-matrix.outputs.matrix, 'libxml2')
+    runs-on: windows-2022
+    strategy:
+      matrix:
+        include:
+          - name: libxml2
+            version: "2.12.6"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Download zlib
+        uses: actions/download-artifact@v4
+        with:
+          name: zlib-1.3.1-win64
+          path: C:\deps\zlib
+
+      - name: Cache Build
+        id: cache
+        uses: actions/cache@v3
+        with:
+          path: C:\libxml2
+          key: libxml2-${{ matrix.version }}-win64-${{ hashFiles('.github/windows/manifest.json') }}
+
+      - name: Download Source
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $version = "${{ matrix.version }}"
+          $majorMinor = $version.Substring(0, $version.LastIndexOf('.'))
+          $urls = @(
+            "https://download.gnome.org/sources/libxml2/$majorMinor/libxml2-$version.tar.xz",
+            "https://gitlab.gnome.org/GNOME/libxml2/-/archive/v$version/libxml2-v$version.tar.gz"
+          )
+
+          $downloaded = $false
+          $archive = $null
+          foreach ($url in $urls) {
+            Write-Host "Trying: $url"
+            try {
+              $ext = if ($url -match '\.tar\.xz$') { ".tar.xz" } else { ".tar.gz" }
+              $archive = "libxml2$ext"
+              curl.exe -f -L -o $archive $url
+              if ($LASTEXITCODE -eq 0 -and (Test-Path $archive) -and ((Get-Item $archive).Length -gt 100000)) {
+                Write-Host "Successfully downloaded from $url"
+                $downloaded = $true
+                break
+              }
+            } catch {
+              Write-Host "Failed to download from $url"
+            }
+          }
+
+          if (-not $downloaded) {
+            Write-Error "Failed to download libxml2 from any mirror"
+            exit 1
+          }
+
+          tar -xf $archive
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Failed to extract $archive"
+            exit 1
+          }
+
+      - name: Configure
+        if: steps.cache.outputs.cache-hit != 'true'
+        working-directory: libxml2-${{ matrix.version }}/win32
+        run: |
+          cscript configure.js compiler=msvc prefix=C:\libxml2 include=C:\deps\zlib\include lib=C:\deps\zlib\lib zlib=yes
+
+      - name: Build
+        if: steps.cache.outputs.cache-hit != 'true'
+        working-directory: libxml2-${{ matrix.version }}/win32
+        run: nmake /f Makefile.msvc
+
+      - name: Install
+        if: steps.cache.outputs.cache-hit != 'true'
+        working-directory: libxml2-${{ matrix.version }}/win32
+        run: nmake /f Makefile.msvc install
+
+      - name: Create Package Info
+        shell: pwsh
+        run: |
+          $info = @{
+            name = "libxml2"
+            version = "${{ matrix.version }}"
+            build_date = Get-Date -Format "yyyy-MM-dd"
+            architecture = "x64"
+            vs_version = "2022"
+            dependencies = @("zlib")
+          }
+          $info | ConvertTo-Json | Out-File -FilePath C:\libxml2\BUILD_INFO.json
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: libxml2-${{ matrix.version }}-win64
+          path: C:\libxml2
+          retention-days: 90
+          if-no-files-found: error
+
+  create-bundle:
+    name: Create Dependency Bundle
+    needs: [build-openssl, build-zlib, build-libxml2]
+    if: always() && (needs.build-openssl.result == 'success' || needs.build-zlib.result == 'success' || needs.build-libxml2.result == 'success')
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: C:\pg-deps
+
+      - name: Create Bundle
+        shell: pwsh
+        run: |
+          # Flatten structure for easier consumption
+          $bundle = "C:\postgresql-deps-bundle"
+          New-Item -ItemType Directory -Force -Path $bundle\bin
+          New-Item -ItemType Directory -Force -Path $bundle\lib
+          New-Item -ItemType Directory -Force -Path $bundle\include
+          New-Item -ItemType Directory -Force -Path $bundle\share
+
+          # Copy from each dependency
+          Get-ChildItem C:\pg-deps -Directory | ForEach-Object {
+            $depDir = $_.FullName
+            Write-Host "Processing: $depDir"
+
+            if (Test-Path "$depDir\bin") {
+              Copy-Item "$depDir\bin\*" $bundle\bin -Force -ErrorAction SilentlyContinue
+            }
+            if (Test-Path "$depDir\lib") {
+              Copy-Item "$depDir\lib\*" $bundle\lib -Force -Recurse -ErrorAction SilentlyContinue
+            }
+            if (Test-Path "$depDir\include") {
+              Copy-Item "$depDir\include\*" $bundle\include -Force -Recurse -ErrorAction SilentlyContinue
+            }
+            if (Test-Path "$depDir\share") {
+              Copy-Item "$depDir\share\*" $bundle\share -Force -Recurse -ErrorAction SilentlyContinue
+            }
+          }
+
+          # Create manifest
+          $manifest = @{
+            bundle_date = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+            architecture = "x64"
+            vs_version = "2022"
+            dependencies = @()
+          }
+
+          Get-ChildItem C:\pg-deps -Directory | ForEach-Object {
+            $infoFile = Join-Path $_.FullName "BUILD_INFO.json"
+            if (Test-Path $infoFile) {
+              $info = Get-Content $infoFile | ConvertFrom-Json
+              $manifest.dependencies += $info
+            }
+          }
+
+          $manifest | ConvertTo-Json -Depth 10 | Out-File -FilePath $bundle\BUNDLE_MANIFEST.json
+
+          Write-Host "Bundle created with $($manifest.dependencies.Count) dependencies"
+
+      - name: Upload Bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: postgresql-deps-bundle-win64
+          path: C:\postgresql-deps-bundle
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Generate Summary
+        shell: pwsh
+        run: |
+          $manifest = Get-Content C:\postgresql-deps-bundle\BUNDLE_MANIFEST.json | ConvertFrom-Json
+
+          "## Windows Dependencies Build Summary" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "**Bundle Date:** $($manifest.bundle_date)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "**Architecture:** $($manifest.architecture)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "**Visual Studio:** $($manifest.vs_version)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "### Dependencies Built" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+
+          foreach ($dep in $manifest.dependencies) {
+            "- **$($dep.name)** $($dep.version)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          }
+
+          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "### Usage" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "Download artifact: ``postgresql-deps-bundle-win64``" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "Extract and add to PATH:" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          '```powershell' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          '$env:PATH = "C:\postgresql-deps-bundle\bin;$env:PATH"' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          '```' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
