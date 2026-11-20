@@ -1,3 +1,0 @@
-key: xtc-ab10-20260806-083838
-sg: sg-0ad4547933eeefe38
-iid: i-0b3ed76dfb97299be

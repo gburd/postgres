@@ -4,9 +4,9 @@
  *    AIO - route data-file IO through libxtc's async file path when the
  *    issuing backend runs as an xtc fiber (USE_XTC_CARRIER).
  *
- * This is a "wrap" at the IoMethodOps vtable seam (item #6 of AGENTS_XTC.md;
- * see plan_docs/XTC_AIO_DESIGN.md).  It does not change any pgaio_io_* call
- * site.  When the issuer is an xtc backend fiber, xtc_aio_preadv/pwritev run
+ * This is a "wrap" at the IoMethodOps vtable seam.  It does not change any
+ * pgaio_io_* call site.  When the issuer is an xtc backend fiber,
+ * xtc_aio_preadv/pwritev run
  * the IO on the xtc loop (parking the fiber, not blocking the carrier thread)
  * and return the total byte count or a negative errno -- the same iovec
  * signature and convention as pg_preadv/pg_pwritev.  The IO is completed by

@@ -40,7 +40,7 @@ extern PgXmlErrorContext *pgxml_parser_init(PgXmlStrictness strictness);
  * Declared non-static in xml.c for exactly this purpose: attach our error
  * context to a parser context we create, instead of relying on the
  * carrier-thread-global xmlSetStructuredErrorFunc handler that pg_xml_init()
- * installs.  See LIBXML_ERROR_HANDLER_THREADED_DESIGN.md.
+ * installs.
  */
 extern void pg_xml_ctxt_seterror(PgXmlErrorContext *errcxt, xmlParserCtxtPtr ctxt);
 
@@ -98,7 +98,6 @@ xslt_process(PG_FUNCTION_ARGS)
 		 * is attached to THIS parse (pg_xml_ctxt_seterror) instead of the
 		 * OS-thread-global handler pg_xml_init() installs; under threaded
 		 * carriers several sessions parse concurrently in one address space.
-		 * See plan_docs/phase16_audits/LIBXML_ERROR_HANDLER_THREADED_DESIGN.md.
 		 */
 		pctxt = xmlNewParserCtxt();
 		if (pctxt == NULL)

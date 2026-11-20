@@ -73,7 +73,7 @@ extern bool pg_xml_error_occurred(PgXmlErrorContext *errcxt);
  * already pulled in libxml2 (contrib/xml2 and xml.c itself do; most TUs that
  * include this header do not, and must not be forced to), which is why these
  * are guarded rather than unconditional: xml.h is deliberately free of libxml
- * types.  See plan_docs/phase16_audits/LIBXML_ERROR_HANDLER_THREADED_DESIGN.md.
+ * types.
  */
 #ifdef LIBXML_VERSION
 extern void pg_xml_ctxt_seterror(PgXmlErrorContext *errcxt,

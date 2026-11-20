@@ -196,8 +196,8 @@ check-global-lifetimes:
 check-runtime-lifecycles:
 	$(PERL) $(top_srcdir)/src/tools/runtime_lifecycle/check_runtime_lifecycles.pl \
 		--header $(top_srcdir)/src/include/utils/backend_runtime.h \
-		--manifest $(top_srcdir)/MULTITHREADED_RUNTIME_LIFECYCLE.tsv \
-		--owner-map $(top_srcdir)/MULTITHREADED_RUNTIME_OWNERS.tsv \
+		--manifest $(top_srcdir)/src/tools/runtime_lifecycle/runtime_lifecycle.tsv \
+		--owner-map $(top_srcdir)/src/tools/runtime_lifecycle/runtime_owners.tsv \
 		--source $(top_srcdir)/src/backend/utils/init/backend_runtime.c \
 		--source $(top_srcdir)/src/backend/utils/init/backend_runtime_backend.c \
 		--source $(top_srcdir)/src/backend/utils/init/backend_runtime_execution.c \

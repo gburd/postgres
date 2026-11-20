@@ -634,9 +634,8 @@ xtc_pg_backend_thread_start_carrier(void *thread_start)
  * Default the SAFE way.  Only regular client backends (B_BACKEND) migrate:
  * they are the throughput target, and every cooperative park a backend fiber
  * has is a wait-boundary seam that repoints the six fiber-owned current-work
- * roots on resume (see xtc_pg_verify_current_work_is_self and
- * MULTITHREADED_FIBER_WORKER_DESIGN.md), so a stolen backend resumes correctly
- * on any loop.  Everything else stays PINNED:
+ * roots on resume (see xtc_pg_verify_current_work_is_self), so a stolen
+ * backend resumes correctly on any loop.  Everything else stays PINNED:
  *   - background workers (parallel query, logical replication, extension
  *     workers) run arbitrary/extension code whose thread-affine assumptions
  *     are not audited for migration; Phase 16 / Gate E2-Extensions owns that.
@@ -668,8 +667,7 @@ xtc_carrier_migratable(BackendType child_type)
 	 * (guc.c ThreadedGUCLock), the concurrent-startup pre-install window is
 	 * per-fiber (PreInstallPgThreadBackendRuntimeState), and every other
 	 * backend-fiber park is seamed (xtc_pg_wait_fd -> WaitEventSet/
-	 * ProcSemaphoreWaitFiber, AIO r/w + fsync/fdatasync).  See
-	 * plan_docs/MULTITHREADED_UNSEAMED_PARK_AUDIT.md.
+	 * ProcSemaphoreWaitFiber, AIO r/w + fsync/fdatasync).
 	 */
 	/*
 	 * HELD at migratable=0 (2026-07-22): an independent review of the

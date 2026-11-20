@@ -1157,7 +1157,7 @@ if xtc.found()
   # fork+exec machinery (internal_forkexec / save+restore backend variables /
   # SubPostmasterMain / shmem reattach) into non-Windows builds so that path is
   # AVAILABLE; it does not change any runtime default.  Windows already gets it
-  # via EXEC_BACKEND.  See plan_docs/MULTITHREADED_PHASE19_INCREMENT2_DESIGN.md.
+  # via EXEC_BACKEND.
   if host_system != 'windows'
     cdata.set('USE_XTC_PROCESS_FALLBACK', 1)
   endif
@@ -4239,6 +4239,72 @@ run_target('help',
   command: [
     perl, '-ne', 'next if /^#/; print',
     files('doc/src/sgml/targets-meson.txt'),
+  ]
+)
+
+# Same checks as the make targets of the same names in GNUmakefile.in.  Both
+# scripts resolve their default inputs and the paths inside their .tsv files
+# relative to the source root, and meson does not fix the working directory of
+# a run_target, so chdir there first.
+run_in_srcdir = [
+  perl, '-e', 'chdir(shift) or die "chdir: $!"; exec(@ARGV) or die "exec: $!"',
+  meson.project_source_root(),
+]
+
+run_target('check-global-lifetimes',
+  command: run_in_srcdir + [
+    perl,
+    'src/tools/global_lifetime/scan_global_lifetimes.pl',
+    '--baseline', 'src/tools/global_lifetime/global_lifetime_baseline.tsv',
+    '--enforce-local-runtime-boundary',
+  ]
+)
+
+run_target('check-runtime-lifecycles',
+  command: run_in_srcdir + [
+    perl,
+    'src/tools/runtime_lifecycle/check_runtime_lifecycles.pl',
+    '--header', 'src/include/utils/backend_runtime.h',
+    '--manifest', 'src/tools/runtime_lifecycle/runtime_lifecycle.tsv',
+    '--owner-map', 'src/tools/runtime_lifecycle/runtime_owners.tsv',
+    '--source', 'src/backend/utils/init/backend_runtime.c',
+    '--source', 'src/backend/utils/init/backend_runtime_backend.c',
+    '--source', 'src/backend/utils/init/backend_runtime_execution.c',
+    '--source', 'src/backend/utils/init/backend_runtime_session.c',
+    '--source', 'src/backend/utils/init/backend_runtime_teardown.c',
+    '--source', 'src/backend/tcop/backend_runtime_tcop.c',
+    '--source', 'src/backend/utils/cache/backend_runtime_cache.c',
+    '--source', 'src/backend/utils/activity/backend_runtime_pgstat.c',
+    '--source', 'src/backend/utils/activity/backend_status.c',
+    '--source', 'src/backend/utils/adt/backend_runtime_pseudorandom.c',
+    '--source', 'src/backend/utils/adt/backend_runtime_ri.c',
+    '--source', 'src/backend/utils/error/backend_runtime_error.c',
+    '--source', 'src/backend/utils/fmgr/backend_runtime_extension.c',
+    '--source', 'src/backend/utils/misc/backend_runtime_guc.c',
+    '--source', 'src/backend/utils/misc/backend_runtime_utility.c',
+    '--source', 'src/backend/utils/misc/timeout.c',
+    '--source', 'src/backend/utils/mb/backend_runtime_mb.c',
+    '--source', 'src/backend/utils/mmgr/backend_runtime_memory.c',
+    '--source', 'src/backend/utils/mmgr/backend_runtime_portal.c',
+    '--source', 'src/backend/regex/backend_runtime_regex.c',
+    '--source', 'src/backend/optimizer/util/backend_runtime_optimizer.c',
+    '--source', 'src/backend/commands/backend_runtime_async.c',
+    '--source', 'src/backend/commands/event_trigger.c',
+    '--source', 'src/backend/commands/backend_runtime_event_trigger.c',
+    '--source', 'src/backend/commands/backend_runtime_trigger.c',
+    '--source', 'src/backend/replication/logical/backend_runtime_logical.c',
+    '--source', 'src/backend/postmaster/interrupt.c',
+    '--source', 'src/backend/jit/backend_runtime_jit.c',
+    '--source', 'src/backend/access/transam/backend_runtime_parallel.c',
+    '--source', 'src/backend/access/transam/backend_runtime_xact.c',
+    '--source', 'src/backend/libpq/backend_runtime_connection.c',
+    '--source', 'src/backend/storage/large_object/backend_runtime_large_object.c',
+    '--source', 'src/backend/storage/buffer/backend_runtime_buffer.c',
+    '--source', 'src/backend/storage/file/backend_runtime_file.c',
+    '--source', 'src/backend/storage/lmgr/backend_runtime_lmgr.c',
+    '--source', 'src/backend/storage/ipc/backend_runtime_ipc.c',
+    '--source', 'src/backend/storage/ipc/dsm.c',
+    '--source', 'src/backend/storage/ipc/ipc.c',
   ]
 )
 

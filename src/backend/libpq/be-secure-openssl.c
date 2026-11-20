@@ -105,7 +105,7 @@ static const char *SSLerrmessage(unsigned long ecode);
 
 #ifdef USE_XTC_CARRIER
 /*
- * xtc TLS stack (fiber path) -- MULTITHREADED_TLS_XTC_DESIGN.md.
+ * xtc TLS stack (fiber path).
  *
  * P1 SCAFFOLDING: be_tls_xtc_available() returns false, so be_tls_open_server
  * never takes the xtc branch, port->xtc_tls stays NULL, and every dispatch head
@@ -1018,8 +1018,8 @@ be_tls_open_server(Port *port)
 	 * threaded mode are byte-for-byte unchanged.  (xtc_carrier_migratable in
 	 * launch_backend.c is the actual gate and is deliberately left unchanged.)
 	 *
-	 * See plan_docs/MULTITHREADED_PLAN.md "ssl_sni no-migrate invariant" and the
-	 * carrier no-steal staging (the affine-section tripwire in pg_xtc_carrier.c).
+	 * See also the affine-section tripwire in pg_xtc_carrier.c, which guards
+	 * the same no-steal staging.
 	 */
 	Assert(!(xtc_pg_in_backend_fiber() && ssl_sni && xtc_pg_backend_fiber_is_migratable()));
 

@@ -37,7 +37,7 @@ PgXmlErrorContext *pgxml_parser_init(PgXmlStrictness strictness);
  * Declared non-static in xml.c for exactly this purpose: attach our error
  * context to a parser/xpath context we create, instead of relying on the
  * carrier-thread-global xmlSetStructuredErrorFunc handler that pg_xml_init()
- * installs.  See LIBXML_ERROR_HANDLER_THREADED_DESIGN.md.
+ * installs.
  */
 extern void pg_xml_ctxt_seterror(PgXmlErrorContext *errcxt, xmlParserCtxtPtr ctxt);
 extern void pg_xml_xpath_seterror(PgXmlErrorContext *errcxt, xmlXPathContextPtr xpathctx);
@@ -535,8 +535,7 @@ pgxml_xpath(text *document, xmlChar *xpath, PgXmlErrorContext *xmlerrcxt)
 		/*
 		 * Parse via an explicit parser context so we can attach our error
 		 * context directly to it (pg_xml_ctxt_seterror), instead of relying on
-		 * the carrier-thread-global handler that pg_xml_init() installs.  See
-		 * plan_docs/phase16_audits/LIBXML_ERROR_HANDLER_THREADED_DESIGN.md.
+		 * the carrier-thread-global handler that pg_xml_init() installs.
 		 */
 		pctxt = xmlNewParserCtxt();
 		if (pctxt == NULL)
@@ -823,8 +822,7 @@ xpath_table(PG_FUNCTION_ARGS)
 			 * error handler is attached to THIS parse (pg_xml_ctxt_seterror)
 			 * rather than relying on the OS-thread-global handler that
 			 * pg_xml_init() installs -- under threaded carriers several
-			 * sessions can parse concurrently in one address space.  See
-			 * plan_docs/phase16_audits/LIBXML_ERROR_HANDLER_THREADED_DESIGN.md.
+			 * sessions can parse concurrently in one address space.
 			 *
 			 * A not-well-formed document is an ordinary, expected outcome here
 			 * (it yields an all-NULL row below), so a failure to allocate the

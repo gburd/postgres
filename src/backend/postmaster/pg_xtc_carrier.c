@@ -134,16 +134,15 @@ static volatile bool g_xtc_ready;
 static pthread_mutex_t g_xtc_start_lock = PTHREAD_MUTEX_INITIALIZER;
 
 /*
- * Per-loop supervisor fibers (AGENTS_XTC item #7 Stage 1).  Each loop hosts
- * one long-lived supervisor fiber that xtc_monitor()s the backend fibers on
- * that loop, so an ABNORMAL fiber death -- one that faulted before publishing
- * its PMChild exit -- is observed (a DOWN with non-zero reason) and logged
- * loudly instead of silently leaving an occupied PMChild slot.  NORMAL exits
- * (reason 0) are corroborative only: the postmaster still owns reaping via
- * process_pm_fiber_exit().  The supervisor NEVER reaps and NEVER
- * respawns -- it is an observer.  Stage 1 is observability + loud logging;
- * wiring an abnormal DOWN into the postmaster crash policy (ExitPostmaster)
- * is Stage 1b.
+ * Per-loop supervisor fibers.  Each loop hosts one long-lived supervisor fiber
+ * that xtc_monitor()s the backend fibers on that loop, so an ABNORMAL fiber
+ * death -- one that faulted before publishing its PMChild exit -- is observed
+ * (a DOWN with non-zero reason) and logged loudly instead of silently leaving
+ * an occupied PMChild slot.  NORMAL exits (reason 0) are corroborative only:
+ * the postmaster still owns reaping via process_pm_fiber_exit().  The
+ * supervisor NEVER reaps and NEVER respawns -- it is an observer.  Stage 1 is
+ * observability + loud logging; wiring an abnormal DOWN into the postmaster
+ * crash policy (ExitPostmaster) is Stage 1b.
  *
  * The supervisor must run ON its loop to call xtc_monitor()/xtc_recv(); the
  * postmaster spawn thread (off-loop) hands it each new backend pid via a
@@ -184,7 +183,7 @@ static Latch *_Atomic g_xtc_postmaster_latch;
 static int	g_xtc_n_sups = 0;
 
 /*
- * Supervisor spawn request (AGENTS_XTC #7 Stage 1, race-free variant).
+ * Supervisor spawn request (race-free variant).
  * The postmaster spawn thread sends this to a loop's supervisor; the
  * supervisor -- running ON that loop -- does an atomic xtc_proc_spawn_monitor()
  * (libxtc v1.3.0), so the monitor is established before the child can run and
@@ -419,8 +418,8 @@ xtc_carrier_sched_thread(void *arg)
 static void xtc_carrier_proc(void *arg);
 
 /*
- * Per-loop supervisor fiber (AGENTS_XTC #7 Stage 1).  Runs forever on its
- * loop, servicing two message kinds:
+ * Per-loop supervisor fiber.  Runs forever on its loop, servicing two message
+ * kinds:
  *   - a spawn request (xtc_sup_spawn_msg): xtc_proc_spawn_monitor() the backend
  *     fiber on THIS loop -- one atomic call that establishes the monitor before
  *     the new fiber can run (race-free, and NOPROC cannot occur);
@@ -864,9 +863,8 @@ xtc_carrier_start_supervisors(void)
  * Stage-1b escalation (SIGNAL DOWN -> g_xtc_genuine_crash + postmaster latch).
  *
  * WHY BACKEND FIBERS WERE NOT xtc_sup CHILDREN -- the durable design-doc
- * correction.  The F4 design
- * (plan_docs/MULTITHREADED_F4_SUPERVISION_FUSION_DESIGN.md, 2026-08-31) called
- * for routing backend fibers through xtc_sup_add_child and mapping the
+ * correction.  The original supervision-fusion design called for routing
+ * backend fibers through xtc_sup_add_child and mapping the
  * SIGNAL-DOWN escalation "into the supervisor's DOWN handling".  Against the
  * libxtc pinned through 2026-11-04 that was NOT implementable and would have
  * SILENTLY LOST the escalation:
@@ -882,10 +880,9 @@ xtc_carrier_start_supervisors(void)
  *     was measured 1000/1000 LOST (XTC_DOWN_KIND_NOPROC) on a same-loop
  *     crashing child.
  *
- * Both facts are verified and filed in
- * plan_docs/phase16_audits/LIBXTC_ORC_NO_PER_CHILD_DOWN.md (against libxtc
- * v1.44.0).  Because our crash policy is "a crashed backend may have corrupted
- * the shared address space, so FAIL-STOP the whole process", the
+ * Both facts were verified against libxtc v1.44.0 and reported upstream.
+ * Because our crash policy is "a crashed backend may have corrupted the
+ * shared address space, so FAIL-STOP the whole process", the
  * SIGNAL-vs-clean distinction is mandatory; until libxtc could report it per
  * child it had to stay on a monitor we own -- our own
  * xtc_proc_spawn_monitor() in xtc_carrier_supervisor_proc, which establishes
@@ -1287,8 +1284,7 @@ xtc_pg_carrier_start(void)
 		 * PARK (detail = op) and, on resume, RUN (detail = park-to-run latency in
 		 * ns) -- so a fiber stranded on an I/O completion shows up as a PARK with
 		 * NO matching RUN for that pid.  That is the direct test for the
-		 * lost-completion-wake hang we are chasing with the libxtc team (see
-		 * plan_docs/phase16_audits/LIBXTC_FDINFO_UNREAPED_CQES.md).
+		 * lost-completion-wake hang we are chasing with the libxtc team.
 		 *
 		 * OFF unless PG_XTC_TAIL is set: when a source is disabled xtc_tail is one
 		 * branch and reads no clock, but we still gate it so production never even
@@ -1367,8 +1363,8 @@ xtc_pg_carrier_start(void)
 			pg_usleep(1000);
 
 		/*
-		 * Spawn the per-loop supervisor fibers now that the loops are running
-		 * (AGENTS_XTC #7 Stage 1: observe abnormal backend fiber death).
+		 * Spawn the per-loop supervisor fibers now that the loops are running,
+		 * so abnormal backend fiber death is observed.
 		 */
 		xtc_carrier_start_supervisors();
 
@@ -1609,8 +1605,8 @@ xtc_pg_wait_fd(int fd, int interest_pg, long timeout_ms)
 	 * bracketed thread-affine section (raw spinlock, OpenSSL error-queue span,
 	 * sigprocmask window) holds per-OS-thread state that would be wrong if the
 	 * fiber resumed on a different carrier, so it must never be open across a
-	 * park.  The audit (MULTITHREADED_FIBER_WORKER_DESIGN.md section 4)
-	 * established every affine span is yield-free, so the depth is always zero
+	 * park.  An audit of every such span found each one yield-free (none calls
+	 * a function that can park), so the depth is always zero
 	 * here -- for a PINNED and a MIGRATABLE fiber alike.  Assert it
 	 * unconditionally: a park while an affine span is open is a bug whether or
 	 * not the fiber can migrate (while pinned the resume is on the same thread
@@ -1961,17 +1957,16 @@ xtc_pg_runtime_counters_snapshot(XtcPgRuntimeCounterStat *out, int max)
  * created.  There is no "adopt an already-running proc" call and no "record
  * an external restart event" call -- so an embedder that cannot hand it
  * spawn ownership gets NOTHING from it, not even observability.  We verified
- * this and filed it: plan_docs/phase16_audits/LIBXTC_ORC_NO_PER_CHILD_DOWN.md.
+ * this and reported it upstream.
  *
  * We cannot hand xtc_orc spawn ownership of an aux worker for two
- * independent, already-documented reasons (see
- * plan_docs/phase16_audits/SUPERVISION_SCOPE_WHY_NO_CRASH_RESPAWN.md):
+ * independent reasons:
  *   1. PMChild slot assignment (AssignPostmasterChildSlot) and
  *      ActiveChildList mutation are postmaster-thread-affine; xtc_orc
  *      restarts a child from the SUPERVISOR'S OWN carrier-loop thread.
  *   2. Even where xtc_orc's internal classification is correct (v1.44.0
  *      fixed the spawn-then-monitor race we reported), its public API has
- *      no per-child DOWN detail -- see LIBXTC_ORC_NO_PER_CHILD_DOWN.md.
+ *      no per-child DOWN detail.
  *
  * So restart OWNERSHIP for these singletons stays exactly where it already
  * safely is: PostgreSQL's own postmaster-thread-affine

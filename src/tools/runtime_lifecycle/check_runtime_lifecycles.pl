@@ -16,8 +16,8 @@ use warnings;
 use Getopt::Long qw(GetOptions);
 
 my $header = 'src/include/utils/backend_runtime.h';
-my $manifest = 'MULTITHREADED_RUNTIME_LIFECYCLE.tsv';
-my $owner_map = 'MULTITHREADED_RUNTIME_OWNERS.tsv';
+my $manifest = 'src/tools/runtime_lifecycle/runtime_lifecycle.tsv';
+my $owner_map = 'src/tools/runtime_lifecycle/runtime_owners.tsv';
 my @sources = (
 	'src/backend/utils/init/backend_runtime.c',
 	'src/backend/utils/init/backend_runtime_backend.c',

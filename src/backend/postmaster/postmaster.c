@@ -2059,8 +2059,7 @@ ServerLoop(void)
 			 * made kill-safe (uninterruptible park, or xtc_proc_at_exit doing
 			 * LWLockReleaseAll) or an async kill could abandon a held buffer
 			 * content lock / spinlock and corrupt shared state -- strictly worse
-			 * than the hang.  See
-			 * plan_docs/phase16_audits/IMMEDIATE_SHUTDOWN_CANNOT_KILL_WEDGED_FIBER.md.
+			 * than the hang.
 			 *
 			 * Until that lands, honour the operator contract that an immediate
 			 * shutdown ALWAYS terminates the cluster by fail-stopping the whole

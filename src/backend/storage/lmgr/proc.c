@@ -823,9 +823,8 @@ InitAuxiliaryProcess(void)
 	 * LWLockAcquire wait takes the raw blocking PGSemaphoreLock path
 	 * (ProcSemaphoreWaitCallback) and freezes the WHOLE carrier OS thread,
 	 * including xtc_io_poll for every sibling backend fiber colocated on that
-	 * loop (see plan_docs/phase16_audits/
-	 * LWLOCK_WEDGE_ROOTCAUSE_AUX_CARRIER_STARVATION.md).  A colocated fiber's
-	 * already-ready io_uring completion then never gets reaped and it wedges
+	 * loop.  A colocated fiber's already-ready io_uring completion then
+	 * never gets reaped and it wedges
 	 * forever, even though the LWLock is free and every libxtc wake fired.
 	 *
 	 * The current proc's userdata identifies backend fibers across sibling
@@ -1697,12 +1696,12 @@ ProcSleep(LOCALLOCK *locallock)
 			 * a migrating fiber when enable_timeout_after(DEADLOCK_TIMEOUT) ran,
 			 * the timeout can fail to arm (num_active==0) and the logical clamp
 			 * returns -1 -> an INFINITE park -> a real lock cycle is never broken
-			 * -> permanent hang (root cause: MULTITHREADED_TIMEOUT_SETITIMER_
-			 * ROOTCAUSE.md).  Bound the fiber's park directly by DeadlockTimeout
-			 * so a bucket glitch degrades to a slightly-late deadlock check
-			 * instead of a hang, and run CheckDeadLock on every bounded wake
-			 * regardless of got_deadlock_timeout.  Process mode and the non-fiber
-			 * threaded path are byte-for-byte (wait_timeout stays 0).
+			 * -> permanent hang.  Bound the fiber's park directly by
+			 * DeadlockTimeout so a bucket glitch degrades to a slightly-late
+			 * deadlock check instead of a hang, and run CheckDeadLock on every
+			 * bounded wake regardless of got_deadlock_timeout.  Process mode
+			 * and the non-fiber threaded path are byte-for-byte (wait_timeout
+			 * stays 0).
 			 */
 #ifdef USE_XTC_CARRIER
 			if (xtc_pg_in_backend_fiber() && DeadlockTimeout > 0)

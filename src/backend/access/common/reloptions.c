@@ -692,7 +692,7 @@ ThreadedRelOptionsUnlock(bool locked)
 	 * Asserting would turn an ordinary SQL error into a crash.  Same hazard,
 	 * same shape of fix as the dfmgr critical section (commit 9db33b7674)
 	 * and the sibling GUC critical section (guc.c).  Confirmed live via fault
-	 * injection: see plan_docs/phase16_audits/RELOPTIONS_THREADED_UNWIND_AUDIT.md.
+	 * injection.
 	 */
 	if (ThreadedRelOptionsMutexDepth == 0)
 		return;

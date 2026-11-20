@@ -1,6 +1,0 @@
-#!/usr/bin/env bash
-# Self-test entry for the Phase 18 benchmark tooling (assert-based math tests).
-set -euo pipefail
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-perl "$here/mtpg_ab_gate" --selftest
-perl "$here/pgbench_pctl" --selftest

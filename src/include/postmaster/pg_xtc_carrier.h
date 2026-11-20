@@ -162,9 +162,9 @@ xtc_pg_runtime_counter_inc(XtcPgRuntimeCounter c)
  * Some short spans of backend code hold OS-thread-affine state that would be
  * wrong if the fiber resumed on a different carrier: a raw spinlock hold, the
  * OpenSSL per-thread error queue span (ERR_clear_error .. ERR_get_error), the
- * sigprocmask signal-mask windows, and per-call static scratch buffers.  The
- * audit (plan_docs/MULTITHREADED_FIBER_WORKER_DESIGN.md section 4) established
- * that NONE of these spans contains a cooperative yield point, so a fiber can
+ * sigprocmask signal-mask windows, and per-call static scratch buffers.  An
+ * audit of each span established that NONE of these spans contains a
+ * cooperative yield point, so a fiber can
  * never PARK inside one and thus can never be stolen inside one (a running
  * fiber is never moved mid-instruction; only a parked-then-woken task migrates
  * off the deque).  They are therefore safe-by-construction while pinned AND

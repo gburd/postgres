@@ -248,7 +248,7 @@ typedef struct Port
 	 * (cast to xtc_tls_t * in be-secure-openssl.c) and stored UNCONDITIONALLY so
 	 * the Port struct offsets are identical across process/threaded builds.
 	 * be_tls_read/write/close and the be_tls_get_* introspection getters
-	 * dispatch on (xtc_tls != NULL) -- see MULTITHREADED_TLS_XTC_DESIGN.md (e).
+	 * dispatch on (xtc_tls != NULL).
 	 */
 	void	   *xtc_tls;
 

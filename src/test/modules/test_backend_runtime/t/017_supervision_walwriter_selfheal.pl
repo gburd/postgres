@@ -13,9 +13,7 @@
 #
 # What this test is NOT: it does not test xtc_orc.  We evaluated putting
 # the WAL writer's spawn under libxtc's xtc_orc supervisor and found three
-# independent reasons not to (see
-# plan_docs/phase16_audits/SUPERVISION_SCOPE_WHY_NO_CRASH_RESPAWN.md and
-# plan_docs/phase16_audits/LIBXTC_ORC_NO_PER_CHILD_DOWN.md):
+# independent reasons not to:
 #   1. xtc_orc restarts a child from the supervisor's OWN carrier-loop
 #      thread; PMChild slot assignment is postmaster-thread-affine, so
 #      handing it spawn ownership would be a new cross-thread bug of our own.
