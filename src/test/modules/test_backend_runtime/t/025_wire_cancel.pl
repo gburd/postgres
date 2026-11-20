@@ -117,8 +117,8 @@ sub scalar_query
 
 sub connect_session
 {
-	my ($node, $minor, $user, $sock) = @_;
-	my $session = { sock => $sock // $node->raw_connect };
+	my ($node, $minor, $user) = @_;
+	my $session = { sock => $node->raw_connect };
 	my $body = pack('N', 196608 + $minor)
 	  . "user\0$user\0database\0postgres\0\0";
 	write_packet($session->{sock}, pack('N', length($body) + 4) . $body);
@@ -203,7 +203,7 @@ sub canceled_and_usable
 	is(scalar_query($session, 'SELECT 42'), '42', "$label: session usable");
 }
 
-# Each unfinished startup creates new-connection demand and pins a carrier.
+# Each unfinished startup holds a child slot without finishing startup.
 sub startup_holders
 {
 	my ($node, $count) = @_;
@@ -218,27 +218,14 @@ sub startup_holders
 	return @held;
 }
 
-# Unfinished startup pins a native pooled carrier.  Do not run this fixture
-# with pooled4: the fifth SSL refusal would wait for a carrier held by us.
 sub dead_end_cancel
 {
-	my ($node, $observer, $user, $lane, $a, $holders) = @_;
+	my ($node, $observer, $user) = @_;
 
 	# TAP018's child-pool saturation fixture, with a wire cancel instead of
 	# ordinary startup: two live clients plus six pre-startup connections.
-	$a //= connect_session($node, 2, $user);
-	my @held = defined($holders) ? @$holders : startup_holders($node, 6);
-	if ($lane eq 'pooled8-dead-end')
-	{
-		# Six startup holders plus the sleeping target and querying observer
-		# require eight native pooled carriers, not eight libxtc loops.
-		wait_sql($observer, q{SELECT value = 8
-			FROM pg_stat_xtc_runtime WHERE counter = 'carriers_started'});
-		my $started = scalar_query($observer, q{SELECT value
-			FROM pg_stat_xtc_runtime WHERE counter = 'carriers_started'});
-		is($started, '8', 'eight native pooled carriers actually started');
-		die "pooled8 carrier capacity not established\n" unless $started eq '8';
-	}
+	my $a = connect_session($node, 2, $user);
+	my @held = startup_holders($node, 6);
 	sleeping($a, $observer);
 	my $log_start = -s $node->logfile;
 	my $bad = $a->{key};
@@ -254,11 +241,10 @@ sub dead_end_cancel
 	close($a->{sock});
 }
 
-for my $lane ('fork', 'fiber1', 'fiber2', 'pooled4', 'fallback')
+for my $lane ('fork', 'fiber1', 'fiber2', 'fallback')
 {
 	subtest $lane => sub {
 		my $mode = $lane eq 'fork' ? 'off' : 'on';
-		my $pooled = $lane =~ /^(pooled4|fallback)$/ ? 4 : 0;
 		my $loops = $lane eq 'fiber2' ? 2 : 1;
 		local $ENV{PG_XTC_CARRIER_LOOPS} = $loops;
 		my $node = PostgreSQL::Test::Cluster->new("wire_cancel_$lane");
@@ -270,7 +256,6 @@ shared_memory_type = sysv
 }) if $lane eq 'fallback';
 		$node->append_conf('postgresql.conf', qq{
 multithreaded = $mode
-pooled_protocol_carriers = $pooled
 max_connections = 4
 max_wal_senders = 0
 reserved_connections = 0
@@ -287,23 +272,19 @@ log_min_messages = debug2
 		my $user = $node->safe_psql('postgres', 'SELECT current_user');
 		my $observer = connect_session($node, 0, $user);
 		is(scalar_query($observer, 'SHOW multithreaded'), $mode, 'backend model');
-		is(scalar_query($observer, 'SHOW pooled_protocol_carriers'), $pooled,
-			'configured pool size');
 		if ($lane =~ /^fiber/)
 		{
 			like(slurp_file($node->logfile),
 				qr/xtc: carrier scheduler thread up \($loops loops?, $loops supervisors?, thread-per-session backend pool\)/,
 				'actual fiber loop count');
 		}
-		if ($lane eq 'fallback' || $lane eq 'pooled4')
+		if ($lane eq 'fallback')
 		{
 			query($observer, 'CREATE EXTENSION test_backend_runtime_threaded');
 			is_deeply(response($observer)->{states}, [], 'runtime fixture loaded');
 			my $model = scalar_query($observer,
 				'SELECT test_backend_runtime_model_snapshot()');
-			like($model, $lane eq 'fallback' ? qr/^process\|process\|/
-				: qr/^pooled_protocol\|pooled-protocol-affine\|4\|1$/,
-				'actual target runtime');
+			is($model, 'process|process', 'actual target runtime');
 		}
 
 		for my $minor (0, 2)
@@ -428,7 +409,7 @@ log_min_messages = debug2
 				WHERE backend_type = 'client backend'});
 		}
 
-		dead_end_cancel($node, $observer, $user, $lane) unless $lane eq 'pooled4';
+		dead_end_cancel($node, $observer, $user);
 		close($observer->{sock});
 		unlike(slurp_file($node->logfile),
 			qr/TRAP:|PANIC:|terminating threaded server runtime|GENUINE-CRASH/,
@@ -438,52 +419,5 @@ log_min_messages = debug2
 		done_testing();
 	};
 }
-
-subtest 'pooled8-dead-end' => sub {
-	my ($ncpus, $cpu_error);
-	IPC::Run::run(['getconf', '_NPROCESSORS_ONLN'],
-		'>' => \$ncpus, '2>' => \$cpu_error)
-	  or die "could not determine online CPU count: $cpu_error";
-	$ncpus =~ /^\s*([1-9][0-9]*)\s*$/
-	  or die "invalid online CPU count\n";
-	$ncpus = $1;
-	plan skip_all => 'pooled8 dead-end coverage requires eight online CPUs'
-	  if $ncpus < 8;
-
-	local $ENV{PG_XTC_CARRIER_LOOPS} = 1;
-	my $node = PostgreSQL::Test::Cluster->new('wire_cancel_pooled8_dead_end');
-	$node->init(extra => ['--username=postgres']);
-	$node->append_conf('postgresql.conf', q{
-multithreaded = on
-pooled_protocol_carriers = 8
-max_connections = 4
-max_wal_senders = 0
-reserved_connections = 0
-superuser_reserved_connections = 0
-autovacuum = off
-summarize_wal = off
-io_method = sync
-ssl = off
-authentication_timeout = 120
-log_min_messages = debug2
-});
-	$node->start;
-	# Grow via eight new startups, not resumes of already parked sessions:
-	# resume-growth does not include the carriers pinned by startup holders.
-	my @held = startup_holders($node, 8);
-	my $observer = connect_session($node, 0, 'postgres', shift @held);
-	my $a = connect_session($node, 2, 'postgres', shift @held);
-	is(scalar_query($observer, 'SHOW multithreaded'), 'on', 'threaded mode');
-	is(scalar_query($observer, 'SHOW pooled_protocol_carriers'), '8',
-		'eight pooled carriers configured');
-	dead_end_cancel($node, $observer, 'postgres', 'pooled8-dead-end', $a, \@held);
-	close($observer->{sock});
-	unlike(slurp_file($node->logfile),
-		qr/TRAP:|PANIC:|terminating threaded server runtime|GENUINE-CRASH/,
-		'no crash during pooled8 dead-end cancellation');
-	ok($node->stop('fast', timeout => 10, fail_ok => 1), 'fast shutdown')
-	  or $node->stop('immediate', timeout => 5);
-	done_testing();
-};
 
 done_testing();

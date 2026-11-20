@@ -122,7 +122,6 @@ pg_noreturn extern void FloatExceptionHandler(SIGNAL_ARGS);
 extern void HandleRecoveryConflictInterrupt(void);
 extern void ProcessClientReadInterrupt(bool blocked);
 extern void ProcessClientWriteInterrupt(bool blocked);
-extern void PgSessionServiceProtocolReadWake(PgSession *session);
 
 extern void process_postgres_switches(int argc, char *argv[],
 									  GucContext ctx, const char **dbname);
@@ -130,12 +129,7 @@ pg_noreturn extern void PostgresSingleUserMain(int argc, char *argv[],
 											   const char *username);
 extern PgSession *PostgresBootstrapSession(const char *dbname,
 										   const char *username);
-extern bool PgBackendPollProtocolReadPark(PgBackend *backend,
-										  uint32 *wake_events);
-extern int	PgRuntimeProtocolSchedulerPollParkedReads(PgRuntime *runtime,
-													 PgBackend **scratch,
-													 int max_backends);
-extern PgStepResult PgSessionRunProtocolSchedulerUntilBoundary(PgSession *session);
+extern void PgSessionReleaseIdleMemory(PgSession *session);
 pg_noreturn extern void PostgresRunSession(PgSession *session);
 pg_noreturn extern void PostgresMain(const char *dbname,
 									 const char *username);

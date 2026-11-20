@@ -88,7 +88,6 @@ for my $lane ('fork', 'fiber1', 'fiber2')
 		$node->init;
 		$node->append_conf('postgresql.conf', qq{
 multithreaded = $mode
-pooled_protocol_carriers = 0
 io_method = sync
 summarize_wal = off
 max_connections = 20
@@ -103,8 +102,6 @@ local_preload_libraries = ''
 		$node->start;
 		is($node->safe_psql('postgres', 'SHOW multithreaded'), $mode,
 			"$label: requested backend model");
-		is($node->safe_psql('postgres', 'SHOW pooled_protocol_carriers'), '0',
-			"$label: stackless pool disabled");
 		if ($mode eq 'on')
 		{
 			like(slurp_file($node->logfile),

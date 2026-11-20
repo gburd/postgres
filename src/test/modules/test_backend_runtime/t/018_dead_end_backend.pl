@@ -19,7 +19,6 @@ for my $mode ('off', 'on')
 	$node->append_conf(
 		'postgresql.conf', qq{
 multithreaded = $mode
-pooled_protocol_carriers = 0
 max_connections = 4
 max_wal_senders = 0
 reserved_connections = 0

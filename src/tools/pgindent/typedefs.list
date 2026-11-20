@@ -2320,8 +2320,6 @@ PgSessionResetCallbackItem
 PgSessionTcopState
 PgSessionXactCallbackState
 PgSessionTzAbbrevCache
-PgStepBudget
-PgStepResult
 PgStatShared_Archiver
 PgStatShared_Backend
 PgStatShared_BgWriter

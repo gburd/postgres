@@ -20,8 +20,8 @@
 /*
  * Thread-local storage bridge for state that is private to one backend,
  * session, execution, carrier, or connection in the initial thread-per-session
- * runtime.  Pooled scheduling must move this state onto explicit owner
- * objects, but thread-local storage preserves today's process-per-session
+ * runtime.  Fibers that migrate between carrier threads need this state on
+ * explicit owner objects, but thread-local storage preserves today's process-per-session
  * semantics while multiple backends share an address space.
  */
 #if defined(_MSC_VER)

@@ -335,26 +335,8 @@ extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool pg_backend_was_forkexeced;
 #else
 #define PG_BACKEND_WAS_FORKEXECED	(pg_backend_was_forkexeced)
 #endif
-extern PGDLLIMPORT PG_GLOBAL_RUNTIME int pooled_protocol_carriers;
-extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool pooled_protocol_fiber_sessions;
-extern PGDLLIMPORT PG_GLOBAL_RUNTIME int pooled_protocol_sticky_idle_ms;
-extern PGDLLIMPORT PG_GLOBAL_RUNTIME int pooled_protocol_hibernate_after_ms;
-extern PGDLLIMPORT PG_GLOBAL_RUNTIME int pooled_protocol_idle_memory_compaction;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool threaded_lazy_relcache_init_file;
-extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool log_protocol_park_memory;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool xtc_xproc_watchdog_demo;
-
-#define POOLED_PROTOCOL_IDLE_MEMORY_COMPACTION_OFF	0
-#define POOLED_PROTOCOL_IDLE_MEMORY_COMPACTION_TRIM	1
-#define POOLED_PROTOCOL_IDLE_MEMORY_COMPACTION_CACHE	2
-
-/*
- * Hard ceiling for the -1 (auto) pooled_protocol_carriers default, so a
- * very-large-core box does not default to a multi-GB pthread-stack address-
- * space reservation (one 8MB carrier stack per carrier).  Explicit tuning may
- * still set a higher value.
- */
-#define POOLED_PROTOCOL_CARRIER_AUTO_CEILING	256
 
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int commit_timestamp_buffers;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int multixact_member_buffers;

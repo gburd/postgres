@@ -743,7 +743,7 @@ BaseInit(void)
 	 * inside START_CRIT_SECTION().  Auxiliary and maintenance workers (the
 	 * checkpointer's shutdown checkpoint, an autovacuum worker's page-prune
 	 * record, etc.) have the same hazard.  So initialize eagerly for every
-	 * backend, matching process mode.  (A read-only idle pooled session retains
+	 * backend, matching process mode.  (A read-only idle threaded session retains
 	 * the small scratch context as a result; that is a cheap, bounded cost and
 	 * the deferral that avoided it was incorrect.)
 	 */

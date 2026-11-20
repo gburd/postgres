@@ -4315,8 +4315,9 @@ InitBufferManagerAccess(void)
 }
 
 /*
- * Restore private shared-buffer pin tracking after it has been released at a
- * clean pooled-protocol idle park.
+ * Restore private shared-buffer pin tracking after
+ * ReleaseBufferManagerIdleMemory() released it at the idle command-read
+ * boundary.
  */
 void
 RestoreBufferManagerIdleMemory(void)
@@ -4330,9 +4331,9 @@ RestoreBufferManagerIdleMemory(void)
 }
 
 /*
- * Release private shared-buffer pin tracking while a pooled protocol session
- * is cleanly parked.  A parked session cannot hold buffer pins; if anything
- * suggests otherwise, leave the state resident instead of risking corruption.
+ * Release private shared-buffer pin tracking while a session is idle between
+ * commands.  An idle session cannot hold buffer pins; if anything suggests
+ * otherwise, leave the state resident instead of risking corruption.
  */
 void
 ReleaseBufferManagerIdleMemory(void)

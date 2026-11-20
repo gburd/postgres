@@ -248,19 +248,6 @@ typedef struct WaitEventSetWaitArgs
 /* Process owning the self-pipe --- needed for checking purposes */
 #define selfpipe_owner_pid (*PgCurrentWaitEventSelfPipeOwnerPidRef())
 
-/*
- * Threaded runtime: fds that a controlling thread (the postmaster, for a
- * pooled-protocol carrier) pre-created for this thread's self-pipe.  When set
- * (>= 0), InitializeWaitEventSupport() adopts them instead of calling pipe()
- * itself.  This moves the only fd-allocating step of a carrier's startup to a
- * context where failure fails closed (the postmaster refuses the connection)
- * rather than an elog(FATAL) from inside the running carrier thread -- which
- * would run the per-backend exit path on a non-backend and pthread_exit a
- * runtime-critical thread.  Consumed exactly once per InitializeWaitEventSupport().
- */
-static __thread int presupplied_selfpipe_readfd = -1;
-static __thread int presupplied_selfpipe_writefd = -1;
-
 /* Private function prototypes */
 static void latch_sigurg_handler(SIGNAL_ARGS);
 static void sendSelfPipeByte(void);
@@ -373,35 +360,16 @@ InitializeWaitEventSupport(void)
 	 * Also, make both FDs close-on-exec, since we surely do not want any
 	 * child processes messing with them.
 	 */
-	if (presupplied_selfpipe_readfd >= 0)
-	{
-		/*
-		 * A controlling thread (the postmaster, for a pooled-protocol carrier)
-		 * already created this thread's self-pipe, so adopt it instead of
-		 * calling pipe() here.  Doing the fd allocation outside the carrier
-		 * thread lets an fd-exhaustion failure fail closed at a safe boundary
-		 * rather than an elog(FATAL) from a running carrier.  The fds are
-		 * already O_NONBLOCK|FD_CLOEXEC (see WaitEventSetPresupplySelfPipe), so
-		 * no further fcntl() is needed.
-		 */
-		pipefd[0] = presupplied_selfpipe_readfd;
-		pipefd[1] = presupplied_selfpipe_writefd;
-		presupplied_selfpipe_readfd = -1;
-		presupplied_selfpipe_writefd = -1;
-	}
-	else
-	{
-		if (pipe(pipefd) < 0)
-			elog(FATAL, "pipe() failed: %m");
-		if (fcntl(pipefd[0], F_SETFL, O_NONBLOCK) == -1)
-			elog(FATAL, "fcntl(F_SETFL) failed on read-end of self-pipe: %m");
-		if (fcntl(pipefd[1], F_SETFL, O_NONBLOCK) == -1)
-			elog(FATAL, "fcntl(F_SETFL) failed on write-end of self-pipe: %m");
-		if (fcntl(pipefd[0], F_SETFD, FD_CLOEXEC) == -1)
-			elog(FATAL, "fcntl(F_SETFD) failed on read-end of self-pipe: %m");
-		if (fcntl(pipefd[1], F_SETFD, FD_CLOEXEC) == -1)
-			elog(FATAL, "fcntl(F_SETFD) failed on write-end of self-pipe: %m");
-	}
+	if (pipe(pipefd) < 0)
+		elog(FATAL, "pipe() failed: %m");
+	if (fcntl(pipefd[0], F_SETFL, O_NONBLOCK) == -1)
+		elog(FATAL, "fcntl(F_SETFL) failed on read-end of self-pipe: %m");
+	if (fcntl(pipefd[1], F_SETFL, O_NONBLOCK) == -1)
+		elog(FATAL, "fcntl(F_SETFL) failed on write-end of self-pipe: %m");
+	if (fcntl(pipefd[0], F_SETFD, FD_CLOEXEC) == -1)
+		elog(FATAL, "fcntl(F_SETFD) failed on read-end of self-pipe: %m");
+	if (fcntl(pipefd[1], F_SETFD, FD_CLOEXEC) == -1)
+		elog(FATAL, "fcntl(F_SETFD) failed on write-end of self-pipe: %m");
 
 	selfpipe_readfd = pipefd[0];
 	selfpipe_writefd = pipefd[1];
@@ -448,52 +416,6 @@ InitializeWaitEventSupport(void)
 #ifdef WAIT_USE_KQUEUE
 	/* Ignore SIGURG, because we'll receive it via kqueue. */
 	pqsignal(SIGURG, PG_SIG_IGN);
-#endif
-}
-
-/*
- * Whether this build's wait-event implementation uses a per-thread self-pipe
- * (see WAIT_USE_SELF_PIPE selection above).  A controlling thread that wants to
- * pre-create a thread's self-pipe (WaitEventSetPresupplySelfPipe) can use this
- * to avoid creating fds that would just be closed again on kqueue/poll builds.
- */
-bool
-WaitEventSetUsesSelfPipe(void)
-{
-#ifdef WAIT_USE_SELF_PIPE
-	return true;
-#else
-	return false;
-#endif
-}
-
-/*
- * Pre-supply the self-pipe fds for the next InitializeWaitEventSupport() call
- * on THIS thread.
- *
- * The threaded pooled-protocol carrier uses this so the postmaster creates the
- * carrier's self-pipe before the carrier thread starts.  If pipe() were to run
- * inside the carrier thread and fail (fd exhaustion), its elog(FATAL) would
- * route through the per-backend exit path on a thread that is not a backend and
- * pthread_exit() a runtime-critical carrier thread, taking the whole threaded
- * server down.  Creating the fds on the postmaster thread instead lets that
- * failure fail closed (the connection is refused) with the runtime intact.
- *
- * The caller owns creating the pipe with O_NONBLOCK|FD_CLOEXEC set (matching
- * what InitializeWaitEventSupport() would have done).  On any build without a
- * self-pipe this is a no-op that just closes the fds to avoid leaking them.
- */
-void
-WaitEventSetPresupplySelfPipe(int readfd, int writefd)
-{
-#ifdef WAIT_USE_SELF_PIPE
-	presupplied_selfpipe_readfd = readfd;
-	presupplied_selfpipe_writefd = writefd;
-#else
-	if (readfd >= 0)
-		(void) close(readfd);
-	if (writefd >= 0)
-		(void) close(writefd);
 #endif
 }
 
@@ -903,7 +825,7 @@ ModifyWaitEvent(WaitEventSet *set, int pos, uint32 events, Latch *latch)
 		/*
 		 * On Unix, we don't need to modify the kernel object because the
 		 * underlying pipe (if there is one) is the same for all latches in a
-		 * carrier.  A pooled logical backend can move to another carrier,
+		 * carrier.  A fiber backend can move to another carrier,
 		 * though, so refresh the registered latch fd before returning.  On
 		 * Windows, we need to update our array of handles, but we leave the
 		 * old one in place and tolerate spurious wakeups if the latch is

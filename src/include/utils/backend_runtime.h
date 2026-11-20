@@ -135,8 +135,7 @@ typedef int (*PgSuspendCallback) (void *callback_arg);
 typedef enum PgRuntimeKind
 {
 	PG_RUNTIME_PROCESS,
-	PG_RUNTIME_THREAD_PER_SESSION,
-	PG_RUNTIME_POOLED_PROTOCOL
+	PG_RUNTIME_THREAD_PER_SESSION
 } PgRuntimeKind;
 
 typedef enum PgCarrierKind
@@ -159,175 +158,6 @@ struct GlobalVisState
 	/* XIDs < are not considered to be running by any backend */
 	FullTransactionId maybe_needed;
 };
-
-/*
- * Budget for one invocation of PgSessionStep().  A positive value yields after
- * that many frontend protocol messages.  A zero or negative value is
- * unbounded, which lets process and thread-per-session carriers amortize the
- * bottom error boundary across the same long-running loop shape that vanilla
- * PostgresMain() uses.  Later nonblocking schedulers can use small positive
- * budgets to preserve fairness.
- */
-typedef struct PgStepBudget
-{
-	int			max_messages;
-	bool		protocol_park_enabled;
-	bool		return_logical_exits;
-} PgStepBudget;
-
-typedef enum PgStepResult
-{
-	PG_STEP_CONTINUE,
-	PG_STEP_PARK_PROTOCOL_READ,
-	PG_STEP_ERROR_RECOVERED,
-	PG_STEP_DONE,
-	PG_STEP_FATAL_EXIT
-} PgStepResult;
-
-/*
- * Protocol park and logical-exit results are opt-in through PgStepBudget until
- * scheduler dispatch grows beyond process/thread-per-session compatibility.
- */
-
-typedef enum PgProtocolByteResult
-{
-	PG_PROTOCOL_BYTE_NONE,
-	PG_PROTOCOL_BYTE_AVAILABLE,
-	PG_PROTOCOL_BYTE_EOF
-} PgProtocolByteResult;
-
-typedef struct PgProtocolByteProbe
-{
-	unsigned char type;
-	uint32		transport_wait_events;
-	bool		transport_buffered_input;
-	uint64		transport_generation;
-} PgProtocolByteProbe;
-
-typedef enum PgProtocolParkState
-{
-	PG_PROTOCOL_PARK_NONE,
-	PG_PROTOCOL_PARK_PREPARED,
-	PG_PROTOCOL_PARK_COMMITTED
-} PgProtocolParkState;
-
-typedef enum PgProtocolParkWakeReason
-{
-	PG_PROTOCOL_PARK_WAKE_NONE = 0,
-	PG_PROTOCOL_PARK_WAKE_BUFFERED_INPUT = (1 << 0),
-	PG_PROTOCOL_PARK_WAKE_TRANSPORT = (1 << 1),
-	PG_PROTOCOL_PARK_WAKE_CLOSED = (1 << 2),
-	PG_PROTOCOL_PARK_WAKE_LOGICAL = (1 << 3),
-	PG_PROTOCOL_PARK_WAKE_POSTMASTER = (1 << 4),
-	PG_PROTOCOL_PARK_WAKE_STALE_TRANSPORT = (1 << 5),
-	PG_PROTOCOL_PARK_WAKE_TIMEOUT = (1 << 6),
-	PG_PROTOCOL_PARK_WAKE_STALE_TIMEOUT = (1 << 7),
-	PG_PROTOCOL_PARK_WAKE_NOTIFY = (1 << 8),
-	PG_PROTOCOL_PARK_WAKE_HIBERNATE = (1 << 9)
-} PgProtocolParkWakeReason;
-
-typedef struct PgProtocolParkSpec
-{
-	PgBackend  *backend;
-	PgSession  *session;
-	PgConnection *connection;
-	pgsocket	socket;
-	uint32		transport_wait_events;
-	bool		transport_buffered_input;
-	uint64		transport_generation;
-	uint64		timeout_generation;
-	bool		timeout_wake_at_valid;
-	TimestampTz timeout_wake_at;
-	uint32		wait_event_info;
-	uint64		generation;
-} PgProtocolParkSpec;
-
-typedef enum PgProtocolSchedulerQueueState
-{
-	PG_PROTOCOL_SCHEDULER_QUEUE_NONE,
-	PG_PROTOCOL_SCHEDULER_QUEUE_PARKED_PROTOCOL_READ,
-	PG_PROTOCOL_SCHEDULER_QUEUE_POLLING,
-	PG_PROTOCOL_SCHEDULER_QUEUE_RUNNABLE,
-	PG_PROTOCOL_SCHEDULER_QUEUE_LEASED
-} PgProtocolSchedulerQueueState;
-
-typedef struct PgProtocolSchedulerState
-{
-	slock_t		lock;
-	dlist_head	runnable_queue;
-	dlist_head	parked_protocol_queue;
-	uint32		runnable_count;
-	uint32		parked_protocol_count;
-	uint64		runnable_enqueue_count;
-	uint64		parked_protocol_enqueue_count;
-	uint32		carrier_limit;
-	uint32		registered_carrier_count;
-	uint32		idle_carrier_count;
-	uint32		active_carrier_count;
-	uint64		carrier_register_count;
-	uint64		carrier_reject_count;
-	uint64		carrier_lease_count;
-	uint64		carrier_release_count;
-	uint64		same_carrier_resume_count;
-	uint64		migrated_resume_count;
-} PgProtocolSchedulerState;
-
-typedef struct PgProtocolParkSnapshot
-{
-	PgProtocolParkState state;
-	PgProtocolSchedulerQueueState scheduler_queue_state;
-	uint64		generation;
-	uint32		wake_reasons;
-	uint32		wake_events;
-	uint64		wake_generation;
-	uint32		last_wake_reasons;
-	uint32		last_wake_events;
-	uint64		last_wake_generation;
-	uint64		notify_wake_generation;
-	uint64		deferred_notify_generation;
-	uint64		deferred_notify_park_generation;
-	uint32		deferred_notify_reasons;
-	uint32		scheduler_runnable_count;
-	uint32		scheduler_parked_protocol_count;
-	uint64		scheduler_runnable_enqueue_count;
-	uint64		scheduler_parked_protocol_enqueue_count;
-	bool		carrier_attached;
-	bool		session_present;
-	bool		connection_present;
-	bool		execution_present;
-	uint32		scheduler_carrier_limit;
-	uint64		scheduler_same_carrier_resume_count;
-	uint64		scheduler_migrated_resume_count;
-	uint32		scheduler_registered_carrier_count;
-	uint32		scheduler_idle_carrier_count;
-	uint32		scheduler_active_carrier_count;
-	bool		last_park_duration_valid;
-	long		last_park_duration_ms;
-} PgProtocolParkSnapshot;
-
-typedef struct PgBackendProtocolParkState
-{
-	PgProtocolParkState state;
-	PgProtocolParkSpec spec;
-	dlist_node	scheduler_node;
-	PgProtocolSchedulerQueueState scheduler_queue_state;
-	uint64		next_generation;
-	uint32		wake_reasons;
-	uint32		wake_events;
-	uint64		wake_generation;
-	uint32		last_wake_reasons;
-	uint32		last_wake_events;
-	uint64		last_wake_generation;
-	uint64		notify_wake_generation;
-	uint64		deferred_notify_generation;
-	uint64		deferred_notify_park_generation;
-	uint32		deferred_notify_reasons;
-	TimestampTz committed_at;
-	bool		last_park_duration_valid;
-	long		last_park_duration_ms;
-	bool		hibernated;
-	PgCarrier  *parked_carrier;
-} PgBackendProtocolParkState;
 
 /*
  * Logical interrupts target a backend object first.  In process mode these are
@@ -2243,7 +2073,6 @@ typedef struct PgConnectionSocketIOState
 	bool		comm_busy;
 	bool		comm_reading_msg;
 	int			win32_noblock;
-	uint64		transport_generation;
 } PgConnectionSocketIOState;
 
 typedef struct PgConnectionProtocolState
@@ -2371,7 +2200,6 @@ struct PgRuntime
 	 */
 	PgBackendExitContinuation exit_backend;
 
-	PgProtocolSchedulerState protocol_scheduler;
 	PgRuntimeServerGUCState server_guc;
 	PgRuntimeExtensionModuleState extension_modules;
 };
@@ -2395,8 +2223,6 @@ struct PgCarrier
 	int			threaded_guc_mutex_depth;
 	int			threaded_reloptions_mutex_depth;
 	int			threaded_dfmgr_mutex_depth;
-	bool		protocol_scheduler_registered;
-	bool		protocol_scheduler_idle;
 
 	/*
 	 * xtc-carrier: whether the backend fiber that owns this carrier may be
@@ -2451,7 +2277,6 @@ struct PgBackend
 	PgBackendPendingInterruptState pending_interrupts;
 	PgBackendInterruptHoldoffState interrupt_holdoffs;
 	PgBackendWaitState wait_state;
-	PgBackendProtocolParkState protocol_park;
 	struct PGPROC *my_proc;
 	ProcNumber	my_proc_number;
 	ProcNumber	parallel_leader_proc_number;
@@ -3473,12 +3298,6 @@ extern PgConnectionSecurityState *PgConnectionSecurityStateRef(PgConnection *con
 extern PgConnectionSecurityState *PgCurrentConnectionSecurityStateRef(void);
 extern bool PgRuntimeKindIsThreadBacked(PgRuntimeKind kind);
 extern bool PgRuntimeIsThreadBacked(PgRuntime *runtime);
-extern bool PgRuntimeKindIsPooledProtocol(PgRuntimeKind kind);
-extern bool PgRuntimeIsPooledProtocol(PgRuntime *runtime);
-extern bool PgRuntimePooledProtocolRequested(void);
-extern int	PgRuntimePooledProtocolCarrierLimit(void);
-extern uint32 PgRuntimePooledProtocolIdleCarrierCount(void);
-extern uint32 PgRuntimePooledProtocolRunnableCount(void);
 extern PgBackendLaunchModel PgRuntimeGetBackendLaunchModel(BackendType backend_type);
 extern bool PgRuntimeShouldThreadBackend(BackendType backend_type);
 extern PgBackendModel PgRuntimeGetExtensionBackendModel(void);
@@ -3512,38 +3331,6 @@ extern bool PgBackendSendInterruptById(PgBackendId backend_id,
 									  PgBackendInterruptType interrupt_type,
 									  int sender_pid, int sender_uid);
 extern uint64 PgBackendNotifyInterruptGeneration(PgBackend *backend);
-extern void PgRuntimeInitializeProtocolScheduler(PgProtocolSchedulerState *scheduler);
-extern bool PgRuntimeProtocolSchedulerParkBackend(PgRuntime *runtime,
-												  PgBackend *backend);
-extern bool PgRuntimeProtocolSchedulerMarkRunnable(PgRuntime *runtime,
-												   PgBackend *backend);
-extern bool PgRuntimeProtocolSchedulerLeaseBackend(PgRuntime *runtime,
-												   PgBackend *backend);
-extern PgBackend *PgRuntimeProtocolSchedulerLeaseParkedBackend(PgRuntime *runtime);
-extern bool PgRuntimeProtocolSchedulerReparkBackend(PgRuntime *runtime,
-													PgBackend *backend);
-extern bool PgRuntimeProtocolSchedulerReparkBackendIfPolling(PgRuntime *runtime,
-															 PgBackend *backend);
-extern PgBackend *PgRuntimeProtocolSchedulerPopRunnable(PgRuntime *runtime);
-extern int	PgRuntimeProtocolSchedulerCollectParked(PgRuntime *runtime,
-													PgBackend **backends,
-													int max_backends);
-extern int	PgRuntimeProtocolSchedulerWaitParkedReads(PgRuntime *runtime,
-													 PgBackend **scratch,
-													 struct pollfd *poll_scratch,
-													 int max_backends,
-													 int wake_fd,
-													 long timeout_ms,
-													 bool *had_parked);
-extern bool PgRuntimeProtocolSchedulerRegisterCarrier(PgRuntime *runtime,
-													  PgCarrier *carrier);
-extern bool PgRuntimeProtocolSchedulerUnregisterCarrier(PgRuntime *runtime,
-														PgCarrier *carrier);
-extern PgBackend *PgCarrierLeaseRunnableProtocolBackend(PgCarrier *carrier);
-extern bool PgRuntimeProtocolSchedulerRemoveBackend(PgRuntime *runtime,
-													PgBackend *backend);
-extern bool PgBackendSnapshotProtocolParkById(PgBackendId backend_id,
-											  PgProtocolParkSnapshot *snapshot);
 /*
  * Logical backend interrupts are for backend events such as cancel, die,
  * notify, and proc-signal-derived work. Wait readiness should remain with
@@ -3582,27 +3369,8 @@ extern bool PgBackendWakeWaitCompletion(PgBackend *backend,
 extern bool PgBackendWakeWaitCompletionById(PgBackendId backend_id,
 											uint32 ready_events);
 extern bool PgBackendShouldPublishWaitCompletion(PgBackend *backend);
-extern bool PgBackendLogicalTimeoutNextWake(PgBackend *backend,
-											TimestampTz *wake_at,
-											uint64 *generation);
-extern bool PgBackendPrepareProtocolReadPark(PgBackend *backend,
-											 PgProtocolParkSpec *spec);
-extern void PgCarrierCommitProtocolReadPark(PgCarrier *carrier,
-											PgBackend *backend);
-extern bool PgBackendMarkProtocolReadParkWake(PgBackend *backend,
-											  uint64 generation,
-											  uint32 wake_reasons,
-											  uint32 wake_events);
-extern bool PgBackendMarkProtocolReadParkDeferredNotify(PgBackend *backend,
-														uint64 notify_generation,
-														uint32 wake_reasons);
-extern void PgBackendClearProtocolReadParkDeferredNotify(PgBackend *backend);
-extern bool PgBackendProtocolReadParkTimeoutGenerationValid(PgBackend *backend,
-															uint64 generation);
-extern void PgBackendResumeProtocolReadPark(PgBackend *backend);
 extern int	PgSuspend(const PgWaitSpec *wait_spec,
 					  PgSuspendCallback callback, void *callback_arg);
-extern PgStepResult PgSessionStep(PgSession *session, PgStepBudget budget);
 pg_noreturn extern void PgSessionRun(PgSession *session);
 
 #define PG_RUNTIME_FAST_BUCKET_ACCESSOR(variable, fallback) \

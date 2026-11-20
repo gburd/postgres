@@ -447,7 +447,7 @@ static void process_pm_reload_request(void);
 static void process_pm_shutdown_request(void);
 static void dummy_handler(SIGNAL_ARGS);
 static void process_pm_thread_startup_complete(void);
-static void process_pm_pooled_logical_exit(void);
+static void process_pm_fiber_exit(void);
 static void process_pm_thread_exit(void);
 static void CleanupBackend(PMChild *bp, int exitstatus);
 static bool cleanup_archiver_child(PMChild *child, int exitstatus);
@@ -927,106 +927,6 @@ PostmasterMain(int argc, char *argv[])
 				(errmsg("multithreaded=on: routing io_method=worker to the in-fiber \"xtc\" method"),
 				 errdetail("Forked io workers cannot wake in-process fiber backends; set io_method explicitly to override.")));
 	}
-
-	/*
-	 * Pooled protocol mode is the default under multithreaded=on.  The GUC's
-	 * boot value -1 means "auto": derive a bounded carrier pool so threaded
-	 * client backends multiplex over a few carriers instead of one OS thread
-	 * per session.  An explicit 0 forces thread-per-session (still supported);
-	 * an explicit positive value is respected verbatim.  Under
-	 * multithreaded=off the pooled scheduler does not run, so resolve the -1
-	 * sentinel down to 0 to keep every `pooled_protocol_carriers > 0` consumer
-	 * (and SHOW) honest in process mode.
-	 *
-	 * Done here, after SelectConfigFiles() has finalized multithreaded, for the
-	 * same boot-value ordering reason as the io_method remap above.
-	 */
-	if (pooled_protocol_carriers < 0)
-	{
-		int			resolved;
-
-		if (multithreaded && pooled_protocol_fiber_sessions)
-		{
-			/*
-			 * Option A (staged, default off): run each session as an xtc
-			 * fiber on the carrier-loop pool instead of the stackless inline
-			 * carrier pool.  carriers=0 is exactly the fiber-per-session
-			 * model (postmaster_child_launch_carrier routes B_BACKEND through
-			 * postmaster_backend_thread_launch -> xtc_pg_launch_backend_fiber
-			 * when PgRuntimePooledProtocolRequested() is false, i.e.
-			 * carriers==0), so an in-command wait (WAL fsync, LWLock, buffer
-			 * pin) parks the fiber and frees its carrier for siblings rather
-			 * than pinning a whole OS thread.  Flip pooled_protocol_fiber_
-			 * sessions on only after the libxtc cross-loop task->state resume
-			 * race is fixed (see plan_docs/MULTITHREADED_SESSIONS_AS_FIBERS_
-			 * PLAN.md); until then this branch is dormant and auto keeps the
-			 * stackless carrier-per-core default below, byte-for-byte.
-			 */
-			resolved = 0;
-		}
-		else if (multithreaded)
-		{
-			long		ncpus = sysconf(_SC_NPROCESSORS_ONLN);
-
-			if (ncpus < 1)
-				ncpus = 1;
-			/*
-			 * A pooled-protocol carrier is a full OS thread (pg_thread_create,
-			 * 8MB pthread stack) that runs a session's commands inline to a
-			 * protocol boundary.  It releases the session ONLY at the
-			 * between-commands client read-park (PG_READ_COMMAND_PROTOCOL_PARK);
-			 * an IN-COMMAND wait (disk I/O, LWLock, buffer pin) stays
-			 * CARRIER-PINNED.  So the carrier count is the concurrency ceiling
-			 * for BOTH CPU-bound commands (which never yield mid-command) AND
-			 * in-command waits.
-			 *
-			 * A 2026-07-15 carrier sweep on a 32-vCPU box (CPU-bound, in-RAM
-			 * write TPC-B) proved the CPU-bound case: carriers=8 -> 24k tps,
-			 * 16 -> 37k, 32 -> 74k (DEAD EVEN with process fork), 64 -> 74k (no
-			 * regression).  The old Max(8,cpus/4) resolved to 8 there and
-			 * capped throughput at cpus/4-wide -- a 4x under-provision.
-			 *
-			 * Default to one carrier per core (floor 8 for small-box
-			 * responsiveness; a hard ceiling bounds the pthread-stack address-
-			 * space blast radius on very-large-core boxes; capped by
-			 * MaxConnections).  The pool is spawned LAZILY and grown on demand
-			 * up to this limit, and each carrier's 8MB stack is touched-pages-
-			 * only resident, so the threaded model stays well under the fork
-			 * model's per-connection footprint.
-			 *
-			 * CAVEAT (tuning basis is CPU-bound): a WAIT-BOUND workload (data >
-			 * shared_buffers, heavy row-lock contention) pins carriers on
-			 * in-command waits, so ncpus carriers may under-provide vs. fork
-			 * there -- such deployments should raise pooled_protocol_carriers
-			 * explicitly until the pool becomes elastic-above-ncpus.  No single
-			 * fixed number is optimal for both regimes.
-			 */
-			resolved = (int) ncpus;
-			if (resolved < 8)
-				resolved = 8;	/* floor: small-box responsiveness */
-			if (resolved > POOLED_PROTOCOL_CARRIER_AUTO_CEILING)
-				resolved = POOLED_PROTOCOL_CARRIER_AUTO_CEILING;
-			if (MaxConnections > 0 && resolved > MaxConnections)
-				resolved = MaxConnections;
-			if (resolved < 1)
-				resolved = 1;
-		}
-		else
-			resolved = 0;
-
-		{
-			char		buf[16];
-
-			snprintf(buf, sizeof(buf), "%d", resolved);
-			SetConfigOption("pooled_protocol_carriers", buf,
-							PGC_POSTMASTER, PGC_S_OVERRIDE);
-		}
-		if (multithreaded)
-			ereport(LOG,
-					(errmsg("multithreaded=on: pooled protocol scheduler enabled with %d carrier%s (default)",
-							resolved, resolved == 1 ? "" : "s"),
-					 errdetail("Set pooled_protocol_carriers=0 for thread-per-session, or a positive value to fix the pool size.")));
-	}
 #endif
 
 	/*
@@ -1138,9 +1038,7 @@ PostmasterMain(int argc, char *argv[])
 	 * than a server-wide preload -- via the Phase 19 process-fallback route.)
 	 */
 	if (multithreaded)
-		check_loaded_modules_backend_model(PgRuntimePooledProtocolRequested() ?
-										   PG_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE :
-										   PG_BACKEND_MODEL_THREAD_PER_SESSION);
+		check_loaded_modules_backend_model(PG_BACKEND_MODEL_THREAD_PER_SESSION);
 
 	/*
 	 * Initialize SSL library, if specified.
@@ -1234,12 +1132,12 @@ PostmasterMain(int argc, char *argv[])
 
 	/*
 	 * Threaded mode needs a much larger descriptor budget than process mode,
-	 * and running out is a LATE, confusing failure: every PGPROC gets two
-	 * eventfds (sem_wake_fd + interrupt_wake_fd, see InitProcess), all of them
+	 * and running out is a LATE, confusing failure: every PGPROC gets a
+	 * semaphore-wake eventfd (sem_wake_fd, see InitProcGlobal), all of them
 	 * in ONE address space rather than spread over forked children.  With the
 	 * common distro default of 1024 a server configured for a few hundred
 	 * connections dies partway through PGPROC setup with
-	 *   FATAL: could not create interrupt-wake eventfd for PGPROC: Too many open files
+	 *   FATAL: could not create semaphore-wake eventfd for PGPROC: Too many open files
 	 * which names neither the real limit nor the fix.  (Observed on a 32-core
 	 * box: max_connections=600 was unstartable until nofile was raised.)
 	 *
@@ -1256,18 +1154,18 @@ PostmasterMain(int argc, char *argv[])
 			rlim.rlim_cur != RLIM_INFINITY)
 		{
 			/*
-			 * Two eventfds per PGPROC, plus one io_uring ring per carrier loop,
+			 * One eventfd per PGPROC, plus one io_uring ring per carrier loop,
 			 * plus the usual per-connection socket and the shared/WAL/relation
 			 * files that max_safe_fds already accounts for.  NUM_RESERVED_FDS
 			 * worth of slack on top.
 			 */
-			long		want = (long) MaxBackends * 3 + 1024;
+			long		want = (long) MaxBackends * 2 + 1024;
 
 			if ((long) rlim.rlim_cur < want)
 				ereport(WARNING,
 						(errmsg("open file limit %ld is too low for multithreaded mode with %d backends",
 								(long) rlim.rlim_cur, MaxBackends),
-						 errdetail("Threaded mode keeps two eventfds per backend plus one io_uring ring per carrier in a single process, so it needs roughly %ld descriptors.",
+						 errdetail("Threaded mode keeps one eventfd per backend plus one io_uring ring per carrier in a single process, so it needs roughly %ld descriptors.",
 								   want),
 						 errhint("Raise the open file limit (ulimit -n, LimitNOFILE= for systemd, or /etc/security/limits.conf) to at least %ld, or reduce max_connections.",
 								 want)));
@@ -1958,7 +1856,7 @@ ServerLoop(void)
 		 * timeout.
 		 */
 		process_pm_thread_startup_complete();
-		process_pm_pooled_logical_exit();
+		process_pm_fiber_exit();
 		process_pm_thread_exit();
 #ifdef USE_XTC_CARRIER
 		if (xtc_pg_consume_genuine_crash())
@@ -1967,23 +1865,6 @@ ServerLoop(void)
 					(errmsg("terminating threaded server runtime after backend fiber crash")));
 			ExitPostmaster(1);
 		}
-		/*
-		 * Grow the pooled carrier pool toward runnable demand.  A carrier that
-		 * saw more runnable sessions than carriers woke us (SetLatch); creating
-		 * carriers must happen here, on the postmaster thread.
-		 *
-		 * Only while accepting work (pmState == PM_RUN, Shutdown == NoShutdown).
-		 * During shutdown/crash the carriers are draining runnable backends to
-		 * proc_exit, and each lease still nudges the grow flag; spawning NEW
-		 * carriers then would grow the PMChild population the reaper is racing to
-		 * shrink and touch the self-pipe/scheduler machinery while teardown may be
-		 * tearing it down.  The pre-existing enqueue-path growth already freezes
-		 * at shutdown because new connections are refused (canAcceptConnections
-		 * -> CAC_SHUTDOWN); gate this new resume-path growth the same way.
-		 */
-		if (multithreaded && PostmasterThreadCarriersStarted() &&
-			pmState == PM_RUN && Shutdown == NoShutdown)
-			backend_pooled_protocol_maybe_grow_for_runnable_demand();
 #endif
 
 		nevents = WaitEventSetWait(pm_wait_set,
@@ -2027,7 +1908,7 @@ ServerLoop(void)
 		if (pending_pm_pmsignal)
 			process_pm_pmsignal();
 		process_pm_thread_startup_complete();
-		process_pm_pooled_logical_exit();
+		process_pm_fiber_exit();
 		process_pm_thread_exit();
 #ifdef USE_XTC_CARRIER
 		/*
@@ -2922,11 +2803,11 @@ process_pm_child_exit(void)
  * CleanupBackend() for regular backends and background workers.
  *
  * Shared by process_pm_thread_exit() (dedicated-thread carriers) and
- * process_pm_pooled_logical_exit() (fiber / pooled-logical carriers): an aux
- * worker that runs as a fiber is reaped through the pooled-logical path, and it
- * MUST still run its per-type cleanup or the postmaster's global aux pointer is
- * left dangling and PostmasterStateMachine trips e.g.
- * Assert(WalWriterPMChild == NULL) at PM_WAIT_DEAD_END.
+ * process_pm_fiber_exit() (fibers): an aux worker that runs as a fiber is
+ * reaped through the fiber path, and it MUST still run its per-type cleanup
+ * or the postmaster's global aux pointer is left dangling and
+ * PostmasterStateMachine trips e.g. Assert(WalWriterPMChild == NULL) at
+ * PM_WAIT_DEAD_END.
  */
 static void
 reap_aux_or_backend_child(PMChild *pmchild, int exitstatus)
@@ -2983,12 +2864,12 @@ reap_aux_or_backend_child(PMChild *pmchild, int exitstatus)
 }
 
 /*
- * Cleanup after a pooled logical backend reports exit.  The carrier thread
- * that ran the session remains alive; the postmaster owns PMChild list
- * mutation and slot release just like process and thread-backed children.
+ * Cleanup after a fiber backend reports exit.  The carrier thread that ran
+ * the session remains alive; the postmaster owns PMChild list mutation and
+ * slot release just like process and thread-backed children.
  */
 static void
-process_pm_pooled_logical_exit(void)
+process_pm_fiber_exit(void)
 {
 	dlist_mutable_iter iter;
 	bool		reaped = false;
@@ -3001,19 +2882,19 @@ process_pm_pooled_logical_exit(void)
 		Size		top_memory_allocated;
 		Size		top_memory_reclaimed;
 
-		if (!PostmasterChildHasExitedPooledLogical(pmchild, &exitstatus,
-												  &top_memory_allocated,
-												  &top_memory_reclaimed,
-												  &signal_pid))
+		if (!PostmasterChildHasExitedFiber(pmchild, &exitstatus,
+										   &top_memory_allocated,
+										   &top_memory_reclaimed,
+										   &signal_pid))
 			continue;
 
 		if (top_memory_allocated > 0)
 			ereport(WARNING,
-					(errmsg_internal("pooled logical backend %d retained %zu bytes in TopMemoryContext at exit",
+					(errmsg_internal("fiber backend %d retained %zu bytes in TopMemoryContext at exit",
 									 signal_pid, top_memory_allocated)));
 		if (top_memory_reclaimed > 0)
 			ereport(DEBUG1,
-					(errmsg_internal("pooled logical backend %d reclaimed %zu bytes from TopMemoryContext at exit",
+					(errmsg_internal("fiber backend %d reclaimed %zu bytes from TopMemoryContext at exit",
 									 signal_pid, top_memory_reclaimed)));
 
 		reap_aux_or_backend_child(pmchild, exitstatus);
@@ -4631,13 +4512,13 @@ process_pm_pmsignal(void)
 		/*
 		 * The autovacuum launcher canceled a worker whose start it timed out
 		 * on.  Under the xtc carrier a worker fiber that was never scheduled
-		 * leaves an orphaned pooled-logical PMChild; reap it so a later
+		 * leaves an orphaned fiber PMChild; reap it so a later
 		 * PM_WAIT_BACKENDS (fast stop) cannot wedge waiting on a fiber that
 		 * will never publish an exit.  Gate on the worker-start-timeout so we
 		 * only reap the aged, stuck worker and never a fresh one the launcher
 		 * just relaunched.  A no-op in process mode / when there is no orphan.
 		 * Re-run the state machine if we reaped one, matching
-		 * process_pm_pooled_logical_exit().
+		 * process_pm_fiber_exit().
 		 */
 		int			start_timeout_ms = Min(autovacuum_naptime, 60) * 1000;
 

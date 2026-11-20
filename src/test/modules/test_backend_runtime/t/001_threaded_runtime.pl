@@ -13,11 +13,11 @@ use Time::HiRes qw(usleep);
 
 my $repo_root = abs_path("$FindBin::Bin/../../../../..");
 my $node = PostgreSQL::Test::Cluster->new('threaded_runtime');
-# Both thread-backed and pooled-logical carriers reclaim TopMemoryContext at
-# exit and log it through the postmaster; count both wordings so the
-# reclamation-accounting assertions do not undercount pooled-logical exits.
+# Both thread-backed and fiber children reclaim TopMemoryContext at exit and
+# log it through the postmaster; count both wordings so the
+# reclamation-accounting assertions do not undercount fiber exits.
 my $top_reclaim_re =
-  qr/(?:thread-backed child|pooled logical backend) \d+ reclaimed [1-9]\d* bytes from TopMemoryContext at exit/;
+  qr/(?:thread-backed child|fiber backend) \d+ reclaimed [1-9]\d* bytes from TopMemoryContext at exit/;
 
 sub install_contrib_extensions
 {
@@ -187,7 +187,6 @@ $node->init;
 $node->append_conf(
 	'postgresql.conf', q{
 multithreaded = on
-pooled_protocol_carriers = 0
 autovacuum = on
 autovacuum_naptime = '1h'
 io_method = worker

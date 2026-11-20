@@ -25,10 +25,10 @@
 #   N>=4 -> 5/5 (2 loops); single loop crashed at N~6.
 #
 # The fix makes the whole pre-install startup window PER-FIBER: it installs the
-# fiber-owned logical roots as current (PreInstallPgThreadBackendRuntimeState,
-# mirroring the pooled-protocol path's PgCarrierAttachBackend) BEFORE the
-# per-backend startup, so MemoryContextInit() and the early GUC init write into
-# fiber-owned storage that rides the GUC-amutex park with the fiber; the sibling
+# fiber-owned logical roots as current (PreInstallPgThreadBackendRuntimeState)
+# BEFORE the per-backend startup, so MemoryContextInit() and the early GUC init
+# write into fiber-owned storage that rides the GUC-amutex park with the fiber;
+# the sibling
 # fiber sees its OWN (NULL) TopMemoryContext.  No shared fallback is touched in
 # the window, so there is nothing to clobber.
 #
@@ -63,7 +63,6 @@ $node->init;
 $node->append_conf(
 	'postgresql.conf', q{
 multithreaded = on
-pooled_protocol_carriers = 0
 autovacuum = off
 io_method = sync
 summarize_wal = off

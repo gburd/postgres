@@ -59,24 +59,6 @@ SELECT test_carrier_attach_detach_current_work();
  t
 (1 row)
 
-SELECT test_carrier_protocol_park_prepare_commit();
- test_carrier_protocol_park_prepare_commit 
--------------------------------------------
- t
-(1 row)
-
-SELECT test_protocol_scheduler_poll_buffered_read();
- test_protocol_scheduler_poll_buffered_read 
---------------------------------------------
- t
-(1 row)
-
-SELECT test_protocol_read_wake_applies_backend_interrupt();
- test_protocol_read_wake_applies_backend_interrupt 
----------------------------------------------------
- t
-(1 row)
-
 SELECT test_carrier_misc_state_is_carrier_local();
  test_carrier_misc_state_is_carrier_local 
 ------------------------------------------
@@ -647,9 +629,9 @@ SELECT test_pmchild_thread_backend_reset_api();
  t
 (1 row)
 
-SELECT test_pmchild_pooled_logical_backend_signal_api();
- test_pmchild_pooled_logical_backend_signal_api 
-------------------------------------------------
+SELECT test_pmchild_fiber_backend_signal_api();
+ test_pmchild_fiber_backend_signal_api 
+---------------------------------------
  t
 (1 row)
 
@@ -846,12 +828,6 @@ SELECT test_connection_socket_io_is_connection_local();
 SELECT test_connection_protocol_state_is_connection_local();
  test_connection_protocol_state_is_connection_local 
 ----------------------------------------------------
- t
-(1 row)
-
-SELECT test_connection_protocol_byte_probe();
- test_connection_protocol_byte_probe 
--------------------------------------
  t
 (1 row)
 

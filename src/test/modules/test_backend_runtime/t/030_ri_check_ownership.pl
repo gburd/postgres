@@ -15,15 +15,14 @@ use Test::More;
 
 $ENV{PG_XTC_CARRIER_LOOPS} = '1';
 
-for my $lane (['fork', 'off', 0], ['fiber', 'on', 0], ['pooled', 'on', 4])
+for my $lane (['fork', 'off'], ['fiber', 'on'])
 {
-	my ($label, $mode, $carriers) = @$lane;
+	my ($label, $mode) = @$lane;
 	my $node = PostgreSQL::Test::Cluster->new("ri_check_ownership_$label");
 	$node->init;
 	$node->append_conf(
 		'postgresql.conf', qq{
 multithreaded = $mode
-pooled_protocol_carriers = $carriers
 io_method = sync
 summarize_wal = off
 max_connections = 20

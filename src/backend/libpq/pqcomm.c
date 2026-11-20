@@ -146,12 +146,6 @@ static void socket_putmessage_noblock(char msgtype, const char *s, size_t len);
 static inline PgConnectionSocketIOState *PqSocketIO(void);
 static pg_always_inline void pq_advance_recv_pointer(PgConnectionSocketIOState *io,
 															   size_t amount);
-static bool pq_connection_transport_buffered_input(PgConnection *connection);
-static uint32 pq_connection_transport_wait_events(PgConnection *connection);
-static int	pq_probe_recvbuf(PgConnection *connection);
-static PgProtocolByteResult pq_probe_message_type(PgConnection *connection,
-												  PgProtocolByteProbe *probe,
-												  bool probe_kernel);
 static inline int pq_getbyte_from(PgConnectionSocketIOState *io);
 static inline int pq_getbytes_from(PgConnectionSocketIOState *io,
 								   void *b, size_t len);
@@ -209,59 +203,6 @@ pq_advance_recv_pointer(PgConnectionSocketIOState *io, size_t amount)
 
 	io->recv_pointer += amount;
 }
-
-static bool
-pq_connection_transport_buffered_input(PgConnection *connection)
-{
-	Port	   *port;
-	PgConnectionSocketIOState *io;
-	PgConnectionSecurityState *security;
-
-	Assert(connection != NULL);
-
-	io = &connection->socket_io;
-	if (io->recv_pointer < io->recv_length)
-		return true;
-
-	port = connection->identity.port;
-	if (port != NULL && port->raw_buf_remaining > 0)
-		return true;
-
-	security = &connection->security;
-	if (security->gss_result_next < security->gss_result_length)
-		return true;
-
-	return false;
-}
-
-static uint32
-pq_connection_transport_wait_events(PgConnection *connection)
-{
-	PgConnectionSecurityState *security;
-	Port	   *port;
-
-	Assert(connection != NULL);
-
-	security = &connection->security;
-	if (security->gss_send_next < security->gss_send_length)
-		return WL_SOCKET_WRITEABLE;
-
-	port = connection->identity.port;
-	if (port == NULL)
-		return 0;
-
-#ifdef USE_SSL
-	if (port->ssl_in_use)
-		return 0;
-#endif
-#ifdef ENABLE_GSS
-	if (port->gss && port->gss->enc)
-		return 0;
-#endif
-
-	return WL_SOCKET_READABLE;
-}
-
 
 /* --------------------------------
  *		pq_init - initialize libpq at backend startup
@@ -1278,7 +1219,6 @@ pq_recvbuf(PgConnectionSocketIOState *io)
 		}
 		/* r contains number of bytes read, so just incr length */
 		io->recv_length += r;
-		io->transport_generation++;
 		return 0;
 	}
 }
@@ -1394,8 +1334,6 @@ pq_getbyte_if_available(unsigned char *c)
 		/* EOF detected */
 		r = EOF;
 	}
-	else
-		io->transport_generation++;
 
 	return r;
 }
@@ -1479,65 +1417,6 @@ pq_buffer_remaining_data(void)
 	return (io->recv_length - io->recv_pointer);
 }
 
-static int
-pq_probe_recvbuf(PgConnection *connection)
-{
-	PgConnectionSocketIOState *io;
-	Port	   *port;
-	size_t		old_recv_pointer;
-	size_t		old_recv_length;
-	bool		saved_noblock;
-	int			r;
-
-	Assert(connection != NULL);
-	io = &connection->socket_io;
-	port = connection->identity.port;
-	Assert(port != NULL);
-	Assert(io->recv_pointer >= io->recv_length);
-
-	old_recv_pointer = io->recv_pointer;
-	old_recv_length = io->recv_length;
-
-	pq_ensure_recv_buffer(io);
-	io->recv_pointer = 0;
-	io->recv_length = 0;
-
-	saved_noblock = port->noblock;
-	port->noblock = true;
-
-	errno = 0;
-	r = secure_read(port, io->recv_buffer, PQ_RECV_BUFFER_SIZE);
-	port->noblock = saved_noblock;
-	if (r < 0)
-	{
-		if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
-		{
-			io->recv_pointer = old_recv_pointer;
-			io->recv_length = old_recv_length;
-			return 0;
-		}
-
-		if (errno != 0)
-			ereport(COMMERROR,
-					(errcode_for_socket_access(),
-					 errmsg("could not receive data from client: %m")));
-		io->recv_pointer = old_recv_pointer;
-		io->recv_length = old_recv_length;
-		return EOF;
-	}
-	if (r == 0)
-	{
-		io->recv_pointer = old_recv_pointer;
-		io->recv_length = old_recv_length;
-		return EOF;
-	}
-
-	io->recv_length = r;
-	io->transport_generation++;
-	return 1;
-}
-
-
 /* --------------------------------
  *		pq_startmsgread - begin reading a message from the client.
  *
@@ -1582,15 +1461,6 @@ pq_startmsgread_getbyte(void)
 	return pq_getbyte_from(io);
 }
 
-bool
-PgConnectionCanParkBeforeMessage(PgConnection *connection)
-{
-	if (connection == NULL)
-		return false;
-
-	return !connection->socket_io.comm_reading_msg;
-}
-
 void
 PgConnectionReleaseIdleRecvBuffer(PgConnection *connection)
 {
@@ -1612,96 +1482,6 @@ PgConnectionReleaseIdleRecvBuffer(PgConnection *connection)
 	io->recv_pointer = 0;
 	io->recv_length = 0;
 }
-
-static PgProtocolByteResult
-pq_probe_message_type(PgConnection *connection, PgProtocolByteProbe *probe,
-					  bool probe_kernel)
-{
-	PgConnectionSocketIOState *io;
-	Port	   *port;
-	unsigned char c;
-	bool		buffered_input;
-	uint32		wait_events;
-	int			r;
-
-	Assert(connection != NULL);
-
-	io = &connection->socket_io;
-	if (probe != NULL)
-		MemSet(probe, 0, sizeof(*probe));
-
-	if (io->comm_reading_msg)
-		ereport(FATAL,
-				(errcode(ERRCODE_PROTOCOL_VIOLATION),
-				 errmsg("terminating connection because protocol synchronization was lost")));
-
-	buffered_input = pq_connection_transport_buffered_input(connection);
-	wait_events = pq_connection_transport_wait_events(connection);
-	if (probe != NULL)
-	{
-		probe->transport_wait_events = wait_events;
-		probe->transport_buffered_input = buffered_input;
-		probe->transport_generation = io->transport_generation;
-	}
-
-	if (io->recv_pointer < io->recv_length)
-	{
-		c = (unsigned char) io->recv_buffer[io->recv_pointer];
-		pq_advance_recv_pointer(io, 1);
-		io->comm_reading_msg = true;
-		if (probe != NULL)
-		{
-			probe->type = c;
-			probe->transport_wait_events = 0;
-			probe->transport_buffered_input = true;
-			probe->transport_generation = io->transport_generation;
-		}
-		return PG_PROTOCOL_BYTE_AVAILABLE;
-	}
-
-	port = connection->identity.port;
-	if (port == NULL)
-		return PG_PROTOCOL_BYTE_EOF;
-
-	if (!probe_kernel && !buffered_input)
-		return PG_PROTOCOL_BYTE_NONE;
-
-	if (wait_events == 0 && !buffered_input)
-		return PG_PROTOCOL_BYTE_NONE;
-
-	r = pq_probe_recvbuf(connection);
-	if (r == 0)
-		return PG_PROTOCOL_BYTE_NONE;
-	if (r == EOF)
-		return PG_PROTOCOL_BYTE_EOF;
-
-	c = (unsigned char) io->recv_buffer[io->recv_pointer];
-	pq_advance_recv_pointer(io, 1);
-	io->comm_reading_msg = true;
-	if (probe != NULL)
-	{
-		probe->type = c;
-		probe->transport_wait_events = 0;
-		probe->transport_buffered_input = buffered_input;
-		probe->transport_generation = io->transport_generation;
-	}
-	return PG_PROTOCOL_BYTE_AVAILABLE;
-}
-
-PgProtocolByteResult
-PgConnectionProbeBufferedMessageType(PgConnection *connection,
-									 PgProtocolByteProbe *probe)
-{
-	return pq_probe_message_type(connection, probe, false);
-}
-
-PgProtocolByteResult
-PgConnectionProbeMessageType(PgConnection *connection,
-							 PgProtocolByteProbe *probe)
-{
-	return pq_probe_message_type(connection, probe, true);
-}
-
 
 /* --------------------------------
  *		pq_endmsgread	- finish reading message.

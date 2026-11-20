@@ -361,16 +361,16 @@ PostmasterChildIsThread(const PMChild *pmchild)
 }
 
 bool
-PostmasterChildIsPooledLogical(const PMChild *pmchild)
+PostmasterChildIsFiber(const PMChild *pmchild)
 {
-	return pmchild->carrier_kind == PM_CHILD_CARRIER_POOLED_LOGICAL;
+	return pmchild->carrier_kind == PM_CHILD_CARRIER_FIBER;
 }
 
 bool
 PostmasterChildHasLogicalBackendPublication(const PMChild *pmchild)
 {
 	return PostmasterChildIsThread(pmchild) ||
-		PostmasterChildIsPooledLogical(pmchild);
+		PostmasterChildIsFiber(pmchild);
 }
 
 pid_t
@@ -411,9 +411,9 @@ PostmasterChildSetThread(PMChild *pmchild, const PgThread *thread)
 }
 
 void
-PostmasterChildSetPooledLogical(PMChild *pmchild)
+PostmasterChildSetFiber(PMChild *pmchild)
 {
-	pmchild->carrier_kind = PM_CHILD_CARRIER_POOLED_LOGICAL;
+	pmchild->carrier_kind = PM_CHILD_CARRIER_FIBER;
 	pmchild->pid = 0;
 	PMChildResetLogicalPublicationState(pmchild, 0);
 }
@@ -557,12 +557,12 @@ PostmasterChildPublishExit(PMChild *pmchild, int exitstatus,
 }
 
 void
-PostmasterChildPublishPooledLogicalExit(PMChild *pmchild, int exitstatus,
-										Size top_memory_allocated,
-										Size top_memory_reclaimed,
-										Latch *postmaster_latch)
+PostmasterChildPublishFiberExit(PMChild *pmchild, int exitstatus,
+								Size top_memory_allocated,
+								Size top_memory_reclaimed,
+								Latch *postmaster_latch)
 {
-	Assert(PostmasterChildIsPooledLogical(pmchild));
+	Assert(PostmasterChildIsFiber(pmchild));
 
 	PostmasterChildPublishExit(pmchild, exitstatus, top_memory_allocated,
 							   top_memory_reclaimed, postmaster_latch);
@@ -603,12 +603,12 @@ PostmasterChildHasExited(PMChild *pmchild, int *exitstatus,
 }
 
 bool
-PostmasterChildHasExitedPooledLogical(PMChild *pmchild, int *exitstatus,
-									  Size *top_memory_allocated,
-									  Size *top_memory_reclaimed,
-									  pid_t *signal_pid)
+PostmasterChildHasExitedFiber(PMChild *pmchild, int *exitstatus,
+							  Size *top_memory_allocated,
+							  Size *top_memory_reclaimed,
+							  pid_t *signal_pid)
 {
-	if (!PostmasterChildIsPooledLogical(pmchild))
+	if (!PostmasterChildIsFiber(pmchild))
 		return false;
 
 	return PostmasterChildHasExited(pmchild, exitstatus, top_memory_allocated,

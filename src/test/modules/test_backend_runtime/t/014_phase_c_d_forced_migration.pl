@@ -13,14 +13,7 @@
 # backends therefore spawn migratable=1 (ssl_sni off).  This test exercises the
 # contended-GUC park path with the seam + cross-checks ARMED, asserts real
 # cross-loop steals fire (n_steals > 0), and asserts NO cross-fiber leak and NO
-# protocol-read-park PANIC under real migration.
-#
-# The "protocol-read-park cross-carrier PANIC" that previously held migration on
-# Phase D HOLD is DECIDED here: with the GUC-amutex seam in place + eager
-# rebalance producing hundreds of real steals under this exact contended-GUC
-# concurrent load, PgCarrierCommitProtocolReadPark NEVER PANICs.  The prior
-# PANIC was a downstream manifestation of the now-fixed GUC-amutex bridge leak
-# (subsumed by the seam), not a distinct scheduler-affinity hazard.
+# PANIC under real migration.
 #
 # WHAT THIS TEST DRIVES:
 #   1. Client backends spawn MIGRATABLE (migratable=1) -- the Phase D LIVE
@@ -85,7 +78,6 @@ $node->init;
 $node->append_conf(
 	'postgresql.conf', q{
 multithreaded = on
-pooled_protocol_carriers = 0
 autovacuum = off
 io_method = sync
 summarize_wal = off
@@ -270,14 +262,12 @@ is($node->safe_psql('postgres', 'SELECT 42;'),
 # (4) No crash / assertion / corruption / PANIC signatures under REAL steals --
 # under cassert this means the seam cross-checks (XtcPgVerifyCurrentWorkIsSelf on
 # the GUC-amutex seam restore, XtcPgVerifySnapshotIsSelf on its save) and the
-# affine park-boundary tripwire stayed silent (no wrong root repoint), and the
-# protocol-read-park commit (PgCarrierCommitProtocolReadPark) did NOT PANIC on a
-# cross-carrier mismatch even though hundreds of fibers were stolen across loops.
-# This is the release-visible half of the bug-#2 decision.
+# affine park-boundary tripwire stayed silent (no wrong root repoint), even
+# though hundreds of fibers were stolen across loops.
 unlike(
 	$log,
 	qr/PANIC|Assert|assertion|segmentation|was terminated by signal|TRAP:|FailedAssertion|server process .* was terminated/,
-	'no crash / assertion / corruption / protocol-read-park PANIC under real cross-loop steals (seam cross-checks + affine tripwire silent)'
+	'no crash / assertion / corruption / PANIC under real cross-loop steals (seam cross-checks + affine tripwire silent)'
 );
 
 $node->stop('fast');

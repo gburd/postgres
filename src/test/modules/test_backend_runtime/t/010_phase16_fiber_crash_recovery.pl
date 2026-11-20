@@ -1,7 +1,7 @@
 # Copyright (c) 2026, PostgreSQL Global Development Group
 #
 # Phase 16 hardening: define and lock in the behavior of a backend crash
-# (SIGSEGV) under the pooled protocol scheduler.
+# (SIGSEGV) in a client backend running as a fiber.
 #
 # In a shared-process threaded runtime one fiber's memory corruption cannot be
 # safely isolated the way a separate process crash can, so the current,
@@ -27,12 +27,11 @@ use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
 
-my $node = PostgreSQL::Test::Cluster->new('phase16_pooled_crash_recovery');
+my $node = PostgreSQL::Test::Cluster->new('phase16_fiber_crash_recovery');
 $node->init;
 $node->append_conf(
 	'postgresql.conf', q{
 multithreaded = on
-pooled_protocol_carriers = 3
 autovacuum = off
 io_method = sync
 });
@@ -41,9 +40,9 @@ $node->start;
 $node->safe_psql('postgres', 'CREATE EXTENSION test_backend_runtime_threaded;');
 
 is($node->safe_psql('postgres', 'SHOW multithreaded'), 'on',
-	'pooled crash test runs threaded');
-isnt($node->safe_psql('postgres', 'SHOW pooled_protocol_carriers'), '0',
-	'pooled crash test runs pooled');
+	'fiber crash test runs threaded');
+like(slurp_file($node->logfile), qr/xtc: client backend launched as xtc fiber/,
+	'fiber crash test runs client backends as fibers');
 
 # Durable, committed data that must survive across the crash + restart.
 $node->safe_psql('postgres', q{
@@ -54,7 +53,7 @@ $node->safe_psql('postgres', q{
 is($node->safe_psql('postgres', 'SELECT count(*) FROM crash_survive;'),
 	'500', 'committed rows present before crash');
 
-# Crash one pooled session with a SIGSEGV.  The connection dies.
+# Crash one fiber session with a SIGSEGV.  The connection dies.
 my ($ret, $out, $err) = $node->psql('postgres',
 	'SELECT test_backend_runtime_crash_current_backend();');
 isnt($ret, 0, 'crashing SELECT returns a client-visible failure');
@@ -71,7 +70,7 @@ for (1 .. 120)
 	if ($r != 0) { $down = 1; last; }
 	sleep 1;
 }
-ok($down, 'server fail-stops (stops accepting connections) after the pooled backend crash');
+ok($down, 'server fail-stops (stops accepting connections) after the fiber backend crash');
 
 # Bring the postmaster's bookkeeping in line, then restart and confirm the
 # on-disk state recovered cleanly and committed data survived.

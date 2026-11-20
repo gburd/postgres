@@ -47,7 +47,7 @@ typedef enum PMChildCarrierKind
 {
 	PM_CHILD_CARRIER_PROCESS,
 	PM_CHILD_CARRIER_THREAD,
-	PM_CHILD_CARRIER_POOLED_LOGICAL
+	PM_CHILD_CARRIER_FIBER
 } PMChildCarrierKind;
 
 typedef struct
@@ -151,7 +151,6 @@ extern bool PostmasterThreadCarriersStarted(void);
 extern void ThreadedBackendStartupComplete(void);
 #ifdef USE_XTC_CARRIER
 extern bool ReapOrphanedThreadedWorker(BackendType child_type, int min_age_ms);
-extern void backend_pooled_protocol_maybe_grow_for_runnable_demand(void);
 #endif
 extern pid_t postmaster_child_launch(BackendType child_type,
 									 int child_slot,
@@ -171,12 +170,12 @@ extern PMChild *AssignPostmasterChildSlot(BackendType btype);
 extern PMChild *AllocDeadEndChild(void);
 extern bool PostmasterChildIsProcess(const PMChild *pmchild);
 extern bool PostmasterChildIsThread(const PMChild *pmchild);
-extern bool PostmasterChildIsPooledLogical(const PMChild *pmchild);
+extern bool PostmasterChildIsFiber(const PMChild *pmchild);
 extern bool PostmasterChildHasLogicalBackendPublication(const PMChild *pmchild);
 extern pid_t PostmasterChildSignalPid(const PMChild *pmchild);
 extern void PostmasterChildSetProcess(PMChild *pmchild, pid_t pid);
 extern void PostmasterChildSetThread(PMChild *pmchild, const PgThread *thread);
-extern void PostmasterChildSetPooledLogical(PMChild *pmchild);
+extern void PostmasterChildSetFiber(PMChild *pmchild);
 extern void PostmasterChildPublishLogicalBackend(PMChild *pmchild,
 												 struct PgBackend *backend);
 extern void PostmasterChildUnpublishLogicalBackend(PMChild *pmchild);
@@ -188,16 +187,16 @@ extern void PostmasterChildPublishLogicalStartupComplete(PMChild *pmchild,
 extern void PostmasterChildPublishThreadStartupComplete(PMChild *pmchild,
 														struct Latch *postmaster_latch);
 extern bool PostmasterChildHasStartupComplete(PMChild *pmchild);
-extern void PostmasterChildPublishPooledLogicalExit(PMChild *pmchild,
-													int exitstatus,
-													Size top_memory_allocated,
-													Size top_memory_reclaimed,
-													struct Latch *postmaster_latch);
-extern bool PostmasterChildHasExitedPooledLogical(PMChild *pmchild,
-												 int *exitstatus,
-												 Size *top_memory_allocated,
-												 Size *top_memory_reclaimed,
-												 pid_t *signal_pid);
+extern void PostmasterChildPublishFiberExit(PMChild *pmchild,
+											int exitstatus,
+											Size top_memory_allocated,
+											Size top_memory_reclaimed,
+											struct Latch *postmaster_latch);
+extern bool PostmasterChildHasExitedFiber(PMChild *pmchild,
+										  int *exitstatus,
+										  Size *top_memory_allocated,
+										  Size *top_memory_reclaimed,
+										  pid_t *signal_pid);
 extern void PostmasterChildPublishThreadExit(PMChild *pmchild, int exitstatus,
 											 Size top_memory_allocated,
 											 Size top_memory_reclaimed,

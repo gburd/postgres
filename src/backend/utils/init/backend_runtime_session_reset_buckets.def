@@ -20,7 +20,7 @@ PG_SESSION_RESET_BUCKET(temp_file, PgSessionResetTempFileClosedState(session))
  *     sql_delete_callback -> DropCachedPlan), draining SQL-language function
  *     plans that were SaveCachedPlan()'d.
  * Both must precede PgSessionResetPlanCacheClosedState, which asserts the list
- * empty.  (Ordering either after plan_cache tripped that assert on a pooled
+ * empty.  (Ordering either after plan_cache tripped that assert on a threaded
  * session that had run a PL/pgSQL or SQL-language function.)
  *
  * ruleutils and ri_triggers likewise SPI_keepplan() long-lived internal plans

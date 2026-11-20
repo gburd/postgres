@@ -151,7 +151,7 @@ static char *PgRuntimeCopyThreadServerGUCString(char *current,
 static bool PgRuntimeThreadServerGUCStringIsOwned(char *value);
 static void PgRuntimeCopyThreadServerGUCState(const PgRuntimeServerGUCState *source);
 static void PgRuntimeRefreshThreadServerGUCState(void);
-static void PgRuntimeConfigureThreadedAllocator(bool pooled_protocol);
+static void PgRuntimeConfigureThreadedAllocator(void);
 
 PgBackendPgStatPendingState *PgCurrentBackendPgStatPendingState(void);
 PgBackendInstrumentationState *PgCurrentBackendInstrumentationState(void);
@@ -520,8 +520,8 @@ PgRuntimeInstallHotBucketPointers(PgBackend *backend, PgSession *session,
 								  PgExecution *execution)
 {
 	/*
-	 * These pointers are only a cache of the current runtime work.  A future
-	 * pooled scheduler must call this whenever it switches carrier work.
+	 * These pointers are only a cache of the current runtime work.  Anything
+	 * that switches carrier work must call this again.
 	 */
 #define PG_RUNTIME_HOT_BUCKET(variable, type, owner, field) \
 	do { \
@@ -722,22 +722,9 @@ PgCarrierAttachBackend(PgCarrier *carrier, PgBackend *backend,
 	execution->backend = backend;
 	execution->session = session;
 	execution->carrier = carrier;
-	PgRuntimeProtocolSchedulerCarrierBecameActive(carrier);
 
 	PgRuntimeSetCurrentWork(runtime, carrier, backend, session, connection,
 							execution, true);
-	if (PgRuntimeIsPooledProtocol(runtime) &&
-		backend->my_proc != NULL &&
-		backend->core.latch == &backend->my_proc->procLatch)
-	{
-		ReownLatchCurrentThread(backend->core.latch);
-		RefreshLatchWaitSetCurrentCarrier();
-		if (FeBeWaitSet != NULL)
-			ModifyWaitEvent(FeBeWaitSet, FeBeWaitSetLatchPos, WL_LATCH_SET,
-							MyLatch);
-	}
-	if (PgRuntimeIsPooledProtocol(runtime))
-		RestoreBufferManagerIdleMemory();
 }
 
 void
@@ -763,7 +750,6 @@ PgCarrierDetachBackend(PgCarrier *carrier, PgBackend *backend)
 		backend->carrier = NULL;
 	if (execution != NULL && execution->carrier == carrier)
 		execution->carrier = NULL;
-	PgRuntimeProtocolSchedulerCarrierBecameIdle(carrier);
 
 	if (CurrentPgCarrier == carrier)
 		PgRuntimeSetCurrentWork(runtime, carrier, NULL, NULL, NULL, NULL,
@@ -962,7 +948,7 @@ PgRuntimeThreadServerGUCContext(void)
 /*
  * The thread runtime is shared by many logical sessions.  Server GUC strings
  * must therefore live in address-space runtime memory, not in the
- * per-session GUC contexts that pooled carriers repeatedly create and delete.
+ * per-session GUC contexts that sessions repeatedly create and delete.
  */
 static bool
 PgRuntimeThreadServerGUCStringIsOwned(char *value)
@@ -1044,75 +1030,45 @@ PgRuntimeRefreshThreadServerGUCState(void)
 }
 
 static void
-PgRuntimeConfigureThreadedAllocator(bool pooled_protocol)
+PgRuntimeConfigureThreadedAllocator(void)
 {
 #if defined(__GLIBC__)
 	/*
 	 * Arena count is a throughput-vs-footprint tradeoff.  Glibc serializes all
-	 * allocations that land in the same arena behind that arena's lock, so with
-	 * too few arenas the carrier OS threads contend on the arena lock under a
-	 * malloc-heavy workload.  Profiling a pooled prepared-SELECT load showed
-	 * ~2.6M malloc/free per second (per-command StringInfo churn in the session
-	 * step) and that capping to a single arena was the dominant throughput
-	 * bottleneck: arena_max=1 -> 197k tps, =64 -> 265k tps (+33%) at 8 carriers
-	 * on 32 vCPU (plan_docs/MULTITHREADED_PHASE18_PROFILE.md).  Unlike process
-	 * mode -- where each backend is a separate process with PRIVATE arenas and
-	 * therefore never cross-contends -- the carriers share one address space, so
-	 * the arena count must at least cover the concurrent carriers.
-	 *
-	 * Scale the cap with the carrier pool (one arena per carrier is enough to
-	 * remove the cross-carrier serialization without glibc's default
-	 * 8*ncpu explosion), with a small floor for the not-yet-sized/thread-per-
-	 * session case.  Retained memory is held down NOT by the 64MB trim
-	 * threshold alone (that only raises when top-of-heap sbrk-shrinks) but by
-	 * arena free-list REUSE plus two active malloc_trim(0) valves -- idle
-	 * hibernation (postgres.c, pooled_protocol_idle_memory_compaction) and
-	 * teardown reclaim (backend_thread_maybe_malloc_trim, this file's callers)
-	 * -- so total retained ~= arenas * per-session peak working set, a plateau
-	 * bounded by the arena cap, not a ramp.  An operator MALLOC_ARENA_MAX wins.
+	 * allocations that land in the same arena behind that arena's lock.  Unlike
+	 * process mode, where each backend is a separate process with private
+	 * arenas, the carrier loop threads share one address space, so too few
+	 * arenas make them contend on the arena lock under a malloc-heavy load.
+	 * Keep glibc's default 8*ncpu explosion out with a modest cap.  Retained
+	 * memory is held down by arena free-list reuse plus the malloc_trim(0) on
+	 * backend teardown (backend_thread_maybe_trim_reclaimed_memory), so total
+	 * retained memory is a plateau bounded by the arena cap, not a ramp.  An
+	 * operator MALLOC_ARENA_MAX wins.
 	 */
-	int			carriers = pooled_protocol ? PgRuntimePooledProtocolCarrierLimit() : 0;
-	int			arena_max;
-
-	if (carriers > 0)
-		arena_max = carriers;	/* one arena per carrier */
-	else
-		arena_max = 4;			/* thread-per-session / unsized: modest */
-	if (arena_max < 4)
-		arena_max = 4;
-
 	if (getenv("MALLOC_ARENA_MAX") == NULL)
-		(void) mallopt(M_ARENA_MAX, arena_max);
+		(void) mallopt(M_ARENA_MAX, 4);
 
-	if (pooled_protocol)
-	{
-		/*
-		 * Large-allocation policy for the shared carrier address space.  Unlike
-		 * process mode -- where each backend is its own process and glibc's
-		 * mmap-per-large-alloc + munmap-on-free touches only that process's
-		 * private address space -- the carriers share ONE address space, so a
-		 * malloc-heavy query that allocates large blocks (tuplestore / sort /
-		 * hash / large StringInfo) makes glibc mmap+munmap them repeatedly, and
-		 * the kernel mmap_lock + cross-core TLB shootdowns serialize every
-		 * carrier.  Measured on a 192-core box with a CPU-bound query across the
-		 * pooled carriers: the default policy collapsed to ~3.7k tps (vs fork's
-		 * ~51k, 0.07x); disabling the mmap path (M_MMAP_MAX=0, keep large blocks
-		 * in the arena) and raising the trim threshold to 64 MB (retain freed
-		 * blocks for reuse instead of returning them to the OS) lifted it to
-		 * ~68.5k tps -- 18.5x, and 1.34x of fork -- with -S read OLTP unchanged
-		 * (~1.91M tps) and only a bounded RSS increase (+24%: 946->1170 MB).  A
-		 * 64 MB trim beat both the old 128 KB (churn) and an unbounded -1
-		 * (retention overhead).  M_TOP_PAD stays 0 so the retained footprint is
-		 * the arena free-lists, not top-of-heap padding.  Operator env overrides
-		 * still win.
-		 */
-		if (getenv("MALLOC_MMAP_MAX_") == NULL)
-			(void) mallopt(M_MMAP_MAX, 0);
-		if (getenv("MALLOC_TRIM_THRESHOLD_") == NULL)
-			(void) mallopt(M_TRIM_THRESHOLD, 64 * 1024 * 1024);
-		if (getenv("MALLOC_TOP_PAD_") == NULL)
-			(void) mallopt(M_TOP_PAD, 0);
-	}
+	/*
+	 * Large-allocation policy for the shared address space.  In process mode
+	 * glibc's mmap-per-large-alloc and munmap-on-free touch only that
+	 * process's private address space.  Here every session shares one, so a
+	 * query that allocates large blocks (tuplestore, sort, hash, a large
+	 * StringInfo) makes glibc mmap and munmap them repeatedly, and the kernel
+	 * mmap_lock and cross-core TLB shootdowns serialize every carrier thread.
+	 * On a 192-core box with a CPU-bound query this collapsed throughput to
+	 * 0.07x of fork; disabling the mmap path (M_MMAP_MAX=0, keep large blocks
+	 * in the arena) and raising the trim threshold to 64 MB (retain freed
+	 * blocks for reuse) lifted it 18.5x, to 1.34x of fork, with read OLTP
+	 * unchanged and a bounded RSS increase (+24%).  M_TOP_PAD stays 0 so the
+	 * retained footprint is the arena free-lists, not top-of-heap padding.
+	 * Operator env overrides still win.
+	 */
+	if (getenv("MALLOC_MMAP_MAX_") == NULL)
+		(void) mallopt(M_MMAP_MAX, 0);
+	if (getenv("MALLOC_TRIM_THRESHOLD_") == NULL)
+		(void) mallopt(M_TRIM_THRESHOLD, 64 * 1024 * 1024);
+	if (getenv("MALLOC_TOP_PAD_") == NULL)
+		(void) mallopt(M_TOP_PAD, 0);
 #endif
 }
 
@@ -1121,23 +1077,14 @@ InitializePgThreadRuntime(PgBackendExitContinuation exit_backend)
 {
 	if (!thread_runtime_initialized)
 	{
-		PgRuntimeConfigureThreadedAllocator(PgRuntimePooledProtocolRequested());
+		PgRuntimeConfigureThreadedAllocator();
 
 		MemSet(&thread_runtime, 0, sizeof(thread_runtime));
 		PgRuntimeInitializeRuntimeObject(&thread_runtime);
 
-		if (PgRuntimePooledProtocolRequested())
-		{
-			thread_runtime.kind = PG_RUNTIME_POOLED_PROTOCOL;
-			thread_runtime.extension_backend_model =
-				PG_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE;
-		}
-		else
-		{
-			thread_runtime.kind = PG_RUNTIME_THREAD_PER_SESSION;
-			thread_runtime.extension_backend_model =
-				PG_BACKEND_MODEL_THREAD_PER_SESSION;
-		}
+		thread_runtime.kind = PG_RUNTIME_THREAD_PER_SESSION;
+		thread_runtime.extension_backend_model =
+			PG_BACKEND_MODEL_THREAD_PER_SESSION;
 		/*
 		 * Carry the early-runtime extension-module state into thread_runtime.
 		 * shared_preload_libraries modules registered runtime-scoped private
@@ -1273,9 +1220,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
  * Assert(TopMemoryContext == NULL) (cassert) or corrupting the shared
  * per-thread memory-context / session-GUC state (release).  Installing the
  * per-fiber logical roots first makes the whole startup window resolve to
- * fiber-owned storage that rides the park with the fiber, exactly as the
- * pooled-protocol path already does via PgCarrierAttachBackend() before its
- * own MemoryContextInit().
+ * fiber-owned storage that rides the park with the fiber.
  *
  * InstallPgThreadBackendRuntimeState() below detects that the roots are
  * already current and skips the populate-fallback-then-adopt copy (which would
@@ -1456,8 +1401,7 @@ PgCurrentCarrierState(void)
 bool
 PgRuntimeKindIsThreadBacked(PgRuntimeKind kind)
 {
-	return kind == PG_RUNTIME_THREAD_PER_SESSION ||
-		kind == PG_RUNTIME_POOLED_PROTOCOL;
+	return kind == PG_RUNTIME_THREAD_PER_SESSION;
 }
 
 bool
@@ -1465,75 +1409,6 @@ PgRuntimeIsThreadBacked(PgRuntime *runtime)
 {
 	return runtime != NULL &&
 		PgRuntimeKindIsThreadBacked(runtime->kind);
-}
-
-bool
-PgRuntimeKindIsPooledProtocol(PgRuntimeKind kind)
-{
-	return kind == PG_RUNTIME_POOLED_PROTOCOL;
-}
-
-bool
-PgRuntimeIsPooledProtocol(PgRuntime *runtime)
-{
-	return runtime != NULL &&
-		PgRuntimeKindIsPooledProtocol(runtime->kind);
-}
-
-bool
-PgRuntimePooledProtocolRequested(void)
-{
-	return multithreaded && pooled_protocol_carriers > 0;
-}
-
-int
-PgRuntimePooledProtocolCarrierLimit(void)
-{
-	return pooled_protocol_carriers;
-}
-
-uint32
-PgRuntimePooledProtocolIdleCarrierCount(void)
-{
-	PgProtocolSchedulerState *scheduler;
-	uint32		idle_carriers;
-
-	if (!thread_runtime_initialized ||
-		thread_runtime.kind != PG_RUNTIME_POOLED_PROTOCOL)
-		return 0;
-
-	scheduler = &thread_runtime.protocol_scheduler;
-	SpinLockAcquire(&scheduler->lock);
-	idle_carriers = scheduler->idle_carrier_count;
-	SpinLockRelease(&scheduler->lock);
-
-	return idle_carriers;
-}
-
-/*
- * Number of protocol backends currently RUNNABLE (a parked session whose read
- * became ready and is waiting for a carrier to resume it).  This is the demand
- * signal the pooled pool grows against for CPU-bound sessions, which never sit
- * in the new-connection dispatch queue: they are resumed in place, so
- * runnable_count -- not queue_length -- reflects how many sessions want a
- * carrier right now.  Returns 0 off the pooled path.
- */
-uint32
-PgRuntimePooledProtocolRunnableCount(void)
-{
-	PgProtocolSchedulerState *scheduler;
-	uint32		runnable;
-
-	if (!thread_runtime_initialized ||
-		thread_runtime.kind != PG_RUNTIME_POOLED_PROTOCOL)
-		return 0;
-
-	scheduler = &thread_runtime.protocol_scheduler;
-	SpinLockAcquire(&scheduler->lock);
-	runnable = scheduler->runnable_count;
-	SpinLockRelease(&scheduler->lock);
-
-	return runnable;
 }
 
 PgBackendLaunchModel

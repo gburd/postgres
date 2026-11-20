@@ -52,7 +52,6 @@ PG_FUNCTION_INFO_V1(test_backend_runtime_crash_current_backend);
 PG_FUNCTION_INFO_V1(test_backend_runtime_send_forged_down);
 PG_FUNCTION_INFO_V1(test_backend_runtime_wait_completion_enabled);
 PG_FUNCTION_INFO_V1(test_backend_runtime_wait_completion_snapshot);
-PG_FUNCTION_INFO_V1(test_backend_runtime_protocol_park_snapshot);
 PG_FUNCTION_INFO_V1(test_backend_runtime_wait_on_condition_variable);
 PG_FUNCTION_INFO_V1(test_backend_runtime_hold_lwlock);
 PG_FUNCTION_INFO_V1(test_backend_runtime_wait_on_lwlock);
@@ -93,8 +92,6 @@ test_backend_runtime_kind_name(PgRuntimeKind kind)
 			return "process";
 		case PG_RUNTIME_THREAD_PER_SESSION:
 			return "thread_per_session";
-		case PG_RUNTIME_POOLED_PROTOCOL:
-			return "pooled_protocol";
 	}
 
 	return "unknown";
@@ -156,43 +153,6 @@ test_backend_runtime_wait_completion_state_name(uint32 state)
 	return "unknown";
 }
 
-static const char *
-test_backend_runtime_protocol_park_state_name(PgProtocolParkState state)
-{
-	switch (state)
-	{
-		case PG_PROTOCOL_PARK_NONE:
-			return "none";
-		case PG_PROTOCOL_PARK_PREPARED:
-			return "prepared";
-		case PG_PROTOCOL_PARK_COMMITTED:
-			return "committed";
-	}
-
-	return "unknown";
-}
-
-static const char *
-test_backend_runtime_protocol_queue_state_name(
-	PgProtocolSchedulerQueueState state)
-{
-	switch (state)
-	{
-		case PG_PROTOCOL_SCHEDULER_QUEUE_NONE:
-			return "none";
-		case PG_PROTOCOL_SCHEDULER_QUEUE_PARKED_PROTOCOL_READ:
-			return "parked_protocol_read";
-		case PG_PROTOCOL_SCHEDULER_QUEUE_POLLING:
-			return "polling";
-		case PG_PROTOCOL_SCHEDULER_QUEUE_RUNNABLE:
-			return "runnable";
-		case PG_PROTOCOL_SCHEDULER_QUEUE_LEASED:
-			return "leased";
-	}
-
-	return "unknown";
-}
-
 void
 _PG_init(void)
 {
@@ -248,12 +208,10 @@ test_backend_runtime_model_snapshot(PG_FUNCTION_ARGS)
 	if (runtime == NULL)
 		PG_RETURN_NULL();
 
-	result = psprintf("%s|%s|%d|%d",
+	result = psprintf("%s|%s",
 					  test_backend_runtime_kind_name(runtime->kind),
 					  test_backend_runtime_model_name(
-						  runtime->extension_backend_model),
-					  PgRuntimePooledProtocolCarrierLimit(),
-					  PgRuntimePooledProtocolRequested());
+						  runtime->extension_backend_model));
 
 	PG_RETURN_TEXT_P(cstring_to_text(result));
 }
@@ -504,7 +462,7 @@ test_backend_runtime_send_forged_down(PG_FUNCTION_ARGS)
 }
 
 /*
- * Crash the CURRENT backend with a SIGSEGV (NULL deref).  In a threaded/pooled
+ * Crash the CURRENT backend with a SIGSEGV (NULL deref).  In a threaded
  * runtime this exercises the fiber-crash containment + genuine-crash escalation
  * path: the fault must be contained on the carrier, escalate to a postmaster
  * crash-recovery cycle, and not silently corrupt or hang sibling sessions.
@@ -565,60 +523,6 @@ test_backend_runtime_wait_completion_snapshot(PG_FUNCTION_ARGS)
 					  snapshot.backend != NULL,
 					  snapshot.session != NULL,
 					  snapshot.execution != NULL);
-
-	PG_RETURN_TEXT_P(cstring_to_text(result));
-}
-
-Datum
-test_backend_runtime_protocol_park_snapshot(PG_FUNCTION_ARGS)
-{
-	int32		backend_id_arg = PG_GETARG_INT32(0);
-	PgProtocolParkSnapshot snapshot;
-	char	   *result;
-
-	if (backend_id_arg <= 0)
-		PG_RETURN_NULL();
-
-	if (!PgBackendSnapshotProtocolParkById((PgBackendId) backend_id_arg,
-										   &snapshot))
-		PG_RETURN_NULL();
-
-	result = psprintf("%s|%s|"
-					  UINT64_FORMAT "|%u|%u|" UINT64_FORMAT "|%u|%u|"
-					  UINT64_FORMAT "|" UINT64_FORMAT "|" UINT64_FORMAT "|"
-					  UINT64_FORMAT "|%u|%u|%u|" UINT64_FORMAT "|"
-					  UINT64_FORMAT "|%d|%d|%d|%d|%u|" UINT64_FORMAT "|"
-					  UINT64_FORMAT "|%u|%u|%u|%d|%ld",
-					  test_backend_runtime_protocol_park_state_name(snapshot.state),
-					  test_backend_runtime_protocol_queue_state_name(
-						  snapshot.scheduler_queue_state),
-					  snapshot.generation,
-					  snapshot.wake_reasons,
-					  snapshot.wake_events,
-					  snapshot.wake_generation,
-					  snapshot.last_wake_reasons,
-					  snapshot.last_wake_events,
-					  snapshot.last_wake_generation,
-					  snapshot.notify_wake_generation,
-					  snapshot.deferred_notify_generation,
-					  snapshot.deferred_notify_park_generation,
-					  snapshot.deferred_notify_reasons,
-					  snapshot.scheduler_runnable_count,
-					  snapshot.scheduler_parked_protocol_count,
-					  snapshot.scheduler_runnable_enqueue_count,
-					  snapshot.scheduler_parked_protocol_enqueue_count,
-					  snapshot.carrier_attached,
-					  snapshot.session_present,
-					  snapshot.connection_present,
-					  snapshot.execution_present,
-					  snapshot.scheduler_carrier_limit,
-					  snapshot.scheduler_same_carrier_resume_count,
-					  snapshot.scheduler_migrated_resume_count,
-					  snapshot.scheduler_registered_carrier_count,
-					  snapshot.scheduler_idle_carrier_count,
-					  snapshot.scheduler_active_carrier_count,
-					  snapshot.last_park_duration_valid,
-					  snapshot.last_park_duration_ms);
 
 	PG_RETURN_TEXT_P(cstring_to_text(result));
 }

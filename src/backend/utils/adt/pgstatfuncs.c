@@ -2575,12 +2575,11 @@ pg_stat_get_xtc_carriers(PG_FUNCTION_ARGS)
 /*
  * pg_stat_get_xtc_runtime - carrier/runtime hot-path counters (fusion F1).
  *
- * One row per counter: (counter name, value).  These count events on our own
- * pooled-protocol carrier hot paths -- sessions leased/resumed, protocol
- * parks, wake deliveries, carriers started, process fallbacks, idle queue
- * waits -- which libxtc's per-loop stats (pg_stat_xtc_carriers) do not see.
- * Empty set in process mode and in any threaded run that never stood up a
- * pooled carrier (the counters are never registered there).  Complements
+ * One row per counter: (counter name, value).  These count PG-side runtime
+ * events, such as sessions routed to a process-fallback backend, which
+ * libxtc's per-loop stats (pg_stat_xtc_carriers) do not see.  Empty set in
+ * process mode and in any threaded run that never counted an event (the
+ * counters are never registered there).  Complements
  * pg_stat_xtc_carriers: libxtc-scheduler health there, PG-side runtime flow
  * here.
  */

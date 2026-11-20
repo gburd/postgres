@@ -14,15 +14,13 @@ plan skip_all => 'startup publication coverage requires injection points'
 
 $ENV{PG_XTC_CARRIER_LOOPS} = '1';
 
-for my $lane ('process', 'fiber', 'pooled')
+for my $lane ('process', 'fiber')
 {
 	my $mode = $lane eq 'process' ? 'off' : 'on';
-	my $pool = $lane eq 'pooled' ? 2 : 0;
 	my $node = PostgreSQL::Test::Cluster->new("startup_publication_$lane");
 	$node->init;
 	$node->append_conf('postgresql.conf', qq{
 multithreaded = $mode
-pooled_protocol_carriers = $pool
 io_method = sync
 summarize_wal = off
 autovacuum = off
@@ -37,15 +35,10 @@ statement_timeout = 0
 		'CREATE EXTENSION test_backend_runtime_threaded');
 	is($node->safe_psql('postgres', 'SHOW multithreaded'),
 		$mode, "$lane: backend mode");
-	is($node->safe_psql('postgres', 'SHOW pooled_protocol_carriers'),
-		"$pool", "$lane: protocol carrier setting");
 	if ($mode eq 'on')
 	{
-		my $pool_label = $lane eq 'pooled'
-		  ? 'worker-fiber pool; client backends on pooled carriers'
-		  : 'thread-per-session backend pool';
 		like(slurp_file($node->logfile),
-			qr/xtc: carrier scheduler thread up \(1 loop, 1 supervisor, \Q$pool_label\E\)/,
+			qr/xtc: carrier scheduler thread up \(1 loop, 1 supervisor, thread-per-session backend pool\)/,
 			"$lane: one worker fiber loop");
 	}
 

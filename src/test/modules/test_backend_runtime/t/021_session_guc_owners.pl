@@ -17,15 +17,14 @@ my $settings = q{SELECT current_setting('enable_groupagg'),
 my $explain = q{EXPLAIN (FORMAT JSON, COSTS OFF)
 	SELECT i, count(i ORDER BY i) FROM generate_series(1, 10) i GROUP BY i ORDER BY i};
 
-for my $lane (['fork', 'off', 0], ['fiber', 'on', 0], ['pooled', 'on', 4])
+for my $lane (['fork', 'off'], ['fiber', 'on'])
 {
-	my ($label, $mode, $carriers) = @$lane;
+	my ($label, $mode) = @$lane;
 	my $node = PostgreSQL::Test::Cluster->new("guc_owners_$label");
 	$node->init(allows_streaming => 'logical');
 	$node->append_conf(
 		'postgresql.conf', qq{
 multithreaded = $mode
-pooled_protocol_carriers = $carriers
 io_method = sync
 summarize_wal = off
 max_connections = 20
@@ -34,14 +33,11 @@ log_statement = 'all'
 	$node->start;
 	is($node->safe_psql('postgres', 'SHOW multithreaded'),
 		$mode, "$label: backend model");
-	is($node->safe_psql('postgres', 'SHOW pooled_protocol_carriers'),
-		"$carriers", "$label: protocol carrier count");
 
 	my $a = $node->background_psql('postgres', timeout => 30);
 	my $b = $node->background_psql('postgres', timeout => 30);
 	$a->set_query_timer_restart;
 	$b->set_query_timer_restart;
-	# Five live sessions exceed the four-carrier protocol pool.
 	my @idle = map { $node->background_psql('postgres', timeout => 30) } 1 .. 3;
 	my $defaults = 'on|-1|pgoutput, test_decoding';
 	is($a->query_safe($settings), $defaults, "$label: A boot defaults");

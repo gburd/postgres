@@ -44,7 +44,6 @@ sub check_bootstrap
 	my @settings = (
 		['xtc_force_process_fallback', $mode],
 		['shared_memory_type', 'sysv'],
-		['pooled_protocol_carriers', '4'],
 		['max_connections', '4'],
 		['superuser_reserved_connections', '0'],
 		['reserved_connections', '0'],
@@ -125,7 +124,7 @@ SELECT pg_backend_pid(), test_backend_runtime_model_snapshot(),
        (SELECT size FROM pg_shmem_allocations WHERE name = 'Wal Sender Ctl');
 }, 'runtime and shared memory query succeeds');
 	return unless defined $out;
-	my ($pid, $runtime, $model, $limit, $requested, $size) = split /\|/, $out, -1;
+	my ($pid, $runtime, $model, $size) = split /\|/, $out, -1;
 	like($pid // '', qr/^[1-9][0-9]*$/, 'backend has a real PID');
 	my $postmaster_pid = slurp_file($node->data_dir . '/postmaster.pid');
 	$postmaster_pid =~ s/\n.*//s;

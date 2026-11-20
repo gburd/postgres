@@ -38,7 +38,6 @@
 
 #include "miscadmin.h"
 #include <sys/resource.h>
-#include "postmaster/autovacuum.h"	/* autovacuum_max_workers */
 #include "storage/latch.h"
 #include "libpq/pqsignal.h"	/* BlockSig */
 #include "postmaster/pg_xtc_carrier.h"
@@ -49,7 +48,7 @@
 #include "xtc.h"
 #include "xtc_app.h"
 #include "xtc_exec.h"		/* xtc_exec_loop, xtc_exec_n_loops, xtc_exec_set_eager_rebalance */
-#include "xtc_loop.h"		/* xtc_loop_wake (v1.39: lost-wake-free cross-thread loop nudge) */
+#include "xtc_loop.h"
 #include "xtc_proc.h"
 #include "xtc_orc.h"		/* xtc_sup_* (F4: optional per-loop OTP supervisor) */
 #include "xtc_version.h"		/* XTC_VERSION_* (installed from libxtc 2.2) */
@@ -64,7 +63,6 @@
 #endif
 #include "xtc_runtime.h"		/* xtc_runtime_set_stack_size */
 #include "xtc_stats.h"		/* xtc_counter_* (fusion F1 runtime counters); xtc_runtime_tuning_check (F0a) */
-#include "xtc_sync.h"		/* xtc_amutex_*, xtc_notify_* (fusion F2 pooled-queue lock) */
 #include "xtc_log.h"		/* xtc_log_set_default (fusion F0a: libxtc diagnostics -> server log) */
 #include "xtc_dump.h"		/* xtc_dump (fusion F0d: full runtime dump on threaded crash) */
 #include "xtc_tail.h"		/* xtc_tail_enable (v1.41.1 diagnostic timeline; PG_XTC_TAIL) */
@@ -149,7 +147,7 @@ static pthread_mutex_t g_xtc_start_lock = PTHREAD_MUTEX_INITIALIZER;
  * its PMChild exit -- is observed (a DOWN with non-zero reason) and logged
  * loudly instead of silently leaving an occupied PMChild slot.  NORMAL exits
  * (reason 0) are corroborative only: the postmaster still owns reaping via
- * process_pm_pooled_logical_exit().  The supervisor NEVER reaps and NEVER
+ * process_pm_fiber_exit().  The supervisor NEVER reaps and NEVER
  * respawns -- it is an observer.  Stage 1 is observability + loud logging;
  * wiring an abnormal DOWN into the postmaster crash policy (ExitPostmaster)
  * is Stage 1b.
@@ -159,13 +157,6 @@ static pthread_mutex_t g_xtc_start_lock = PTHREAD_MUTEX_INITIALIZER;
  * cross-thread xtc_send() register message.
  */
 #define XTC_PG_MAX_SUP_LOOPS 1024
-/*
- * Upper bound on the worker/aux fiber executor loop pool when the pooled
- * protocol scheduler owns client backends.  The executor then runs only
- * long-lived worker fibers, so a small fixed pool suffices; this caps the pool
- * even if autovacuum_max_workers + max_worker_processes are set very high.
- */
-#define XTC_PG_MAX_WORKER_FIBER_LOOPS 16
 static xtc_pid_t g_xtc_sup_pid[XTC_PG_MAX_SUP_LOOPS];
 
 /*
@@ -233,44 +224,25 @@ typedef struct xtc_sup_spawn_msg
 static xtc_carrier_entry_fn g_xtc_backend_entry;
 
 /*
+ * Upper bound on the default carrier loop count, so a very-large-core box does
+ * not create hundreds of carrier OS threads (and their stack reservations)
+ * that the kernel's CFS load balancer then spends its time on.
+ */
+#define XTC_PG_CARRIER_LOOPS_CEILING 256
+
+/*
  * Number of carrier loops (each on its own OS thread).  A pool of loops lets
  * backend fibers run in parallel and avoids the single-loop lost-wakeup where
  * two or more fibers parked on one loop could starve each other.
  *
- * The pool is FIXED at startup and sized to roughly one loop per core, but
- * bounded so a very-large-core box does not create hundreds of carrier OS
- * threads.  Two callers create OS-thread pools under multithreaded=on: this
- * fiber executor (worker/aux fibers, and thread-per-session client backends
- * when pooled_protocol_carriers=0) and, independently, the pooled-protocol
- * carrier pool (backend_pooled_protocol_*).  Both must share the SAME budget,
- * or on a 384-vCPU box the two uncapped pools stack (e.g. 192 pooled carriers
- * PLUS 384 fiber-executor loops = 576+ OS threads) and the kernel's CFS
- * load-balancer (update_sg_lb_stats) dominates the profile -- measured as the
- * top CPU consumer, 10-11%, with the box 78-89%% idle, on the 2026-07-23 EC2
- * A/B.  So:
- *   - PG_XTC_CARRIER_LOOPS overrides everything (tuning / tests).
- *   - Else, when the pooled-protocol scheduler is active, the pooled carrier
- *     pool owns client-backend parallelism and this executor runs only a
- *     handful of long-lived worker fibers, so size it small and fixed to the
- *     worker concurrency (NOT the core count).
- *   - Else (thread-per-session, pooled_protocol_carriers==0), this executor IS
- *     the backend parallelism, so size to the core count, bounded by
- *     POOLED_PROTOCOL_CARRIER_AUTO_CEILING so the fiber pool obeys the same
- *     ceiling as the pooled pool.
+ * The pool is FIXED at startup and sized to one loop per core, bounded by
+ * XTC_PG_CARRIER_LOOPS_CEILING.  PG_XTC_CARRIER_LOOPS overrides the default
+ * (tuning and tests).
  *
- * NECESSARY BUT NOT THE WHOLE CURE: this removes the fiber executor's
- * over-sizing (its 384->~15 contribution on the benchmark box).  The A/B
- * measured 4634 OS threads, which is NOT fully accounted for by any single
- * identifiable source (fiber executor n_loops+1, libxtc blocking pool capped
- * at 64, singleton lock-detector/preempt/slab-PSI helpers, pooled carriers
- * <= ceiling).  A follow-up must locate the remaining thread multiplier with a
- * thread-name histogram; do not treat this alone as the full thread-explosion
- * fix.
- *
- * ponytail: with many concurrent CPU-bound parallel workers (workers >> loops)
+ * shortcut: with many concurrent CPU-bound parallel workers (workers >> loops)
  * they serialize per loop -- a latency ceiling, not a deadlock (fibers are
  * cooperative).  Upgrade path if a workload proves it matters: elastic loop
- * growth for the worker-fiber pool.
+ * growth.
  */
 static int
 xtc_carrier_loop_count(void)
@@ -287,50 +259,12 @@ xtc_carrier_loop_count(void)
 			return (int) v;
 	}
 
-	/*
-	 * When the pooled-protocol scheduler is active, client backends run on the
-	 * pooled carrier pool (backend_pooled_protocol_*), NOT on this fiber
-	 * executor.  The executor then runs only a small, fixed set of long-lived
-	 * worker/aux fibers (autovac launcher + workers, WAL writer, WAL
-	 * summarizer, logical launcher, a few bgworkers -- on the order of ten,
-	 * bounded by autovacuum_max_workers + max_worker_processes).  Sizing this
-	 * pool to the core count would spin up hundreds of OS threads to run a
-	 * dozen fibers -- exactly the thread explosion the 2026-07-23 A/B caught
-	 * (fiber executor 384 loops stacked on 192 pooled carriers -> CFS
-	 * load-balancer became the top CPU consumer).  Size it to the worker
-	 * concurrency instead, floored small for parallelism / lost-wakeup safety
-	 * and never larger than the carrier budget.
-	 */
-	if (PgRuntimePooledProtocolRequested())
-	{
-		int			carriers = PgRuntimePooledProtocolCarrierLimit();
-		int			workers = 4;	/* floor: parallel workers, avoid single-loop starvation */
-
-		if (autovacuum_max_workers > 0)
-			workers += autovacuum_max_workers;
-		if (max_worker_processes > 0)
-			workers += max_worker_processes;
-		if (workers > XTC_PG_MAX_WORKER_FIBER_LOOPS)
-			workers = XTC_PG_MAX_WORKER_FIBER_LOOPS;
-		if (carriers >= 1 && workers > carriers)
-			workers = carriers;
-		if (workers < 1)
-			workers = 1;
-		return workers;
-	}
-
-	/*
-	 * Thread-per-session (pooled_protocol_carriers==0): this executor IS the
-	 * client-backend parallelism, so size it to the cores, bounded by the same
-	 * ceiling the pooled pool obeys so a very-large-core box cannot create an
-	 * unbounded thread pool here either.
-	 */
 	ncpus = sysconf(_SC_NPROCESSORS_ONLN);
 	if (ncpus < 1)
 		ncpus = 1;
 	loops = (int) ncpus;
-	if (loops > POOLED_PROTOCOL_CARRIER_AUTO_CEILING)
-		loops = POOLED_PROTOCOL_CARRIER_AUTO_CEILING;
+	if (loops > XTC_PG_CARRIER_LOOPS_CEILING)
+		loops = XTC_PG_CARRIER_LOOPS_CEILING;
 	return loops;
 }
 
@@ -981,7 +915,7 @@ xtc_carrier_start_supervisors(void)
  * real backend spawn (xtc_pg_launch_backend_fiber) through xtc_sup_add_child is
  * a larger behavioural cutover -- it moves the spawn+monitor+DOWN plumbing off
  * the hand-rolled XTC_SUP_SPAWN mailbox onto the OTP supervisor -- and needs its
- * own A/B on check-threaded-pooled (neutral-or-better, no crash-containment
+ * own A/B on check-threaded (neutral-or-better, no crash-containment
  * regression) before it can replace the escalation source of truth.  That is
  * the remaining step (F4 design step 2), intentionally NOT taken in this commit.
  * Until a child is added the hook never fires and changes no behaviour -- which
@@ -1362,12 +1296,11 @@ xtc_pg_carrier_start(void)
 		}
 
 		/*
-		 * Threaded fault policy: fail-stop FAST.  A synchronous fault in a
-		 * session running inline on a pooled-affine carrier thread (not a
-		 * libxtc-managed coro) cannot be contained -- libxtc's fault guard
-		 * restores SIG_DFL and re-raises, and the whole shared-address-space
-		 * process must die (correct: one fiber's memory corruption is not
-		 * isolable).  But the default SIGSEGV disposition core-dumps the entire
+		 * Threaded fault policy: fail-stop FAST.  A synchronous fault on a
+		 * carrier thread cannot be contained -- libxtc's fault guard restores
+		 * SIG_DFL and re-raises, and the whole shared-address-space process
+		 * must die (correct: one fiber's memory corruption is not isolable).
+		 * But the default SIGSEGV disposition core-dumps the entire
 		 * multithreaded process (dozens of carrier threads x large fiber
 		 * stacks), which took ~20-70s to write -- during which the crashing
 		 * client's socket stays open and it hangs.  Drop RLIMIT_CORE to 0 so
@@ -1521,9 +1454,7 @@ xtc_pg_carrier_start(void)
 		elog(LOG, "xtc: carrier scheduler thread up (%d loop%s, %d supervisor%s, %s)",
 			 g_xtc_n_loops, g_xtc_n_loops == 1 ? "" : "s",
 			 g_xtc_n_sups, g_xtc_n_sups == 1 ? "" : "s",
-			 PgRuntimePooledProtocolRequested()
-			 ? "worker-fiber pool; client backends on pooled carriers"
-			 : "thread-per-session backend pool");
+			 "thread-per-session backend pool");
 
 		/*
 		 * F4: report the optional xtc_orc supervisor count only when the GUC is
@@ -1993,41 +1924,33 @@ xtc_pg_carrier_runtime_info(XtcPgCarrierRuntimeInfo *out)
  * ---------------------------------------------------------------------------
  * Fusion F1: carrier/runtime hot-path counters (libxtc xtc_stats).
  *
- * These count events on OUR OWN pooled-protocol carrier hot paths -- the ones
- * libxtc's per-loop xtc_exec_loop_stats (surfaced by pg_stat_xtc_carriers)
- * does NOT see: how sessions flow through the pooled queue, park/resume, and
- * the process-fallback + carrier-spawn control events.  Surfaced by the
+ * These count PG-side runtime events that libxtc's per-loop
+ * xtc_exec_loop_stats (surfaced by pg_stat_xtc_carriers) does NOT see, such
+ * as sessions routed to a process-fallback backend.  Surfaced by the
  * pg_stat_xtc_runtime SRF/view.
  *
  * Each counter is a libxtc xtc_counter_t: per-CPU sharded, so an inc/add on
  * the hot path is one cache-line-local atomic add (see xtc_stats.h).  The
- * handles are created once, on the scheduler thread at carrier bringup, via
+ * handles are created once, on the postmaster thread, via
  * xtc_pg_runtime_counters_register().  Before registration -- and forever in
- * process mode and non-fiber threaded mode, where register() is never called
- * -- g_xtc_runtime_counters[] stays all-NULL and the inc/add helpers are a
- * branch-and-return, so those paths pay nothing and stay byte-for-byte.
+ * process mode, where register() is never called -- g_xtc_runtime_counters[]
+ * stays all-NULL and the inc/add helpers are a branch-and-return, so those
+ * paths pay nothing.
  *
  * The names/order MUST match the XtcPgRuntimeCounter enum in the header.
  * ---------------------------------------------------------------------------
  */
 static const char *const xtc_pg_runtime_counter_names[XTC_PG_RUNTIME_COUNTER_COUNT] = {
-	[XTC_PG_RC_SESSIONS_LEASED] = "sessions_leased",
-	[XTC_PG_RC_SESSIONS_RESUMED] = "sessions_resumed",
-	[XTC_PG_RC_PROTOCOL_PARKS] = "protocol_parks",
-	[XTC_PG_RC_WAKES_DELIVERED] = "wakes_delivered",
-	[XTC_PG_RC_CARRIERS_STARTED] = "carriers_started",
 	[XTC_PG_RC_PROCESS_FALLBACKS] = "process_fallbacks",
-	[XTC_PG_RC_QUEUE_WAITS] = "queue_waits",
-	[XTC_PG_RC_BUDGET_YIELDS] = "budget_yields",
 };
 
 static xtc_counter_t *g_xtc_runtime_counters[XTC_PG_RUNTIME_COUNTER_COUNT];
 static bool g_xtc_runtime_counters_registered = false;
 
 /*
- * Create the F1 runtime counters once.  Idempotent; called on the scheduler
- * thread from the pooled-protocol carrier bringup path (see
- * backend_pooled_protocol_start_one_carrier).  A create failure just leaves
+ * Create the F1 runtime counters once.  Idempotent; called on the postmaster
+ * thread before the first event is counted (see
+ * postmaster_process_fallback_launch).  A create failure just leaves
  * that handle NULL -- the inc/add helper skips a NULL handle, so a partial
  * registration degrades to "that counter reads 0", never a crash.
  */
@@ -2052,7 +1975,7 @@ xtc_pg_runtime_counters_register(void)
 /*
  * Hot-path increment.  One cache-line-local atomic add when the counter is
  * registered; a NULL-guarded no-op otherwise (process mode, or before the
- * pooled carrier has come up).  `c` out of range is defensively ignored.
+ * first registration).  `c` out of range is defensively ignored.
  */
 void
 xtc_pg_runtime_counter_add(XtcPgRuntimeCounter c, int64 delta)
@@ -2067,8 +1990,7 @@ xtc_pg_runtime_counter_add(XtcPgRuntimeCounter c, int64 delta)
  * Snapshot the counters for the pg_stat_xtc_runtime SRF.  Fills at most
  * `max` entries and returns the number written.  Returns 0 (empty view) when
  * the counters were never registered -- i.e. process mode or a threaded run
- * that never stood up a pooled carrier -- so the view is empty exactly when
- * there is no pooled runtime to report on.  xtc_counter_read sums the per-CPU
+ * that never counted an event.  xtc_counter_read sums the per-CPU
  * shards, so this is the slow path by design; harmless for a monitoring view.
  */
 int
@@ -2089,154 +2011,6 @@ xtc_pg_runtime_counters_snapshot(XtcPgRuntimeCounterStat *out, int max)
 		n++;
 	}
 	return n;
-}
-
-/* ---------------------------------------------------------------------------
- * Fusion F2: pooled-protocol queue lock/notify seam (libxtc primitives).
- *
- * The pooled-protocol session queue in launch_backend.c is the hottest raw
- * pthread_mutex/pthread_cond in the threaded-runtime plumbing: every pooled
- * session enqueues/dequeues under it, and every idle carrier waits on it.
- * F2 replaces that raw pair with libxtc primitives, keeping EXACT semantics:
- *
- *   pthread_mutex_t   -> xtc_amutex_t   (queue mutual exclusion)
- *   pthread_cond_t    -> xtc_notify_t   (carrier idle-wait / work-available hint)
- *
- * Why these two, from RAW PTHREAD carriers (pg_thread_create, not fibers):
- *  - xtc_amutex: when uncontended it is a fast atomic flag; when contended a
- *    caller ON a loop parks the fiber, but a caller NOT on a loop (our case)
- *    falls back to an internal condvar -- correct and safe from a raw pthread
- *    today, and DST-visible / fiber-aware for free if these carriers ever
- *    become fibers.  (xtc_lwlock was rejected: it exposes NO timed-cond-wait
- *    -- its header says "use xtc_amutex for those scenarios".)
- *  - xtc_notify: a stored one-shot wake flag.  A signal with no waiter is not
- *    lost (the flag stays set; the next wait returns at once); a wait consumes
- *    exactly one token.  Off a loop (our raw-pthread carriers) a signal does a
- *    pthread_cond_broadcast and each woken carrier re-checks the queue via its
- *    outer loop, so the flag is a work-available HINT, not a strict predicate
- *    cond-wait: the carrier's for(;;) loop rechecks lease/dequeue/poll every
- *    iteration, the wait is capped at 10ms, and a redundant wake-eventfd path
- *    already exists.  A coalesced or slightly-late notify costs at most a few
- *    ms of idle latency, never correctness -- and it is stronger than a raw
- *    cond, which loses a pre-wait signal outright.  (Since the token is a
- *    single binary flag, signalling N times is the same as signalling once;
- *    the seam signals once and lets the broadcast + per-carrier recheck fan
- *    the wake out to however many idle carriers exist.)
- *
- * Because notify is independent of the mutex, wait no longer has to be done
- * with the queue lock held (the old code held the mutex across
- * pthread_cond_timedwait): the carrier reads the queue length under the lock,
- * releases it, then notify-waits unlocked.  Producers post work under the
- * lock, then notify OUTSIDE it.  This removes a lock-held-across-wait and is
- * strictly cheaper, while preserving the no-lost-wakeup property (notify
- * stores the token).
- *
- * Lifecycle: created once, on the postmaster thread, at pooled-carrier
- * bringup (xtc_pg_pooled_queue_init, called right beside
- * xtc_pg_runtime_counters_register) BEFORE any carrier is spawned, so the
- * handles are published happens-before any carrier touches them.  Never
- * destroyed (process-lifetime, like the carrier pool itself).  In process
- * mode and any threaded run that never stands up a pooled carrier, init() is
- * never called and launch_backend.c never routes through this seam.
- * ---------------------------------------------------------------------------
- */
-static xtc_amutex_t *g_xtc_pooled_queue_mutex = NULL;
-static xtc_notify_t *g_xtc_pooled_queue_notify = NULL;
-
-void
-xtc_pg_pooled_queue_init(void)
-{
-	if (g_xtc_pooled_queue_mutex == NULL)
-	{
-		if (xtc_amutex_create(&g_xtc_pooled_queue_mutex) != XTC_OK)
-			elog(FATAL, "could not create pooled protocol queue mutex");
-	}
-	if (g_xtc_pooled_queue_notify == NULL)
-	{
-		if (xtc_notify_create(&g_xtc_pooled_queue_notify) != XTC_OK)
-			elog(FATAL, "could not create pooled protocol queue notify");
-	}
-}
-
-void
-xtc_pg_pooled_queue_lock(void)
-{
-	/* timeout_ns < 0 == block forever, matching pthread_mutex_lock. */
-	if (xtc_amutex_lock(g_xtc_pooled_queue_mutex, -1) != XTC_OK)
-		elog(FATAL, "could not lock pooled protocol queue");
-}
-
-void
-xtc_pg_pooled_queue_unlock(void)
-{
-	if (xtc_amutex_unlock(g_xtc_pooled_queue_mutex) != XTC_OK)
-		elog(FATAL, "could not unlock pooled protocol queue");
-}
-
-/*
- * Wake idle carriers.  xtc_notify's token is a single binary flag whose
- * off-loop signal broadcasts to all parked carriers (each then rechecks the
- * queue via its outer loop), so `count` is advisory: one signal suffices to
- * fan the wake out to every idle carrier.  Kept as a parameter to mirror the
- * old signal_ready_work(count) call site.  Called with the queue lock NOT
- * held.
- */
-void
-xtc_pg_pooled_queue_signal(int count)
-{
-	if (g_xtc_pooled_queue_notify == NULL || count <= 0)
-		return;
-	if (xtc_notify_signal(g_xtc_pooled_queue_notify) != XTC_OK)
-		elog(FATAL, "could not signal pooled protocol queue");
-
-	/*
-	 * Producer-must-nudge (libxtc v1.39, cross-loop wake contract): a carrier
-	 * whose fiber has yielded back to its executor loop is parked in the loop's
-	 * I/O wait (xtc_io_poll), NOT necessarily watching the pooled queue notify or
-	 * the wake eventfd at this instant.  xtc_notify_signal only wakes a carrier
-	 * actually blocked in xtc_notify_wait; a carrier idle in its loop poll would
-	 * miss it, stranding a just-made-runnable session while the loop sleeps (the
-	 * write-load stall diagnosed 2026-08-27: all carriers in xtc_io_poll, a
-	 * runnable session unpicked).  xtc_loop_wake nudges the loop's poller out of
-	 * its wait, lost-wake-free (it writes the loop's own wakeup fd, kept armed
-	 * across the drain), so the carrier re-runs and re-checks the ready set.  The
-	 * enqueue/mark-runnable already happened before this call (caller ordering),
-	 * so this is the required "make runnable FIRST, then nudge" sequence.  A
-	 * spurious wake is harmless -- the loop just re-polls.  Nudge every carrier
-	 * loop, matching the broadcast semantics of xtc_notify_signal above.
-	 */
-	if (g_xtc_exec != NULL && g_xtc_n_loops > 1)
-	{
-		for (int i = 0; i < g_xtc_n_loops; i++)
-		{
-			xtc_loop_t *loop = xtc_exec_loop(g_xtc_exec, i);
-
-			if (loop != NULL)
-				(void) xtc_loop_wake(loop);
-		}
-	}
-	else if (g_xtc_loop != NULL)
-		(void) xtc_loop_wake(g_xtc_loop);
-}
-
-/*
- * Bounded idle wait for work.  Called with the queue lock NOT held (unlike the
- * old pthread_cond_timedwait, which was called holding the mutex).  Returns
- * after a signal or the timeout; XTC_E_AGAIN (timeout) is expected and not an
- * error, mirroring the old ETIMEDOUT handling.
- */
-void
-xtc_pg_pooled_queue_wait(long timeout_us)
-{
-	int64_t		timeout_ns;
-	int			rc;
-
-	if (g_xtc_pooled_queue_notify == NULL)
-		return;
-	timeout_ns = (int64_t) timeout_us * 1000;
-	rc = xtc_notify_wait(g_xtc_pooled_queue_notify, timeout_ns);
-	if (rc != XTC_OK && rc != XTC_E_AGAIN)
-		elog(FATAL, "could not wait on pooled protocol queue");
 }
 
 /*

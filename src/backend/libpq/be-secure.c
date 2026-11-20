@@ -194,7 +194,7 @@ secure_close(Port *port)
  * the constant-misreading that produced two wrong root causes:
  *   WL_LATCH_SET=0x1 WL_SOCKET_READABLE=0x2 WL_SOCKET_WRITEABLE=0x4
  *   WL_TIMEOUT=0x8   WL_POSTMASTER_DEATH=0x10 WL_SOCKET_CLOSED=0x80
- * FeBe positions: 0=socket 1=latch 2=pmdeath 3=interrupt_wake_fd
+ * FeBe positions: 0=socket 1=latch 2=pmdeath
  */
 #ifdef USE_XTC_CARRIER
 static int	xtc_sread_trace_on = -1;
@@ -309,31 +309,8 @@ retry:
 					 errmsg("terminating connection due to unexpected postmaster exit")));
 
 		/* Handle interrupt. */
-		if (event.events & WL_LATCH_SET
-#ifdef USE_XTC_CARRIER
-			|| event.pos == FeBeWaitSetInterruptWakeFdPos
-#endif
-			)
+		if (event.events & WL_LATCH_SET)
 		{
-#ifdef USE_XTC_CARRIER
-			/*
-			 * The interrupt-wake eventfd (shared FeBe set position 3, present
-			 * only for fiber-backed backends) firing is a cross-fiber interrupt
-			 * arriving during a blocking client read.  Drain it (level-
-			 * triggered) so it does not re-fire, and process interrupts exactly
-			 * as for a latch set -- the pending_mask mailbox is the source of
-			 * truth.  Distinguished by position (it shares WL_SOCKET_READABLE
-			 * with the client socket at position 0).
-			 */
-			if (MyProc != NULL && MyProc->interrupt_wake_fd >= 0)
-			{
-				uint64		drain;
-
-				while (read(MyProc->interrupt_wake_fd, &drain,
-							sizeof(drain)) == sizeof(drain))
-					;
-			}
-#endif
 			ResetLatch(MyLatch);
 			ProcessClientReadInterrupt(true);
 
@@ -449,23 +426,8 @@ retry:
 					 errmsg("terminating connection due to unexpected postmaster exit")));
 
 		/* Handle interrupt. */
-		if (event.events & WL_LATCH_SET
-#ifdef USE_XTC_CARRIER
-			|| event.pos == FeBeWaitSetInterruptWakeFdPos
-#endif
-			)
+		if (event.events & WL_LATCH_SET)
 		{
-#ifdef USE_XTC_CARRIER
-			/* See secure_read: drain the interrupt-wake eventfd (pos 3). */
-			if (MyProc != NULL && MyProc->interrupt_wake_fd >= 0)
-			{
-				uint64		drain;
-
-				while (read(MyProc->interrupt_wake_fd, &drain,
-							sizeof(drain)) == sizeof(drain))
-					;
-			}
-#endif
 			ResetLatch(MyLatch);
 			ProcessClientWriteInterrupt(true);
 

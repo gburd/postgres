@@ -19,7 +19,6 @@ for my $mode ('off', 'on')
 	$node->append_conf(
 		'postgresql.conf', qq{
 multithreaded = $mode
-pooled_protocol_carriers = 0
 io_method = sync
 summarize_wal = off
 max_connections = 20
@@ -34,8 +33,6 @@ statement_timeout = 0
 
 	is($node->safe_psql('postgres', 'SHOW multithreaded'),
 		$mode, "$mode: requested backend model is active");
-	is($node->safe_psql('postgres', 'SHOW pooled_protocol_carriers'),
-		'0', "$mode: stackless protocol pool is disabled");
 	if ($mode eq 'on')
 	{
 		like(slurp_file($node->logfile),

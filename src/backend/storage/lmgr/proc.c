@@ -320,7 +320,7 @@ ProcGlobalShmemInit(void *arg)
 #ifdef USE_XTC_CARRIER
 			/*
 			 * Fiber-aware deep-wait eventfd (Phase 17), created eagerly and
-			 * once per PGPROC.  A pooled backend fiber parks on this fd in
+			 * once per PGPROC.  A backend fiber parks on this fd in
 			 * ProcWaitOnSemaphore instead of blocking the carrier in
 			 * sem_wait().  EFD_NONBLOCK so a drain never blocks; level-
 			 * triggered readiness is the stored-signal that closes the
@@ -334,11 +334,6 @@ ProcGlobalShmemInit(void *arg)
 				ereport(FATAL,
 						(errcode_for_socket_access(),
 						 errmsg("could not create semaphore-wake eventfd for PGPROC: %m")));
-			proc->interrupt_wake_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-			if (proc->interrupt_wake_fd < 0)
-				ereport(FATAL,
-						(errcode_for_socket_access(),
-						 errmsg("could not create interrupt-wake eventfd for PGPROC: %m")));
 			SpinLockInit(&proc->sem_fiber_lock);
 			proc->sem_fiber_backed = false;
 			proc->sem_fiber_armed = false;
@@ -360,7 +355,6 @@ ProcGlobalShmemInit(void *arg)
 			 * but keep the invariant honest.
 			 */
 			proc->sem_wake_fd = -1;
-			proc->interrupt_wake_fd = -1;
 			SpinLockInit(&proc->sem_fiber_lock);
 			proc->sem_fiber_backed = false;
 			proc->sem_fiber_armed = false;
@@ -616,15 +610,6 @@ InitProcess(void)
 		SpinLockRelease(&MyProc->sem_fiber_lock);
 		while (read(MyProc->sem_wake_fd, &buf, sizeof(buf)) == sizeof(buf))
 			;
-		/*
-		 * Drain any stale interrupt-wake readiness left by the previous tenant
-		 * of this recycled PGPROC, so the next read-command park does not wake
-		 * spuriously on a dead interrupt.  Level-triggered eventfd; a fresh
-		 * SetLatch after this re-arms it.
-		 */
-		if (MyProc->interrupt_wake_fd >= 0)
-			while (read(MyProc->interrupt_wake_fd, &buf, sizeof(buf)) == sizeof(buf))
-				;
 	}
 	else if (MyProc->sem_wake_fd >= 0)
 	{
@@ -2452,7 +2437,7 @@ ProcWaitOnSemaphore(PGPROC *proc, uint32 wait_event_info)
 
 #ifdef USE_XTC_CARRIER
 	/*
-	 * Fiber-aware fast path: a pooled backend running as an xtc fiber parks
+	 * Fiber-aware fast path: a backend running as an xtc fiber parks
 	 * the fiber (freeing the carrier for other sessions) rather than blocking
 	 * the carrier OS thread in sem_wait().  We key off proc->sem_fiber_backed
 	 * (latched once at InitProcess, resident in shmem) -- NOT the __thread

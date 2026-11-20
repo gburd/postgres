@@ -194,8 +194,6 @@ extern void PgRuntimeInitializeExtensionModuleState(PgRuntimeExtensionModuleStat
 extern void PgRuntimeAdoptEarlyExtensionModuleState(PgRuntime *runtime);
 extern void PgRuntimeCopyEarlyExtensionModuleState(PgRuntime *runtime);
 extern PgRuntimeExtensionModuleState *PgCurrentRuntimeExtensionModuleState(void);
-extern void PgRuntimeProtocolSchedulerCarrierBecameActive(PgCarrier *carrier);
-extern void PgRuntimeProtocolSchedulerCarrierBecameIdle(PgCarrier *carrier);
 #ifndef PgCurrentSessionLoopState
 extern PgSessionLoopState *PgCurrentSessionLoopState(void);
 #endif

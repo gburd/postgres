@@ -11,7 +11,7 @@ use Time::HiRes qw(usleep);
 
 my $node = PostgreSQL::Test::Cluster->new('threaded_milestone_w');
 my $top_reclaim_re =
-  qr/(?:thread-backed child|pooled logical backend) \d+ reclaimed [1-9]\d* bytes from TopMemoryContext at exit/;
+  qr/(?:thread-backed child|fiber backend) \d+ reclaimed [1-9]\d* bytes from TopMemoryContext at exit/;
 
 sub start_psql_script
 {
@@ -102,7 +102,6 @@ $node->init;
 $node->append_conf(
 	'postgresql.conf', q{
 multithreaded = on
-pooled_protocol_carriers = 0
 autovacuum = off
 io_method = sync
 summarize_wal = off
