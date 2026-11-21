@@ -62,6 +62,9 @@ tests += {
     ],
   },
   'tap': {
+    'env': {
+       'enable_injection_points': get_option('injection_points') ? 'yes' : 'no',
+    },
     'tests': [
       't/001_threaded_runtime.pl',
       't/002_threaded_bgworker_crash.pl',
