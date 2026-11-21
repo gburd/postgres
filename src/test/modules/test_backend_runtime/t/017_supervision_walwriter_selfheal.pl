@@ -53,6 +53,12 @@ wal_writer_delay = 200
 log_min_messages = debug1
 });
 $node->start;
+$node->safe_psql('postgres', 'CREATE EXTENSION test_backend_runtime_threaded');
+
+# The flap test below fail-stops the server, which removes postmaster.pid,
+# so read the pid now.
+my $postmaster_pid = slurp_file($node->data_dir . '/postmaster.pid');
+$postmaster_pid =~ s/\n.*//s;
 
 is($node->safe_psql('postgres', 'SHOW multithreaded'), 'on',
 	'threaded runtime enabled for the supervision fixture');
@@ -81,7 +87,11 @@ isnt($original_pid, '', 'WAL writer is visible in pg_stat_activity');
 my $log_start = -s $node->logfile;
 
 # --- Case 1: a CLEAN exit (SIGTERM) is relaunched, server keeps serving. ---
-kill('TERM', $original_pid);
+# Fibers share the postmaster's OS pid, so ask for the exit through the
+# WAL writer's logical interrupt, which is where a SIGTERM is routed.
+is($node->safe_psql('postgres',
+		'SELECT test_backend_runtime_request_walwriter_exit()'),
+	't', 'clean-exit request delivered to the WAL writer');
 
 my $relaunched_pid;
 for (1 .. 100)
@@ -123,14 +133,13 @@ unlike($log_after_case1, qr/restart intensity exceeded/,
 my $flap_log_start = -s $node->logfile;
 for (1 .. 4)
 {
-	my $pid = eval { walwriter_pid() };
-	last if !defined $pid || $pid eq '';
-	kill('TERM', $pid);
+	my $sent = eval {
+		$node->safe_psql('postgres',
+			'SELECT test_backend_runtime_request_walwriter_exit()');
+	};
+	last if !defined $sent;
 	usleep(200_000);
 }
-
-my $postmaster_pid = slurp_file($node->data_dir . '/postmaster.pid');
-$postmaster_pid =~ s/\n.*//s;
 
 my $postmaster_exited = 0;
 for (1 .. 100)

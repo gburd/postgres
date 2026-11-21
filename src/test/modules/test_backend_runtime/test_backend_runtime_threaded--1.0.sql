@@ -63,6 +63,12 @@ CREATE FUNCTION test_backend_runtime_emit_fatal()
 	   'test_backend_runtime_emit_fatal'
 	LANGUAGE C;
 
+CREATE FUNCTION test_backend_runtime_request_walwriter_exit()
+	RETURNS pg_catalog.bool
+	AS 'MODULE_PATHNAME',
+	   'test_backend_runtime_request_walwriter_exit'
+	LANGUAGE C;
+
 CREATE FUNCTION test_backend_runtime_send_forged_down()
 	RETURNS pg_catalog.bool
 	AS 'MODULE_PATHNAME',

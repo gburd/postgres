@@ -23,6 +23,7 @@
 #include "storage/ipc.h"
 #include "storage/latch.h"
 #include "storage/pmsignal.h"
+#include "storage/proc.h"
 #include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/guc.h"
@@ -48,6 +49,7 @@ PG_FUNCTION_INFO_V1(test_backend_runtime_carrier_total_steals);
 PG_FUNCTION_INFO_V1(test_backend_runtime_emit_fatal);
 PG_FUNCTION_INFO_V1(test_backend_runtime_crash_current_backend);
 PG_FUNCTION_INFO_V1(test_backend_runtime_send_forged_down);
+PG_FUNCTION_INFO_V1(test_backend_runtime_request_walwriter_exit);
 
 pg_noreturn PGDLLEXPORT void test_backend_runtime_unreachable_bgworker_main(Datum main_arg);
 PGDLLEXPORT void test_backend_runtime_thread_bgworker_main(Datum main_arg);
@@ -362,6 +364,28 @@ test_backend_runtime_emit_fatal(PG_FUNCTION_ARGS)
 	ereport(FATAL,
 			(errmsg("test_backend_runtime requested FATAL")));
 	pg_unreachable();
+}
+
+/*
+ * Ask the WAL writer to exit cleanly, as the postmaster's SIGTERM would.  In
+ * threaded mode every fiber shares the postmaster's OS pid, so a test cannot
+ * reach the WAL writer with kill(); this raises the same logical interrupt
+ * the postmaster routes a SIGTERM to.  Returns whether a WAL writer was found.
+ */
+Datum
+test_backend_runtime_request_walwriter_exit(PG_FUNCTION_ARGS)
+{
+	for (uint32 i = 0; i < ProcGlobal->allProcCount; i++)
+	{
+		PGPROC	   *proc = GetPGProcByNumber(i);
+
+		if (proc->pid != 0 && proc->backendType == B_WAL_WRITER &&
+			proc->backendId != 0)
+			PG_RETURN_BOOL(PgBackendSendInterruptById(proc->backendId,
+													  PG_BACKEND_INTERRUPT_SHUTDOWN_REQUEST,
+													  MyProcPid, GetUserId()));
+	}
+	PG_RETURN_BOOL(false);
 }
 
 /*

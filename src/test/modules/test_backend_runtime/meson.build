@@ -73,6 +73,7 @@ tests += {
       't/014_phase_c_d_forced_migration.pl',
       't/015_phase_c_concurrent_startup_storm.pl',
       't/016_carrier_loop_count.pl',
+      't/017_supervision_walwriter_selfheal.pl',
       't/018_dead_end_backend.pl',
       't/019_same_loop_latch.pl',
       't/020_parallel_attach.pl',
