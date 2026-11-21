@@ -3235,6 +3235,7 @@ TimeoutId
 TimeoutType
 Timestamp
 TimestampTz
+TimezoneGate
 TimingClockSourceType
 TmFromChar
 TmToChar

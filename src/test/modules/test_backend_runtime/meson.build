@@ -85,6 +85,7 @@ tests += {
       't/023_bgworker_startup_publication.pl',
       't/025_wire_cancel.pl',
       't/026_fallback_guc_bootstrap.pl',
+      't/027_timezone_cache_publication.pl',
       't/028_subscription_startup_stop.pl',
       't/030_ri_check_ownership.pl',
       't/031_orc_supervision.pl',

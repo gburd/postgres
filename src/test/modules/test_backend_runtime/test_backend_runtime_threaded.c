@@ -14,6 +14,7 @@
 
 #include "fmgr.h"
 #include "miscadmin.h"
+#include "pgtime.h"
 #include "port/atomics.h"
 #include "portability/instr_time.h"
 #include "postmaster/bgworker.h"
@@ -1024,6 +1025,229 @@ test_backend_runtime_subscription_gate(PG_FUNCTION_ARGS)
 		gate->carrier == 3 ? "fiber" : "thread", matching, live)));
 #else
 	elog(ERROR, "subscription gate requires injection points");
+	PG_RETURN_NULL();
+#endif
+}
+
+#ifdef USE_INJECTION_POINTS
+#define TIMEZONE_POINT "timezone-cache-before-publish"
+#define TIMEZONE_KEY "TZPUBCACHE-1"
+
+typedef struct TimezoneGate
+{
+	PgBackendId publisher_id;
+	int			publisher_pid;
+#ifdef WIN32
+	DWORD		publisher_thread;
+#else
+	pthread_t	publisher_thread;
+#endif
+	pg_atomic_uint32 held;
+	pg_atomic_uint32 attempted;
+	pg_atomic_uint32 released;
+	pg_atomic_uint32 completed;
+	pg_atomic_uint32 timed_out;
+} TimezoneGate;
+
+PGDLLEXPORT void test_backend_runtime_timezone_gate(
+	const char *name, const void *private_data, void *arg);
+
+/* OS sleeps only: yielding while the cache mutex is held can deadlock. */
+static bool
+timezone_pause(instr_time start, double milliseconds)
+{
+	instr_time	now;
+
+	INSTR_TIME_SET_CURRENT(now);
+	INSTR_TIME_SUBTRACT(now, start);
+	if (INSTR_TIME_GET_MILLISEC(now) >= milliseconds)
+		return false;
+#ifdef WIN32
+	Sleep(1);
+#else
+	pg_usleep(1000L);
+#endif
+	return true;
+}
+
+/* Mapping, identity and callback loading must all precede pg_tzset(). */
+void
+test_backend_runtime_timezone_gate(const char *name,
+								   const void *private_data, void *arg)
+{
+	dsm_handle	handle;
+	dsm_segment *seg;
+	TimezoneGate *gate;
+	instr_time	start;
+
+	if (strcmp(arg, TIMEZONE_KEY) != 0)
+		return;
+	memcpy(&handle, private_data, sizeof(handle));
+	seg = dsm_find_mapping(handle);
+	if (seg == NULL)
+		return;
+	gate = dsm_segment_address(seg);
+	if (gate->publisher_id != PgCurrentBackendId() ||
+		gate->publisher_pid != MyProcPid)
+		return;
+
+#ifdef WIN32
+	gate->publisher_thread = GetCurrentThreadId();
+#else
+	gate->publisher_thread = pthread_self();
+#endif
+	INSTR_TIME_SET_CURRENT(start);
+	pg_atomic_write_membarrier_u32(&gate->held, 1);
+	while (!pg_atomic_read_membarrier_u32(&gate->attempted) &&
+		   !pg_atomic_read_membarrier_u32(&gate->released))
+		if (!timezone_pause(start, 5000))
+		{
+			pg_atomic_write_membarrier_u32(&gate->timed_out, 1);
+			break;
+		}
+
+	/* Never wait for reader completion: fixed readers wait for our unlock. */
+	INSTR_TIME_SET_CURRENT(start);
+	while (!pg_atomic_read_membarrier_u32(&gate->released) &&
+		   timezone_pause(start, 200))
+		;
+	pg_atomic_write_membarrier_u32(&gate->released, 1);
+}
+#endif
+
+PG_FUNCTION_INFO_V1(test_backend_runtime_timezone_publication);
+
+/* One keeper and two real SQL sessions; no process-global test pointers. */
+Datum
+test_backend_runtime_timezone_publication(PG_FUNCTION_ARGS)
+{
+#ifdef USE_INJECTION_POINTS
+	char	   *action = text_to_cstring(PG_GETARG_TEXT_PP(0));
+	dsm_handle	handle = (dsm_handle) PG_GETARG_INT64(1);
+	dsm_segment *seg;
+	TimezoneGate *gate;
+	pg_tz	   *tz = NULL;
+	instr_time	start;
+	bool		publisher = strcmp(action, "publish") == 0;
+	bool		early = false;
+	bool		overlap = false;
+	bool		same_carrier = false;
+	bool		fiber = false;
+	long		offset = 0;
+
+	if (strcmp(action, "create") == 0)
+	{
+		seg = dsm_create(sizeof(TimezoneGate), 0);
+		handle = dsm_segment_handle(seg);
+		gate = dsm_segment_address(seg);
+		gate->publisher_id = 0;
+		gate->publisher_pid = 0;
+		pg_atomic_init_u32(&gate->held, 0);
+		pg_atomic_init_u32(&gate->attempted, 0);
+		pg_atomic_init_u32(&gate->released, 0);
+		pg_atomic_init_u32(&gate->completed, 0);
+		pg_atomic_init_u32(&gate->timed_out, 0);
+		InjectionPointAttach(TIMEZONE_POINT, "test_backend_runtime_threaded",
+							 "test_backend_runtime_timezone_gate",
+							 &handle, sizeof(handle));
+		dsm_pin_mapping(seg);
+		PG_RETURN_TEXT_P(cstring_to_text(psprintf("%u", handle)));
+	}
+
+	seg = dsm_find_mapping(handle);
+	if (seg == NULL &&
+		(strcmp(action, "prepare_publisher") == 0 ||
+		 strcmp(action, "prepare_reader") == 0))
+	{
+		seg = dsm_attach(handle);
+		if (seg != NULL)
+			dsm_pin_mapping(seg);
+	}
+	if (seg == NULL)
+		elog(ERROR, "timezone test mapping is missing");
+	gate = dsm_segment_address(seg);
+	if (strcmp(action, "prepare_publisher") == 0 ||
+		strcmp(action, "prepare_reader") == 0)
+	{
+		if (strcmp(action, "prepare_publisher") == 0)
+		{
+			gate->publisher_id = PgCurrentBackendId();
+			gate->publisher_pid = MyProcPid;
+		}
+		INJECTION_POINT_LOAD(TIMEZONE_POINT);
+		PG_RETURN_TEXT_P(cstring_to_text("ready"));
+	}
+	if (strcmp(action, "cleanup") == 0)
+	{
+		pg_atomic_write_membarrier_u32(&gate->released, 1);
+		InjectionPointDetach(TIMEZONE_POINT);
+		dsm_detach(seg);
+		PG_RETURN_TEXT_P(cstring_to_text("cleaned"));
+	}
+	if (!publisher && strcmp(action, "lookup") != 0)
+		elog(ERROR, "unknown timezone test action: %s", action);
+
+	HOLD_INTERRUPTS();
+	PG_TRY();
+	{
+		if (!publisher)
+		{
+			INSTR_TIME_SET_CURRENT(start);
+			while (!pg_atomic_read_membarrier_u32(&gate->held))
+				if (!timezone_pause(start, 5000))
+					elog(ERROR, "timezone publisher did not enter gate");
+			overlap = !pg_atomic_read_membarrier_u32(&gate->released);
+			if (gate->publisher_pid == MyProcPid)
+			{
+#ifdef WIN32
+				same_carrier = gate->publisher_thread == GetCurrentThreadId();
+#else
+				same_carrier = pthread_equal(gate->publisher_thread,
+											pthread_self());
+#endif
+			}
+			pg_atomic_write_membarrier_u32(&gate->attempted, 1);
+		}
+		tz = pg_tzset(TIMEZONE_KEY);
+		if (publisher)
+			pg_atomic_write_membarrier_u32(&gate->completed, 1);
+		else
+		{
+			early = !pg_atomic_read_membarrier_u32(&gate->released);
+			/* Old code returns an incomplete object: do not read it yet. */
+			INSTR_TIME_SET_CURRENT(start);
+			while (!pg_atomic_read_membarrier_u32(&gate->completed))
+				if (!timezone_pause(start, 5000))
+					elog(ERROR, "timezone publisher did not complete");
+		}
+	}
+	PG_FINALLY();
+	{
+		pg_atomic_write_membarrier_u32(&gate->released, 1);
+		/* errfinish() resets the holdoff before a timeout ERROR gets here. */
+		if (InterruptHoldoffCount > 0)
+			RESUME_INTERRUPTS();
+	}
+	PG_END_TRY();
+
+	if (pg_atomic_read_membarrier_u32(&gate->timed_out) ||
+		!pg_atomic_read_membarrier_u32(&gate->held) ||
+		!pg_atomic_read_membarrier_u32(&gate->attempted) ||
+		(!publisher && (!overlap || same_carrier)))
+		elog(ERROR, "timezone test missed concurrent lookup while held");
+	if (tz == NULL || !pg_get_timezone_offset(tz, &offset))
+		elog(ERROR, "timezone test did not get a fixed-offset zone");
+#ifdef USE_XTC_CARRIER
+	fiber = xtc_pg_in_backend_fiber();
+#endif
+	PG_RETURN_TEXT_P(cstring_to_text(psprintf(
+		"early=%d;offset=%ld;held=%u;attempted=%u;completed=%u;pid=%d;same_carrier=%d;fiber=%d",
+		early, offset, pg_atomic_read_membarrier_u32(&gate->held),
+		pg_atomic_read_membarrier_u32(&gate->attempted),
+		pg_atomic_read_membarrier_u32(&gate->completed), MyProcPid,
+		same_carrier, fiber)));
+#else
+	elog(ERROR, "timezone publication test requires injection points");
 	PG_RETURN_NULL();
 #endif
 }

@@ -96,3 +96,9 @@ CREATE FUNCTION test_backend_runtime_subscription_gate(pg_catalog.int8, pg_catal
 	RETURNS pg_catalog.text
 	AS 'MODULE_PATHNAME', 'test_backend_runtime_subscription_gate'
 	LANGUAGE C STRICT;
+
+CREATE FUNCTION test_backend_runtime_timezone_publication(pg_catalog.text, pg_catalog.int8)
+	RETURNS pg_catalog.text
+	AS 'MODULE_PATHNAME',
+	   'test_backend_runtime_timezone_publication'
+	LANGUAGE C STRICT;

@@ -16,12 +16,20 @@
 #include <fcntl.h>
 #include <time.h>
 
+#ifdef WIN32
+#include <windows.h>
+#else
+#include "port/pg_pthread.h"
+#endif
+
 #include "common/file_utils.h"
 #include "datatype/timestamp.h"
 #include "miscadmin.h"
 #include "pgtz.h"
 #include "storage/fd.h"
+#include "utils/global_lifetime.h"
 #include "utils/hsearch.h"
+#include "utils/injection_point.h"
 
 
 /*
@@ -194,7 +202,67 @@ typedef struct
 	pg_tz		tz;
 } pg_tz_cache;
 
-static HTAB *timezone_cache = NULL;
+/*
+ * Entries are borrowed by GUCs and startup payloads, so neither the cache nor
+ * its entries can be session-owned.  Completed entries are never rewritten.
+ * InitializeGUCOptions creates this under the process TopMemoryContext before
+ * any thread is launched; subsequent allocations use the hash's own context.
+ */
+static PG_GLOBAL_RUNTIME HTAB *timezone_cache = NULL;
+#ifdef WIN32
+static PG_GLOBAL_RUNTIME SRWLOCK timezone_cache_lock = SRWLOCK_INIT;
+#else
+static PG_GLOBAL_RUNTIME pthread_mutex_t timezone_cache_lock = PTHREAD_MUTEX_INITIALIZER;
+#endif
+
+/* Timezone file access and scheduler waits stay outside this lock. */
+static void
+timezone_cache_acquire(void)
+{
+	if (!multithreaded)
+		return;
+	HOLD_INTERRUPTS();
+#ifdef WIN32
+	AcquireSRWLockExclusive(&timezone_cache_lock);
+#else
+	{
+		int			rc = pthread_mutex_lock(&timezone_cache_lock);
+
+		if (rc != 0)
+		{
+			RESUME_INTERRUPTS();
+			errno = rc;
+			elog(FATAL, "could not lock timezone cache: %m");
+		}
+	}
+#endif
+}
+
+static void
+timezone_cache_release(void)
+{
+#ifndef WIN32
+	int			rc;
+#endif
+
+	if (!multithreaded)
+		return;
+#ifdef WIN32
+	ReleaseSRWLockExclusive(&timezone_cache_lock);
+#else
+	rc = pthread_mutex_unlock(&timezone_cache_lock);
+#endif
+	/* errfinish() may already have reset the holdoff during ERROR unwind. */
+	if (InterruptHoldoffCount > 0)
+		RESUME_INTERRUPTS();
+#ifndef WIN32
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(FATAL, "could not unlock timezone cache: %m");
+	}
+#endif
+}
 
 
 static bool
@@ -202,6 +270,8 @@ init_timezone_hashtable(void)
 {
 	HASHCTL		hash_ctl;
 
+	/* A first client must not create a process cache in its private context. */
+	Assert(!IsUnderPostmaster);
 	hash_ctl.keysize = TZ_STRLEN_MAX + 1;
 	hash_ctl.entrysize = sizeof(pg_tz_cache);
 
@@ -213,6 +283,47 @@ init_timezone_hashtable(void)
 		return false;
 
 	return true;
+}
+
+/*
+ * Find an immutable entry, or publish private scratch if still absent.
+ * Hash initialization and growth can throw; always release the cache lock.
+ */
+static pg_tz_cache *
+timezone_cache_lookup(const char *uppername, const char *canonname,
+					  const struct state *tzstate)
+{
+	pg_tz_cache *tzp = NULL;
+
+	timezone_cache_acquire();
+	PG_TRY();
+	{
+		if (timezone_cache != NULL || init_timezone_hashtable())
+		{
+			tzp = (pg_tz_cache *) hash_search(timezone_cache, uppername,
+											 HASH_FIND, NULL);
+			if (tzp == NULL && tzstate != NULL)
+			{
+				tzp = (pg_tz_cache *) hash_search(timezone_cache, uppername,
+												 HASH_ENTER, NULL);
+
+				/* Cached callbacks here must not allocate, throw, or yield. */
+				INJECTION_POINT_CACHED("timezone-cache-before-publish",
+									   (void *) uppername);
+
+				/* hash_search already copied uppername into the hash key */
+				strcpy(tzp->tz.TZname, canonname);
+				memcpy(&tzp->tz.state, tzstate, sizeof(*tzstate));
+			}
+		}
+	}
+	PG_FINALLY();
+	{
+		timezone_cache_release();
+	}
+	PG_END_TRY();
+
+	return tzp;
 }
 
 /*
@@ -231,10 +342,6 @@ pg_tzset(const char *tzname)
 	if (strlen(tzname) > TZ_STRLEN_MAX)
 		return NULL;			/* not going to fit */
 
-	if (!timezone_cache)
-		if (!init_timezone_hashtable())
-			return NULL;
-
 	/*
 	 * Upcase the given name to perform a case-insensitive hashtable search.
 	 * (We could alternatively downcase it, but we prefer upcase so that we
@@ -246,10 +353,7 @@ pg_tzset(const char *tzname)
 		*p++ = pg_toupper((unsigned char) *tzname++);
 	*p = '\0';
 
-	tzp = (pg_tz_cache *) hash_search(timezone_cache,
-									  uppername,
-									  HASH_FIND,
-									  NULL);
+	tzp = timezone_cache_lookup(uppername, NULL, NULL);
 	if (tzp)
 	{
 		/* Timezone found in cache, nothing more to do */
@@ -270,17 +374,10 @@ pg_tzset(const char *tzname)
 		return NULL;
 	}
 
-	/* Save timezone in the cache */
-	tzp = (pg_tz_cache *) hash_search(timezone_cache,
-									  uppername,
-									  HASH_ENTER,
-									  NULL);
+	/* A concurrent loader may have won while we performed file access. */
+	tzp = timezone_cache_lookup(uppername, canonname, &tzstate);
 
-	/* hash_search already copied uppername into the hash key */
-	strcpy(tzp->tz.TZname, canonname);
-	memcpy(&tzp->tz.state, &tzstate, sizeof(tzstate));
-
-	return &tzp->tz;
+	return tzp ? &tzp->tz : NULL;
 }
 
 /*
