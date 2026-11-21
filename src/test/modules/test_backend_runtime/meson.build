@@ -83,6 +83,7 @@ tests += {
       't/021_session_guc_owners.pl',
       't/022_guc_prefix.pl',
       't/023_bgworker_startup_publication.pl',
+      't/024_wait_fd_error.pl',
       't/025_wire_cancel.pl',
       't/026_fallback_guc_bootstrap.pl',
       't/027_timezone_cache_publication.pl',

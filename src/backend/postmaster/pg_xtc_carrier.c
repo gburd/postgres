@@ -1585,6 +1585,8 @@ xtc_pg_backend_fiber_exit(int code)
  * until `fd` is ready for `interest_pg` (PG WL_* bits) or timeout.  Returns
  * WL_* bits that fired.  timeout_ms < 0 means wait forever.  Only called
  * when a libxtc proc is running (including waiteventset's non-backend fallback).
+ * A hard FD-wait error terminates the process; callers may hold locks or own
+ * wait-queue state for which PostgreSQL error unwinding is not safe.
  */
 #include "storage/waiteventset.h"	/* WL_* */
 #include "xtc_io.h"					/* XTC_IO_* */
@@ -1678,7 +1680,18 @@ xtc_pg_wait_fd(int fd, int interest_pg, long timeout_ms)
 	XtcPgVerifyCurrentWorkIsSelf();
 
 	if (rc != XTC_OK && rc != XTC_E_AGAIN)
-		return WL_LATCH_SET;	/* treat as a wakeup; caller re-checks */
+	{
+		char		buf[128];
+		int			n;
+
+		/* No PG error callbacks or cleanup while caller-owned waits are live. */
+		n = snprintf(buf, sizeof(buf),
+					 "xtc: xtc_proc_wait_fd failed fd=%d rc=%d; terminating process\n",
+					 fd, rc);
+		if (n > 0)
+			xtc_diag_write(STDERR_FILENO, buf, Min((size_t) n, sizeof(buf) - 1));
+		_exit(2);
+	}
 
 	if (revents & XTC_WAIT_TIMEOUT)
 		out |= WL_TIMEOUT;

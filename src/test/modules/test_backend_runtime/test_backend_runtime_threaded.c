@@ -12,6 +12,16 @@
  */
 #include "postgres.h"
 
+#ifdef USE_XTC_CARRIER
+#include <fcntl.h>
+#include <sys/resource.h>
+#include <unistd.h>
+
+#include "xtc.h"
+#include "xtc_io.h"
+#include "xtc_proc.h"
+#endif
+
 #include "fmgr.h"
 #include "miscadmin.h"
 #include "pgtime.h"
@@ -24,6 +34,7 @@
 #include "storage/dsm.h"
 #include "storage/ipc.h"
 #include "storage/latch.h"
+#include "storage/lwlock.h"
 #include "storage/pmsignal.h"
 #include "storage/proc.h"
 #include "utils/backend_runtime.h"
@@ -51,6 +62,10 @@ PG_FUNCTION_INFO_V1(test_backend_runtime_carrier_total_steals);
 PG_FUNCTION_INFO_V1(test_backend_runtime_emit_fatal);
 PG_FUNCTION_INFO_V1(test_backend_runtime_crash_current_backend);
 PG_FUNCTION_INFO_V1(test_backend_runtime_send_forged_down);
+PG_FUNCTION_INFO_V1(test_backend_runtime_hold_lwlock);
+PG_FUNCTION_INFO_V1(test_backend_runtime_wait_on_lwlock);
+PG_FUNCTION_INFO_V1(test_backend_runtime_wait_fd_error);
+PG_FUNCTION_INFO_V1(test_backend_runtime_wait_fd_control);
 PG_FUNCTION_INFO_V1(test_backend_runtime_request_walwriter_exit);
 
 pg_noreturn PGDLLEXPORT void test_backend_runtime_unreachable_bgworker_main(Datum main_arg);
@@ -60,6 +75,9 @@ pg_noreturn PGDLLEXPORT void test_backend_runtime_crash_bgworker_main(Datum main
 PGDLLEXPORT void _PG_init(void);
 
 static uint32 test_backend_runtime_thread_bgworker_wait_event = 0;
+static uint32 test_backend_runtime_hold_lwlock_wait_event = 0;
+static bool test_backend_runtime_lwlock_initialized = false;
+static LWLock test_backend_runtime_lwlock;
 static pg_atomic_uint32 test_backend_runtime_restart_count;
 static pg_atomic_uint32 test_backend_runtime_crash_count;
 /*
@@ -1248,6 +1266,271 @@ test_backend_runtime_timezone_publication(PG_FUNCTION_ARGS)
 		same_carrier, fiber)));
 #else
 	elog(ERROR, "timezone publication test requires injection points");
+	PG_RETURN_NULL();
+#endif
+}
+
+/*
+ * Lazily allocate the tranche and initialize the (backend-local) test LWLock on
+ * first use, so it happens after shared memory is available rather than in
+ * _PG_init at preload time.
+ */
+static void
+test_backend_runtime_ensure_lwlock(void)
+{
+	if (!test_backend_runtime_lwlock_initialized)
+	{
+		int			tranche_id = LWLockNewTrancheId("TestBackendRuntimeLWLock");
+
+		LWLockInitialize(&test_backend_runtime_lwlock, tranche_id);
+		test_backend_runtime_lwlock_initialized = true;
+	}
+}
+
+Datum
+test_backend_runtime_hold_lwlock(PG_FUNCTION_ARGS)
+{
+	int32		timeout_ms = PG_GETARG_INT32(0);
+	volatile bool held = false;
+
+	if (timeout_ms < 0)
+		ereport(ERROR,
+				errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				errmsg("LWLock hold timeout must not be negative"));
+
+	if (test_backend_runtime_hold_lwlock_wait_event == 0)
+		test_backend_runtime_hold_lwlock_wait_event =
+			WaitEventExtensionNew("TestBackendRuntimeHoldLWLock");
+
+	test_backend_runtime_ensure_lwlock();
+	LWLockAcquire(&test_backend_runtime_lwlock, LW_EXCLUSIVE);
+	held = true;
+
+	PG_TRY();
+	{
+		(void) WaitLatch(MyLatch,
+						 WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+						 timeout_ms,
+						 test_backend_runtime_hold_lwlock_wait_event);
+		ResetLatch(MyLatch);
+		CHECK_FOR_INTERRUPTS();
+	}
+	PG_FINALLY();
+	{
+		if (held)
+			LWLockRelease(&test_backend_runtime_lwlock);
+	}
+	PG_END_TRY();
+
+	PG_RETURN_BOOL(true);
+}
+
+Datum
+test_backend_runtime_wait_on_lwlock(PG_FUNCTION_ARGS)
+{
+	test_backend_runtime_ensure_lwlock();
+	LWLockAcquire(&test_backend_runtime_lwlock, LW_EXCLUSIVE);
+	LWLockRelease(&test_backend_runtime_lwlock);
+
+	PG_RETURN_BOOL(true);
+}
+
+/*
+ * Exercise ordinary FD readiness and zero/positive timeouts before the failure
+ * fixture.  A private pipe stays open throughout; no descriptor-reuse window.
+ */
+Datum
+test_backend_runtime_wait_fd_control(PG_FUNCTION_ARGS)
+{
+#ifdef USE_XTC_CARRIER
+	int			fds[2];
+	volatile int zero = 0;
+	volatile int finite = 0;
+	volatile int readable = 0;
+	int			i;
+
+	if (!xtc_pg_in_backend_fiber())
+		elog(ERROR, "FD wait control requires a backend fiber");
+	if (pipe(fds) != 0)
+		elog(ERROR, "could not create FD wait control pipe: %m");
+	PG_TRY();
+	{
+		for (i = 0; i < 3 && !zero; i++)
+			zero = xtc_pg_wait_fd(fds[0], WL_SOCKET_READABLE, 0) == WL_TIMEOUT;
+		for (i = 0; i < 3 && !finite; i++)
+			finite = xtc_pg_wait_fd(fds[0], WL_SOCKET_READABLE, 20) == WL_TIMEOUT;
+		if (write(fds[1], "x", 1) != 1)
+			elog(ERROR, "could not write FD wait control pipe: %m");
+		for (i = 0; i < 3 && !readable; i++)
+			readable = (xtc_pg_wait_fd(fds[0], WL_SOCKET_READABLE, 20) &
+						WL_SOCKET_READABLE) != 0;
+	}
+	PG_FINALLY();
+	{
+		close(fds[0]);
+		close(fds[1]);
+	}
+	PG_END_TRY();
+
+	PG_RETURN_TEXT_P(cstring_to_text(psprintf(
+		"fiber|%s|timeout0=%d|timeout20=%d|readable=%d",
+		xtc_io_backend_name(), zero, finite, readable)));
+#else
+	elog(ERROR, "FD wait control requires USE_XTC_CARRIER");
+	PG_RETURN_NULL();
+#endif
+}
+
+/*
+ * The dedicated TAP server inherits soft AND hard RLIMIT_NOFILE=4096.  Once
+ * absent, fd 4096 cannot be reused by another thread across a park.  Calibrate
+ * the actual library return before taking the test lock, then exercise the
+ * real wrapper.  Return observations on the old policy, never abort to make
+ * the death assertion pass.  This does not inject a libxtc failure.
+ */
+Datum
+test_backend_runtime_wait_fd_error(PG_FUNCTION_ARGS)
+{
+	int32		timeout_ms = PG_GETARG_INT32(0);
+	bool		held_lwlock = PG_GETARG_BOOL(1);
+#ifdef USE_XTC_CARRIER
+	const int	badfd = 4096;
+	struct rlimit limit;
+	PgCurrentWorkSnapshot snap;
+	PgCarrier  *carrier;
+	int64_t		timeout_ns;
+	uint32_t	revents = 0;
+	int			rc = XTC_OK;
+	int			i;
+	int			old_wakes = 0;
+	bool		mailbox_clear = true;
+	char		buf[256];
+	int			n;
+	ssize_t		written;
+	const char *entry = held_lwlock ?
+		"wait-fd-test: wrapper entering held=1 mailbox_empty=1\n" :
+		"wait-fd-test: wrapper entering held=0 mailbox_empty=1\n";
+#endif
+
+	if (timeout_ms != 20 && timeout_ms != -1)
+		elog(ERROR, "FD wait error timeout must be 20 or -1");
+
+	/* A fork backend has no current xtc proc; use its supported wait path. */
+	if (!multithreaded)
+	{
+		if (held_lwlock)
+			(void) DirectFunctionCall1(test_backend_runtime_hold_lwlock,
+									  Int32GetDatum(20));
+		else
+		{
+			ResetLatch(MyLatch);
+			(void) WaitLatch(MyLatch,
+							 WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+							 20, PG_WAIT_EXTENSION);
+		}
+		PG_RETURN_TEXT_P(cstring_to_text("process wait returned"));
+	}
+
+#ifdef USE_XTC_CARRIER
+	if (!xtc_pg_in_backend_fiber())
+		elog(ERROR, "FD wait error fixture requires a backend fiber");
+	if (getrlimit(RLIMIT_NOFILE, &limit) != 0 ||
+		limit.rlim_cur != badfd || limit.rlim_max != badfd)
+		elog(ERROR, "FD wait error fixture requires soft/hard RLIMIT_NOFILE=4096");
+	if (fcntl(badfd, F_GETFD) != -1 || errno != EBADF)
+		elog(ERROR, "FD wait error fixture requires fd 4096 to be absent");
+
+	carrier = xtc_proc_userdata();
+	timeout_ns = timeout_ms < 0 ? -1 : (int64_t) timeout_ms * 1000000;
+	for (i = 0; i < 3; i++)
+	{
+		/* Same park contract as the wrapper, but no production policy call. */
+		PgRuntimeSaveCurrentWork(&snap);
+		rc = xtc_proc_wait_fd(badfd,
+							  XTC_IO_READABLE | XTC_IO_HUP | XTC_IO_ERR,
+							  timeout_ns, &revents);
+		PgRuntimeRestoreCurrentWorkLazy(&snap);
+		XtcPgVerifyCurrentWorkIsSelf();
+		if (CurrentPgCarrier != carrier || xtc_proc_userdata() != carrier ||
+			CurrentPgRuntime != snap.runtime || CurrentPgBackend != snap.backend ||
+			CurrentPgSession != snap.session || CurrentPgConnection != snap.connection ||
+			CurrentPgExecution != snap.execution)
+			elog(ERROR, "FD wait calibration changed current-work identity");
+
+		n = snprintf(buf, sizeof(buf),
+					 "wait-fd-test: calibration fiber=1 backend=%s fd=%d timeout=%d rc=%d revents=%u roots=ok\n",
+					 xtc_io_backend_name(), badfd, timeout_ms, rc, revents);
+		if (n > 0)
+		{
+			written = write(STDERR_FILENO, buf, Min(n, (int) sizeof(buf) - 1));
+			(void) written;
+		}
+		if (rc == XTC_E_INVAL && revents == 0)
+			break;
+		if (rc != XTC_OK || (revents & XTC_WAIT_MAILBOX))
+			break;
+	}
+	if (rc != XTC_E_INVAL || revents != 0)
+		elog(ERROR, "FD wait calibration did not return INVAL with zero readiness");
+
+	test_backend_runtime_ensure_lwlock();
+	if (held_lwlock)
+		LWLockAcquire(&test_backend_runtime_lwlock, LW_EXCLUSIVE);
+	PG_TRY();
+	{
+		if (held_lwlock && !LWLockHeldByMe(&test_backend_runtime_lwlock))
+			elog(ERROR, "FD wait fixture does not own its LWLock");
+		for (i = 0; i < 3; i++)
+		{
+			xtc_mailbox_stats_t before = XTC_MAILBOX_STATS_INIT;
+			xtc_mailbox_stats_t after = XTC_MAILBOX_STATS_INIT;
+			int			out;
+
+			if (xtc_proc_mailbox_stats(xtc_self(), &before) != XTC_OK ||
+				before.depth != 0 || before.saved != 0)
+			{
+				mailbox_clear = false;
+				break;
+			}
+			written = write(STDERR_FILENO, entry, strlen(entry));
+			(void) written;
+			out = xtc_pg_wait_fd(badfd, WL_SOCKET_READABLE, timeout_ms);
+			if (xtc_proc_mailbox_stats(xtc_self(), &after) != XTC_OK ||
+				after.depth != 0 || after.saved != 0 ||
+				before.recv_total != after.recv_total)
+				mailbox_clear = false;
+			if (mailbox_clear && out == WL_LATCH_SET)
+				old_wakes++;
+			n = snprintf(buf, sizeof(buf),
+						 "wait-fd-test: wrapper returned=%d mailbox_clear=%d held=%d\n",
+						 out, mailbox_clear, held_lwlock);
+			if (n > 0)
+			{
+				written = write(STDERR_FILENO, buf, Min(n, (int) sizeof(buf) - 1));
+				(void) written;
+			}
+			if (!mailbox_clear)
+				break;
+		}
+	}
+	PG_CATCH();
+	{
+		const char marker[] = "wait-fd-test: PG unwind reached\n";
+
+		written = write(STDERR_FILENO, marker, sizeof(marker) - 1);
+		(void) written;
+		if (held_lwlock)
+			LWLockRelease(&test_backend_runtime_lwlock);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+	if (held_lwlock)
+		LWLockRelease(&test_backend_runtime_lwlock);
+
+	PG_RETURN_TEXT_P(cstring_to_text(psprintf(
+		"old_wakes=%d mailbox_clear=%d", old_wakes, mailbox_clear)));
+#else
+	elog(ERROR, "FD wait error fixture requires USE_XTC_CARRIER");
 	PG_RETURN_NULL();
 #endif
 }

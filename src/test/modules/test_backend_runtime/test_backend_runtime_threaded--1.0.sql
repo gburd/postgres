@@ -102,3 +102,25 @@ CREATE FUNCTION test_backend_runtime_timezone_publication(pg_catalog.text, pg_ca
 	AS 'MODULE_PATHNAME',
 	   'test_backend_runtime_timezone_publication'
 	LANGUAGE C STRICT;
+
+CREATE FUNCTION test_backend_runtime_hold_lwlock(pg_catalog.int4)
+	RETURNS pg_catalog.bool
+	AS 'MODULE_PATHNAME',
+	   'test_backend_runtime_hold_lwlock'
+	LANGUAGE C;
+
+CREATE FUNCTION test_backend_runtime_wait_on_lwlock()
+	RETURNS pg_catalog.bool
+	AS 'MODULE_PATHNAME',
+	   'test_backend_runtime_wait_on_lwlock'
+	LANGUAGE C;
+
+CREATE FUNCTION test_backend_runtime_wait_fd_error(pg_catalog.int4, pg_catalog.bool)
+	RETURNS pg_catalog.text
+	AS 'MODULE_PATHNAME', 'test_backend_runtime_wait_fd_error'
+	LANGUAGE C STRICT;
+
+CREATE FUNCTION test_backend_runtime_wait_fd_control()
+	RETURNS pg_catalog.text
+	AS 'MODULE_PATHNAME', 'test_backend_runtime_wait_fd_control'
+	LANGUAGE C;
