@@ -1,11 +1,10 @@
 /*-------------------------------------------------------------------------
  *
  * backend_runtime_logical.c
- *	  Runtime bridge accessors for logical-replication execution state.
+ *	  Runtime bridge accessors for logical-replication state.
  *
- * These accessors keep logical-replication compatibility globals mapped onto
- * the current PgExecution while leaving runtime construction and early
- * fallback ownership in utils/init/backend_runtime.c.
+ * These accessors map logical-replication compatibility globals onto their
+ * current runtime owners; utils/init owns construction and early fallback.
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  *
@@ -31,6 +30,12 @@ PgCurrentExecutionSnapBuildState(void)
 {
 	PG_RUNTIME_RETURN_CURRENT_EXECUTION_BUCKET(CurrentPgExecutionSnapBuildRuntimeState,
 											   snapbuild);
+}
+
+bool *
+PgCurrentReplicationOriginCleanupRegisteredRef(void)
+{
+	return &PgCurrentLogicalReplicationState()->origin_cleanup_registered;
 }
 
 ReplOriginXactState *

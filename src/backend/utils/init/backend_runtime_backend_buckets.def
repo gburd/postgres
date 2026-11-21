@@ -43,7 +43,7 @@ PG_BACKEND_BUCKET(transaction, PgBackendInitializeTransactionState(&backend->tra
 PG_BACKEND_BUCKET(timeout, PgBackendInitializeTimeoutState(&backend->timeout), PgBackendAdoptEarlyTimeoutState(backend), PgBackendResetTimeoutClosedState(&backend->timeout))
 PG_BACKEND_BUCKET(walsender, PgBackendInitializeWalSenderState(&backend->walsender), PgBackendAdoptEarlyWalSenderState(backend), PgBackendResetWalSenderClosedState(&backend->walsender))
 PG_BACKEND_BUCKET(replication, PgBackendInitializeReplicationState(&backend->replication), PgBackendAdoptEarlyReplicationState(backend), PgBackendResetReplicationClosedState(&backend->replication))
-PG_BACKEND_BUCKET(logical_replication, PgBackendInitializeLogicalReplicationState(&backend->logical_replication), PgBackendAdoptEarlyLogicalReplicationState(backend), PgBackendResetLogicalReplicationClosedState(&backend->logical_replication))
+PG_BACKEND_BUCKET(logical_replication, PgBackendInitializeLogicalReplicationState(&backend->logical_replication), PgBackendAdoptEarlyLogicalReplicationState(backend), PgBackendResetLogicalReplicationClosedState(backend))
 PG_BACKEND_BUCKET(xlog, PgBackendInitializeXLogState(&backend->xlog), PgBackendAdoptEarlyXLogState(backend), PgBackendResetXLogClosedState(&backend->xlog))
 PG_BACKEND_BUCKET(recovery, PgBackendInitializeRecoveryState(&backend->recovery), PgBackendAdoptEarlyRecoveryState(backend), PgBackendResetRecoveryClosedState(&backend->recovery))
 PG_BACKEND_BUCKET(maintenance_worker, PgBackendInitializeMaintenanceWorkerState(&backend->maintenance_worker), PgBackendAdoptEarlyMaintenanceWorkerState(backend), PgBackendResetMaintenanceWorkerClosedState(&backend->maintenance_worker))

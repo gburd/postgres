@@ -194,6 +194,9 @@ static PG_GLOBAL_SHMEM ReplicationStateCtl *replication_states_ctl;
  */
 #define session_replication_state (*PgCurrentReplicationOriginSessionStateRef())
 
+/* Registration follows the backend exit stack, not session origin resets. */
+#define registered_cleanup (*PgCurrentReplicationOriginCleanupRegisteredRef())
+
 /* Magic for on disk files. */
 #define REPLICATION_STATE_MAGIC ((uint32) 0x1257DADE)
 
@@ -1122,6 +1125,9 @@ replorigin_session_reset_internal(void)
 static void
 ReplicationOriginExitCleanup(int code, Datum arg)
 {
+	/* shmem_exit removes the callback before invoking it. */
+	registered_cleanup = false;
+
 	if (session_replication_state == NULL)
 		return;
 
@@ -1149,7 +1155,6 @@ ReplicationOriginExitCleanup(int code, Datum arg)
 void
 replorigin_session_setup(ReplOriginId node, int acquired_by)
 {
-	static bool registered_cleanup;
 	int			i;
 	int			free_slot = -1;
 

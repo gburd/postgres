@@ -369,6 +369,7 @@ typedef struct PgBackendLogicalReplicationState
 	WalReceiverConn *logrep_worker_walrcv_conn;
 	Subscription *my_subscription;
 	bool		my_subscription_valid;
+	bool		origin_cleanup_registered;
 	LogicalRepWorker *my_logical_rep_worker;
 	List	   *on_commit_wakeup_workers_subids;
 	bool		in_remote_transaction;
@@ -2580,6 +2581,7 @@ extern bool *PgCurrentLogReplicationCommandsRef(void);
 extern int *PgCurrentWalReceiverTimeoutRef(void);
 extern int *PgCurrentLogicalDecodingWorkMemRef(void);
 extern int *PgCurrentDebugLogicalReplicationStreamingRef(void);
+extern bool *PgCurrentReplicationOriginCleanupRegisteredRef(void);
 extern struct ReplicationState **PgCurrentReplicationOriginSessionStateRef(void);
 extern MemoryContext *PgCurrentLogicalRepRelMapContextRef(void);
 extern HTAB **PgCurrentLogicalRepRelMapRef(void);

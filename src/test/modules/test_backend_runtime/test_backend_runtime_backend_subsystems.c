@@ -1740,6 +1740,8 @@ test_backend_logical_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 	{
 		PgSetCurrentBackend(&fake_backend1);
 		logical1 = PgCurrentLogicalReplicationState();
+		ok = ok && !logical1->origin_cleanup_registered;
+		*PgCurrentReplicationOriginCleanupRegisteredRef() = true;
 		logical1->remote_ctx.command = LOGICAL_REP_MSG_INSERT;
 		logical1->remote_ctx.rel =
 			(struct LogicalRepRelMapEntry *) &fake_backend1;
@@ -1793,6 +1795,7 @@ test_backend_logical_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 
 		PgSetCurrentBackend(&fake_backend2);
 		logical2 = PgCurrentLogicalReplicationState();
+		ok = ok && !logical2->origin_cleanup_registered;
 		ok = ok && dlist_is_empty(&logical2->lsn_mapping);
 		ok = ok && logical2->remote_ctx.command == 0;
 		ok = ok && logical2->remote_ctx.rel == NULL;
@@ -1897,6 +1900,7 @@ test_backend_logical_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 
 		PgSetCurrentBackend(&fake_backend1);
 		logical1 = PgCurrentLogicalReplicationState();
+		ok = ok && logical1->origin_cleanup_registered;
 		ok = ok && dlist_is_empty(&logical1->lsn_mapping);
 		ok = ok && logical1->remote_ctx.command ==
 			LOGICAL_REP_MSG_INSERT;
@@ -1959,6 +1963,7 @@ test_backend_logical_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 
 		PgSetCurrentBackend(&fake_backend2);
 		logical2 = PgCurrentLogicalReplicationState();
+		ok = ok && !logical2->origin_cleanup_registered;
 		ok = ok && dlist_is_empty(&logical2->lsn_mapping);
 		ok = ok && logical2->remote_ctx.command ==
 			LOGICAL_REP_MSG_UPDATE;

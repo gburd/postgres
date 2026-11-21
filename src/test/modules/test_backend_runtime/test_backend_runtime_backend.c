@@ -839,6 +839,7 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	initStringInfo(&replication->walreceiver_reply_message);
 	appendStringInfoString(&replication->walreceiver_reply_message, "walrcv");
 
+	logical_replication->origin_cleanup_registered = true;
 	logical_replication->subxact_data.nsubxacts = 1;
 	logical_replication->subxact_data.nsubxacts_max = 1;
 	logical_replication->subxact_data.subxact_last = FirstNormalTransactionId;
@@ -1276,7 +1277,14 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 		PgSetCurrentBackend(&fake_backend);
 		notifyInterruptPending = true;
 		proc_exit_inprogress = true;
+		/* Closed-state reset must not forget a retained exit callback. */
+		fake_backend.exit_state.on_shmem_exit_index = 1;
 		PgBackendResetClosedState(&fake_backend);
+		ok = ok && logical_replication->origin_cleanup_registered;
+		/* Discard only the synthetic stack count; retain the exit sentinels. */
+		fake_backend.exit_state.on_shmem_exit_index = 0;
+		PgBackendResetClosedState(&fake_backend);
+		ok = ok && !logical_replication->origin_cleanup_registered;
 	}
 	PG_CATCH();
 	{

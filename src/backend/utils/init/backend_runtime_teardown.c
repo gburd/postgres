@@ -534,10 +534,17 @@ PgBackendResetReplicationClosedState(PgBackendReplicationState *replication)
 }
 
 static void
-PgBackendResetLogicalReplicationClosedState(PgBackendLogicalReplicationState *logical_replication)
+PgBackendResetLogicalReplicationClosedState(PgBackend *backend)
 {
-	if (logical_replication == NULL)
+	PgBackendLogicalReplicationState *logical_replication;
+
+	if (backend == NULL)
 		return;
+
+	logical_replication = &backend->logical_replication;
+	/* A retained exit stack still owns the registration, even after reset. */
+	if (backend->exit_state.on_shmem_exit_index == 0)
+		logical_replication->origin_cleanup_registered = false;
 
 	if (logical_replication->logrep_worker_walrcv_conn != NULL)
 	{
