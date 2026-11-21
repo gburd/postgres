@@ -359,7 +359,7 @@ plpython3_call_handler(PG_FUNCTION_ARGS)
 	 */
 	gilstate = PyGILState_Ensure();
 
-	PG_TRY();
+	PG_TRY(2);
 	{
 	/* Note: SPI_finish() happens in plpy_exec.c, which is dubious design */
 	SPI_connect_ext(nonatomic ? SPI_OPT_NONATOMIC : 0);
@@ -422,12 +422,12 @@ plpython3_call_handler(PG_FUNCTION_ARGS)
 	/* Destroy the execution context */
 	PLy_pop_execution_context();
 	}
-	PG_FINALLY();
+	PG_FINALLY(2);
 	{
 		/* Release the GIL on every exit path (normal + rethrow). */
 		PyGILState_Release(gilstate);
 	}
-	PG_END_TRY();
+	PG_END_TRY(2);
 
 	return retval;
 }
@@ -447,7 +447,7 @@ plpython3_inline_handler(PG_FUNCTION_ARGS)
 	/* Acquire the GIL outermost (see plpython3_call_handler). */
 	gilstate = PyGILState_Ensure();
 
-	PG_TRY();
+	PG_TRY(2);
 	{
 	/* Note: SPI_finish() happens in plpy_exec.c, which is dubious design */
 	SPI_connect_ext(codeblock->atomic ? 0 : SPI_OPT_NONATOMIC);
@@ -523,11 +523,11 @@ plpython3_inline_handler(PG_FUNCTION_ARGS)
 	/* Now clean up the transient procedure we made */
 	PLy_procedure_delete(&proc);
 	}
-	PG_FINALLY();
+	PG_FINALLY(2);
 	{
 		PyGILState_Release(gilstate);
 	}
-	PG_END_TRY();
+	PG_END_TRY(2);
 
 	PG_RETURN_VOID();
 }
