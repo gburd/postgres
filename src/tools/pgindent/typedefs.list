@@ -3067,6 +3067,8 @@ SubscriptTransform
 SubscriptingRef
 SubscriptingRefState
 Subscription
+SubscriptionGate
+SubscriptionGateKey
 SubscriptionInfo
 SubscriptionRelState
 SummarizerReadLocalXLogPrivate

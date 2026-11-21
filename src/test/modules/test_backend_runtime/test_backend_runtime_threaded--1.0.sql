@@ -86,3 +86,13 @@ CREATE FUNCTION test_backend_runtime_bgworker_startup_publication(pg_catalog.tex
 	AS 'MODULE_PATHNAME',
 	   'test_backend_runtime_bgworker_startup_publication'
 	LANGUAGE C STRICT;
+
+CREATE FUNCTION test_backend_runtime_subscription_arm(pg_catalog.oid)
+	RETURNS pg_catalog.int8
+	AS 'MODULE_PATHNAME', 'test_backend_runtime_subscription_arm'
+	LANGUAGE C STRICT;
+
+CREATE FUNCTION test_backend_runtime_subscription_gate(pg_catalog.int8, pg_catalog.text)
+	RETURNS pg_catalog.text
+	AS 'MODULE_PATHNAME', 'test_backend_runtime_subscription_gate'
+	LANGUAGE C STRICT;

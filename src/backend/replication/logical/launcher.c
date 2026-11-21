@@ -644,9 +644,15 @@ logicalrep_worker_stop_internal(LogicalRepWorker *worker, int signo)
 
 	/* Now terminate the worker ... */
 	if (worker->threaded)
-		(void) SendBackendInterrupt(worker->signal_pid,
-									logicalrep_worker_signal_to_interrupt(signo),
-									MyProcPid, getuid());
+	{
+		/*
+		 * An attached worker has a full runtime identity even before its
+		 * ProcSignal slot is registered.
+		 */
+		(void) PgBackendSendInterruptById(worker->proc->backendId,
+										logicalrep_worker_signal_to_interrupt(signo),
+										MyProcPid, getuid());
+	}
 	else
 		kill(worker->proc->pid, signo);
 

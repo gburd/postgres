@@ -19,6 +19,7 @@
 #include "postmaster/bgworker.h"
 #include "postmaster/interrupt.h"
 #include "postmaster/pg_xtc_carrier.h"	/* xtc_pg_carrier_total_steals */
+#include "replication/worker_internal.h"
 #include "storage/dsm.h"
 #include "storage/ipc.h"
 #include "storage/latch.h"
@@ -794,6 +795,235 @@ test_backend_runtime_bgworker_startup_publication(PG_FUNCTION_ARGS)
 	ereport(ERROR,
 			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 			 errmsg("startup publication test requires injection points")));
+	PG_RETURN_NULL();
+#endif
+}
+
+/* The keeper owns the mapping; no process-global gate registry is needed. */
+#ifdef USE_INJECTION_POINTS
+#define SUBSCRIPTION_POINT "init-pre-auth"
+
+typedef struct SubscriptionGateKey
+{
+	dsm_handle	handle;
+	Oid			subid;
+} SubscriptionGateKey;
+
+typedef struct SubscriptionGate
+{
+	pg_atomic_uint32 claimed;
+	pg_atomic_uint32 entered;
+	pg_atomic_uint32 release;
+	pg_atomic_uint32 left;
+	pg_atomic_uint32 timed_out;
+	pg_atomic_uint32 attached;
+	Oid			subid;
+	pid_t		pid;
+	uint16		generation;
+	ProcNumber	procno;
+	PgBackendId backend_id;
+	uint32		carrier;
+} SubscriptionGate;
+
+PGDLLEXPORT void test_backend_runtime_subscription_startup_gate(
+	const char *name, const void *private_data, void *arg);
+
+/* FATAL can bypass PG_FINALLY; DSM teardown still records gate departure. */
+static void
+subscription_gate_left(dsm_segment *seg, Datum arg)
+{
+	SubscriptionGate *gate = dsm_segment_address(seg);
+
+	pg_atomic_write_u32(&gate->left, 1);
+}
+
+/* A failed keeper releases the worker, retaining the segment until shutdown. */
+static void
+subscription_keeper_detach(dsm_segment *seg, Datum arg)
+{
+	SubscriptionGate *gate = dsm_segment_address(seg);
+
+	pg_atomic_write_u32(&gate->release, 1);
+	if (pg_atomic_read_u32(&gate->attached))
+		InjectionPointDetach(SUBSCRIPTION_POINT);
+}
+
+void
+test_backend_runtime_subscription_startup_gate(const char *name,
+											  const void *private_data, void *arg)
+{
+	SubscriptionGateKey key;
+	dsm_segment *seg;
+	SubscriptionGate *gate;
+	instr_time	start;
+	uint32		expected = 0;
+
+	memcpy(&key, private_data, sizeof(key));
+	if (MyBackendType != B_BG_WORKER ||
+		MyLogicalRepWorker == NULL ||
+		MyLogicalRepWorker->type != WORKERTYPE_APPLY ||
+		MyLogicalRepWorker->subid != key.subid)
+		return;
+	seg = dsm_attach(key.handle);
+	if (seg == NULL)
+		elog(ERROR, "subscription gate DSM segment disappeared");
+	gate = dsm_segment_address(seg);
+	if (!pg_atomic_compare_exchange_u32(&gate->claimed, &expected, 1))
+	{
+		dsm_detach(seg);
+		return;
+	}
+	PG_TRY();
+	{
+		on_dsm_detach(seg, subscription_gate_left, (Datum) 0);
+		LWLockAcquire(LogicalRepWorkerLock, LW_SHARED);
+		Assert(MyLogicalRepWorker->proc == MyProc);
+		Assert(MyLogicalRepWorker->procno == MyProcNumber);
+		gate->pid = MyLogicalRepWorker->signal_pid;
+		gate->generation = MyLogicalRepWorker->generation;
+		gate->procno = MyProcNumber;
+		gate->backend_id = MyProc->backendId;
+		LWLockRelease(LogicalRepWorkerLock);
+		gate->carrier = PgRuntimeIsThreadBacked(CurrentPgRuntime) ? 2 : 1;
+#ifdef USE_XTC_CARRIER
+		if (xtc_pg_in_backend_fiber())
+			gate->carrier = 3;
+#endif
+		INSTR_TIME_SET_CURRENT(start);
+		pg_memory_barrier();
+		pg_atomic_write_u32(&gate->entered, 1);
+		while (!pg_atomic_read_u32(&gate->release))
+		{
+			/* PROC_DIE is safe here; no subscription lock is held yet. */
+			if (!startup_pause(start, 30))
+			{
+				pg_atomic_write_u32(&gate->timed_out, 1);
+				elog(ERROR, "subscription gate timed out");
+			}
+		}
+	}
+	PG_FINALLY();
+	{
+		dsm_detach(seg);
+	}
+	PG_END_TRY();
+}
+#endif
+
+PG_FUNCTION_INFO_V1(test_backend_runtime_subscription_arm);
+PG_FUNCTION_INFO_V1(test_backend_runtime_subscription_gate);
+
+Datum
+test_backend_runtime_subscription_arm(PG_FUNCTION_ARGS)
+{
+#ifdef USE_INJECTION_POINTS
+	SubscriptionGateKey key = {0};
+	dsm_segment *seg;
+	SubscriptionGate *gate;
+
+	if (!superuser())
+		elog(ERROR, "subscription gate requires superuser");
+	key.subid = PG_GETARG_OID(0);
+	seg = dsm_create(sizeof(SubscriptionGate), 0);
+	key.handle = dsm_segment_handle(seg);
+	gate = dsm_segment_address(seg);
+	memset(gate, 0, sizeof(*gate));
+	pg_atomic_init_u32(&gate->claimed, 0);
+	pg_atomic_init_u32(&gate->entered, 0);
+	pg_atomic_init_u32(&gate->release, 0);
+	pg_atomic_init_u32(&gate->left, 0);
+	pg_atomic_init_u32(&gate->timed_out, 0);
+	pg_atomic_init_u32(&gate->attached, 0);
+	gate->subid = key.subid;
+	on_dsm_detach(seg, subscription_keeper_detach, (Datum) 0);
+	/* Also protect a callback which copied private_data before keeper exit. */
+	dsm_pin_segment(seg);
+	PG_TRY();
+	{
+		InjectionPointAttach(SUBSCRIPTION_POINT, "test_backend_runtime_threaded",
+							 "test_backend_runtime_subscription_startup_gate",
+							 &key, sizeof(key));
+		pg_atomic_write_u32(&gate->attached, 1);
+		dsm_pin_mapping(seg);
+	}
+	PG_CATCH();
+	{
+		/* Keep the segment even if a callback copied the key before ERROR. */
+		dsm_detach(seg);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+	PG_RETURN_INT64((int64) key.handle);
+#else
+	elog(ERROR, "subscription gate requires injection points");
+	PG_RETURN_NULL();
+#endif
+}
+
+/* Status only reads worker pointers while holding LogicalRepWorkerLock. */
+Datum
+test_backend_runtime_subscription_gate(PG_FUNCTION_ARGS)
+{
+#ifdef USE_INJECTION_POINTS
+	dsm_handle	handle = (dsm_handle) PG_GETARG_INT64(0);
+	char	   *action = text_to_cstring(PG_GETARG_TEXT_PP(1));
+	dsm_segment *seg;
+	SubscriptionGate *gate;
+	List	   *workers;
+	ListCell   *lc;
+	bool		matching = false;
+	int			live;
+	uint32		entered;
+
+	if (!superuser())
+		elog(ERROR, "subscription gate requires superuser");
+	seg = dsm_find_mapping(handle);
+	if (seg == NULL || dsm_segment_map_length(seg) < sizeof(SubscriptionGate))
+		elog(ERROR, "subscription gate is not owned by this session");
+	gate = dsm_segment_address(seg);
+	entered = pg_atomic_read_u32(&gate->entered);
+	pg_memory_barrier();
+	LWLockAcquire(LogicalRepWorkerLock, LW_SHARED);
+	workers = logicalrep_workers_find(gate->subid, false, false);
+	live = list_length(workers);
+	foreach(lc, workers)
+	{
+		LogicalRepWorker *worker = lfirst(lc);
+
+		if (entered && worker->type == WORKERTYPE_APPLY &&
+			worker->generation == gate->generation &&
+			worker->signal_pid == gate->pid && worker->procno == gate->procno &&
+			worker->proc != NULL && worker->proc == GetPGProcByNumber(gate->procno) &&
+			worker->proc->backendId == gate->backend_id)
+			matching = true;
+	}
+	LWLockRelease(LogicalRepWorkerLock);
+	list_free(workers);
+	if (strcmp(action, "release") == 0)
+		pg_atomic_write_u32(&gate->release, 1);
+	else if (strcmp(action, "close") == 0)
+	{
+		if (live != 0 || (entered && !pg_atomic_read_u32(&gate->left)))
+			elog(ERROR, "subscription workers still own the gate");
+		InjectionPointDetach(SUBSCRIPTION_POINT);
+		cancel_on_dsm_detach(seg, subscription_keeper_detach, (Datum) 0);
+		/* Detach is not a join; retain the segment until node shutdown. */
+		dsm_detach(seg);
+		PG_RETURN_TEXT_P(cstring_to_text("closed"));
+	}
+	else if (strcmp(action, "status") != 0)
+		elog(ERROR, "unknown subscription gate action: %s", action);
+	PG_RETURN_TEXT_P(cstring_to_text(psprintf(
+		"%u|%u|%u|%u|%d|%u|%d|" UINT64_FORMAT "|%s|%d|%d",
+		entered, pg_atomic_read_u32(&gate->release),
+		pg_atomic_read_u32(&gate->left), pg_atomic_read_u32(&gate->timed_out),
+		entered ? gate->pid : 0, entered ? gate->generation : 0,
+		entered ? gate->procno : INVALID_PROC_NUMBER,
+		entered ? gate->backend_id : (PgBackendId) 0,
+		!entered ? "none" : gate->carrier == 1 ? "process" :
+		gate->carrier == 3 ? "fiber" : "thread", matching, live)));
+#else
+	elog(ERROR, "subscription gate requires injection points");
 	PG_RETURN_NULL();
 #endif
 }
