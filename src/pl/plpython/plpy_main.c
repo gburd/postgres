@@ -583,7 +583,7 @@ plpython_inline_error_callback(void *arg)
 PLyExecutionContext *
 PLy_current_execution_context(void)
 {
-	Assert(PyGILState_Check());	/* a PL entry point must have taken the GIL */
+	PLy_AssertHoldsGIL();
 	if (PLy_execution_contexts == NULL)
 		elog(ERROR, "no Python function is currently executing");
 

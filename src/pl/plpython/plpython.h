@@ -34,6 +34,17 @@
  */
 #include "plpython_system.h"
 
+/*
+ * Assert that the calling thread holds the GIL.  PyGILState_Check() is not
+ * part of the limited API this module builds against, so the check exists
+ * only where the full API is visible.
+ */
+#if !defined(Py_LIMITED_API)
+#define PLy_AssertHoldsGIL() Assert(PyGILState_Check())
+#else
+#define PLy_AssertHoldsGIL() ((void) 0)
+#endif
+
 /* define our text domain for translations */
 #undef TEXTDOMAIN
 #define TEXTDOMAIN PG_TEXTDOMAIN("plpython")

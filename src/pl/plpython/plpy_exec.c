@@ -1166,7 +1166,7 @@ PLy_procedure_call(PLyProcedure *proc, const char *kargs, PyObject *vargs)
 	PyObject   *rv = NULL;
 	int volatile save_subxact_level = list_length(explicit_subtransactions);
 
-	Assert(PyGILState_Check());	/* must hold the GIL to touch Python */
+	PLy_AssertHoldsGIL();
 	PyDict_SetItemString(proc->globals, kargs, vargs);
 
 	PG_TRY();
