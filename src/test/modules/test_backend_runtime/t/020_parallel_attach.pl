@@ -10,7 +10,6 @@ use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
 
-$ENV{PG_XTC_CARRIER_LOOPS} = '1';
 
 for my $mode ('off', 'on')
 {
@@ -19,6 +18,7 @@ for my $mode ('off', 'on')
 	$node->append_conf(
 		'postgresql.conf', qq{
 multithreaded = $mode
+carrier_loops = 1
 io_method = sync
 summarize_wal = off
 max_connections = 20
@@ -36,7 +36,7 @@ statement_timeout = 0
 	if ($mode eq 'on')
 	{
 		like(slurp_file($node->logfile),
-			qr/xtc: carrier scheduler thread up \(1 loop, 1 supervisor, thread-per-session backend pool\)/,
+			qr/xtc: carrier up \(1 loop, /,
 			'fiber: exactly one carrier loop');
 	}
 

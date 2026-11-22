@@ -3,8 +3,7 @@
 # Phase C concurrent-startup corruption regression gate.
 #
 # Regression guard for a PRE-EXISTING concurrent-startup DATA CORRUPTION in the
-# thread-per-session fiber runtime, live at migratable=0 (migration OFF) and
-# independent of work-stealing / migration:
+# fiber runtime, independent of work-stealing and migration:
 #
 #   The backend-fiber startup window used to run MemoryContextInit() and the
 #   early GUC init (InitializeThreadedSessionGUCOptions / read_nondefault_
@@ -39,12 +38,6 @@
 # reintroduces the shared-fallback clobber and shows up as a crash signature in
 # the server log and/or a lost/failed connection.
 #
-# migratable is now 1 (migration re-enabled): client backends spawn migratable
-# so the concurrent-connect storm exercises the pre-install window BOTH under
-# on-loop cooperative interleaving AND under real cross-loop steals.  The
-# per-fiber-window fix must hold under migration too; assertion (5) below now
-# requires migratable=1, and the storm-safety assertions (2-4) prove no
-# pre-install-window corruption regresses once fibers can be stolen.
 
 use strict;
 use warnings FATAL => 'all';
@@ -56,13 +49,13 @@ use POSIX ();
 
 # Two carrier loops keeps the runtime multi-loop while concentrating enough
 # concurrently-starting fibers per loop to interleave their startup windows.
-$ENV{PG_XTC_CARRIER_LOOPS} = '2';
 
 my $node = PostgreSQL::Test::Cluster->new('phase_c_concurrent_startup_storm');
 $node->init;
 $node->append_conf(
 	'postgresql.conf', q{
 multithreaded = on
+carrier_loops = 2
 autovacuum = off
 io_method = sync
 summarize_wal = off
@@ -165,23 +158,9 @@ unlike(
 	'no crash / assertion / corruption signatures during concurrent-startup storm'
 );
 
-# Confirm the storm actually spawned backend fibers, and adapt to whichever
-# migration state is in effect.  This test's PRIMARY value -- the pre-install
-# per-fiber-window corruption gate (assertions above: no lost connect, server
-# usable, no crash/corruption signatures) -- holds in BOTH states and is the
-# active regression guard for fix #3.  The migratability check below just
-# records the state: when migration is LIVE (migratable=1) the window fix must
-# hold while fibers can be stolen; when migration is HELD (migratable=0, the
-# safe/pinned state) the same window fix must hold under pinned interleaving.
-my $migratable_spawns = () = $log =~ /spawned backend fiber pid=.*migratable=1/g;
-my $pinned_spawns = () = $log =~ /spawned backend fiber pid=.*migratable=0/g;
-ok($migratable_spawns > 0 || $pinned_spawns > 0,
-	"storm spawned backend fibers (migratable=$migratable_spawns pinned=$pinned_spawns; "
-	. ($migratable_spawns > 0
-		? 'migration LIVE -- per-fiber-window fix holds under real steals'
-		: 'migration HELD/pinned -- per-fiber-window fix holds under pinned interleaving')
-	. ')'
-);
+# Confirm the storm actually spawned backend fibers.
+my $spawns = () = $log =~ /spawned backend fiber pid=/g;
+cmp_ok($spawns, '>', 0, "storm spawned backend fibers ($spawns)");
 
 # Best-effort shutdown: if the storm crashed the runtime the postmaster is
 # already gone, so do not let teardown mask the real assertion failures above.

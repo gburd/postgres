@@ -26,7 +26,6 @@ like(slurp_file('/proc/self/limits'),
 	'focused runner has the fixed soft and hard fd limit')
   or BAIL_OUT('launch only this test with prlimit --nofile=4096:4096');
 
-local $ENV{PG_XTC_CARRIER_LOOPS} = '1';
 local $ENV{PGOPTIONS} = '';
 
 # Linux starttime distinguishes the original host process from a reused PID.
@@ -112,6 +111,7 @@ for my $case (['fork', 'off', 20, 'true'],
 	$node->init;
 	$node->append_conf('postgresql.conf', qq{
 multithreaded = $mode
+carrier_loops = 1
 io_method = sync
 autovacuum = off
 summarize_wal = off
@@ -151,7 +151,7 @@ synchronous_commit = on
 	}
 
 	like(slurp_file($node->logfile),
-		qr/xtc: carrier scheduler thread up \(1 loop, 1 supervisor, thread-per-session backend pool\)/,
+		qr/xtc: carrier up \(1 loop, /,
 		"$name: one fiber carrier loop");
 	is($victim->query_safe('SELECT test_backend_runtime_wait_fd_control()'),
 		"fiber|$backend|timeout0=1|timeout20=1|readable=1",

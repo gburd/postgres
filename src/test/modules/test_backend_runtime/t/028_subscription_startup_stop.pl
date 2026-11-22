@@ -11,7 +11,6 @@ use Time::HiRes qw(clock_gettime CLOCK_MONOTONIC usleep);
 
 plan skip_all => 'subscription startup coverage requires injection points'
   unless ($ENV{enable_injection_points} // '') eq 'yes';
-$ENV{PG_XTC_CARRIER_LOOPS} = '4';
 
 # Polling budgets exclude the final query's separate three-second client bound.
 sub await_sql
@@ -33,6 +32,7 @@ for my $case ('fiber_early', 'fiber_late', 'process_early', 'fiber_release')
 	$node->init;
 	$node->append_conf('postgresql.conf', qq{
 multithreaded = $mode
+carrier_loops = 4
 io_method = sync
 summarize_wal = off
 autovacuum = off
@@ -58,7 +58,7 @@ statement_timeout = 0
 		is($driver->query_safe('SHOW multithreaded'), $mode, "$case: backend mode");
 		if ($mode eq 'on')
 		{
-			like(slurp_file($node->logfile), qr/xtc: carrier scheduler thread up \(4 loops,/,
+			like(slurp_file($node->logfile), qr/xtc: carrier up \(4 loops,/,
 				"$case: four worker carrier loops");
 		}
 		my $create_state = $driver->query(q{

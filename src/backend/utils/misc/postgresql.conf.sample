@@ -236,6 +236,11 @@
 #max_parallel_workers = 8               # number of max_worker_processes that
                                         # can be used in parallel operations
 #parallel_leader_participation = on
+#carrier_loops = 0                      # threads when multithreaded = on;
+                                        # 0 = one per CPU
+                                        # (change requires restart)
+#carrier_cpu_pinning = on               # pin each carrier thread to a CPU
+                                        # (change requires restart)
 
 
 #------------------------------------------------------------------------------

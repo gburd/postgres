@@ -20,13 +20,13 @@ use PostgreSQL::Test::Utils;
 use Test::More;
 
 my $loops = 4;
-$ENV{PG_XTC_CARRIER_LOOPS} = "$loops";
 
 my $node = PostgreSQL::Test::Cluster->new('carrier_loop_count');
 $node->init;
 $node->append_conf(
 	'postgresql.conf', qq(
 multithreaded = on
+carrier_loops = $loops
 io_method = sync
 autovacuum_max_workers = 3
 max_worker_processes = 8
@@ -47,7 +47,7 @@ for (1 .. 8)
 
 like(
 	slurp_file($node->logfile),
-	qr/xtc: carrier scheduler thread up \($loops loops, $loops supervisors, thread-per-session backend pool\)/,
+	qr/xtc: carrier up \($loops loops, /,
 	"carrier scheduler came up with exactly $loops loops");
 
 # The whole process thread count must stay bounded.  The postmaster pid is the

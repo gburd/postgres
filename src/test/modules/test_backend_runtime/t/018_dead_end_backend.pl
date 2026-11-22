@@ -10,7 +10,6 @@ use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
 
-$ENV{PG_XTC_CARRIER_LOOPS} = '2';
 
 for my $mode ('off', 'on')
 {
@@ -19,6 +18,7 @@ for my $mode ('off', 'on')
 	$node->append_conf(
 		'postgresql.conf', qq{
 multithreaded = $mode
+carrier_loops = 2
 max_connections = 4
 max_wal_senders = 0
 reserved_connections = 0

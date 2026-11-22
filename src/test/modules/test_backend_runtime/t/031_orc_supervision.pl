@@ -1,9 +1,9 @@
 # Copyright (c) 2026, PostgreSQL Global Development Group
 
-# With xtc_carrier_use_orc = on, client backend fibers are TEMPORARY children
-# of the per-loop xtc_orc supervisors, and on_child_down is the crash
-# escalation path.  A clean disconnect must not escalate; a crashing backend
-# must fail-stop the server through the hook; a forged DOWN must do neither.
+# Backend fibers are TEMPORARY children of the per-loop xtc_orc supervisors,
+# and on_child_down is the crash escalation path.  A clean disconnect must not
+# escalate; a crashing backend must fail-stop the server through the hook; a
+# forged DOWN must do neither.  Each loop thread is pinned to its own CPU.
 use strict;
 use warnings FATAL => 'all';
 
@@ -17,16 +17,42 @@ $node->init;
 $node->append_conf(
 	'postgresql.conf', q{
 multithreaded = on
-xtc_carrier_use_orc = on
+carrier_loops = 2
 autovacuum = off
 io_method = sync
 summarize_wal = off
 });
 $node->start;
 
-like(slurp_file($node->logfile),
-	qr/xtc_orc supervisors up .* TEMPORARY children/,
-	'xtc_orc supervisors own the backend fibers');
+my $startlog = slurp_file($node->logfile);
+like($startlog, qr/xtc: carrier up \(2 loops, each with an xtc_orc supervisor, pinned to a CPU\)/,
+	'two loops, each supervised and pinned');
+
+# Each loop reports the CPU it pinned to, and for each such CPU some thread of
+# the server is restricted to that CPU alone.
+my $pm = (split /\n/, slurp_file($node->data_dir . '/postmaster.pid'))[0];
+SKIP:
+{
+	skip 'no /proc', 2 unless -d "/proc/$pm/task";
+	my %pinned;
+	while ($startlog =~ /xtc: loop (\d+) pinned to CPU (\d+)/g)
+	{
+		$pinned{$1} = $2;
+	}
+	is(scalar(keys %pinned), 2, 'both loops report a pinned CPU');
+	my @single;
+	opendir(my $dh, "/proc/$pm/task") or die "opendir: $!";
+	for my $tid (grep { /^\d+$/ } readdir($dh))
+	{
+		my $status = slurp_file("/proc/$pm/task/$tid/status");
+		push @single, $1
+		  if $status =~ /^Cpus_allowed_list:\s*(\d+)\s*$/m;
+	}
+	closedir($dh);
+	my %single = map { $_ => 1 } @single;
+	ok(!(grep { !$single{$_} } values %pinned),
+		'a thread is restricted to each CPU a loop reported');
+}
 
 $node->safe_psql('postgres', 'CREATE EXTENSION test_backend_runtime_threaded');
 
@@ -36,8 +62,8 @@ for my $i (1 .. 8)
 	is($node->safe_psql('postgres', "SELECT $i"), $i, "clean session $i");
 }
 my $log = slurp_file($node->logfile);
-like($log, qr/xtc: orc added backend fiber/, 'backends were added as children');
-unlike($log, qr/orc xtc_sup_add_child failed/, 'no add_child failed');
+like($log, qr/xtc: spawned backend fiber/, 'backends were added as children');
+unlike($log, qr/could not add backend fiber/, 'no add_child failed');
 unlike($log, qr/GENUINE-CRASH/, 'clean exits did not escalate');
 
 is($node->safe_psql('postgres', 'SELECT test_backend_runtime_send_forged_down()'),
@@ -63,7 +89,7 @@ for (1 .. 100)
 }
 ok($exited, 'server fail-stopped after the backend crash');
 like(slurp_file($node->logfile, $log_start),
-	qr/ORC observed GENUINE-CRASH/,
+	qr/supervisor observed GENUINE-CRASH/,
 	'the crash was escalated by on_child_down');
 
 $node->stop('immediate', fail_ok => 1);

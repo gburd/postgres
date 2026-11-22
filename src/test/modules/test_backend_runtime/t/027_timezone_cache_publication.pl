@@ -14,13 +14,13 @@ plan skip_all => 'timezone publication coverage requires injection points'
 
 for my $lane ('fork', 'fiber')
 {
-	local $ENV{PG_XTC_CARRIER_LOOPS} = 4;
 	local $ENV{PGOPTIONS} = '';
 	my $mode = $lane eq 'fork' ? 'off' : 'on';
 	my $node = PostgreSQL::Test::Cluster->new("timezone_publication_$lane");
 	$node->init;
 	$node->append_conf('postgresql.conf', qq{
 multithreaded = $mode
+carrier_loops = 4
 io_method = sync
 autovacuum = off
 summarize_wal = off
@@ -37,7 +37,7 @@ statement_timeout = 0
 	if ($lane eq 'fiber')
 	{
 		like(slurp_file($node->logfile),
-			qr/xtc: carrier scheduler thread up \(4 loops, 4 supervisors, thread-per-session backend pool\)/,
+			qr/xtc: carrier up \(4 loops, /,
 			"$lane: four native carrier loops");
 	}
 

@@ -9,7 +9,6 @@ use PostgreSQL::Test::Utils;
 use Test::More;
 use JSON::PP;
 
-$ENV{PG_XTC_CARRIER_LOOPS} = '1';
 
 my $settings = q{SELECT current_setting('enable_groupagg'),
 	current_setting('log_statement_max_length'),
@@ -25,6 +24,7 @@ for my $lane (['fork', 'off'], ['fiber', 'on'])
 	$node->append_conf(
 		'postgresql.conf', qq{
 multithreaded = $mode
+carrier_loops = 1
 io_method = sync
 summarize_wal = off
 max_connections = 20

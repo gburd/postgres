@@ -62,7 +62,6 @@ for my $lane ('fiber1', 'fork', 'fiber2')
 {
 	my $mode = $lane eq 'fork' ? 'off' : 'on';
 	my $loops = $lane eq 'fiber2' ? 2 : 1;
-	local $ENV{PG_XTC_CARRIER_LOOPS} = $loops;
 
 	my @variants = ('auto', 'reset');
 	push @variants, 'reuse' if $lane eq 'fiber1';
@@ -73,6 +72,7 @@ for my $lane ('fiber1', 'fork', 'fiber2')
 		$node->init;
 		$node->append_conf('postgresql.conf', qq{
 multithreaded = $mode
+carrier_loops = $loops
 io_method = sync
 summarize_wal = off
 autovacuum = off
@@ -99,7 +99,7 @@ local_preload_libraries = ''
 			if ($lane eq 'fiber1' || $lane eq 'fiber2')
 			{
 				like(slurp_file($node->logfile),
-					qr/xtc: carrier scheduler thread up \($loops loops?, $loops supervisors?, thread-per-session backend pool\)/,
+					qr/xtc: carrier up \($loops loops?, /,
 					"$case: native loop count");
 			}
 			my $keeper_pid = $keeper->query_safe('SELECT pg_backend_pid()');

@@ -77,7 +77,6 @@ for my $lane ('fork', 'fiber1', 'fiber2')
 {
 	my $mode = $lane eq 'fork' ? 'off' : 'on';
 	my $loops = $lane eq 'fiber2' ? 2 : 1;
-	local $ENV{PG_XTC_CARRIER_LOOPS} = $loops;
 
 	for my $preload ('none', 'prefix', 'descriptors')
 	{
@@ -88,6 +87,7 @@ for my $lane ('fork', 'fiber1', 'fiber2')
 		$node->init;
 		$node->append_conf('postgresql.conf', qq{
 multithreaded = $mode
+carrier_loops = $loops
 io_method = sync
 summarize_wal = off
 max_connections = 20
@@ -105,7 +105,7 @@ local_preload_libraries = ''
 		if ($mode eq 'on')
 		{
 			like(slurp_file($node->logfile),
-				qr/xtc: carrier scheduler thread up \($loops loops?, $loops supervisors?, thread-per-session backend pool\)/,
+				qr/xtc: carrier up \($loops loops?, /,
 				"$label: requested native loop count");
 		}
 

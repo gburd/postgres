@@ -90,17 +90,9 @@ PG_GLOBAL_RUNTIME bool xtc_force_process_fallback = false;
  */
 bool		xtc_log_to_server = false;
 
-/*
- * F4 supervision-fusion: when true (and multithreaded=on), stand up one libxtc
- * xtc_orc OTP supervisor per carrier loop alongside the hand-rolled per-loop
- * supervisor fiber.  The hand-rolled supervisor stays the source of truth for
- * backend-fiber crash detection and Stage-1b escalation; see the long comment
- * at xtc_carrier_start_orc_supervisors() in pg_xtc_carrier.c for why an
- * orc-owned backend child cannot carry escalation with today's libxtc.
- * Developer knob; default off.  Read once at carrier bringup; a plain
- * postmaster-wide global, like xtc_log_to_server.
- */
-bool		xtc_carrier_use_orc = false;
+/* Carrier loop count (0 = one per allowed CPU) and per-loop CPU pinning. */
+PG_GLOBAL_RUNTIME int carrier_loops = 0;
+PG_GLOBAL_RUNTIME bool carrier_cpu_pinning = true;
 
 /*
  * True in a backend that was started via fork()+exec() (arriving through

@@ -3231,6 +3231,45 @@ include_dir 'conf.d'
         </para>
        </listitem>
       </varlistentry>
+
+      <varlistentry id="guc-carrier-loops" xreflabel="carrier_loops">
+       <term><varname>carrier_loops</varname> (<type>integer</type>)
+       <indexterm>
+        <primary><varname>carrier_loops</varname> configuration parameter</primary>
+       </indexterm>
+       </term>
+       <listitem>
+        <para>
+         Sets the number of carrier loops a multithreaded server runs.  Each
+         loop is one operating-system thread, and every server process except
+         the logger and any process-fallback backend runs as a fiber on one of
+         them.  The default, <literal>0</literal>, starts one loop for each
+         CPU the server is allowed to run on.  This parameter can only be set
+         at server start, and has no effect unless
+         <literal>multithreaded</literal> is on.
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="guc-carrier-cpu-pinning" xreflabel="carrier_cpu_pinning">
+       <term><varname>carrier_cpu_pinning</varname> (<type>boolean</type>)
+       <indexterm>
+        <primary><varname>carrier_cpu_pinning</varname> configuration parameter</primary>
+       </indexterm>
+       </term>
+       <listitem>
+        <para>
+         Pins each carrier loop thread to one CPU of the set the server was
+         started with, taking the CPUs in order and wrapping around when
+         there are more loops than CPUs.  To keep the server off some CPUs,
+         start it under a narrower affinity mask, for example with
+         <command>taskset</command> or a systemd <literal>CPUAffinity</literal>
+         setting.  The default is <literal>on</literal>.  This parameter can
+         only be set at server start, and has no effect unless
+         <literal>multithreaded</literal> is on.
+        </para>
+       </listitem>
+      </varlistentry>
      </variablelist>
     </sect2>
    </sect1>

@@ -16,7 +16,6 @@ plan skip_all => 'process fallback requires Unix and SysV shared memory'
 
 $ENV{PGCTLTIMEOUT} = 30;
 $ENV{PGCONNECT_TIMEOUT} = 5;
-$ENV{PG_XTC_CARRIER_LOOPS} = 1;
 
 # Capture connection failures and timeouts without aborting the other cases.
 sub query_ok
@@ -53,6 +52,7 @@ sub check_bootstrap
 		['summarize_wal', 'off'],
 		['ssl', 'off']);
 	push @settings, ['max_wal_senders', $senders] if $before;
+	push @settings, ['carrier_loops', 1];
 	push @settings, ['multithreaded', $mode];
 	push @settings, ['max_wal_senders', $senders] unless $before;
 

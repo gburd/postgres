@@ -246,7 +246,6 @@ for my $lane ('fork', 'fiber1', 'fiber2', 'fallback')
 	subtest $lane => sub {
 		my $mode = $lane eq 'fork' ? 'off' : 'on';
 		my $loops = $lane eq 'fiber2' ? 2 : 1;
-		local $ENV{PG_XTC_CARRIER_LOOPS} = $loops;
 		my $node = PostgreSQL::Test::Cluster->new("wire_cancel_$lane");
 		$node->init;
 		# Match TAP013's order for the existing fork+exec/sysv fixture.
@@ -256,6 +255,7 @@ shared_memory_type = sysv
 }) if $lane eq 'fallback';
 		$node->append_conf('postgresql.conf', qq{
 multithreaded = $mode
+carrier_loops = $loops
 max_connections = 4
 max_wal_senders = 0
 reserved_connections = 0
@@ -275,7 +275,7 @@ log_min_messages = debug2
 		if ($lane =~ /^fiber/)
 		{
 			like(slurp_file($node->logfile),
-				qr/xtc: carrier scheduler thread up \($loops loops?, $loops supervisors?, thread-per-session backend pool\)/,
+				qr/xtc: carrier up \($loops loops?, /,
 				'actual fiber loop count');
 		}
 		if ($lane eq 'fallback')

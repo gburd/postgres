@@ -13,7 +13,6 @@ use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
 
-$ENV{PG_XTC_CARRIER_LOOPS} = '1';
 
 for my $lane (['fork', 'off'], ['fiber', 'on'])
 {
@@ -23,6 +22,7 @@ for my $lane (['fork', 'off'], ['fiber', 'on'])
 	$node->append_conf(
 		'postgresql.conf', qq{
 multithreaded = $mode
+carrier_loops = 1
 io_method = sync
 summarize_wal = off
 max_connections = 20

@@ -12,7 +12,6 @@ use Test::More;
 plan skip_all => 'startup publication coverage requires injection points'
   unless ($ENV{enable_injection_points} // '') eq 'yes';
 
-$ENV{PG_XTC_CARRIER_LOOPS} = '1';
 
 for my $lane ('process', 'fiber')
 {
@@ -21,6 +20,7 @@ for my $lane ('process', 'fiber')
 	$node->init;
 	$node->append_conf('postgresql.conf', qq{
 multithreaded = $mode
+carrier_loops = 1
 io_method = sync
 summarize_wal = off
 autovacuum = off
@@ -38,7 +38,7 @@ statement_timeout = 0
 	if ($mode eq 'on')
 	{
 		like(slurp_file($node->logfile),
-			qr/xtc: carrier scheduler thread up \(1 loop, 1 supervisor, thread-per-session backend pool\)/,
+			qr/xtc: carrier up \(1 loop, /,
 			"$lane: one worker fiber loop");
 	}
 

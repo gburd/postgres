@@ -408,6 +408,22 @@
   options => 'bytea_output_options',
 },
 
+{ name => 'carrier_cpu_pinning', type => 'bool', context => 'PGC_POSTMASTER', group => 'RESOURCES_WORKER_PROCESSES',
+  short_desc => 'Pins each carrier loop thread to its own CPU.',
+  long_desc => 'When multithreaded is on, each carrier loop thread is pinned to one CPU of the set the server was started with, in order, wrapping when there are more loops than CPUs.',
+  variable => 'carrier_cpu_pinning',
+  boot_val => 'true',
+},
+
+{ name => 'carrier_loops', type => 'int', context => 'PGC_POSTMASTER', group => 'RESOURCES_WORKER_PROCESSES',
+  short_desc => 'Sets the number of carrier loop threads.',
+  long_desc => 'When multithreaded is on, every server process except the logger runs as a fiber on one of this many carrier loops, one thread each. 0 means one loop per CPU the server may run on.',
+  variable => 'carrier_loops',
+  boot_val => '0',
+  min => '0',
+  max => '1024',
+},
+
 { name => 'check_function_bodies', type => 'bool', context => 'PGC_USERSET', group => 'CLIENT_CONN_STATEMENT',
   short_desc => 'Check routine bodies during CREATE FUNCTION and CREATE PROCEDURE.',
   variable => 'check_function_bodies',
@@ -3931,14 +3947,6 @@
   threaded_accessor => 'PgCurrentXmlOptionRef',
   boot_val => 'XMLOPTION_CONTENT',
   options => 'xmloption_options',
-},
-
-{ name => 'xtc_carrier_use_orc', type => 'bool', context => 'PGC_POSTMASTER', group => 'DEVELOPER_OPTIONS',
-  short_desc => 'Stands up a libxtc xtc_orc OTP supervisor per carrier loop.',
-  long_desc => 'F4 supervision-fusion knob for the multithreaded PostgreSQL development branch. When multithreaded=on, stands up one libxtc xtc_orc supervisor (xtc_sup_start, ONE_FOR_ONE) per carrier loop alongside the hand-rolled per-loop supervisor fiber. The hand-rolled supervisor remains the source of truth for backend-fiber crash DETECTION and Stage-1b escalation (SIGNAL DOWN -> genuine-crash flag + postmaster latch): libxtc xtc_orc exposes no per-child DOWN classification to an external caller (only aggregate counters), so an orc-owned backend child cannot surface the crash-vs-clean distinction the escalation policy requires. Off (the default) keeps the hand-rolled supervisor path byte-for-byte. Has no effect under multithreaded=off.',
-  flags => 'GUC_NOT_IN_SAMPLE',
-  variable => 'xtc_carrier_use_orc',
-  boot_val => 'false',
 },
 
 { name => 'xtc_force_process_fallback', type => 'bool', context => 'PGC_POSTMASTER', group => 'DEVELOPER_OPTIONS',

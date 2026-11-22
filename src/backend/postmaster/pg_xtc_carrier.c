@@ -15,8 +15,9 @@
  *	blocking epoll_wait() that would monopolize the carrier thread.
  *
  *	Concurrency is cooperative: a fiber yields only at a wait point.  Each
- *	loop has a supervisor fiber that spawns the fibers placed on it and
- *	classifies their exits; a genuine crash fail-stops the server.
+ *	loop has an xtc_orc supervisor whose TEMPORARY children are the fibers
+ *	placed on it, and a spawner fiber that adds them; a genuine crash
+ *	fail-stops the server.
  *-------------------------------------------------------------------------
  */
 
@@ -25,6 +26,7 @@
 #ifdef USE_XTC_CARRIER
 
 #include <pthread.h>
+#include <sched.h>
 #include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -40,10 +42,10 @@
 /* xtc public API */
 #include "xtc.h"
 #include "xtc_app.h"
-#include "xtc_exec.h"		/* xtc_exec_loop, xtc_exec_n_loops, xtc_exec_set_eager_rebalance */
+#include "xtc_exec.h"
 #include "xtc_loop.h"
 #include "xtc_proc.h"
-#include "xtc_orc.h"		/* xtc_sup_* (F4: optional per-loop OTP supervisor) */
+#include "xtc_orc.h"
 #include "xtc_version.h"		/* XTC_VERSION_* (installed from libxtc 2.2) */
 /*
  * This file uses 2.2 API: xtc_sup_opts_t.on_child_down, XTC_DOWN_KIND_KILLED,
@@ -134,128 +136,134 @@ static volatile bool g_xtc_ready;
 static pthread_mutex_t g_xtc_start_lock = PTHREAD_MUTEX_INITIALIZER;
 
 /*
- * Per-loop supervisor fibers.  Each loop hosts one long-lived supervisor fiber
- * that xtc_monitor()s the backend fibers on that loop, so an ABNORMAL fiber
- * death -- one that faulted before publishing its PMChild exit -- is observed
- * (a DOWN with non-zero reason) and logged loudly instead of silently leaving
- * an occupied PMChild slot.  NORMAL exits (reason 0) are corroborative only:
- * the postmaster still owns reaping via process_pm_fiber_exit().  The
- * supervisor NEVER reaps and NEVER respawns -- it is an observer.  Stage 1 is
- * observability + loud logging; wiring an abnormal DOWN into the postmaster
- * crash policy (ExitPostmaster) is Stage 1b.
+ * Supervision.  Each loop runs two procs of ours:
  *
- * The supervisor must run ON its loop to call xtc_monitor()/xtc_recv(); the
- * postmaster spawn thread (off-loop) hands it each new backend pid via a
- * cross-thread xtc_send() register message.
+ *   - an xtc_orc supervisor (g_xtc_orc_sup[i]) whose children are the
+ *     backend fibers placed on that loop.  Every child is TEMPORARY: the
+ *     postmaster, not the supervisor, decides whether a child type is
+ *     restarted.  The supervisor's on_child_down hook classifies each exit,
+ *     and a contained fault (XTC_DOWN_KIND_SIGNAL) fail-stops the server.
+ *   - a spawner fiber (g_xtc_spawner_pid[i]).  xtc_sup_add_child must be
+ *     called from a proc, and the postmaster thread is not one, so the
+ *     postmaster sends the spawner a request and the spawner adds the child.
+ *     The spawner also pins its loop thread to a CPU at startup.
+ *
+ * Nothing restarts a backend fiber here and nothing reaps a PMChild slot:
+ * exactly-once reaping and the restart policy stay with the postmaster.
  */
-#define XTC_PG_MAX_SUP_LOOPS 1024
-static xtc_pid_t g_xtc_sup_pid[XTC_PG_MAX_SUP_LOOPS];
+#define XTC_PG_MAX_LOOPS 1024
+static xtc_supervisor_t *g_xtc_orc_sup[XTC_PG_MAX_LOOPS];
+static xtc_pid_t g_xtc_spawner_pid[XTC_PG_MAX_LOOPS];
 
 /*
- * F4 supervision-fusion (optional, GUC-gated by xtc_carrier_use_orc): one
- * libxtc xtc_orc OTP supervisor per carrier loop, standing up ALONGSIDE the
- * hand-rolled g_xtc_sup_pid[] supervisor fibers -- it does NOT replace them.
- * The handles are parallel to g_xtc_sup_pid[] (index i is loop i).  NULL when
- * the GUC is off (the default) or the supervisor failed to start on that loop.
- * See xtc_carrier_start_orc_supervisors() for why backend fibers are NOT
- * registered as children of these supervisors (the escalation invariant).
- */
-static xtc_supervisor_t *g_xtc_orc_sup[XTC_PG_MAX_SUP_LOOPS];
-static int	g_xtc_n_orc_sups = 0;
-
-/*
- * Set true (and the postmaster latch kicked) when the supervisor observes a
- * GENUINE abnormal fiber crash -- one that died before reaching its clean
- * exit.  The postmaster polls this in its main loop (Stage 1b escalation);
- * benign teardown faults (findings 2c) never set it.
+ * Set (and the postmaster latch kicked) when a supervisor observes a genuine
+ * crash: a backend fiber that died of a contained fault.  The postmaster polls
+ * it in ServerLoop.
  */
 static _Atomic uint32_t g_xtc_genuine_crash;
 
 /*
- * Postmaster's process latch, captured once at carrier start (on the postmaster
- * thread, where MyLatch is the postmaster's own latch).  The supervisor kicks
- * it after flagging a genuine crash so the postmaster escalates on its very
- * next wake instead of waiting out DetermineSleepTime() (which can be tens of
- * seconds when the server is otherwise idle).
+ * The postmaster's process latch, captured at carrier start on the postmaster
+ * thread.  on_child_down sets it after flagging a crash, so the postmaster
+ * escalates at once instead of waiting out DetermineSleepTime().
  */
 static Latch *_Atomic g_xtc_postmaster_latch;
 
-static int	g_xtc_n_sups = 0;
-
 /*
- * Supervisor spawn request (race-free variant).
- * The postmaster spawn thread sends this to a loop's supervisor; the
- * supervisor -- running ON that loop -- does an atomic xtc_proc_spawn_monitor()
- * (libxtc v1.3.0), so the monitor is established before the child can run and
- * even an instant-exiting backend delivers a real-reason DOWN (never NOPROC).
- * This closes the spawn/register race where a fast-crashing fiber could die
- * before an out-of-band register arrived, escaping observation.  A leading
- * magic distinguishes it from a libxtc DOWN signal in the supervisor mailbox.
+ * A spawn request from the postmaster thread to a loop's spawner fiber.  The
+ * leading magic tells it apart from anything else in the spawner's mailbox.
  */
-#define XTC_SUP_SPAWN_MAGIC 0x58545343u		/* 'XTSC' */
-typedef struct xtc_sup_spawn_msg
+#define XTC_SPAWN_MAGIC 0x58545343u		/* 'XTSC' */
+typedef struct xtc_spawn_msg
 {
 	uint32_t	magic;
 	xtc_carrier_entry_fn entry;
 	void	   *entry_arg;
-} xtc_sup_spawn_msg;
+} xtc_spawn_msg;
 
 /*
- * The backend fiber entry function.  It is invariant across the process
- * (always the tree's backend_thread_entry), so we store it once rather than
- * heap-allocating a per-spawn {entry, arg} wrapper: the fiber is spawned with
- * entry_arg (a stable, launch_backend.c-owned BackendThreadStart *) as its
- * xtc arg and reads this pointer for the function.  This keeps the carrier
- * layer allocation-free -- important because it runs on a bare xtc fiber
- * before any PostgreSQL memory context exists, where palloc is unusable and
- * libxtc exposes no public general-purpose malloc (only xtc_free for buffers
- * it hands back).
+ * The backend fiber entry function.  It is the same for every fiber (the
+ * tree's backend_thread_entry), so it is stored once and each fiber is spawned
+ * with only its BackendThreadStart * as the argument.  This keeps the spawner
+ * allocation-free: it runs on a bare fiber before any memory context exists.
  */
 static xtc_carrier_entry_fn g_xtc_backend_entry;
 
 /*
- * Upper bound on the default carrier loop count, so a very-large-core box does
- * not create hundreds of carrier OS threads (and their stack reservations)
- * that the kernel's CFS load balancer then spends its time on.
- */
-#define XTC_PG_CARRIER_LOOPS_CEILING 256
-
-/*
- * Number of carrier loops (each on its own OS thread).  A pool of loops lets
- * backend fibers run in parallel and avoids the single-loop lost-wakeup where
- * two or more fibers parked on one loop could starve each other.
- *
- * The pool is FIXED at startup and sized to one loop per core, bounded by
- * XTC_PG_CARRIER_LOOPS_CEILING.  PG_XTC_CARRIER_LOOPS overrides the default
- * (tuning and tests).
- *
- * shortcut: with many concurrent CPU-bound parallel workers (workers >> loops)
- * they serialize per loop -- a latency ceiling, not a deadlock (fibers are
- * cooperative).  Upgrade path if a workload proves it matters: elastic loop
- * growth.
+ * Number of carrier loops, one OS thread each, fixed for the life of the
+ * server.  carrier_loops = 0 (the default) means one loop per CPU the process
+ * may run on, which is also the most it can use once every loop is pinned to
+ * its own CPU.
  */
 int
 xtc_pg_carrier_loop_count(void)
 {
-	const char *env = getenv("PG_XTC_CARRIER_LOOPS");
-	long		ncpus;
-	int			loops;
+	int			ncpus = 0;
 
-	if (env != NULL && env[0] != '\0')
-	{
-		long		v = strtol(env, NULL, 10);
+#ifdef __linux__
+	cpu_set_t	allowed;
 
-		if (v >= 1 && v <= 1024)
-			return (int) v;
-	}
-
-	ncpus = sysconf(_SC_NPROCESSORS_ONLN);
+	if (sched_getaffinity(0, sizeof(allowed), &allowed) == 0)
+		ncpus = CPU_COUNT(&allowed);
+#endif
+	if (carrier_loops > 0)
+		return carrier_loops;
+	if (ncpus < 1)
+		ncpus = (int) sysconf(_SC_NPROCESSORS_ONLN);
 	if (ncpus < 1)
 		ncpus = 1;
-	loops = (int) ncpus;
-	if (loops > XTC_PG_CARRIER_LOOPS_CEILING)
-		loops = XTC_PG_CARRIER_LOOPS_CEILING;
-	return loops;
+	return Min(ncpus, XTC_PG_MAX_LOOPS);
+}
+
+/*
+ * Pin the calling loop thread to the loop_idx-th CPU of the process's allowed
+ * set (wrapping when there are more loops than CPUs).  The allowed set is the
+ * one the postmaster started with, captured before any loop pinned itself, so
+ * every loop sees the same set.  libxtc exports no affinity call, so this uses
+ * pthread_setaffinity_np directly.  Failure only costs locality, so it is
+ * reported and otherwise ignored.
+ */
+#ifdef __linux__
+static cpu_set_t g_xtc_allowed_cpus;
+static int	g_xtc_n_allowed_cpus;
+#endif
+
+static void
+xtc_carrier_pin_loop_thread(int loop_idx)
+{
+#ifdef __linux__
+	cpu_set_t	one;
+	int			nth;
+	int			cpu = -1;
+	char		buf[96];
+	int			n;
+
+	if (!carrier_cpu_pinning || g_xtc_n_allowed_cpus < 1)
+		return;
+	nth = loop_idx % g_xtc_n_allowed_cpus;
+	for (int c = 0; c < CPU_SETSIZE; c++)
+	{
+		if (CPU_ISSET(c, &g_xtc_allowed_cpus) && nth-- == 0)
+		{
+			cpu = c;
+			break;
+		}
+	}
+	if (cpu < 0)
+		return;
+	CPU_ZERO(&one);
+	CPU_SET(cpu, &one);
+	if (pthread_setaffinity_np(pthread_self(), sizeof(one), &one) == 0)
+		n = snprintf(buf, sizeof(buf), "xtc: loop %d pinned to CPU %d\n",
+					 loop_idx, cpu);
+	else
+		n = snprintf(buf, sizeof(buf), "xtc: could not pin loop %d to CPU %d\n",
+					 loop_idx, cpu);
+	if (n > 0)
+		xtc_diag_write(STDERR_FILENO, buf, Min((size_t) n, sizeof(buf) - 1));
+#else
+	(void) loop_idx;
+#endif
 }
 
 /*
@@ -414,42 +422,75 @@ xtc_carrier_sched_thread(void *arg)
 	return NULL;
 }
 
-/* Forward decl: the backend fiber body, spawned by the loop supervisor. */
+/* The backend fiber body, added to a loop's supervisor by its spawner. */
 static void xtc_carrier_proc(void *arg);
 
 /*
- * Per-loop supervisor fiber.  Runs forever on its loop, servicing two message
- * kinds:
- *   - a spawn request (xtc_sup_spawn_msg): xtc_proc_spawn_monitor() the backend
- *     fiber on THIS loop -- one atomic call that establishes the monitor before
- *     the new fiber can run (race-free, and NOPROC cannot occur);
- *   - a DOWN signal (decoded via xtc_down_decode_ex into a self-describing
- *     xtc_down_info_t): a monitored backend exited.  KIND_CLEAN/KIND_NOPROC are
- *     normal/benign (the postmaster already reaps; log quietly).  KIND_SIGNAL
- *     is a genuine contained fault -- make it LOUD via a raw write (elog is
- *     unsafe from this bare fiber with no PG error stack) and escalate.
- *     KIND_EXIT is a non-zero app exit the postmaster reaps under its own
- *     restart policy -- log, do not escalate.
+ * on_child_down hook of the per-loop xtc_orc supervisors.
  *
- * The supervisor never reaps a PMChild slot and never respawns a backend --
- * exactly-once reaping and crash policy remain the postmaster's.
+ * Runs on the supervisor's fiber once per DOWN of a backend fiber it owns,
+ * before its (TEMPORARY, so empty) restart decision.  A contained fault
+ * (XTC_DOWN_KIND_SIGNAL) is a genuine crash that may have damaged the shared
+ * address space, so flag it and wake the postmaster, which fail-stops the
+ * server.  A clean or non-zero application exit is a normal end the postmaster
+ * reaps, and KILLED or NOCONNECTION is a deliberate teardown; none escalate.
+ * The supervisor only passes on a DOWN the library sent (XTC_MSG_SYS), so a
+ * forged message cannot reach this hook.
+ *
+ * NB: the hook must not park.  An atomic store, SetLatch, and a raw write are
+ * all it does; elog is unsafe on this bare fiber.  libxtc's xtc_dump takes
+ * per-loop inspection locks, so it cannot run here either.
  */
 static void
-xtc_carrier_supervisor_proc(void *arg)
+xtc_carrier_child_down(xtc_supervisor_t *sup, const xtc_child_spec_t *spec,
+					   const xtc_down_info_t *info, void *user)
 {
-	/* arg encodes this supervisor's loop index (see start_supervisors). */
+	Latch	   *pml;
+	char		buf[160];
+	int			n;
+
+	(void) sup;
+	(void) spec;
+	(void) user;
+
+	if (info == NULL || info->kind != XTC_DOWN_KIND_SIGNAL)
+		return;
+
+	n = snprintf(buf, sizeof(buf),
+				 "xtc: supervisor observed GENUINE-CRASH backend fiber DOWN "
+				 "pid=(loop=%u,local=%u,gen=" UINT64_FORMAT ") signal=%d\n",
+				 info->pid.loop_id, info->pid.local_id,
+				 (uint64) info->pid.gen, info->signal);
+	if (n > 0)
+		xtc_diag_write(STDERR_FILENO, buf, Min((size_t) n, sizeof(buf) - 1));
+
+	atomic_store(&g_xtc_genuine_crash, 1);
+	pml = atomic_load(&g_xtc_postmaster_latch);
+	if (pml != NULL)
+		SetLatch(pml);
+}
+
+/*
+ * Per-loop spawner fiber.  It pins its loop thread to a CPU, installs
+ * libxtc's fault guard on that thread, and then serves spawn requests from
+ * the postmaster by adding each backend fiber to this loop's supervisor.
+ *
+ * An add that fails leaves the fiber unstarted.  Its PMChild never registers,
+ * so the postmaster's launch-registration wait times out and the connection
+ * fails as for any failed spawn; the failure is logged here.
+ */
+static void
+xtc_carrier_spawner_proc(void *arg)
+{
 	int			my_loop_idx = (int) (intptr_t) arg;
-	xtc_loop_t *my_loop = (g_xtc_exec != NULL && g_xtc_n_loops > 1)
-		? xtc_exec_loop(g_xtc_exec, my_loop_idx) : g_xtc_loop;
+
+	xtc_carrier_pin_loop_thread(my_loop_idx);
 
 	/*
-	 * Install libxtc's R1 per-fiber fault guard on THIS loop thread.  The
-	 * guard registers the SIGSEGV/SIGBUS/SIGFPE/SIGILL handler on an alternate
-	 * signal stack; without it a synchronous fault in a backend fiber cannot
-	 * be contained (no handler to unwind the one fiber and deliver its DOWN),
-	 * which is the whole point of #7 Stage 1b crash containment.  The
-	 * supervisor runs one fiber per loop, on that loop's thread, so this
-	 * installs the guard exactly once per loop thread (the call is idempotent).
+	 * The fault guard handles SIGSEGV, SIGBUS, SIGFPE, and SIGILL on an
+	 * alternate stack, so a fault in one backend fiber ends that fiber with a
+	 * SIGNAL DOWN instead of taking the thread down unobserved.  It is per OS
+	 * thread, and this fiber is the one proc of ours that runs on every loop.
 	 */
 	(void) xtc_fault_guard_install();
 
@@ -457,565 +498,79 @@ xtc_carrier_supervisor_proc(void *arg)
 	{
 		void	   *msg = NULL;
 		size_t		len = 0;
-		xtc_down_info_t di = XTC_DOWN_INFO_INIT;
-		bool		from_library;
+		xtc_spawn_msg sp;
+		xtc_child_spec_t spec = XTC_CHILD_SPEC_INIT;
+		xtc_pid_t	bpid = XTC_PID_NONE;
 		int			rc;
-
-#ifdef HAVE_XTC_RECV_MATCH_EX
-		xtc_msg_info_t info = XTC_MSG_INFO_INIT;
-
-		/* block until a message arrives; NULL predicate takes the first */
-		rc = xtc_recv_match_ex(0, NULL, NULL, &msg, &len, &info, -1);
-
-		/*
-		 * A DOWN's byte layout is public, so a payload that decodes as a DOWN
-		 * proves nothing by itself; only the library can set XTC_MSG_SYS.
-		 * Without this check any proc could make the supervisor report a live
-		 * backend as crashed and fail-stop the server.
-		 */
-		from_library = (info.flags & XTC_MSG_SYS) != 0;
-#else
-		rc = xtc_recv(&msg, &len, -1);	/* block until a message arrives */
-		from_library = true;
-#endif
-		if (rc != XTC_OK || msg == NULL)
-			continue;
-
-		if (from_library && xtc_down_decode_ex(msg, len, &di) == XTC_OK)
-		{
-			xtc_pid_t	down_pid = di.pid;
-
-			/*
-			 * A monitored backend/worker fiber exited.  libxtc v1.3.0 gives a
-			 * self-describing DOWN: di.kind says HOW it ended, with the signal
-			 * number and the app exit code in SEPARATE fields, so there is no
-			 * range heuristic and no dependence on our proc_exit << 8 encoding:
-			 *   XTC_DOWN_KIND_CLEAN  -> returned, or xtc_exit_self(0); quiet.
-			 *   XTC_DOWN_KIND_NOPROC -> the monitor raced a clean exit (target
-			 *                           already reaped); benign, the postmaster
-			 *                           owns reaping.  (Atomic spawn_monitor now
-			 *                           makes this case essentially unreachable
-			 *                           -- the monitor is in place before the
-			 *                           child runs -- but we still classify it.)
-			 *   XTC_DOWN_KIND_SIGNAL -> a GENUINE crash: di.signal is the R1
-			 *                           contained-fault signal (e.g. 11 ==
-			 *                           SIGSEGV).  Escalate.  libxtc 2.2
-			 *                           (8a7e9c06) GUARANTEES this kind for any
-			 *                           contained fault regardless of the code
-			 *                           the fiber then passed to xtc_exit_self:
-			 *                           our backends arm a recovery frame and
-			 *                           xtc_exit_self(sig) on a fault, which
-			 *                           v2.1.x MISREPORTED as KIND_EXIT(sig) and
-			 *                           silently skipped this escalation (libxtc
-			 *                           reply 2026-11-12 section 1).  The signal
-			 *                           replaces any passed code in the DOWN.
-			 *   XTC_DOWN_KIND_EXIT   -> a non-zero application exit: di.exit_code
-			 *                           is the code the fiber passed to
-			 *                           xtc_exit_self (our backends pass
-			 *                           backend_thread_exitstatus(code), i.e. the
-			 *                           << 8 wait-status form, so di.exit_code
-			 *                           carries that verbatim).  A NORMAL exit the
-			 *                           postmaster reaps under its own restart
-			 *                           policy -- NOT a fault.  Do NOT escalate.
-			 *   XTC_DOWN_KIND_KILLED -> (libxtc 2.2, =5) the fiber was terminated
-			 *                           on purpose (xtc_exit_pid, a supervisor
-			 *                           stop, a link/group kill); di.exit_code is
-			 *                           the KILL REASON, not a proc_exit code.
-			 *                           Deliberate teardown -- NOT a fault.  Do
-			 *                           NOT escalate.  (NOCONNECTION and any
-			 *                           future kind share this terminal branch.)
-			 * A bare xtc_exit_self(1) is KIND_EXIT (exit_code 1), distinct from a
-			 * signal-1 fault (KIND_SIGNAL, signal 1).
-			 */
-			if (di.kind == XTC_DOWN_KIND_CLEAN)
-			{
-				static __thread int nlog = 0;
-
-				if (nlog < 8)
-				{
-					char		buf[160];
-					int			n;
-
-					nlog++;
-					n = snprintf(buf, sizeof(buf),
-								 "xtc: supervisor observed normal backend fiber DOWN "
-								 "pid=(loop=%u,local=%u,gen=" UINT64_FORMAT ")\n",
-								 down_pid.loop_id, down_pid.local_id, (uint64) down_pid.gen);
-					if (n > 0)
-					{
-						if (n > (int) sizeof(buf))
-							n = (int) sizeof(buf);
-						xtc_diag_write(STDERR_FILENO, buf, (size_t) n);
-					}
-				}
-			}
-			else if (di.kind == XTC_DOWN_KIND_NOPROC)
-			{
-				/* Monitor raced a clean exit; benign, do NOT escalate. */
-				static __thread int nnp = 0;
-
-				if (nnp < 8)
-				{
-					char		buf[160];
-					int			n;
-
-					nnp++;
-					n = snprintf(buf, sizeof(buf),
-								 "xtc: supervisor observed benign monitor-race DOWN "
-								 "(NOPROC) pid=(loop=%u,local=%u,gen=" UINT64_FORMAT ")\n",
-								 down_pid.loop_id, down_pid.local_id, (uint64) down_pid.gen);
-					if (n > 0)
-					{
-						if (n > (int) sizeof(buf))
-							n = (int) sizeof(buf);
-						xtc_diag_write(STDERR_FILENO, buf, (size_t) n);
-					}
-				}
-			}
-			else if (di.kind == XTC_DOWN_KIND_SIGNAL)
-			{
-				/* An R1 contained-fault signal -> genuine crash. */
-				static __thread int nabn = 0;
-
-				if (nabn < 32)
-				{
-					char		buf[192];
-					int			n;
-
-					nabn++;
-					n = snprintf(buf, sizeof(buf),
-								 "xtc: SUPERVISOR observed GENUINE-CRASH backend fiber DOWN "
-								 "pid=(loop=%u,local=%u,gen=" UINT64_FORMAT ") signal=%d\n",
-								 down_pid.loop_id, down_pid.local_id,
-								 (uint64) down_pid.gen, di.signal);
-					if (n > 0)
-					{
-						if (n > (int) sizeof(buf))
-							n = (int) sizeof(buf);
-						xtc_diag_write(STDERR_FILENO, buf, (size_t) n);
-					}
-				}
-
-				/*
-				 * Stage 1b escalation: a genuine backend-fiber crash.  Flag it,
-				 * then kick the postmaster latch so it consumes the flag and
-				 * drives its crash policy (ExitPostmaster under multithreaded
-				 * mode) immediately, rather than only on its next idle-timeout
-				 * wakeup.
-				 */
-				/*
-				 * F0d (fusion observability): dump the full libxtc runtime
-				 * state -- every scheduler loop with its run-queue/steal
-				 * stats, all procs, the faulting thread's C backtrace -- to
-				 * the server log BEFORE we escalate the whole process down.
-				 * A threaded genuine crash fail-stops the process (no
-				 * core-dump hang), so this dump is the primary post-mortem
-				 * for what the scheduler was doing at the crash.  Runs only
-				 * on the genuine-crash path (never a hot path), from the
-				 * supervisor fiber in normal context where xtc_dump's
-				 * per-loop inspection locks are reliable.  STDERR_FILENO is
-				 * the postmaster's stderr == the server log.
-				 */
-				xtc_dump(STDERR_FILENO);
-
-				atomic_store(&g_xtc_genuine_crash, 1);
-				{
-					Latch	   *pml = atomic_load(&g_xtc_postmaster_latch);
-
-					if (pml != NULL)
-						SetLatch(pml);
-				}
-			}
-			else if (di.kind == XTC_DOWN_KIND_EXIT)
-			{
-				/*
-				 * XTC_DOWN_KIND_EXIT: a non-zero application exit.  The
-				 * postmaster reaps it and applies its own worker restart
-				 * policy; do NOT escalate the runtime.  di.exit_code carries
-				 * the backend_thread_exitstatus(code) value verbatim (<< 8
-				 * wait-status form), so recover the proc_exit code with >> 8.
-				 *
-				 * NB (libxtc 2.2, 8a7e9c06): a CONTAINED FAULT is now always
-				 * reported as XTC_DOWN_KIND_SIGNAL regardless of the code the
-				 * fiber passed to xtc_exit_self -- so a backend that faults
-				 * inside its recovery frame and then calls xtc_exit_self(sig)
-				 * no longer lands HERE as EXIT(sig) (the v2.1.x
-				 * misclassification that silently skipped the genuine-crash
-				 * fail-stop; libxtc reply 2026-11-12 section 1).  This branch
-				 * is now reached only by a genuine application exit.
-				 */
-				static __thread int nappx = 0;
-
-				if (nappx < 8)
-				{
-					char		buf[176];
-					int			n;
-
-					nappx++;
-					n = snprintf(buf, sizeof(buf),
-								 "xtc: supervisor observed non-zero exit DOWN "
-								 "pid=(loop=%u,local=%u,gen=" UINT64_FORMAT ") exit_code=%d (postmaster reaps)\n",
-								 down_pid.loop_id, down_pid.local_id,
-								 (uint64) down_pid.gen, di.exit_code >> 8);
-					if (n > 0)
-					{
-						if (n > (int) sizeof(buf))
-							n = (int) sizeof(buf);
-						xtc_diag_write(STDERR_FILENO, buf, (size_t) n);
-					}
-				}
-			}
-			else
-			{
-				/*
-				 * XTC_DOWN_KIND_KILLED (libxtc 2.2: xtc_exit_pid / a
-				 * supervisor stop / a link or group-restart kill),
-				 * XTC_DOWN_KIND_NOCONNECTION (a cross-process channel died --
-				 * not produced on the in-process backend-fiber path), or any
-				 * future kind.  A KILLED backend fiber was terminated on
-				 * purpose (we or the runtime asked it to stop), so it is NOT a
-				 * genuine crash: the postmaster owns the teardown, do NOT
-				 * escalate.  Handle it explicitly rather than folding it into
-				 * the EXIT branch -- di.exit_code here is the KILL REASON, not
-				 * a proc_exit code, so the >> 8 recovery above would misread
-				 * it.  An unrecognised kind is logged and treated
-				 * conservatively as a non-escalating teardown; if a future
-				 * libxtc adds a kind that must fail-stop, it will be a SIGNAL.
-				 */
-				static __thread int nkill = 0;
-
-				if (nkill < 8)
-				{
-					char		buf[192];
-					int			n;
-
-					nkill++;
-					n = snprintf(buf, sizeof(buf),
-								 "xtc: supervisor observed terminated backend fiber DOWN "
-								 "pid=(loop=%u,local=%u,gen=" UINT64_FORMAT ") kind=%d reason=%d (postmaster reaps)\n",
-								 down_pid.loop_id, down_pid.local_id,
-								 (uint64) down_pid.gen, (int) di.kind, di.exit_code);
-					if (n > 0)
-					{
-						if (n > (int) sizeof(buf))
-							n = (int) sizeof(buf);
-						xtc_diag_write(STDERR_FILENO, buf, (size_t) n);
-					}
-				}
-			}
-		}
-		else if (!from_library &&
-				 len == sizeof(xtc_sup_spawn_msg) &&
-				 ((const xtc_sup_spawn_msg *) msg)->magic == XTC_SUP_SPAWN_MAGIC)
-		{
-			xtc_sup_spawn_msg sp;
-			xtc_proc_opts_t po = XTC_PROC_OPTS_INIT;
-			xtc_pid_t	bpid = XTC_PID_NONE;
-			uint64_t	ref = 0;
-			PgCarrier  *bc;
-
-			memcpy(&sp, msg, sizeof(sp));
-
-			/* entry is invariant; store it once (no per-spawn wrapper). */
-			g_xtc_backend_entry = sp.entry;
-			po.name = "pg-backend";
-
-			/*
-			 * Phase D: spawn migratable (work-stealable) iff the postmaster
-			 * marked this fiber's carrier so (client backend, ssl_sni off; see
-			 * xtc_carrier_migratable).  A zeroed po.migratable keeps the fiber
-			 * pinned -- the pre-Phase-D behavior -- for every other child and
-			 * whenever the flag is off, so the flip is scoped to exactly the
-			 * fibers the design clears.  The decision rides on the fiber-owned
-			 * carrier, so this spawn-time read matches the runtime
-			 * xtc_pg_backend_fiber_is_migratable() view (both read the same
-			 * carrier.migratable).
-			 */
-			bc = xtc_pg_backend_thread_start_carrier(sp.entry_arg);
-			if (bc != NULL && bc->migratable)
-				po.migratable = 1;
-
-			/*
-			 * Atomic spawn+monitor (libxtc v1.3.0): establish the monitor
-			 * BEFORE the child is made runnable, so there is no window in which
-			 * the backend fiber exists but is unmonitored.  Even a backend that
-			 * runs and exits immediately delivers a real-reason DOWN, never
-			 * XTC_DOWN_KIND_NOPROC -- the monitor-race case disappears by
-			 * construction instead of being classified after the fact.  The
-			 * supervisor runs as an xtc_proc (see xtc_carrier_start_supervisors),
-			 * so it satisfies spawn_monitor's requirement that the caller be a
-			 * process.  entry_arg is the stable launch_backend.c-owned
-			 * BackendThreadStart *; no heap allocation on this bare fiber.
-			 */
-			if (xtc_carrier_use_orc && my_loop_idx < g_xtc_n_orc_sups &&
-				g_xtc_orc_sup[my_loop_idx] != NULL)
-			{
-				/*
-				 * Hand the backend to this loop's xtc_orc supervisor as a
-				 * TEMPORARY child: it is never restarted, and its exit reaches
-				 * xtc_carrier_orc_child_down, which is then the escalation path.
-				 * This fiber is a proc and is not the supervisor, so
-				 * xtc_sup_add_child may run here (sup.c refuses only off-proc
-				 * callers and the supervisor itself).  An add that fails or
-				 * times out leaves the backend unstarted; the postmaster sees the
-				 * launch never register and fails the connection as it would
-				 * for a failed spawn.
-				 */
-				xtc_child_spec_t spec = XTC_CHILD_SPEC_INIT;
-				int			arc;
-
-				spec.name = "pg-backend";
-				spec.fn = xtc_carrier_proc;
-				spec.arg = sp.entry_arg;
-				spec.policy = XTC_RESTART_TEMPORARY;
-				spec.migratable = po.migratable;
-				spec.stack_size = XTC_PG_FIBER_STACK;
-				arc = xtc_sup_add_child(g_xtc_orc_sup[my_loop_idx], &spec, &bpid);
-				if (arc == XTC_OK)
-				{
-					char		sbuf[128];
-					int			sn;
-
-					sn = snprintf(sbuf, sizeof(sbuf),
-								  "xtc: orc added backend fiber pid=(loop=%u,local=%u,gen=" UINT64_FORMAT ") migratable=%d\n",
-								  bpid.loop_id, bpid.local_id, (uint64) bpid.gen, po.migratable);
-					if (sn > 0)
-						xtc_diag_write(STDERR_FILENO, sbuf,
-									   Min((size_t) sn, sizeof(sbuf)));
-				}
-				else
-				{
-					char		sbuf[96];
-					int			sn;
-
-					sn = snprintf(sbuf, sizeof(sbuf),
-								  "xtc: orc xtc_sup_add_child failed rc=%d on loop %d\n",
-								  arc, my_loop_idx);
-					if (sn > 0)
-						xtc_diag_write(STDERR_FILENO, sbuf,
-									   Min((size_t) sn, sizeof(sbuf)));
-				}
-			}
-			else if (xtc_proc_spawn_monitor(my_loop, xtc_carrier_proc, sp.entry_arg,
-											&po, &bpid, &ref) == XTC_OK)
-			{
-				char		sbuf[128];
-				int			sn;
-
-				/* raw write: elog is unsafe from this bare fiber */
-				sn = snprintf(sbuf, sizeof(sbuf),
-							  "xtc: spawned backend fiber pid=(loop=%u,local=%u,gen=" UINT64_FORMAT ") migratable=%d\n",
-							  bpid.loop_id, bpid.local_id, (uint64) bpid.gen, po.migratable);
-				if (sn > 0)
-				{
-					if (sn > (int) sizeof(sbuf))
-						sn = (int) sizeof(sbuf);
-					xtc_diag_write(STDERR_FILENO, sbuf, (size_t) sn);
-				}
-			}
-		}
-
-		/*
-		 * Free the recv envelope with the library allocator's public
-		 * deallocator (libxtc v1.2.0).  xtc_recv buffers come from libxtc's
-		 * own allocator, which is not necessarily libc malloc/free, so
-		 * xtc_free() -- not plain free() -- is the documented, thread-safe
-		 * way to release them.
-		 */
-		xtc_free(msg);
-	}
-}
-
-/* Spawn one supervisor fiber per loop; record their pids.  Best-effort:
- * a loop whose supervisor fails to spawn simply has no DOWN observation. */
-static void
-xtc_carrier_start_supervisors(void)
-{
-	g_xtc_n_sups = (g_xtc_n_loops < XTC_PG_MAX_SUP_LOOPS)
-		? g_xtc_n_loops : XTC_PG_MAX_SUP_LOOPS;
-
-	for (int i = 0; i < g_xtc_n_sups; i++)
-	{
-		xtc_loop_t *loop = (g_xtc_exec != NULL && g_xtc_n_loops > 1)
-			? xtc_exec_loop(g_xtc_exec, i) : g_xtc_loop;
-		xtc_proc_opts_t po = XTC_PROC_OPTS_INIT;
-		xtc_pid_t	pid = XTC_PID_NONE;
-
-		po.name = "pg-xtc-supervisor";
-		if (xtc_proc_spawn(loop, xtc_carrier_supervisor_proc,
-						   (void *) (intptr_t) i, &po, &pid) == XTC_OK)
-			g_xtc_sup_pid[i] = pid;
-		else
-			g_xtc_sup_pid[i] = XTC_PID_NONE;
-	}
-}
-
-/*
- * F4 supervision-fusion: stand up one libxtc xtc_orc OTP supervisor per carrier
- * loop (GUC xtc_carrier_use_orc; default off).  Best-effort, exactly like
- * xtc_carrier_start_supervisors(): a loop whose supervisor fails to start just
- * gets a NULL handle.
- *
- * This runs ALONGSIDE the hand-rolled per-loop supervisor fibers
- * (xtc_carrier_supervisor_proc); it does NOT replace them.  The hand-rolled
- * supervisor + the XTC_SUP_SPAWN mailbox + the manual XTC_DOWN_KIND_* classifier
- * remain the UNCHANGED source of truth for backend-fiber crash detection and
- * Stage-1b escalation (SIGNAL DOWN -> g_xtc_genuine_crash + postmaster latch).
- *
- * WHY BACKEND FIBERS WERE NOT xtc_sup CHILDREN -- the durable design-doc
- * correction.  The original supervision-fusion design called for routing
- * backend fibers through xtc_sup_add_child and mapping the
- * SIGNAL-DOWN escalation "into the supervisor's DOWN handling".  Against the
- * libxtc pinned through 2026-11-04 that was NOT implementable and would have
- * SILENTLY LOST the escalation:
- *
- *   - xtc_orc's public API then exposed only AGGREGATE counters
- *     (xtc_sup_n_alive / n_restarts); it had NO per-child DOWN callback and no
- *     DOWN-forwarding hook.  The supervisor decoded each child's DOWN inside
- *     its own private xtc_recv loop purely to drive the restart decision and
- *     then DISCARDED the classification -- an external caller could not learn
- *     whether a specific child crashed (SIGNAL) or exited cleanly.
- *   - A caller-side follow-up xtc_monitor() on the pid xtc_sup_add_child
- *     returns is NOT a substitute: it races the supervisor's own monitor and
- *     was measured 1000/1000 LOST (XTC_DOWN_KIND_NOPROC) on a same-loop
- *     crashing child.
- *
- * Both facts were verified against libxtc v1.44.0 and reported upstream.
- * Because our crash policy is "a crashed backend may have corrupted the
- * shared address space, so FAIL-STOP the whole process", the
- * SIGNAL-vs-clean distinction is mandatory; until libxtc could report it per
- * child it had to stay on a monitor we own -- our own
- * xtc_proc_spawn_monitor() in xtc_carrier_supervisor_proc, which establishes
- * the monitor atomically before the child runs.
- *
- * THE PER-CHILD-DOWN GAP IS NOW CLOSED (libxtc 2.2, 8a7e9c06).  The audit
- * requested exactly this, and libxtc delivered it as
- * xtc_sup_opts_t.on_child_down (one hook per supervisor, NOT per child spec),
- * fired on the supervisor's own fiber BEFORE the restart decision, observe-only
- * and non-parking, with the child's spec (so spec->arg / spec->name identify
- * the child across restarts).  We install that hook here (xtc_carrier_orc_child_down)
- * so an xtc_sup child that goes DOWN with XTC_DOWN_KIND_SIGNAL drives the SAME
- * Stage-1b escalation (g_xtc_genuine_crash + postmaster latch) the hand-rolled
- * classifier does.  The mechanism is therefore wired and testable the moment a
- * child is added.
- *
- * These supervisors still own ZERO children today, deliberately.  Routing the
- * real backend spawn (xtc_pg_launch_backend_fiber) through xtc_sup_add_child is
- * a larger behavioural cutover -- it moves the spawn+monitor+DOWN plumbing off
- * the hand-rolled XTC_SUP_SPAWN mailbox onto the OTP supervisor -- and needs its
- * own A/B on check-threaded (neutral-or-better, no crash-containment
- * regression) before it can replace the escalation source of truth.  That is
- * the remaining step (F4 design step 2), intentionally NOT taken in this commit.
- * Until a child is added the hook never fires and changes no behaviour -- which
- * is exactly why it is safe to wire behind a default-off developer GUC.
- */
-
-/*
- * on_child_down hook for the GUC-gated xtc_orc supervisors (libxtc 2.2).
- *
- * Runs on the supervisor's own fiber, once per DOWN of a child the supervisor
- * owns, BEFORE the supervisor decides whether to restart it.  It mirrors the
- * SIGNAL branch of the hand-rolled classifier (xtc_carrier_supervisor_proc):
- * an XTC_DOWN_KIND_SIGNAL is an R1 contained fault -- a genuine crash that may
- * have torn the shared address space -- so flag g_xtc_genuine_crash and kick
- * the postmaster latch, the identical Stage-1b escalation.  CLEAN / EXIT are a
- * normal end and KILLED is a deliberate teardown; none escalate (the postmaster
- * owns reaping), matching the hand-rolled classifier's non-escalating branches.
- *
- * The hook MUST NOT park (libxtc's contract): only an atomic store,
- * xtc_proc_wake, SetLatch or xtc_sup_stop are allowed -- no xtc_recv, sleep,
- * blocking I/O or xtc_amutex.  atomic_store + SetLatch satisfy that exactly.
- * Unlike the hand-rolled SIGNAL branch we do NOT call xtc_dump() here: xtc_dump
- * takes libxtc's per-loop inspection locks and is not a non-parking operation,
- * so it stays on the hand-rolled path (which runs in a plain xtc_recv loop, not
- * under the supervisor's restart-decision fiber).  The escalation itself --
- * the only load-bearing effect -- is byte-identical: atomic_store(&..., 1) then
- * SetLatch(postmaster).  spec->arg will carry the PgBackend/carrier identity
- * once backends are added as children; today it is unused (zero children).
- */
-static void
-xtc_carrier_orc_child_down(xtc_supervisor_t *sup,
-						   const xtc_child_spec_t *spec,
-						   const xtc_down_info_t *info, void *user)
-{
-	(void) sup;
-	(void) spec;
-	(void) user;
-
-	if (info == NULL)
-		return;
-
-	if (info->kind == XTC_DOWN_KIND_SIGNAL)
-	{
-		/*
-		 * A genuine contained-fault crash.  Escalate exactly as the
-		 * hand-rolled classifier does: set the flag the postmaster polls, then
-		 * kick its latch so it drives the crash policy immediately rather than
-		 * waiting out DetermineSleepTime().  Store 1 (not info->signal) to keep
-		 * g_xtc_genuine_crash's value byte-identical to the hand-rolled path;
-		 * the consumer (xtc_pg_consume_genuine_crash) only tests != 0.  Both
-		 * atomic_store and SetLatch are non-parking, honouring the hook
-		 * contract.
-		 */
-		Latch	   *pml;
-		char		buf[160];
+		char		buf[128];
 		int			n;
 
-		/* raw write: elog is unsafe from the supervisor fiber */
-		n = snprintf(buf, sizeof(buf),
-					 "xtc: ORC observed GENUINE-CRASH backend fiber DOWN pid=(loop=%u,local=%u,gen=" UINT64_FORMAT ") signal=%d\n",
-					 info->pid.loop_id, info->pid.local_id,
-					 (uint64) info->pid.gen, info->signal);
-		if (n > 0)
-			xtc_diag_write(STDERR_FILENO, buf, Min((size_t) n, sizeof(buf)));
+		if (xtc_recv(&msg, &len, -1) != XTC_OK || msg == NULL)
+			continue;
+		if (len != sizeof(sp) ||
+			((const xtc_spawn_msg *) msg)->magic != XTC_SPAWN_MAGIC)
+		{
+			xtc_free(msg);
+			continue;
+		}
+		memcpy(&sp, msg, sizeof(sp));
+		xtc_free(msg);
 
-		atomic_store(&g_xtc_genuine_crash, 1);
-		pml = atomic_load(&g_xtc_postmaster_latch);
-		if (pml != NULL)
-			SetLatch(pml);
+		g_xtc_backend_entry = sp.entry;
+		spec.name = "pg-backend";
+		spec.fn = xtc_carrier_proc;
+		spec.arg = sp.entry_arg;
+		spec.policy = XTC_RESTART_TEMPORARY;
+		spec.stack_size = XTC_PG_FIBER_STACK;
+
+		rc = xtc_sup_add_child(g_xtc_orc_sup[my_loop_idx], &spec, &bpid);
+		if (rc == XTC_OK)
+			n = snprintf(buf, sizeof(buf),
+						 "xtc: spawned backend fiber pid=(loop=%u,local=%u,gen=" UINT64_FORMAT ")\n",
+						 bpid.loop_id, bpid.local_id, (uint64) bpid.gen);
+		else
+			n = snprintf(buf, sizeof(buf),
+						 "xtc: could not add backend fiber on loop %d: rc=%d\n",
+						 my_loop_idx, rc);
+		if (n > 0)
+			xtc_diag_write(STDERR_FILENO, buf, Min((size_t) n, sizeof(buf) - 1));
 	}
-	/* CLEAN / EXIT: a normal end.  KILLED / NOCONNECTION: deliberate teardown.
-	 * None escalate -- the postmaster owns reaping (matches the hand-rolled
-	 * classifier's non-SIGNAL branches). */
 }
 
-static void
-xtc_carrier_start_orc_supervisors(void)
+/*
+ * Start one xtc_orc supervisor and one spawner fiber on every loop.  Called
+ * once from xtc_pg_carrier_start, after the loops run.  Without both on every
+ * loop the server cannot place or supervise fibers there, so any failure is
+ * fatal to the carrier start.
+ */
+static int
+xtc_carrier_start_supervision(void)
 {
-	g_xtc_n_orc_sups = (g_xtc_n_loops < XTC_PG_MAX_SUP_LOOPS)
-		? g_xtc_n_loops : XTC_PG_MAX_SUP_LOOPS;
-
-	for (int i = 0; i < g_xtc_n_orc_sups; i++)
+	for (int i = 0; i < g_xtc_n_loops; i++)
 	{
-		xtc_loop_t *loop = (g_xtc_exec != NULL && g_xtc_n_loops > 1)
+		xtc_loop_t *loop = (g_xtc_exec != NULL)
 			? xtc_exec_loop(g_xtc_exec, i) : g_xtc_loop;
 		xtc_sup_opts_t opts = XTC_SUP_OPTS_INIT;
-		xtc_supervisor_t *sup = NULL;
+		xtc_proc_opts_t po = XTC_PROC_OPTS_INIT;
 
-		/*
-		 * ONE_FOR_ONE with the default restart intensity (max_restarts=3 /
-		 * period=5s).  No exec is handed in: each supervisor is single-loop and
-		 * owns only children placed on its own loop, so this mirrors the
-		 * one-supervisor-per-loop topology of the hand-rolled fibers rather than
-		 * a single exec-spanning supervisor.  No initial children (see the long
-		 * comment above), so the child-spec array is empty.
-		 */
 		opts.strategy = XTC_SUP_ONE_FOR_ONE;
+		opts.on_child_down = xtc_carrier_child_down;
+		if (xtc_sup_start(loop, &opts, NULL, 0, &g_xtc_orc_sup[i]) != XTC_OK)
+		{
+			elog(LOG, "xtc: could not start the supervisor on loop %d", i);
+			return -1;
+		}
 
-		/*
-		 * Install the libxtc 2.2 per-child DOWN hook.  It covers the static
-		 * children, the children added via xtc_sup_add_child, and (if we ever
-		 * give the supervisor one) its root -- one registration for all.  With
-		 * zero children today it never fires; it is wired now so the mechanism
-		 * is in place and testable the moment a child is added (F4 step 2).
-		 */
-		opts.on_child_down = xtc_carrier_orc_child_down;
-		opts.on_child_down_user = NULL;
-		if (xtc_sup_start(loop, &opts, NULL, 0, &sup) == XTC_OK)
-			g_xtc_orc_sup[i] = sup;
-		else
-			g_xtc_orc_sup[i] = NULL;
+		po.name = "pg-xtc-spawner";
+		if (xtc_proc_spawn(loop, xtc_carrier_spawner_proc,
+						   (void *) (intptr_t) i, &po,
+						   &g_xtc_spawner_pid[i]) != XTC_OK)
+		{
+			elog(LOG, "xtc: could not start the spawner on loop %d", i);
+			return -1;
+		}
 	}
+	return 0;
 }
 
 /*
@@ -1261,6 +816,11 @@ xtc_pg_carrier_start(void)
 		}
 
 		g_xtc_n_loops = xtc_pg_carrier_loop_count();
+#ifdef __linux__
+		if (sched_getaffinity(0, sizeof(g_xtc_allowed_cpus),
+							  &g_xtc_allowed_cpus) == 0)
+			g_xtc_n_allowed_cpus = CPU_COUNT(&g_xtc_allowed_cpus);
+#endif
 
 		opts.name = "pg-xtc-carrier";
 		opts.n_loops = g_xtc_n_loops;
@@ -1277,73 +837,6 @@ xtc_pg_carrier_start(void)
 			g_xtc_n_loops = xtc_exec_n_loops(g_xtc_exec);
 		else
 			g_xtc_n_loops = 1;
-
-		/*
-		 * Diagnostic timeline (libxtc v1.41.1 xtc_tail): a bounded in-process
-		 * ring of runtime events.  The SCHED source brackets the aio park with
-		 * PARK (detail = op) and, on resume, RUN (detail = park-to-run latency in
-		 * ns) -- so a fiber stranded on an I/O completion shows up as a PARK with
-		 * NO matching RUN for that pid.  That is the direct test for the
-		 * lost-completion-wake hang we are chasing with the libxtc team.
-		 *
-		 * OFF unless PG_XTC_TAIL is set: when a source is disabled xtc_tail is one
-		 * branch and reads no clock, but we still gate it so production never even
-		 * allocates the ring.  The ring holds 16384 records and overwrites
-		 * oldest-first, so a busy run WILL wrap -- dump it promptly at the hang,
-		 * and use xtc_tail_reset() before a load phase if you need the tightest
-		 * window.
-		 */
-		{
-			const char *tail = getenv("PG_XTC_TAIL");
-
-			if (tail != NULL && tail[0] != '\0')
-			{
-				/*
-				 * LOOP_POLL (libxtc >= 1.42.0) and WAKE (>= 1.43.0) ride the
-				 * XTC_TAIL_SCHED mask -- they are event KINDS, not mask bits, so
-				 * no extra flag is needed here.  Worth knowing what changed under
-				 * us: in 1.42.0 LOOP_POLL fired on EVERY poll and, with 32 loops,
-				 * consumed 87-93 % of the 16384-record ring, which made "loop L
-				 * emitted no polls" unfalsifiable (evicted vs never happened).
-				 * 1.43.0 makes it IDLE-ONLY (emitted only when a poll dispatched
-				 * nothing, loop.c: n_out == 0) and adds xtc_tail_dropped(), so
-				 * absence is interpretable again.  XTC_TAIL_WAKE records the
-				 * DISPATCH side -- the missing link between "CQE reaped" and
-				 * "task never ran".
-				 */
-				(void) xtc_tail_enable(XTC_TAIL_SCHED | XTC_TAIL_MSG);
-			}
-		}
-
-		/*
-		 * Eager work-stealing rebalance (libxtc v1.27.0 df86fb8), threaded
-		 * multi-loop carrier ONLY.  It makes migratable backend fibers actually
-		 * get stolen: a loop whose run queue drains but that still owns
-		 * fd-parked fibers steals a peer's runnable migratable proc before
-		 * blocking in its own poller, and enqueuing migratable work nudges one
-		 * idle peer's poller so it re-checks and steals promptly.  Opt-in
-		 * (default off = ABI/behavior-neutral); we turn it on here, AFTER the
-		 * exec exists and BEFORE any backend fiber spawns.  Process mode has no
-		 * exec (g_xtc_exec == NULL) and single-loop mode has no peer to steal
-		 * from (g_xtc_n_loops == 1), so both are left untouched.
-		 */
-		if (g_xtc_exec != NULL && g_xtc_n_loops > 1)
-			xtc_exec_set_eager_rebalance(g_xtc_exec, 1);
-
-		/*
-		 * Idle-poll steal backoff (libxtc v1.31.0), threaded multi-loop carrier
-		 * ONLY.  Complements eager-rebalance: when a worker's run queue is empty
-		 * AND no peer has runnable work to steal, it grows its idle poll timeout
-		 * (1ms -> 32ms across an idle streak) instead of re-scanning peers every
-		 * millisecond; any real work resets it.  This targets the residual the
-		 * 2026-07-24 metal A/B showed on idle-heavy tiny-query load (pgbench
-		 * select@384: box ~97%% idle, update_sg_lb_stats/newidle balancer
-		 * dominant from parked carriers repeatedly waking).  Opt-in (default off
-		 * = neutral); observable via pg_stat_xtc_carriers.steal_backoff.  Same
-		 * gating as eager-rebalance: no-op in process/single-loop mode.
-		 */
-		if (g_xtc_exec != NULL && g_xtc_n_loops > 1)
-			xtc_exec_set_steal_backoff(g_xtc_exec, 1);
 
 		if (xtc_app_start(g_xtc_app, NULL, 0) != XTC_OK)
 		{
@@ -1362,40 +855,15 @@ xtc_pg_carrier_start(void)
 		while (!g_xtc_ready)
 			pg_usleep(1000);
 
-		/*
-		 * Spawn the per-loop supervisor fibers now that the loops are running,
-		 * so abnormal backend fiber death is observed.
-		 */
-		xtc_carrier_start_supervisors();
+		if (xtc_carrier_start_supervision() != 0)
+		{
+			rc = -1;
+			goto out;
+		}
 
-		/*
-		 * F4 supervision-fusion (optional, developer GUC xtc_carrier_use_orc;
-		 * default off): ALSO stand up one libxtc xtc_orc OTP supervisor per loop.
-		 * This is additive scaffolding -- the hand-rolled supervisors spawned
-		 * just above remain the escalation source of truth and the backend spawn
-		 * path is unchanged.  When the GUC is off (the default) this is skipped
-		 * entirely, so the path is byte-for-byte the pre-F4 behaviour.  See
-		 * xtc_carrier_start_orc_supervisors() for why these supervisors own no
-		 * backend children today.
-		 */
-		if (xtc_carrier_use_orc)
-			xtc_carrier_start_orc_supervisors();
-
-		elog(LOG, "xtc: carrier scheduler thread up (%d loop%s, %d supervisor%s, %s)",
+		elog(LOG, "xtc: carrier up (%d loop%s, each with an xtc_orc supervisor%s)",
 			 g_xtc_n_loops, g_xtc_n_loops == 1 ? "" : "s",
-			 g_xtc_n_sups, g_xtc_n_sups == 1 ? "" : "s",
-			 "thread-per-session backend pool");
-
-		/*
-		 * F4: report the optional xtc_orc supervisor count only when the GUC is
-		 * on, so the common (GUC-off) startup log stays byte-for-byte unchanged.
-		 * These supervisors own no children today (see
-		 * xtc_carrier_start_orc_supervisors), so the line documents the scaffold's
-		 * presence, not a child count.
-		 */
-		if (xtc_carrier_use_orc)
-			elog(LOG, "xtc: xtc_orc supervisors up (%d supervisor%s); backend fibers are TEMPORARY children and on_child_down is the escalation path",
-				 g_xtc_n_orc_sups, g_xtc_n_orc_sups == 1 ? "" : "s");
+			 carrier_cpu_pinning ? ", pinned to a CPU" : "");
 	}
 
 out:
@@ -1409,137 +877,45 @@ out:
 /*
  * Launch a threaded backend as an xtc fiber.  `entry` is the tree's
  * backend_thread_entry; `entry_arg` is its BackendThreadStart *.  Returns 0
- * on success (the fiber is spawned on a carrier loop), non-zero errno-like
- * value on failure so the caller can fall back / report.
+ * once a loop's spawner has the request, or an errno value if none would take
+ * it.
  *
- * With a loop pool the fiber is placed round-robin across the executor loops,
- * so concurrent backends run on distinct loops and a fiber parked on one loop
- * cannot starve a sibling on another.  (The test-only PG_XTC_FORCE_LOOP hook
- * below can pin migratable backends to one loop to exercise work-stealing; it
- * is dormant while migration is disabled -- see xtc_carrier_migratable.)
+ * Fibers are placed round-robin across the loops, so concurrent backends run
+ * in parallel.  The send crosses threads (postmaster to spawner) and can see
+ * XTC_E_AGAIN when the spawner's mailbox is momentarily full under a connect
+ * burst; the libxtc contract is to retry, so try each loop in turn, backing
+ * off briefly, before giving up.
  */
 int
 xtc_pg_launch_backend_fiber(xtc_carrier_entry_fn entry, void *entry_arg)
 {
-	int			loop_idx = 0;
+	xtc_spawn_msg sp;
+	int			first;
+	int			rc = XTC_E_INVAL;
 
 	if (xtc_pg_carrier_start() != 0)
 		return EAGAIN;
 
-	/* Pick a loop round-robin across the pool; loop 0 in single-loop mode. */
-	if (g_xtc_exec != NULL && g_xtc_n_loops > 1)
+	sp.magic = XTC_SPAWN_MAGIC;
+	sp.entry = entry;
+	sp.entry_arg = entry_arg;
+	first = (int) (atomic_fetch_add(&g_xtc_next_loop, 1) %
+				   (unsigned) g_xtc_n_loops);
+
+	for (int attempt = 0; attempt < 4000; attempt++)
 	{
-		/*
-		 * Test-only forced placement (DORMANT while migration is disabled).
-		 * PG_XTC_FORCE_LOOP=N pins the MIGRATABLE client-backend fibers to loop
-		 * N instead of round-robin, mirroring libxtc's own work-steal proof
-		 * (test/m5/test_steal.c piles all tasks on loop 0 so idle peer loops
-		 * must steal).  It only fires for migratable fibers, so while
-		 * xtc_carrier_migratable() returns false (Phase D HOLD -- see
-		 * launch_backend.c) NOTHING is forced and every fiber round-robins as
-		 * before.  It is the single point a future steal-under-load test flips
-		 * on once migration is re-enabled AND libxtc's Phase E wake-nudge lands
-		 * (without the nudge an idle peer blocked in xtc_io_poll(-1) is not woken
-		 * to steal, so forcing placement alone cannot force a local steal).
-		 * Never set in production; ignored unless it names a valid loop.
-		 */
-		const char *force = getenv("PG_XTC_FORCE_LOOP");
-		PgCarrier  *fiber_carrier = xtc_pg_backend_thread_start_carrier(entry_arg);
-		bool		force_this = (force != NULL && force[0] != '\0' &&
-								 fiber_carrier != NULL && fiber_carrier->migratable);
+		int			idx = (first + attempt) % g_xtc_n_loops;
 
-		if (force_this)
-		{
-			long		v = strtol(force, NULL, 10);
-
-			if (v >= 0 && v < g_xtc_n_loops)
-				loop_idx = (int) v;
-			else
-				loop_idx = (int) (atomic_fetch_add(&g_xtc_next_loop, 1) %
-								  (unsigned) g_xtc_n_loops);
-		}
-		else
-			loop_idx = (int) (atomic_fetch_add(&g_xtc_next_loop, 1) %
-							  (unsigned) g_xtc_n_loops);
+		rc = xtc_send(g_xtc_spawner_pid[idx], &sp, sizeof(sp));
+		if (rc == XTC_OK)
+			return 0;
+		if (rc != XTC_E_AGAIN)
+			break;
+		if (attempt >= g_xtc_n_loops)
+			pg_usleep(attempt < g_xtc_n_loops + 16 ? 10 : 100);
 	}
-
-	/*
-	 * Hand the spawn to that loop's supervisor, which does an atomic
-	 * xtc_proc_spawn_monitor() on-loop (libxtc v1.3.0), so the new backend
-	 * fiber is monitored BEFORE it can run.  This closes the spawn/register
-	 * race: a fiber that crashes immediately can no longer die unobserved (and
-	 * cannot land in the NOPROC case).  The send is cross-thread (postmaster
-	 * spawn thread -> supervisor mailbox) but only carries the entry/arg; the
-	 * actual atomic spawn+monitor happens inside the supervisor.
-	 */
-	if (loop_idx < g_xtc_n_sups)
-	{
-		xtc_sup_spawn_msg sp;
-		int			rc = XTC_E_INVAL;
-		int			attempt;
-
-		sp.magic = XTC_SUP_SPAWN_MAGIC;
-		sp.entry = entry;
-		sp.entry_arg = entry_arg;
-
-		/*
-		 * Deliver the spawn to a LIVE supervisor without dropping the accepted
-		 * connection.  Two failure modes under a large simultaneous connect
-		 * burst, both of which the fork model never hits and neither should we:
-		 *  - a supervisor whose spawn failed at startup has
-		 *    g_xtc_sup_pid[i]==XTC_PID_NONE; xtc_send returns XTC_E_INVAL there
-		 *    PERMANENTLY, so retrying that loop is futile -- rotate to the next
-		 *    supervisor instead;
-		 *  - xtc_send returns XTC_E_AGAIN (soft-full/contention) even with room;
-		 *    the libxtc contract is to retry (the supervisor drains in us).
-		 * Try each supervisor in turn (rotating), briefly backing off, until one
-		 * accepts.  The bound is a safety valve against ALL supervisors wedged.
-		 */
-		for (attempt = 0; attempt < 4000; attempt++)
-		{
-			int			idx = (loop_idx + attempt) % g_xtc_n_sups;
-			xtc_pid_t	sup = g_xtc_sup_pid[idx];
-
-			if (!xtc_pid_is_none(sup))
-			{
-				rc = xtc_send(sup, &sp, sizeof(sp));
-				if (rc == XTC_OK)
-					return 0;
-				/* XTC_E_AGAIN/INVAL: try the next supervisor; else hard-stop. */
-				if (rc != XTC_E_AGAIN && rc != XTC_E_INVAL)
-					break;
-			}
-			if (attempt >= g_xtc_n_sups)
-				pg_usleep(attempt < g_xtc_n_sups + 16 ? 10 : 100);
-		}
-		elog(WARNING, "could not hand backend fiber spawn to any carrier supervisor after retries: rc=%d",
-			 rc);
-		return EAGAIN;
-	}
-
-	/*
-	 * No supervisor for this loop (should not happen once supervisors are up)
-	 * -- fall back to a direct spawn without monitoring, so a backend still
-	 * launches.  Observability is lost for this one fiber only.
-	 */
-	{
-		xtc_proc_opts_t po = XTC_PROC_OPTS_INIT;
-		xtc_pid_t	pid = XTC_PID_NONE;
-		xtc_loop_t *loop = (g_xtc_exec != NULL && g_xtc_n_loops > 1)
-			? xtc_exec_loop(g_xtc_exec, loop_idx) : g_xtc_loop;
-		PgCarrier  *bc = xtc_pg_backend_thread_start_carrier(entry_arg);
-
-		g_xtc_backend_entry = entry;	/* invariant; see xtc_carrier_proc */
-		po.name = "pg-backend";
-		/* Phase D: honor the same migratability decision as the monitored path. */
-		if (bc != NULL && bc->migratable)
-			po.migratable = 1;
-		if (xtc_proc_spawn(loop, xtc_carrier_proc, entry_arg, &po, &pid) != XTC_OK)
-			return EAGAIN;
-		elog(LOG, "xtc: spawned backend fiber (unmonitored) pid=(loop=%u,local=%u,gen=" UINT64_FORMAT ")",
-			 pid.loop_id, pid.local_id, (uint64) pid.gen);
-		return 0;
-	}
+	elog(WARNING, "could not hand a backend fiber to any carrier loop: rc=%d", rc);
+	return EAGAIN;
 }
 
 /*
@@ -1745,13 +1121,9 @@ xtc_pg_backend_fiber_is_migratable(void)
 }
 
 /*
- * Diagnostic: total number of tasks work-stolen across all carrier loops since
- * startup (summed xtc_loop_stats_t.steals).  Used by the forced-migration
- * stress test to PROVE fibers actually migrated (a nonzero total means at
- * least one parked-then-woken migratable fiber was rebalanced onto an idle
- * loop).  Returns 0 in single-loop mode (no peer to steal from) and is a
- * lock-free snapshot of relaxed atomics -- exactness across a running executor
- * is not guaranteed, which is fine for a "did any steal happen" probe.
+ * Test hook (see header): a user message laid out like a library DOWN, sent to
+ * this loop's spawner.  The spawner discards anything but a spawn request, and
+ * the supervisor never receives it at all, so it must change nothing.
  */
 bool
 xtc_pg_carrier_send_forged_down(int signo)
@@ -1769,12 +1141,10 @@ xtc_pg_carrier_send_forged_down(int signo)
 		uint8_t		exit_kind;
 	}			pg_attribute_packed() down;
 
-	loop = xtc_exec_loop_id();
-	if (loop < 0 || loop >= g_xtc_n_sups)
+	loop = (g_xtc_exec != NULL) ? xtc_exec_loop_id() : 0;
+	if (loop < 0 || loop >= g_xtc_n_loops)
 		return false;
-	sup = g_xtc_sup_pid[loop];
-	if (xtc_pid_is_none(sup))
-		return false;
+	sup = g_xtc_spawner_pid[loop];
 
 	down.kind = 'D';
 	down.ref = 1;
@@ -1784,6 +1154,11 @@ xtc_pg_carrier_send_forged_down(int signo)
 	return xtc_send(sup, &down, sizeof(down)) == XTC_OK;
 }
 
+/*
+ * Total tasks stolen across all carrier loops since startup (summed
+ * xtc_loop_stats_t.steals).  A lock-free snapshot of relaxed atomics; 0 in
+ * single-loop mode.
+ */
 uint64
 xtc_pg_carrier_total_steals(void)
 {
