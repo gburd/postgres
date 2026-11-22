@@ -3331,6 +3331,7 @@ UnlistenStmt
 UnresolvedTup
 UnresolvedTupData
 UpdateContext
+UpdateRows
 UpdateStmt
 UpgradeTask
 UpgradeTaskProcessCB

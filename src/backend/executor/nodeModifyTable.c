@@ -55,6 +55,7 @@
 #include "postgres.h"
 
 #include "access/amapi.h"
+#include "access/detoast.h"
 #include "access/genam.h"
 #include "access/htup_details.h"
 #include "access/tableam.h"
@@ -391,6 +392,97 @@ SaveNewIndexDatums(ResultRelInfo *resultRelInfo, int i, EState *estate,
 }
 
 /*
+ * The old row as ExecUpdateModifiedIdxAttrs() evaluates indexes on it.
+ *
+ * An index expression gets its column's value as stored, so evaluating
+ * several expressions over a compressed or out-of-line value decompresses or
+ * fetches it once per expression, twice per index counting the predicate.
+ * For a large document read by many indexes that is most of what an UPDATE
+ * costs.  So the first time an index has to be evaluated for a row, the old
+ * row is copied into a virtual slot with its compressed and out-of-line
+ * candidate values detoasted, and every index evaluated for the row reads
+ * that copy.  The detoasted values are in the per-tuple memory context.
+ *
+ * Only the old row is copied.  The new row's datums are saved for inserting
+ * its index entries (SaveNewIndexDatums()), which must see its values as
+ * they will be stored; and a new value is nearly always a fresh in-memory
+ * value anyway.
+ */
+typedef struct UpdateRows
+{
+	TupleTableSlot *old_tts;	/* the old row, as fetched */
+	TupleTableSlot *new_tts;	/* the new row */
+	const Bitmapset *detoast;	/* attributes worth detoasting */
+	TupleTableSlot *old_eval;	/* old row to evaluate on, NULL until needed */
+} UpdateRows;
+
+static TupleTableSlot *
+OldRowForEvaluation(ResultRelInfo *resultRelInfo, UpdateRows *rows,
+					EState *estate)
+{
+	TupleDesc	tupdesc;
+	TupleTableSlot *slot;
+	MemoryContext oldcxt;
+	int			attidx = -1;
+	bool		copied = false;
+
+	if (rows->old_eval != NULL)
+		return rows->old_eval;
+
+	tupdesc = RelationGetDescr(resultRelInfo->ri_RelationDesc);
+	slot = resultRelInfo->ri_UpdateOldEvalSlot;
+	oldcxt = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
+	while ((attidx = bms_next_member(rows->detoast, attidx)) >= 0)
+	{
+		AttrNumber	attnum = attidx + FirstLowInvalidHeapAttributeNumber;
+		Datum		value;
+		bool		isnull;
+		varlena    *v;
+
+		if (attnum <= 0 ||
+			TupleDescCompactAttr(tupdesc, attnum - 1)->attlen != -1)
+			continue;
+		value = slot_getattr(rows->old_tts, attnum, &isnull);
+		if (isnull)
+			continue;
+		v = (varlena *) DatumGetPointer(value);
+		if (!VARATT_IS_COMPRESSED(v) && !VARATT_IS_EXTERNAL(v))
+			continue;
+
+		if (!copied)
+		{
+			if (slot == NULL)
+			{
+				/* the tuple table is a List: grow it in query memory */
+				MemoryContextSwitchTo(estate->es_query_cxt);
+				slot = ExecInitExtraTupleSlot(estate, tupdesc, &TTSOpsVirtual);
+				resultRelInfo->ri_UpdateOldEvalSlot = slot;
+				MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
+			}
+			ExecClearTuple(slot);
+			slot_getallattrs(rows->old_tts);
+			memcpy(slot->tts_values, rows->old_tts->tts_values,
+				   sizeof(Datum) * tupdesc->natts);
+			memcpy(slot->tts_isnull, rows->old_tts->tts_isnull,
+				   sizeof(bool) * tupdesc->natts);
+			copied = true;
+		}
+		slot->tts_values[attnum - 1] = PointerGetDatum(detoast_attr(v));
+	}
+	MemoryContextSwitchTo(oldcxt);
+
+	if (copied)
+	{
+		ExecStoreVirtualTuple(slot);
+		slot->tts_tableOid = rows->old_tts->tts_tableOid;
+		rows->old_eval = slot;
+	}
+	else
+		rows->old_eval = rows->old_tts;
+	return rows->old_eval;
+}
+
+/*
  * Would the update from old_tts to new_tts give the i'th index a new entry,
  * or take one away?  "changed" are the attributes the update changed that
  * the index uses, as for IndexDatumsDiffer().
@@ -405,9 +497,10 @@ SaveNewIndexDatums(ResultRelInfo *resultRelInfo, int i, EState *estate,
 static bool
 IndexEntryChanges(ResultRelInfo *resultRelInfo, int i, Relation indexRel,
 				  IndexInfo *indexInfo, const Bitmapset *changed,
-				  TupleTableSlot *old_tts, TupleTableSlot *new_tts,
-				  EState *estate)
+				  UpdateRows *rows, EState *estate)
 {
+	TupleTableSlot *old_tts = OldRowForEvaluation(resultRelInfo, rows, estate);
+	TupleTableSlot *new_tts = rows->new_tts;
 	ExprContext *econtext = GetPerTupleExprContext(estate);
 	TupleTableSlot *save_scantuple = econtext->ecxt_scantuple;
 	MemoryContext oldcxt;
@@ -514,10 +607,11 @@ IndexExprAttrs(ResultRelInfo *resultRelInfo, int i, EState *estate)
  */
 static bool
 IndexUnaffected(ResultRelInfo *resultRelInfo, int i, Bitmapset *mine,
-				TupleTableSlot *old_tts, TupleTableSlot *new_tts,
-				EState *estate)
+				UpdateRows *rows, EState *estate)
 {
 	IndexInfo  *indexInfo = resultRelInfo->ri_IndexRelationInfo[i];
+	TupleTableSlot *old_tts = rows->old_tts;
+	TupleTableSlot *new_tts = rows->new_tts;
 	bool		proven = false;
 
 	if (resultRelInfo->ri_IndexUntouchedAttrs != NULL &&
@@ -544,8 +638,7 @@ IndexUnaffected(ResultRelInfo *resultRelInfo, int i, Bitmapset *mine,
 	{
 		if (IndexEntryChanges(resultRelInfo, i,
 							  resultRelInfo->ri_IndexRelationDescs[i],
-							  indexInfo, mine, old_tts, new_tts,
-							  estate))
+							  indexInfo, mine, rows, estate))
 			elog(ERROR, "index \"%s\" proven unaffected by UPDATE, but its entry changed",
 				 RelationGetRelationName(resultRelInfo->ri_IndexRelationDescs[i]));
 		return true;
@@ -557,8 +650,7 @@ IndexUnaffected(ResultRelInfo *resultRelInfo, int i, Bitmapset *mine,
 
 	return !IndexEntryChanges(resultRelInfo, i,
 							  resultRelInfo->ri_IndexRelationDescs[i],
-							  indexInfo, mine, old_tts, new_tts,
-							  estate);
+							  indexInfo, mine, rows, estate);
 }
 
 /*
@@ -682,6 +774,7 @@ ExecUpdateModifiedIdxAttrs(ResultRelInfo *resultRelInfo,
 	 */
 	{
 		Bitmapset  *keep = NULL;
+		UpdateRows	rows = {old_tts, new_tts, candidates, NULL};
 
 		for (int i = 0; i < resultRelInfo->ri_NumIndices; i++)
 		{
@@ -702,8 +795,7 @@ ExecUpdateModifiedIdxAttrs(ResultRelInfo *resultRelInfo,
 
 			if (!indexInfo->ii_ReadyForInserts ||
 				!resultRelInfo->ri_IndexRelationDescs[i]->rd_index->indisvalid ||
-				!IndexUnaffected(resultRelInfo, i, mine, old_tts, new_tts,
-								 estate))
+				!IndexUnaffected(resultRelInfo, i, mine, &rows, estate))
 			{
 				keep = bms_add_members(keep, mine);
 				if (bms_is_subset(candidates, keep))

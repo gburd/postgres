@@ -512,6 +512,13 @@ typedef struct ResultRelInfo
 	Bitmapset **ri_IndexExprAttrs;
 
 	/*
+	 * For UPDATE, the old row with its compressed and out-of-line candidate
+	 * values detoasted, for ExecUpdateModifiedIdxAttrs() to evaluate indexes
+	 * on (NULL until first needed).
+	 */
+	TupleTableSlot *ri_UpdateOldEvalSlot;
+
+	/*
 	 * For UPDATE, per index, the table attributes (offset as above) that the
 	 * statement's SET expressions provably cannot change any part of that the
 	 * index reads, as long as the attribute is not null before or after.
