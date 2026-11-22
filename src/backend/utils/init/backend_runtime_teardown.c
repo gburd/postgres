@@ -659,6 +659,8 @@ PgBackendResetXLogClosedState(PgBackendXLogState *xlog)
 	if (xlog == NULL)
 		return;
 
+	xlog->abort_backup_handler_registered = false;
+
 	if (xlog->open_log_file >= 0)
 	{
 		(void) close(xlog->open_log_file);

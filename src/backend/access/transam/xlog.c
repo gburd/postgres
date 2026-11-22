@@ -10621,12 +10621,11 @@ do_pg_abort_backup(int code, Datum arg)
 void
 register_persistent_abort_backup_handler(void)
 {
-	static bool already_done = false;
-
-	if (already_done)
+	/* One registration per backend exit stack, not per process. */
+	if (PgCurrentXLogState()->abort_backup_handler_registered)
 		return;
 	before_shmem_exit(do_pg_abort_backup, BoolGetDatum(false));
-	already_done = true;
+	PgCurrentXLogState()->abort_backup_handler_registered = true;
 }
 
 /*

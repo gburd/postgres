@@ -410,6 +410,7 @@ typedef struct PgBackendXLogWriteResult
 
 typedef struct PgBackendXLogState
 {
+	bool		abort_backup_handler_registered;
 	bool		local_recovery_in_progress;
 	int			local_xlog_insert_allowed;
 	XLogRecPtr	proc_last_rec_ptr;
