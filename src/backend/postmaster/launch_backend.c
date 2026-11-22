@@ -41,7 +41,6 @@
 #include "access/xact.h"
 #include "common/pg_prng.h"
 #include "libpq/libpq-be.h"
-#include "libpq/libpq.h"		/* ssl_sni (xtc migratability gate) */
 #include "libpq/pqsignal.h"
 #include "miscadmin.h"
 #include "pgtime.h"
@@ -628,70 +627,26 @@ xtc_pg_backend_thread_start_carrier(void *thread_start)
 }
 
 /*
- * Whether a fiber-eligible child of this type may ALSO be work-stolen across
- * carrier loops (xtc_proc_opts_t.migratable) once the gated unpin is live.
+ * Whether a fiber of this child type may be work-stolen across carrier loops
+ * (xtc_proc_opts_t.migratable).  Today none may.
  *
- * Default the SAFE way.  Only regular client backends (B_BACKEND) migrate:
- * they are the throughput target, and every cooperative park a backend fiber
- * has is a wait-boundary seam that repoints the six fiber-owned current-work
- * roots on resume (see xtc_pg_verify_current_work_is_self), so a stolen
- * backend resumes correctly on any loop.  Everything else stays PINNED:
- *   - background workers (parallel query, logical replication, extension
- *     workers) run arbitrary/extension code whose thread-affine assumptions
- *     are not audited for migration; Phase 16 / Gate E2-Extensions owns that.
- *   - the WAL writer/summarizer, autovacuum, slotsync, WAL receiver and other
- *     long-lived singletons have no throughput reason to migrate and may hold
- *     loop-affine resources; keep them on their spawn loop.
- *   - the per-loop supervisor is a bare fiber and never routes through here.
- *
- * ssl_sni no-migrate invariant (libxtc SNI #29 deferred): a server-side-SNI
- * connection drives OpenSSL's per-OS-thread state directly and cannot yet be
- * served by the fiber-aware TLS stack from a foreign thread, so when ssl_sni
- * is on NO backend may migrate.  ssl_sni is a process-global GUC
- * (PG_GLOBAL_RUNTIME), authoritative on the postmaster thread where this runs,
- * so reading it here HONORS the invariant (the be_tls_open_server assertion is
- * the tripwire; this is the actual gate).
+ * The six current-work roots live in one thread-local bridge
+ * (PgRuntimeCurrentBridgeState).  The wait seams restore it after every park,
+ * but a compiler is free to compute the address of a thread-local once and
+ * keep it across calls, and any call can park.  When a fiber resumes on a
+ * different OS thread, code that cached the old thread's TLS address reads and
+ * writes another session's roots.  gcc 16 does this at -O2 (a cassert build
+ * trips Assert(QueryCancelHoldoffCount > 0) in COPY within seconds), and
+ * libxtc's coro_int.h warns about the same hazard for its own thread-locals.
+ * Migration needs every root access to go through an out-of-line read of the
+ * current thread's slot (or the proc's userdata) before it can be turned on;
+ * until then every fiber stays on the loop it was spawned on.
  */
 static bool
 xtc_carrier_migratable(BackendType child_type)
 {
-	/*
-	 * Phase D: regular client backends (B_BACKEND) are migratable so a loop
-	 * whose run queue drains can steal them under eager rebalance (libxtc
-	 * v1.27.0, wired on the threaded multi-loop carrier).  Everything else
-	 * stays PINNED (see the child-type rationale above); ssl_sni=on pins ALL
-	 * backends (the SNI no-migrate invariant).
-	 *
-	 * Safe to re-enable now that the three in-tree unseamed-park corruptions
-	 * are closed: the GUC-amutex command-path bridge leak is seamed
-	 * (guc.c ThreadedGUCLock), the concurrent-startup pre-install window is
-	 * per-fiber (PreInstallPgThreadBackendRuntimeState), and every other
-	 * backend-fiber park is seamed (xtc_pg_wait_fd -> WaitEventSet/
-	 * ProcSemaphoreWaitFiber, AIO r/w + fsync/fdatasync).
-	 */
-	/*
-	 * HELD at migratable=0 (2026-07-22): an independent review of the
-	 * migratable=1 re-enable (d04f3bea68c) found TWO real, migration-only,
-	 * reproduced-clean-on-pinned regressions under real work-steals:
-	 *   (1) guc.c:1396 GUCMemoryContext corruption -- deterministic under
-	 *       parallel load, a fiber freeing on the wrong session's GUC context
-	 *       (session-root/GUC-metadata unseamed-park hazard, now live under
-	 *       real steals); does NOT reproduce on the pinned baseline.
-	 *   (2) a deterministic shutdown hang under migratable=1 (release needs
-	 *       SIGKILL); pinned shuts down cleanly.
-	 * RE-ENABLED (2026-07-23): both blockers are resolved and re-validated under
-	 * real work-steals.  Blocker (1), the guc.c:1396 GUCMemoryContext corruption,
-	 * is fixed by guc_free_if_current_context (foreign-context-safe free).
-	 * Blocker (2), the fast-shutdown hang, was root-caused on EC2 (gdb backtrace)
-	 * to a SetLatch fiber-park quick-exit race: SetLatch's "quick exit if already
-	 * set" dropped the wake of a maybe_sleeping fiber owner across the two-phase
-	 * fiber park, permanently stranding a backend parked in a CV/AIO wait.  The
-	 * fix (latch.c) falls through to re-deliver the fiber wake when the owner is a
-	 * maybe_sleeping fiber in this process; process mode stays byte-for-byte.
-	 * Only regular client backends with ssl_sni off migrate (SNI pins all
-	 * backends -- the be_tls_open_server assertion is the tripwire).
-	 */
-	return (child_type == B_BACKEND) && !ssl_sni;
+	(void) child_type;
+	return false;
 }
 #endif
 
@@ -822,13 +777,9 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 #ifdef USE_XTC_CARRIER
 
 	/*
-	 * Phase D: decide, on the postmaster thread (where ssl_sni is
-	 * authoritative), whether this fiber may be work-stolen across carrier
-	 * loops, and record it on the fiber-owned carrier root.  The carrier layer
-	 * reads it back at the spawn site (to set xtc_proc_opts_t.migratable) and
-	 * at runtime via xtc_proc_userdata() (xtc_pg_backend_fiber_is_migratable),
-	 * so the spawn-time and runtime views cannot disagree.  Only client
-	 * backends with ssl_sni off migrate; see xtc_carrier_migratable.
+	 * Record on the fiber-owned carrier root whether this fiber may be
+	 * work-stolen.  The spawn site and xtc_pg_backend_fiber_is_migratable()
+	 * both read it back, so the two views cannot disagree.
 	 */
 	thread_start->runtime_state.carrier.migratable =
 		xtc_carrier_migratable(thread_start->child_type);
