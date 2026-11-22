@@ -164,6 +164,16 @@ extern int	pg_disable_aslr(void);
 
 /* Portable delay handling */
 extern void pg_usleep(long microsec);
+#ifndef FRONTEND
+
+/*
+ * If set, pg_usleep() first offers the delay to this hook, which returns true
+ * if it slept.  The multithreaded runtime uses it to park the calling fiber
+ * instead of blocking the OS thread that other fibers share.
+ */
+typedef bool (*pg_usleep_hook_type) (long microsec);
+extern PGDLLIMPORT pg_usleep_hook_type pg_usleep_hook;
+#endif
 
 /* Portable SQL-like case-independent comparisons and conversions */
 extern int	pg_strcasecmp(const char *s1, const char *s2);

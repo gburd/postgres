@@ -190,6 +190,23 @@ typedef struct xtc_spawn_msg
 static xtc_carrier_entry_fn g_xtc_backend_entry;
 
 /*
+ * pg_usleep_hook: on a backend fiber, park the fiber for the delay instead of
+ * sleeping the carrier thread.  A thread sleep would stall every other fiber
+ * on the loop, including the one the sleeper is often waiting for: the
+ * checkpointer polls with 10 ms sleeps for WAL senders to reach STOPPING,
+ * and a WAL sender on the same loop cannot get there while the loop sleeps.
+ * The wait seam saves and restores this fiber's current work around the park.
+ */
+static bool
+xtc_pg_usleep(long microsec)
+{
+	if (!xtc_pg_in_backend_fiber())
+		return false;
+	(void) xtc_pg_wait_fd(-1, 0, (microsec + 999) / 1000);
+	return true;
+}
+
+/*
  * Number of carrier loops, one OS thread each, fixed for the life of the
  * server.  carrier_loops = 0 (the default) means one loop per CPU the process
  * may run on, which is also the most it can use once every loop is pinned to
@@ -860,6 +877,7 @@ xtc_pg_carrier_start(void)
 			rc = -1;
 			goto out;
 		}
+		pg_usleep_hook = xtc_pg_usleep;
 
 		elog(LOG, "xtc: carrier up (%d loop%s, each with an xtc_orc supervisor%s)",
 			 g_xtc_n_loops, g_xtc_n_loops == 1 ? "" : "s",

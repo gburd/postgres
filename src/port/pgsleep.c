@@ -37,9 +37,17 @@
  * Better practice is to use WaitLatch() with a timeout, so that backends
  * respond to latches and signals promptly.
  */
+#ifndef FRONTEND
+pg_usleep_hook_type pg_usleep_hook = NULL;
+#endif
+
 void
 pg_usleep(long microsec)
 {
+#ifndef FRONTEND
+	if (microsec > 0 && pg_usleep_hook != NULL && pg_usleep_hook(microsec))
+		return;
+#endif
 	if (microsec > 0)
 	{
 #ifndef WIN32
