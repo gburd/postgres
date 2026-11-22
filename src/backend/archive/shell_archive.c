@@ -22,6 +22,7 @@
 #include "archive/shell_archive.h"
 #include "common/percentrepl.h"
 #include "pgstat.h"
+#include "storage/fd.h"
 #include "utils/wait_event.h"
 
 static bool shell_archive_configured(ArchiveModuleState *state);
@@ -76,9 +77,8 @@ shell_archive_file(ArchiveModuleState *state, const char *file,
 			(errmsg_internal("executing archive command \"%s\"",
 							 xlogarchcmd)));
 
-	fflush(NULL);
 	pgstat_report_wait_start(WAIT_EVENT_ARCHIVE_COMMAND);
-	rc = system(xlogarchcmd);
+	rc = pg_system(xlogarchcmd);
 	pgstat_report_wait_end();
 
 	if (rc != 0)

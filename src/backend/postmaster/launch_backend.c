@@ -530,9 +530,9 @@ xtc_carrier_eligible(BackendType child_type)
 		case B_ARCHIVER:
 
 			/*
-			 * The archiver is a fiber, but archive_command and archive
-			 * libraries may block its carrier loop, so the postmaster refuses
-			 * archive_mode with multithreaded=on (see PostmasterMain).
+			 * archive_command runs through pg_system(), which parks the fiber
+			 * while the command runs.  An archive library's own blocking
+			 * calls still hold the loop for their duration.
 			 */
 			return true;
 		case B_CHECKPOINTER:

@@ -91,6 +91,7 @@ tests += {
       't/030_ri_check_ownership.pl',
       't/031_orc_supervision.pl',
       't/032_promote_while_paused.pl',
+      't/033_shell_commands.pl',
     ],
   },
 }

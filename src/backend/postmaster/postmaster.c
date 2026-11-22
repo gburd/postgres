@@ -939,16 +939,6 @@ PostmasterMain(int argc, char *argv[])
 				 errmsg("multithreaded mode requires a build with libxtc")));
 #endif
 
-	/*
-	 * The archiver runs as a fiber in threaded mode, and both archive_command
-	 * (system()) and an archive library may block its carrier loop for the
-	 * whole archive cycle, stalling every sibling fiber on that loop.
-	 */
-	if (multithreaded && XLogArchiveMode > ARCHIVE_MODE_OFF)
-		ereport(FATAL,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("archiving is not yet supported with multithreaded=on"),
-				 errhint("Set \"archive_mode\" to \"off\", or set \"multithreaded\" to \"off\".")));
 	if (XLogArchiveMode > ARCHIVE_MODE_OFF && wal_level == WAL_LEVEL_MINIMAL)
 		ereport(ERROR,
 				(errmsg("WAL archival cannot be enabled when \"wal_level\" is \"minimal\"")));
@@ -2616,6 +2606,37 @@ handle_pm_child_exit_signal(SIGNAL_ARGS)
 }
 
 /*
+ * Reap one exited child process, returning its pid, or 0 if none has exited.
+ *
+ * In fork mode every child is ours, so take any.  Once the carrier runs, fibers
+ * also start processes (archive and restore commands, COPY ... PROGRAM) and
+ * wait for them by pid through xtc_osproc; waitpid(-1) here would steal their
+ * exit status.  So under multithreading only the process children the
+ * postmaster tracks are reaped, each by its own pid.
+ */
+static pid_t
+reap_child_process(int *exitstatus)
+{
+	dlist_iter	iter;
+
+	if (!multithreaded)
+		return waitpid(-1, exitstatus, WNOHANG);
+
+	dlist_foreach(iter, &ActiveChildList)
+	{
+		PMChild    *pmchild = dlist_container(PMChild, elem, iter.cur);
+		pid_t		pid;
+
+		if (!PostmasterChildIsProcess(pmchild) || pmchild->pid <= 0)
+			continue;
+		pid = waitpid(pmchild->pid, exitstatus, WNOHANG);
+		if (pid > 0)
+			return pid;
+	}
+	return 0;
+}
+
+/*
  * Cleanup after a child process dies.
  */
 static void
@@ -2629,7 +2650,7 @@ process_pm_child_exit(void)
 	ereport(DEBUG4,
 			(errmsg_internal("reaping dead processes")));
 
-	while ((pid = waitpid(-1, &exitstatus, WNOHANG)) > 0)
+	while ((pid = reap_child_process(&exitstatus)) > 0)
 	{
 		PMChild    *pmchild;
 

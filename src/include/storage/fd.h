@@ -165,6 +165,7 @@ extern int	FreeFile(FILE *file);
 
 /* Operations that allow use of pipe streams (popen/pclose) */
 extern FILE *OpenPipeStream(const char *command, const char *mode);
+extern int	pg_system(const char *command);
 extern int	ClosePipeStream(FILE *file);
 
 /* Operations to allow use of the <dirent.h> library routines */

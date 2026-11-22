@@ -104,6 +104,7 @@
 #ifdef USE_XTC_CARRIER
 #include "postmaster/pg_xtc_carrier.h"	/* xtc_in_backend_fiber */
 #include "xtc_aio.h"					/* xtc_aio_fsync / xtc_aio_fdatasync */
+#include "xtc_osproc.h"
 #endif
 #include "utils/varlena.h"
 #include "utils/wait_event.h"
@@ -2867,6 +2868,59 @@ OpenTransientFilePerm(const char *fileName, int fileFlags, mode_t fileMode)
 	}
 
 	return -1;					/* failure */
+}
+
+/*
+ * Run a shell command and wait for it, like system(3).  Returns the wait
+ * status, or -1 with errno set if the command could not be started.
+ *
+ * On a carrier fiber, system() would block the whole loop thread until the
+ * command ends, and its fork() would copy a process whose other threads may
+ * hold locks.  There the command is started through xtc_osproc, which execs
+ * /bin/sh -c in the child before touching anything, and the fiber parks on the
+ * child's pidfd while the loop runs other fibers.  The postmaster reaps only
+ * the children it tracks (see reap_child_process), so the status is ours.
+ *
+ * NB: as with system(), the caller is not interrupted while the command runs;
+ * the startup process's SIGTERM handling around restore_command relies on that.
+ */
+int
+pg_system(const char *command)
+{
+#ifdef USE_XTC_CARRIER
+	if (xtc_pg_in_backend_fiber())
+	{
+		char	   *argv[] = {"/bin/sh", "-c", unconstify(char *, command), NULL};
+		xtc_osproc_opts_t opts = XTC_OSPROC_OPTS_INIT;
+		xtc_osproc_t *child = NULL;
+		PgCurrentWorkSnapshot snap;
+		int			status = 0;
+		int			rc;
+
+		opts.name = "pg_system";
+		opts.argv = argv;
+		fflush(NULL);
+		if (xtc_osproc_spawn(&opts, &child) != XTC_OK)
+		{
+			errno = EAGAIN;
+			return -1;
+		}
+
+		PgRuntimeSaveCurrentWork(&snap);
+		rc = xtc_osproc_wait(child, &status, -1);
+		PgRuntimeRestoreCurrentWork(&snap);
+		XtcPgVerifyCurrentWorkIsSelf();
+		xtc_osproc_destroy(child);
+		if (rc != XTC_OK)
+		{
+			errno = ECHILD;
+			return -1;
+		}
+		return status;
+	}
+#endif
+	fflush(NULL);
+	return system(command);
 }
 
 /*
