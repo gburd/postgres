@@ -1144,6 +1144,8 @@ GistSplitUnion
 GistSplitVector
 GistTsVectorOptions
 GistVacState
+GiveUpEntry
+GiveUpKey
 GlobalChannelEntry
 GlobalChannelKey
 GlobalTransaction

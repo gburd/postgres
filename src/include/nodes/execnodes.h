@@ -519,6 +519,12 @@ typedef struct ResultRelInfo
 	TupleTableSlot *ri_UpdateOldEvalSlot;
 
 	/*
+	 * For UPDATE, per index (NULL until first needed), how often evaluating
+	 * it came out changed; see GiveUpOnIndex() in nodeModifyTable.c.
+	 */
+	struct GiveUpEntry **ri_GiveUp;
+
+	/*
 	 * For UPDATE, per index, the table attributes (offset as above) that the
 	 * statement's SET expressions provably cannot change any part of that the
 	 * index reads, as long as the attribute is not null before or after.

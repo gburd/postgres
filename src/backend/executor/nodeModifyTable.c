@@ -64,6 +64,7 @@
 #include "access/xact.h"
 #include "catalog/index.h"
 #include "commands/trigger.h"
+#include "common/hashfn.h"
 #include "executor/execPartition.h"
 #include "executor/executor.h"
 #include "executor/execSubattr.h"
@@ -79,6 +80,7 @@
 #include "storage/lmgr.h"
 #include "utils/builtins.h"
 #include "utils/datum.h"
+#include "utils/hsearch.h"
 #include "utils/injection_point.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
@@ -599,11 +601,126 @@ IndexExprAttrs(ResultRelInfo *resultRelInfo, int i, EState *estate)
 }
 
 /*
+ * Giving up on an index that keeps changing.
+ *
+ * Deciding that an index keeps its entries means evaluating it on the old
+ * and the new row.  When the value it stores changes on every row, as an
+ * index on lower(email) does for an UPDATE of the email address, that work
+ * always ends in "changed" and only adds to the UPDATE's cost.  So after an
+ * index has come out changed GIVE_UP_AFTER times in a row for a statement,
+ * it is taken as changed without being evaluated, except for one row in
+ * RETRY_EVERY, which evaluates it again; a retry that finds it unchanged
+ * starts the count over.
+ *
+ * Taking an index as changed is always correct, it can only cost the HOT
+ * update the evaluation would have found.  So the counts are kept per
+ * backend, keyed by the index and the statement's text, so that a statement
+ * run once per row, as OLTP updates are, learns from its earlier runs.  The
+ * table is bounded: once it is full, a statement whose entry is not in it
+ * counts in an entry of its own, which lasts as long as the statement.
+ * Entries are never removed, since a running statement, or one that called
+ * it, keeps pointers to its entries (ri_GiveUp).  A colliding entry costs at
+ * most what giving up costs.
+ */
+#define GIVE_UP_AFTER	64
+#define RETRY_EVERY		32
+#define GIVE_UP_MAX_ENTRIES	1024
+
+typedef struct GiveUpKey
+{
+	Oid			indexoid;
+	uint32		stmthash;
+} GiveUpKey;
+
+typedef struct GiveUpEntry
+{
+	GiveUpKey	key;
+	uint32		changed;		/* evaluations in a row that came out changed */
+	uint32		skipped;		/* rows taken as changed since the last retry */
+} GiveUpEntry;
+
+static HTAB *give_up_table = NULL;
+
+/*
+ * Return the give-up entry for the i'th index and the running statement,
+ * caching it in resultRelInfo for the rest of the statement.
+ */
+static GiveUpEntry *
+GiveUpEntryFor(ResultRelInfo *resultRelInfo, int i, EState *estate)
+{
+	GiveUpKey	key;
+	bool		found;
+
+	if (resultRelInfo->ri_GiveUp == NULL)
+		resultRelInfo->ri_GiveUp =
+			MemoryContextAllocZero(estate->es_query_cxt,
+								   sizeof(GiveUpEntry *) *
+								   resultRelInfo->ri_NumIndices);
+	if (resultRelInfo->ri_GiveUp[i] != NULL)
+		return resultRelInfo->ri_GiveUp[i];
+
+	if (give_up_table == NULL)
+	{
+		HASHCTL		ctl;
+
+		ctl.keysize = sizeof(GiveUpKey);
+		ctl.entrysize = sizeof(GiveUpEntry);
+		ctl.hcxt = TopMemoryContext;
+		give_up_table = hash_create("UPDATE index give-up", 64, &ctl,
+									HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	}
+
+	memset(&key, 0, sizeof(key));
+	key.indexoid = RelationGetRelid(resultRelInfo->ri_IndexRelationDescs[i]);
+	key.stmthash = estate->es_sourceText ?
+		hash_bytes((const unsigned char *) estate->es_sourceText,
+				   strlen(estate->es_sourceText)) : 0;
+	resultRelInfo->ri_GiveUp[i] =
+		hash_search(give_up_table, &key,
+					hash_get_num_entries(give_up_table) < GIVE_UP_MAX_ENTRIES ?
+					HASH_ENTER : HASH_FIND, &found);
+	if (resultRelInfo->ri_GiveUp[i] == NULL)
+		resultRelInfo->ri_GiveUp[i] =
+			MemoryContextAllocZero(estate->es_query_cxt, sizeof(GiveUpEntry));
+	else if (!found)
+	{
+		resultRelInfo->ri_GiveUp[i]->changed = 0;
+		resultRelInfo->ri_GiveUp[i]->skipped = 0;
+	}
+	return resultRelInfo->ri_GiveUp[i];
+}
+
+/*
+ * Should the i'th index be taken as changed without being evaluated?
+ */
+static bool
+GiveUpOnIndex(GiveUpEntry *entry)
+{
+	if (entry->changed < GIVE_UP_AFTER)
+		return false;
+	if (++entry->skipped < RETRY_EVERY)
+		return true;
+	entry->skipped = 0;
+	return false;				/* retry */
+}
+
+/* Record how evaluating the index came out. */
+static void
+GiveUpRecord(GiveUpEntry *entry, bool unaffected)
+{
+	if (unaffected)
+		entry->changed = 0;
+	else if (entry->changed < GIVE_UP_AFTER)
+		entry->changed++;
+}
+
+/*
  * Is the i'th index unaffected by the update from old_tts to new_tts, where
  * "mine" are the changed attributes it uses?  Use the statement-level proof
  * (ri_IndexUntouchedAttrs) when it covers them all and none is null in
- * either row; otherwise evaluate.  Assert builds evaluate anyway and check
- * that the proof agrees.
+ * either row; otherwise evaluate, unless the index has kept changing (see
+ * GiveUpOnIndex()).  Assert builds evaluate anyway and check that the proof
+ * agrees.
  */
 static bool
 IndexUnaffected(ResultRelInfo *resultRelInfo, int i, Bitmapset *mine,
@@ -613,6 +730,8 @@ IndexUnaffected(ResultRelInfo *resultRelInfo, int i, Bitmapset *mine,
 	TupleTableSlot *old_tts = rows->old_tts;
 	TupleTableSlot *new_tts = rows->new_tts;
 	bool		proven = false;
+	GiveUpEntry *giveup;
+	bool		unaffected;
 
 	if (resultRelInfo->ri_IndexUntouchedAttrs != NULL &&
 		bms_is_subset(mine, resultRelInfo->ri_IndexUntouchedAttrs[i]))
@@ -648,9 +767,15 @@ IndexUnaffected(ResultRelInfo *resultRelInfo, int i, Bitmapset *mine,
 		return true;
 #endif
 
-	return !IndexEntryChanges(resultRelInfo, i,
-							  resultRelInfo->ri_IndexRelationDescs[i],
-							  indexInfo, mine, rows, estate);
+	giveup = GiveUpEntryFor(resultRelInfo, i, estate);
+	if (GiveUpOnIndex(giveup))
+		return false;
+
+	unaffected = !IndexEntryChanges(resultRelInfo, i,
+									resultRelInfo->ri_IndexRelationDescs[i],
+									indexInfo, mine, rows, estate);
+	GiveUpRecord(giveup, unaffected);
+	return unaffected;
 }
 
 /*

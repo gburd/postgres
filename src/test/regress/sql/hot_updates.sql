@@ -332,6 +332,24 @@ SELECT * FROM update_case(
   $$UPDATE hot_expr_test SET x = 1$$);
 DROP FUNCTION hot_expr_trig() CASCADE;
 
+-- An index that keeps changing is given up on: after it has come out
+-- changed 64 times in a row it is taken as changed without being
+-- evaluated, except for one row in 32, which evaluates it again.  The
+-- first 100 rows change the expression's value and the other 100 keep it.
+-- From row 65 the index is taken as changed; the retry at row 96 finds it
+-- changed, the one at row 128 finds it unchanged, and from there on every
+-- row is evaluated and HOT: 73 of the 200.  The index must still find
+-- every row.
+SELECT * FROM update_case(
+  $$CREATE TABLE hot_expr_test (id int PRIMARY KEY, s text) WITH (fillfactor = 10);
+    CREATE INDEX ON hot_expr_test (lower(s));
+    INSERT INTO hot_expr_test SELECT g, 'abc' || g FROM generate_series(1, 200) g$$,
+  $$UPDATE hot_expr_test SET s = CASE WHEN id <= 100 THEN s || 'x' ELSE upper(s) END$$);
+SELECT count(*) FROM hot_expr_test WHERE lower(s) = lower(s);
+SET enable_seqscan = off;
+SELECT count(*) FROM hot_expr_test WHERE lower(s) LIKE 'abc%';
+RESET enable_seqscan;
+
 -- Partial index, both versions outside the predicate, changing the key or
 -- the predicate's column.
 SELECT * FROM update_case(
