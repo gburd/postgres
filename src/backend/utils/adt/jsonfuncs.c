@@ -6165,6 +6165,156 @@ jsonb_subattr_any_position(List *prefix)
 }
 
 /*
+ * Are two jsonb values the same, as far as anything that reads them can
+ * tell?  Scalars compare as stored: numerics by their bytes, so 1.0 and
+ * 1.00 differ, as their text forms do.  Containers compare token by token.
+ */
+static bool jsonb_value_image_eq(JsonbValue *a, JsonbValue *b);
+
+static bool
+jsonb_container_image_eq(JsonbContainer *a, JsonbContainer *b)
+{
+	JsonbIterator *ia = JsonbIteratorInit(a);
+	JsonbIterator *ib = JsonbIteratorInit(b);
+	JsonbIteratorToken ta,
+				tb;
+	JsonbValue	va,
+				vb;
+
+	for (;;)
+	{
+		ta = JsonbIteratorNext(&ia, &va, false);
+		tb = JsonbIteratorNext(&ib, &vb, false);
+		if (ta != tb)
+			return false;
+		if (ta == WJB_DONE)
+			return true;
+		switch (ta)
+		{
+			case WJB_BEGIN_ARRAY:
+				if (va.val.array.rawScalar != vb.val.array.rawScalar ||
+					va.val.array.nElems != vb.val.array.nElems)
+					return false;
+				break;
+			case WJB_BEGIN_OBJECT:
+				if (va.val.object.nPairs != vb.val.object.nPairs)
+					return false;
+				break;
+			case WJB_KEY:
+			case WJB_VALUE:
+			case WJB_ELEM:
+				if (!jsonb_value_image_eq(&va, &vb))
+					return false;
+				break;
+			default:
+				break;
+		}
+	}
+}
+
+static bool
+jsonb_value_image_eq(JsonbValue *a, JsonbValue *b)
+{
+	if (a->type != b->type)
+		return false;
+	switch (a->type)
+	{
+		case jbvNull:
+			return true;
+		case jbvBool:
+			return a->val.boolean == b->val.boolean;
+		case jbvString:
+			return a->val.string.len == b->val.string.len &&
+				memcmp(a->val.string.val, b->val.string.val,
+					   a->val.string.len) == 0;
+		case jbvNumeric:
+			return VARSIZE_ANY(a->val.numeric) == VARSIZE_ANY(b->val.numeric) &&
+				memcmp(a->val.numeric, b->val.numeric,
+					   VARSIZE_ANY(a->val.numeric)) == 0;
+		case jbvBinary:
+			return jsonb_container_image_eq(a->val.binary.data,
+											b->val.binary.data);
+		default:
+			return false;		/* not found in a stored document */
+	}
+}
+
+/* the two documents, detoasted once per row */
+typedef struct JsonbSubattrCache
+{
+	Jsonb	   *a;
+	Jsonb	   *b;
+} JsonbSubattrCache;
+
+/*
+ * jsonb_subattr_compare
+ *		The SubattrCompareFunc for the jsonb accessors: do two documents
+ *		read the same at every path?
+ *
+ * The accessors name parts by keys.  A key in an object names a member,
+ * which every accessor reads the same way.  A key in an array may name an
+ * element counted from either end, and an accessor below a scalar reads
+ * nothing; there, and wherever the two documents differ in kind, the values
+ * are compared as a whole, which is always enough.
+ */
+bool
+jsonb_subattr_compare(Datum oldval, Datum newval, List *paths, void **cache)
+{
+	JsonbSubattrCache *c = *cache;
+
+	if (c == NULL)
+	{
+		c = palloc_object(JsonbSubattrCache);
+		c->a = DatumGetJsonbP(oldval);
+		c->b = DatumGetJsonbP(newval);
+		*cache = c;
+	}
+
+	foreach_ptr(List, path, paths)
+	{
+		JsonbValue	va,
+					vb;
+		JsonbValue *pa,
+				   *pb;
+		ListCell   *lc;
+
+		va.type = jbvBinary;
+		va.val.binary.data = &c->a->root;
+		vb.type = jbvBinary;
+		vb.val.binary.data = &c->b->root;
+		pa = &va;
+		pb = &vb;
+
+		foreach(lc, path)
+		{
+			SubattrPathElem *e = lfirst(lc);
+
+			if (e->kind != SUBATTR_ELEM_KEY ||
+				pa->type != jbvBinary || pb->type != jbvBinary ||
+				!JsonContainerIsObject(pa->val.binary.data) ||
+				!JsonContainerIsObject(pb->val.binary.data))
+				break;			/* compare what we have as a whole */
+			pa = getKeyJsonValueFromContainer(pa->val.binary.data, e->key,
+											  strlen(e->key), NULL);
+			pb = getKeyJsonValueFromContainer(pb->val.binary.data, e->key,
+											  strlen(e->key), NULL);
+			if (pa == NULL || pb == NULL)
+				break;
+		}
+
+		if (pa == NULL || pb == NULL)
+		{
+			if (pa != pb)
+				return false;	/* in one document only */
+			continue;			/* in neither */
+		}
+		if (!jsonb_value_image_eq(pa, pb))
+			return false;
+	}
+	return true;
+}
+
+/*
  * jsonb_subattr_support
  *		Support function for the jsonb accessors and modifiers: tells the
  *		executor which parts of the document a call reads or may change.
@@ -6222,6 +6372,7 @@ jsonb_subattr_support(PG_FUNCTION_ARGS)
 		}
 		req->source = 0;
 		req->paths = list_make1(path);
+		req->compare = jsonb_subattr_compare;
 		PG_RETURN_POINTER(req);
 	}
 

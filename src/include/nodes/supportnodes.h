@@ -483,19 +483,37 @@ typedef struct SupportRequestModifyInPlace
  * different keys that do not both read as integers ("1" and "01" may name
  * the same array element), two different positions, or a position or
  * SUBATTR_ELEM_ANY_POSITION against a key that does not read as an integer.
- * A path overlaps every path it is a prefix of.
+ * A path overlaps every path it is a prefix of.  A SUBATTR_ELEM_OPAQUE
+ * element names a part of the value in a way only its type understands (an
+ * XPath expression, say); it overlaps every element.
+ *
+ * SUBATTR_READ answers may also set "compare" to a function that compares
+ * two values of args[source]'s type at given paths.  The executor uses it
+ * when an UPDATE changes a value as a whole, as SET doc = $1 does, so that
+ * nothing about the SET expression is known: if the old and new values read
+ * the same at every path an index reads, the index keeps its entries without
+ * its expressions being evaluated.  The function must return true only if
+ * every SUBATTR_READ call that names the type's paths would return the same
+ * datum, byte for byte, for the two values.  It is called with neither
+ * value null.  *cache is NULL the first time it is called for a row and
+ * column; it may keep state there, allocated in CurrentMemoryContext, which
+ * lasts for the row, for later calls on the same two values.  Every call in
+ * a chain of accessors over one column must name the same function, or none
+ * is used.
  */
 typedef enum SubattrPathElemKind
 {
 	SUBATTR_ELEM_KEY,			/* object member by name */
 	SUBATTR_ELEM_POSITION,		/* array element by position */
 	SUBATTR_ELEM_ANY_POSITION,	/* any array element */
+	SUBATTR_ELEM_OPAQUE,		/* a part the type names; key describes it */
 } SubattrPathElemKind;
 
 typedef struct SubattrPathElem
 {
 	SubattrPathElemKind kind;
-	char	   *key;			/* SUBATTR_ELEM_KEY: null-terminated name */
+	char	   *key;			/* SUBATTR_ELEM_KEY: null-terminated name;
+								 * SUBATTR_ELEM_OPAQUE: the type's description */
 	int			position;		/* SUBATTR_ELEM_POSITION */
 } SubattrPathElem;
 
@@ -504,6 +522,9 @@ typedef enum SubattrRequestKind
 	SUBATTR_READ,
 	SUBATTR_MODIFY,
 } SubattrRequestKind;
+
+typedef bool (*SubattrCompareFunc) (Datum oldval, Datum newval,
+									List *paths, void **cache);
 
 typedef struct SupportRequestSubattr
 {
@@ -517,6 +538,7 @@ typedef struct SupportRequestSubattr
 	int			source;			/* index into args of the value read/copied */
 	List	   *paths;			/* List of List of SubattrPathElem */
 	bool		subvalue;		/* SUBATTR_READ: returns the part at paths */
+	SubattrCompareFunc compare; /* SUBATTR_READ: compares at paths, or NULL */
 } SupportRequestSubattr;
 
 #endif							/* SUPPORTNODES_H */

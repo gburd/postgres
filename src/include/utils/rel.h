@@ -235,6 +235,13 @@ typedef struct RelationData
 	void	   *rd_amcache;		/* available for use by index/table AM */
 
 	/*
+	 * For an index: the parts of its table's columns it reads, built by
+	 * RelationGetIndexSubattrReads() in rd_indexcxt when first asked for.
+	 */
+	List	   *rd_subattrreads;
+	bool		rd_subattrreadsvalid;
+
+	/*
 	 * foreign-table support
 	 *
 	 * rd_fdwroutine must point to a single memory chunk palloc'd in

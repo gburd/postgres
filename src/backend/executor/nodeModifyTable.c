@@ -66,8 +66,8 @@
 #include "commands/trigger.h"
 #include "common/hashfn.h"
 #include "executor/execPartition.h"
-#include "executor/executor.h"
 #include "executor/execSubattr.h"
+#include "executor/executor.h"
 #include "executor/instrument.h"
 #include "executor/nodeModifyTable.h"
 #include "foreign/fdwapi.h"
@@ -416,7 +416,20 @@ typedef struct UpdateRows
 	TupleTableSlot *new_tts;	/* the new row */
 	const Bitmapset *detoast;	/* attributes worth detoasting */
 	TupleTableSlot *old_eval;	/* old row to evaluate on, NULL until needed */
+	struct CompareCache *compare_cache; /* per attribute, NULL until needed */
 } UpdateRows;
+
+/*
+ * What a SubattrCompareFunc keeps for the row's values of one column.  Each
+ * function keeps its own kind of state, and two indexes may compare one
+ * column with different functions, so the state is kept for the first
+ * function asked; any other starts afresh each time.
+ */
+typedef struct CompareCache
+{
+	SubattrCompareFunc compare;
+	void	   *state;
+} CompareCache;
 
 static TupleTableSlot *
 OldRowForEvaluation(ResultRelInfo *resultRelInfo, UpdateRows *rows,
@@ -715,6 +728,79 @@ GiveUpRecord(GiveUpEntry *entry, bool unaffected)
 }
 
 /*
+ * Does the i'th index read the same of the old and the new row, judging by
+ * the comparisons its columns' types provide (RelationGetIndexSubattrReads())?
+ * "mine" are the changed attributes it uses; each must be described, and
+ * not null in either row.  If so the index's datums are the same and it
+ * keeps its entries, without its expressions or predicate being evaluated.
+ */
+static bool
+IndexReadsUnchanged(ResultRelInfo *resultRelInfo, int i, Bitmapset *mine,
+					UpdateRows *rows, EState *estate)
+{
+	List	   *reads;
+	TupleTableSlot *old_eval = NULL;
+	MemoryContext oldcxt;
+	int			attidx = -1;
+	bool		result = true;
+
+	reads = RelationGetIndexSubattrReads(resultRelInfo->ri_IndexRelationDescs[i]);
+	if (reads == NIL)
+		return false;
+
+	oldcxt = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
+	while (result && (attidx = bms_next_member(mine, attidx)) >= 0)
+	{
+		AttrNumber	attnum = attidx + FirstLowInvalidHeapAttributeNumber;
+		IndexSubattrReads *r = NULL;
+		CompareCache *cache;
+		void	  **state;
+		void	   *scratch;
+		Datum		oldval,
+					newval;
+		bool		oldnull,
+					newnull;
+
+		foreach_ptr(IndexSubattrReads, c, reads)
+		{
+			if (c->attnum == attnum)
+			{
+				r = c;
+				break;
+			}
+		}
+		if (r == NULL)
+		{
+			result = false;
+			break;
+		}
+
+		if (old_eval == NULL)
+			old_eval = OldRowForEvaluation(resultRelInfo, rows, estate);
+		oldval = slot_getattr(old_eval, attnum, &oldnull);
+		newval = slot_getattr(rows->new_tts, attnum, &newnull);
+		if (oldnull || newnull)
+		{
+			result = false;
+			break;
+		}
+
+		if (rows->compare_cache == NULL)
+			rows->compare_cache =
+				palloc0_array(CompareCache,
+							  RelationGetDescr(resultRelInfo->ri_RelationDesc)->natts);
+		cache = &rows->compare_cache[attnum - 1];
+		if (cache->compare == NULL)
+			cache->compare = r->compare;
+		state = cache->compare == r->compare ? &cache->state : &scratch;
+		scratch = NULL;
+		result = r->compare(oldval, newval, r->paths, state);
+	}
+	MemoryContextSwitchTo(oldcxt);
+	return result;
+}
+
+/*
  * Is the i'th index unaffected by the update from old_tts to new_tts, where
  * "mine" are the changed attributes it uses?  Use the statement-level proof
  * (ri_IndexUntouchedAttrs) when it covers them all and none is null in
@@ -770,6 +856,25 @@ IndexUnaffected(ResultRelInfo *resultRelInfo, int i, Bitmapset *mine,
 	giveup = GiveUpEntryFor(resultRelInfo, i, estate);
 	if (GiveUpOnIndex(giveup))
 		return false;
+
+	/*
+	 * When the types say the index reads the same of both rows, it does.  If
+	 * they say it does not, its datums may still be the same (two values that
+	 * differ as parts of the column can give one result through an
+	 * expression), so evaluate it.
+	 */
+	if (IndexReadsUnchanged(resultRelInfo, i, mine, rows, estate))
+	{
+#ifdef USE_ASSERT_CHECKING
+		if (IndexEntryChanges(resultRelInfo, i,
+							  resultRelInfo->ri_IndexRelationDescs[i],
+							  indexInfo, mine, rows, estate))
+			elog(ERROR, "index \"%s\" compared unchanged by UPDATE, but its entry changed",
+				 RelationGetRelationName(resultRelInfo->ri_IndexRelationDescs[i]));
+#endif
+		GiveUpRecord(giveup, true);
+		return true;
+	}
 
 	unaffected = !IndexEntryChanges(resultRelInfo, i,
 									resultRelInfo->ri_IndexRelationDescs[i],
@@ -899,7 +1004,7 @@ ExecUpdateModifiedIdxAttrs(ResultRelInfo *resultRelInfo,
 	 */
 	{
 		Bitmapset  *keep = NULL;
-		UpdateRows	rows = {old_tts, new_tts, candidates, NULL};
+		UpdateRows	rows = {old_tts, new_tts, candidates, NULL, NULL};
 
 		for (int i = 0; i < resultRelInfo->ri_NumIndices; i++)
 		{

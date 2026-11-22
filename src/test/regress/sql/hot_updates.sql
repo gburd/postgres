@@ -332,6 +332,44 @@ SELECT * FROM update_case(
   $$UPDATE hot_expr_test SET x = 1$$);
 DROP FUNCTION hot_expr_trig() CASCADE;
 
+-- A value written as a whole, so that nothing about the SET expression
+-- tells which parts changed.  The types compare the old and new values at
+-- the parts the indexes read: jsonb by keys, arrays by positions.
+SELECT * FROM update_case(
+  $$CREATE TABLE hot_expr_test (id int PRIMARY KEY, d jsonb, a int[]) WITH (fillfactor = 50);
+    CREATE INDEX ON hot_expr_test ((d->>'name'));
+    CREATE INDEX ON hot_expr_test ((d->'o'->>'k'));
+    CREATE INDEX ON hot_expr_test ((a[2]));
+    INSERT INTO hot_expr_test
+      SELECT g, jsonb_build_object('name', 'n' || g, 'o', jsonb_build_object('k', g), 'v', 0),
+             ARRAY[g, g + 1, g + 2]
+        FROM generate_series(1, 10) g$$,
+  $$UPDATE hot_expr_test SET d = (d::text)::jsonb || '{"v": 1}',
+                             a = ARRAY[a[1] + 100, a[2], a[3]]$$);
+-- The indexed parts change: not HOT.
+SELECT * FROM update_case(
+  $$CREATE TABLE hot_expr_test (id int PRIMARY KEY, d jsonb) WITH (fillfactor = 50);
+    CREATE INDEX ON hot_expr_test ((d->'o'->>'k'));
+    INSERT INTO hot_expr_test
+      SELECT g, jsonb_build_object('o', jsonb_build_object('k', g)) FROM generate_series(1, 10) g$$,
+  $$UPDATE hot_expr_test SET d = (d::text)::jsonb || '{"o": {"k": 0}}'$$);
+-- Numbers that differ as stored differ as text, so 1.0 and 1.00 are not the
+-- same, while the number 1 and the string "1" differ as parts but give the
+-- same ->> text, which evaluating the index finds.
+SELECT * FROM update_case(
+  $$CREATE TABLE hot_expr_test (id int PRIMARY KEY, d jsonb) WITH (fillfactor = 50);
+    CREATE INDEX ON hot_expr_test ((d->>'k'));
+    INSERT INTO hot_expr_test SELECT g, '{"k": 1.0}' FROM generate_series(1, 10) g$$,
+  $$UPDATE hot_expr_test SET d = (d::text)::jsonb || '{"k": 1.00}'$$);
+SELECT * FROM update_case(
+  $$CREATE TABLE hot_expr_test (id int PRIMARY KEY, d jsonb) WITH (fillfactor = 50);
+    CREATE INDEX ON hot_expr_test ((d->>'k'));
+    INSERT INTO hot_expr_test SELECT g, '{"k": 1}' FROM generate_series(1, 10) g$$,
+  $$UPDATE hot_expr_test SET d = (d::text)::jsonb || '{"k": "1"}'$$);
+SET enable_seqscan = off;
+SELECT count(*) FROM hot_expr_test WHERE d->>'k' = '1';
+RESET enable_seqscan;
+
 -- An index that keeps changing is given up on: after it has come out
 -- changed 64 times in a row it is taken as changed without being
 -- evaluated, except for one row in 32, which evaluates it again.  The

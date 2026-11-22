@@ -94,11 +94,13 @@
 #include "nodes/execnodes.h"
 #include "nodes/miscnodes.h"
 #include "nodes/nodeFuncs.h"
+#include "nodes/supportnodes.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/date.h"
 #include "utils/datetime.h"
 #include "utils/lsyscache.h"
+#include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
 #include "utils/xml.h"
@@ -4598,7 +4600,229 @@ xpath_internal(text *xpath_expr_text, xmltype *data, ArrayType *namespaces,
 
 	pg_xml_done(xmlerrcxt, false);
 }
+
+/*
+ * Parse an xml value as xpath_internal() does.  The caller frees the
+ * document with xmlFreeDoc().
+ */
+static xmlDocPtr
+xml_subattr_parse(xmltype *data, PgXmlErrorContext *xmlerrcxt)
+{
+	volatile xmlParserCtxtPtr ctxt = NULL;
+	xmlDocPtr	doc = NULL;
+	int32		len = VARSIZE(data) - VARHDRSZ;
+	xmlChar    *string = pg_xmlCharStrndup(VARDATA(data), len);
+	size_t		xmldecl_len = 0;
+
+	if (GetDatabaseEncoding() == PG_UTF8)
+		parse_xml_decl(string, &xmldecl_len, NULL, NULL, NULL);
+
+	PG_TRY();
+	{
+		ctxt = xmlNewParserCtxt();
+		if (ctxt == NULL || xmlerrcxt->err_occurred)
+			xml_ereport(xmlerrcxt, ERROR, ERRCODE_OUT_OF_MEMORY,
+						"could not allocate parser context");
+		doc = xmlCtxtReadMemory(ctxt, (char *) string + xmldecl_len,
+								len - xmldecl_len, NULL, NULL, 0);
+		if (doc == NULL || xmlerrcxt->err_occurred)
+			xml_ereport(xmlerrcxt, ERROR, ERRCODE_INVALID_XML_DOCUMENT,
+						"could not parse XML document");
+	}
+	PG_CATCH();
+	{
+		if (doc)
+			xmlFreeDoc(doc);
+		if (ctxt)
+			xmlFreeParserCtxt(ctxt);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	xmlFreeParserCtxt(ctxt);
+	return doc;
+}
+
+/* Evaluate an XPath expression on a parsed document, as xpath() does. */
+static ArrayBuildState *
+xml_subattr_eval(xmlDocPtr doc, const char *expr, PgXmlErrorContext *xmlerrcxt)
+{
+	volatile xmlXPathContextPtr xpathctx = NULL;
+	volatile xmlXPathCompExprPtr xpathcomp = NULL;
+	volatile xmlXPathObjectPtr xpathobj = NULL;
+	ArrayBuildState *astate = initArrayResult(XMLOID, CurrentMemoryContext,
+											  true);
+
+	PG_TRY();
+	{
+		xpathctx = xmlXPathNewContext(doc);
+		if (xpathctx == NULL || xmlerrcxt->err_occurred)
+			xml_ereport(xmlerrcxt, ERROR, ERRCODE_OUT_OF_MEMORY,
+						"could not allocate XPath context");
+		xpathctx->node = (xmlNodePtr) doc;
+		xpathcomp = xmlXPathCtxtCompile(xpathctx, (const xmlChar *) expr);
+		if (xpathcomp == NULL || xmlerrcxt->err_occurred)
+			xml_ereport(xmlerrcxt, ERROR, ERRCODE_INVALID_ARGUMENT_FOR_XQUERY,
+						"invalid XPath expression");
+		xpathobj = xmlXPathCompiledEval(xpathcomp, xpathctx);
+		if (xpathobj == NULL || xmlerrcxt->err_occurred)
+			xml_ereport(xmlerrcxt, ERROR, ERRCODE_INVALID_ARGUMENT_FOR_XQUERY,
+						"could not create XPath object");
+		(void) xml_xpathobjtoxmlarray(xpathobj, astate, xmlerrcxt);
+	}
+	PG_CATCH();
+	{
+		if (xpathobj)
+			xmlXPathFreeObject(xpathobj);
+		if (xpathcomp)
+			xmlXPathFreeCompExpr(xpathcomp);
+		if (xpathctx)
+			xmlXPathFreeContext(xpathctx);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	xmlXPathFreeObject(xpathobj);
+	xmlXPathFreeCompExpr(xpathcomp);
+	xmlXPathFreeContext(xpathctx);
+	return astate;
+}
+
+/* the two documents, parsed once per row */
+typedef struct XmlSubattrCache
+{
+	xmlDocPtr	docs[2];
+	MemoryContextCallback cb;
+} XmlSubattrCache;
+
+static void
+xml_subattr_cache_free(void *arg)
+{
+	XmlSubattrCache *c = arg;
+
+	for (int i = 0; i < 2; i++)
+		if (c->docs[i] != NULL)
+			xmlFreeDoc(c->docs[i]);
+}
+
+/*
+ * xml_subattr_compare
+ *		The SubattrCompareFunc for xpath(): do two documents give the same
+ *		result for every XPath expression?
+ *
+ * Each document is parsed once per row, however many indexes ask; the
+ * results are those xpath() would return, compared as stored.
+ */
+static bool
+xml_subattr_compare(Datum oldval, Datum newval, List *paths, void **cache)
+{
+	xmltype    *vals[2] = {DatumGetXmlP(oldval), DatumGetXmlP(newval)};
+	XmlSubattrCache *c = *cache;
+	PgXmlErrorContext *xmlerrcxt;
+	volatile bool result = true;
+
+	/* the same text gives the same results */
+	if (VARSIZE(vals[0]) == VARSIZE(vals[1]) &&
+		memcmp(vals[0], vals[1], VARSIZE(vals[0])) == 0)
+		return true;
+
+	if (c == NULL)
+	{
+		c = palloc0_object(XmlSubattrCache);
+		c->cb.func = xml_subattr_cache_free;
+		c->cb.arg = c;
+		MemoryContextRegisterResetCallback(CurrentMemoryContext, &c->cb);
+		*cache = c;
+	}
+
+	xmlerrcxt = pg_xml_init(PG_XML_STRICTNESS_ALL);
+	PG_TRY();
+	{
+		xmlInitParser();
+		for (int i = 0; i < 2; i++)
+			if (c->docs[i] == NULL)
+				c->docs[i] = xml_subattr_parse(vals[i], xmlerrcxt);
+
+		foreach_ptr(List, path, paths)
+		{
+			SubattrPathElem *e = linitial(path);
+			ArrayBuildState *ra;
+			ArrayBuildState *rb;
+
+			Assert(list_length(path) == 1 && e->kind == SUBATTR_ELEM_OPAQUE);
+			ra = xml_subattr_eval(c->docs[0], e->key, xmlerrcxt);
+			rb = xml_subattr_eval(c->docs[1], e->key, xmlerrcxt);
+			if (ra->nelems != rb->nelems)
+				result = false;
+			for (int k = 0; result && k < ra->nelems; k++)
+			{
+				varlena    *va = (varlena *) DatumGetPointer(ra->dvalues[k]);
+				varlena    *vb = (varlena *) DatumGetPointer(rb->dvalues[k]);
+
+				if (VARSIZE(va) != VARSIZE(vb) ||
+					memcmp(va, vb, VARSIZE(va)) != 0)
+					result = false;
+			}
+			if (!result)
+				break;
+		}
+	}
+	PG_CATCH();
+	{
+		pg_xml_done(xmlerrcxt, true);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+	pg_xml_done(xmlerrcxt, false);
+
+	return result;
+}
 #endif							/* USE_LIBXML */
+
+/*
+ * xml_subattr_support
+ *		Support function for xpath(): tells the executor that a call with a
+ *		constant expression and no namespaces reads only that expression's
+ *		result of the document, and how to compare two documents for it.
+ *		See SupportRequestSubattr.
+ */
+Datum
+xml_subattr_support(PG_FUNCTION_ARGS)
+{
+#ifdef USE_LIBXML
+	Node	   *rawreq = (Node *) PG_GETARG_POINTER(0);
+	SupportRequestSubattr *req;
+	Const	   *expr;
+	Const	   *ns;
+	SubattrPathElem *e;
+
+	if (!IsA(rawreq, SupportRequestSubattr))
+		PG_RETURN_POINTER(NULL);
+	req = (SupportRequestSubattr *) rawreq;
+	if (req->kind != SUBATTR_READ || list_length(req->args) != 3)
+		PG_RETURN_POINTER(NULL);
+
+	expr = (Const *) linitial(req->args);
+	ns = (Const *) lthird(req->args);
+	if (!IsA(expr, Const) || expr->constisnull ||
+		!IsA(ns, Const) || ns->constisnull ||
+		ARR_NDIM(DatumGetArrayTypeP(ns->constvalue)) != 0)
+		PG_RETURN_POINTER(NULL);
+
+	e = palloc0_object(SubattrPathElem);
+	e->kind = SUBATTR_ELEM_OPAQUE;
+	e->key = TextDatumGetCString(expr->constvalue);
+	if (e->key[0] == '\0')
+		PG_RETURN_POINTER(NULL);	/* an error at run time */
+	req->source = 1;
+	req->paths = list_make1(list_make1(e));
+	req->subvalue = false;
+	req->compare = xml_subattr_compare;
+	PG_RETURN_POINTER(req);
+#else
+	PG_RETURN_POINTER(NULL);
+#endif
+}
 
 /*
  * Evaluate XPath expression and return array of XML values.

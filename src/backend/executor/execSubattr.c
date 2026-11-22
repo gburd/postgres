@@ -38,6 +38,8 @@
 
 #include <ctype.h>
 
+#include "access/genam.h"
+#include "access/sysattr.h"
 #include "catalog/pg_type.h"
 #include "executor/execSubattr.h"
 #include "miscadmin.h"
@@ -45,10 +47,14 @@
 #include "nodes/nodeFuncs.h"
 #include "nodes/params.h"
 #include "nodes/supportnodes.h"
+#include "optimizer/optimizer.h"
+#include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/datum.h"
 #include "utils/fmgroids.h"
+#include "utils/jsonb.h"
 #include "utils/lsyscache.h"
+#include "utils/memutils.h"
 #include "utils/rel.h"
 
 /* The column the walkers look for, and what they have found. */
@@ -58,7 +64,17 @@ typedef struct SubattrWalk
 	AttrNumber	attnum;
 	bool		known;			/* false: could not tell */
 	List	   *paths;			/* List of List of SubattrPathElem */
+
+	/*
+	 * For reads: the function that compares two values of the column at the
+	 * paths, if every read names the same one; see SupportRequestSubattr.
+	 */
+	SubattrCompareFunc compare;
+	bool		compare_mixed;	/* reads named different ones, or none */
 } SubattrWalk;
+
+static bool array_subattr_compare(Datum oldval, Datum newval, List *paths,
+								  void **cache);
 
 static bool read_walker(Node *node, SubattrWalk *walk);
 
@@ -148,8 +164,10 @@ ask_support(Oid funcid, List *args, SubattrRequestKind kind,
 			if (e == NULL ||
 				(e->kind != SUBATTR_ELEM_KEY &&
 				 e->kind != SUBATTR_ELEM_POSITION &&
-				 e->kind != SUBATTR_ELEM_ANY_POSITION) ||
-				(e->kind == SUBATTR_ELEM_KEY && e->key == NULL))
+				 e->kind != SUBATTR_ELEM_ANY_POSITION &&
+				 e->kind != SUBATTR_ELEM_OPAQUE) ||
+				((e->kind == SUBATTR_ELEM_KEY ||
+				  e->kind == SUBATTR_ELEM_OPAQUE) && e->key == NULL))
 				return false;
 		}
 	}
@@ -215,7 +233,8 @@ subscript_path(SubscriptingRef *sbsref, List **path)
  * accessor can extend the path.
  */
 static bool
-accessor_path(Node *node, SubattrWalk *walk, List **paths, bool *subvalue)
+accessor_path(Node *node, SubattrWalk *walk, List **paths, bool *subvalue,
+			  SubattrCompareFunc *compare)
 {
 	List	   *args;
 	Oid			funcid;
@@ -227,6 +246,7 @@ accessor_path(Node *node, SubattrWalk *walk, List **paths, bool *subvalue)
 	{
 		*paths = list_make1(NIL);
 		*subvalue = true;
+		*compare = NULL;		/* no accessor yet */
 		return true;
 	}
 
@@ -237,12 +257,23 @@ accessor_path(Node *node, SubattrWalk *walk, List **paths, bool *subvalue)
 		List	   *inner;
 		List	   *mine;
 		bool		innersub;
+		SubattrCompareFunc innercmp;
+		SubattrCompareFunc mycmp;
 
-		if (!accessor_path((Node *) sbsref->refexpr, walk, &inner, &innersub) ||
+		if (!accessor_path((Node *) sbsref->refexpr, walk, &inner, &innersub,
+						   &innercmp) ||
 			!innersub || !subscript_path(sbsref, &mine))
 			return false;
 		*paths = list_make1(list_concat(linitial(inner), mine));
 		*subvalue = true;		/* fetching an element yields the element */
+		mycmp = get_typsubscript(sbsref->refcontainertype, NULL) ==
+			F_ARRAY_SUBSCRIPT_HANDLER ? array_subattr_compare :
+			jsonb_subattr_compare;
+		/* see the function case below */
+		if ((innercmp == NULL && linitial(inner) == NIL) || innercmp == mycmp)
+			*compare = mycmp;
+		else
+			*compare = NULL;
 		return true;
 	}
 
@@ -251,10 +282,13 @@ accessor_path(Node *node, SubattrWalk *walk, List **paths, bool *subvalue)
 		FieldSelect *fselect = (FieldSelect *) node;
 		List	   *inner;
 		bool		innersub;
+		SubattrCompareFunc innercmp;
 
-		if (!accessor_path((Node *) fselect->arg, walk, &inner, &innersub) ||
+		if (!accessor_path((Node *) fselect->arg, walk, &inner, &innersub,
+						   &innercmp) ||
 			!innersub)
 			return false;
+		*compare = NULL;		/* records have no comparison here */
 		*paths = list_make1(list_concat(linitial(inner),
 										make_path_elem(SUBATTR_ELEM_POSITION,
 													   NULL,
@@ -269,6 +303,7 @@ accessor_path(Node *node, SubattrWalk *walk, List **paths, bool *subvalue)
 		SupportRequestSubattr req;
 		List	   *inner;
 		bool		innersub;
+		SubattrCompareFunc innercmp;
 		ListCell   *lc;
 
 		/*
@@ -279,7 +314,8 @@ accessor_path(Node *node, SubattrWalk *walk, List **paths, bool *subvalue)
 		if (!ask_support(funcid, args, SUBATTR_READ, &req) ||
 			req.paths == NIL ||
 			(req.subvalue && list_length(req.paths) != 1) ||
-			!accessor_path(list_nth(args, req.source), walk, &inner, &innersub) ||
+			!accessor_path(list_nth(args, req.source), walk, &inner, &innersub,
+						   &innercmp) ||
 			!innersub)
 			return false;
 
@@ -303,6 +339,17 @@ accessor_path(Node *node, SubattrWalk *walk, List **paths, bool *subvalue)
 			*paths = lappend(*paths, path);
 		}
 		*subvalue = req.subvalue;
+
+		/*
+		 * The innermost accessor reads the column itself, and names the
+		 * comparison; every accessor over its result must name the same one,
+		 * which then understands the combined paths.
+		 */
+		if ((innercmp == NULL && linitial(inner) == NIL) ||
+			innercmp == req.compare)
+			*compare = req.compare;
+		else
+			*compare = NULL;
 		return true;
 	}
 
@@ -319,12 +366,18 @@ read_walker(Node *node, SubattrWalk *walk)
 {
 	List	   *paths;
 	bool		subvalue;
+	SubattrCompareFunc compare;
 
 	if (node == NULL)
 		return false;
 
-	if (accessor_path(node, walk, &paths, &subvalue))
+	if (accessor_path(node, walk, &paths, &subvalue, &compare))
 	{
+		/* a bare reference to the column reads all of it */
+		if (compare == NULL ||
+			(walk->paths != NIL && compare != walk->compare))
+			walk->compare_mixed = true;
+		walk->compare = compare;
 		walk->paths = list_concat(walk->paths, paths);
 		return false;
 	}
@@ -487,6 +540,8 @@ paths_may_overlap(List *a, List *b)
 		SubattrPathElem *ea = lfirst(la);
 		SubattrPathElem *eb = lfirst(lb);
 
+		if (ea->kind == SUBATTR_ELEM_OPAQUE || eb->kind == SUBATTR_ELEM_OPAQUE)
+			continue;			/* only the type knows; take them to overlap */
 		if (ea->kind == SUBATTR_ELEM_KEY && eb->kind == SUBATTR_ELEM_KEY)
 		{
 			if (strcmp(ea->key, eb->key) != 0 &&
@@ -627,4 +682,169 @@ ExecSubattrProveUntouched(ResultRelInfo *resultRelInfo, Node *setexpr,
 	}
 
 	return result;
+}
+
+/*
+ * Deep copy of a List of paths, in CurrentMemoryContext.
+ */
+static List *
+copy_paths(List *paths)
+{
+	List	   *result = NIL;
+
+	foreach_ptr(List, path, paths)
+	{
+		List	   *copy = NIL;
+
+		foreach_ptr(SubattrPathElem, e, path)
+		{
+			SubattrPathElem *c = palloc_object(SubattrPathElem);
+
+			*c = *e;
+			if (e->key != NULL)
+				c->key = pstrdup(e->key);
+			copy = lappend(copy, c);
+		}
+		result = lappend(result, copy);
+	}
+	return result;
+}
+
+/*
+ * RelationGetIndexSubattrReads
+ *
+ * For each column of the table that the index reads, say whether what the
+ * index makes of it depends only on some parts of its value, which parts,
+ * and how to compare two values of the column at those parts.  The answer is
+ * worked out from the index's definition, as stored by CREATE INDEX: the
+ * support functions of the accessors in its expressions and predicate say
+ * which parts they read (SupportRequestSubattr).  It is cached in the
+ * index's relcache entry.
+ *
+ * A column is described only if every use of it is understood and every
+ * use names the same comparison; the returned list holds an
+ * IndexSubattrReads for each such column.  A column the index stores
+ * directly, as a key or included column, is read as a whole.
+ */
+List *
+RelationGetIndexSubattrReads(Relation indexRel)
+{
+	MemoryContext tmpcxt;
+	MemoryContext oldcxt;
+	List	   *exprs;
+	List	   *pred;
+	Bitmapset  *attrs = NULL;
+	List	   *result = NIL;
+	Form_pg_index index = indexRel->rd_index;
+	int			attidx = -1;
+
+	if (indexRel->rd_subattrreadsvalid)
+		return indexRel->rd_subattrreads;
+
+	tmpcxt = AllocSetContextCreate(CurrentMemoryContext, "index subattr reads",
+								   ALLOCSET_SMALL_SIZES);
+	oldcxt = MemoryContextSwitchTo(tmpcxt);
+
+	exprs = RelationGetIndexExpressions(indexRel);
+	pred = RelationGetIndexPredicate(indexRel);
+	pull_varattnos((Node *) exprs, 1, &attrs);
+	pull_varattnos((Node *) pred, 1, &attrs);
+	for (int k = 0; k < index->indnatts; k++)
+		if (index->indkey.values[k] > 0)
+			attrs = bms_add_member(attrs, index->indkey.values[k] -
+								   FirstLowInvalidHeapAttributeNumber);
+
+	while ((attidx = bms_next_member(attrs, attidx)) >= 0)
+	{
+		AttrNumber	attnum = attidx + FirstLowInvalidHeapAttributeNumber;
+		SubattrWalk reads = {1, attnum, true, NIL};
+
+		if (attnum <= 0)
+			continue;
+
+		read_walker((Node *) exprs, &reads);
+		read_walker((Node *) pred, &reads);
+
+		/* a column the index stores directly is read as a whole */
+		for (int k = 0; k < index->indnatts; k++)
+			if (index->indkey.values[k] == attnum)
+				reads.known = false;
+
+		if (reads.known && !reads.compare_mixed && reads.compare != NULL &&
+			reads.paths != NIL)
+		{
+			IndexSubattrReads *r;
+
+			MemoryContextSwitchTo(indexRel->rd_indexcxt);
+			r = palloc_object(IndexSubattrReads);
+			r->attnum = attnum;
+			r->paths = copy_paths(reads.paths);
+			r->compare = reads.compare;
+			result = lappend(result, r);	/* in rd_indexcxt too */
+			MemoryContextSwitchTo(tmpcxt);
+		}
+	}
+
+	MemoryContextSwitchTo(oldcxt);
+	MemoryContextDelete(tmpcxt);
+
+	indexRel->rd_subattrreads = result;
+	indexRel->rd_subattrreadsvalid = true;
+	return result;
+}
+
+/*
+ * Compare two arrays at the element positions named by paths, as array
+ * subscripting reads them.  A path that is not a list of positions, one per
+ * dimension, compares the arrays as a whole.
+ */
+static bool
+array_subattr_compare(Datum oldval, Datum newval, List *paths, void **cache)
+{
+	ArrayType  *a = DatumGetArrayTypeP(oldval);
+	ArrayType  *b = DatumGetArrayTypeP(newval);
+	int16		typlen;
+	bool		typbyval;
+	char		typalign;
+
+	if (ARR_ELEMTYPE(a) != ARR_ELEMTYPE(b))
+		return false;
+	get_typlenbyvalalign(ARR_ELEMTYPE(a), &typlen, &typbyval, &typalign);
+
+	foreach_ptr(List, path, paths)
+	{
+		int			indx[MAXDIM];
+		int			n = 0;
+		bool		whole = list_length(path) > MAXDIM;
+		Datum		ea,
+					eb;
+		bool		na,
+					nb;
+
+		foreach_ptr(SubattrPathElem, e, path)
+		{
+			if (whole || e->kind != SUBATTR_ELEM_POSITION)
+			{
+				whole = true;
+				break;
+			}
+			indx[n++] = e->position;
+		}
+		if (whole || n == 0)
+		{
+			if (VARSIZE(a) != VARSIZE(b) || memcmp(a, b, VARSIZE(a)) != 0)
+				return false;
+			continue;
+		}
+
+		ea = array_get_element(PointerGetDatum(a), n, indx, -1, typlen,
+							   typbyval, typalign, &na);
+		eb = array_get_element(PointerGetDatum(b), n, indx, -1, typlen,
+							   typbyval, typalign, &nb);
+		if (na != nb)
+			return false;
+		if (!na && !datum_image_eq(ea, eb, typbyval, typlen))
+			return false;
+	}
+	return true;
 }

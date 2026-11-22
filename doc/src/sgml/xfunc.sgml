@@ -4319,4 +4319,17 @@ supportfn(internal) returns internal
     given: an answer that omits a part the call reads or changes can cause
     index entries to be missing.
    </para>
+
+   <para>
+    An answer for a function that reads part of a value can also name a
+    function that compares two values of its type at given parts.  The
+    executor uses it when an <command>UPDATE</command> writes a column as a
+    whole, so that nothing about the new value's origin is known: if the old
+    and new values compare the same at every part an index's expressions and
+    predicate read, the index keeps its entries without being evaluated.
+    The definitions of the indexes are read once and cached.
+    <type>jsonb</type> compares documents by key, arrays by element, and
+    <function>xpath</function> by evaluating each XPath expression on the two
+    documents, parsing each document once.
+   </para>
   </sect1>

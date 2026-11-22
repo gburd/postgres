@@ -9447,8 +9447,11 @@
 
 { oid => '2931',
   descr => 'evaluate XPath expression, with namespaces support',
-  proname => 'xpath', prorettype => '_xml', proargtypes => 'text xml _text',
-  prosrc => 'xpath' },
+  proname => 'xpath', prosupport => 'xml_subattr_support', prorettype => '_xml',
+  proargtypes => 'text xml _text', prosrc => 'xpath' },
+{ oid => '8009', descr => 'support for xpath',
+  proname => 'xml_subattr_support', prorettype => 'internal',
+  proargtypes => 'internal', prosrc => 'xml_subattr_support' },
 { oid => '2932', descr => 'evaluate XPath expression',
   proname => 'xpath', prolang => 'sql', prorettype => '_xml',
   proargtypes => 'text xml', prosrc => 'see system_functions.sql' },

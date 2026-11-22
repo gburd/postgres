@@ -1633,6 +1633,8 @@ RelationInitIndexAccessInfo(Relation relation)
 	relation->rd_exclprocs = NULL;
 	relation->rd_exclstrats = NULL;
 	relation->rd_amcache = NULL;
+	relation->rd_subattrreads = NIL;
+	relation->rd_subattrreadsvalid = false;
 }
 
 /*
@@ -6718,6 +6720,8 @@ load_relcache_init_file(bool shared)
 		rel->rd_firstRelfilelocatorSubid = InvalidSubTransactionId;
 		rel->rd_droppedSubid = InvalidSubTransactionId;
 		rel->rd_amcache = NULL;
+		rel->rd_subattrreads = NIL;
+		rel->rd_subattrreadsvalid = false;
 		rel->rd_toastchunkidtype = InvalidOid;
 		rel->pgstat_info = NULL;
 
