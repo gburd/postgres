@@ -298,6 +298,14 @@ PgCurrentBackendApplyInterrupts(void)
 
 	if (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_CHECKPOINTER_SHUTDOWN_XLOG))
 		CheckpointerShutdownXLOGPending = true;
+
+	/*
+	 * The startup process waits for a promote request with a condition
+	 * variable sleep, whose CHECK_FOR_INTERRUPTS() lands here; set the flag
+	 * its recovery loop polls, as the SIGUSR2 handler does in fork mode.
+	 */
+	if (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_STARTUP_PROMOTE))
+		PgCurrentRecoveryState()->startup_promote_signaled = true;
 }
 
 /*
