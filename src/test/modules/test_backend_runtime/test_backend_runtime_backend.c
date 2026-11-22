@@ -1262,6 +1262,7 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 		AllocSetContextCreate(TopMemoryContext,
 							  "test libxml context",
 							  ALLOCSET_SMALL_SIZES);
+	utility->libxml_errcxt = &fake_backend;
 	utility->missing_attr_cache =
 		hash_create("test missing attr cache", 8, &hash_ctl,
 					HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
@@ -1575,6 +1576,7 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && utility->num_counter == 0;
 	ok = ok && utility->format_cache_context == NULL;
 	ok = ok && utility->libxml_context == NULL;
+	ok = ok && utility->libxml_errcxt == NULL;
 	ok = ok && utility->missing_attr_cache == NULL;
 	ok = ok && fake_backend.exit_state.retained_top_memory_context ==
 		(MemoryContext) &fake_backend;

@@ -305,6 +305,12 @@ PgCurrentLibxmlContextRef(void)
 	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendUtilityRuntimeState, PgCurrentBackendUtilityState)->libxml_context;
 }
 
+void	  **
+PgCurrentLibxmlErrcxtRef(void)
+{
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendUtilityRuntimeState, PgCurrentBackendUtilityState)->libxml_errcxt;
+}
+
 HTAB **
 PgCurrentMissingAttrCacheRef(void)
 {

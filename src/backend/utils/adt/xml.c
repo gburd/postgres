@@ -80,13 +80,9 @@
 /*
  * libxml2 2.13 added per-parser-context / per-xpath-context structured error
  * handlers (xmlCtxtSetErrorHandler / xmlXPathSetErrorHandler).  When available,
- * we attach our handler to each context we create instead of relying on the
- * OS-thread-global xmlSetStructuredErrorFunc that pg_xml_init installs -- which
- * under the threaded runtime is only safe because of an implicit "no fiber yield
- * between pg_xml_init and pg_xml_done" invariant (enforced today by the
- * XtcPgNoStealEnter/Leave tripwire).  Per-context handlers touch no global, so
- * they are migration-safe by construction; the global install stays as a
- * belt-and-suspenders fallback for libxml-internal call sites and for < 2.13.
+ * we attach our handler to each context we create as well as installing the
+ * thread-local one with xmlSetStructuredErrorFunc, which still catches errors
+ * raised outside a context and on older libxml2.
  */
 #if LIBXML_VERSION >= 21300
 #define HAVE_XML_PER_CTXT_ERRHANDLER 1
@@ -106,7 +102,6 @@
 #include "libpq/pqformat.h"
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
-#include "postmaster/pg_xtc_carrier.h"	/* XtcPgNoStealEnter/Leave (no-op off-carrier/non-assert) */
 #include "nodes/execnodes.h"
 #include "nodes/miscnodes.h"
 #include "nodes/nodeFuncs.h"
@@ -142,13 +137,17 @@ struct PgXmlErrorContext
 	void	   *saved_errcxt;
 	/* previous libxml entity handler (saved by pg_xml_init) */
 	xmlExternalEntityLoader saved_entityfunc;
+	/* this backend's enclosing context, under multithreading (or NULL) */
+	PgXmlErrorContext *prev;
 };
 
 static xmlParserInputPtr xmlPgEntityLoader(const char *URL, const char *ID,
 										   xmlParserCtxtPtr ctxt);
 static void xml_errsave(Node *escontext, PgXmlErrorContext *errcxt,
 						int sqlcode, const char *msg);
-static void xml_errorHandler(void *data, PgXmlErrorPtr error);static int	errdetail_for_xml_code(int code);
+static void xml_errorHandler(void *data, PgXmlErrorPtr error);
+static void xml_resume_hook(void);
+static int	errdetail_for_xml_code(int code);
 static void chopStringInfoNewlines(StringInfo str);
 static void appendStringInfoLineSeparator(StringInfo str);
 
@@ -1226,6 +1225,21 @@ pg_xml_init_library(void)
 		/* Check library compatibility */
 		LIBXML_TEST_VERSION;
 
+		/*
+		 * Under multithreading, libxml's entity loader is one process-wide
+		 * pointer shared by every session, so it cannot be saved and restored
+		 * around each call: one session's restore would reopen external
+		 * entity loading while another is still parsing.  Install ours for
+		 * the life of the process instead.  The error handler is per thread,
+		 * and xml_resume_hook moves it with the fiber.  Every session stores
+		 * the same values, so concurrent first calls race harmlessly.
+		 */
+		if (multithreaded)
+		{
+			xmlSetExternalEntityLoader(xmlPgEntityLoader);
+			pg_runtime_resume_hook = xml_resume_hook;
+		}
+
 		first_time = false;
 	}
 }
@@ -1276,6 +1290,19 @@ pg_xml_init(PgXmlStrictness strictness)
 	errcxt->saved_errcxt = xmlGenericErrorContext;
 #endif
 
+	/*
+	 * Under multithreading the thread's handler may belong to another session
+	 * whose fiber parked on this thread, so the state to return to is this
+	 * backend's own enclosing context, if any, and otherwise no handler.
+	 */
+	errcxt->prev = NULL;
+	if (multithreaded)
+	{
+		errcxt->prev = (PgXmlErrorContext *) *PgCurrentLibxmlErrcxtRef();
+		errcxt->saved_errfunc = errcxt->prev ? xml_errorHandler : NULL;
+		errcxt->saved_errcxt = errcxt->prev;
+	}
+
 	xmlSetStructuredErrorFunc(errcxt, xml_errorHandler);
 
 	/*
@@ -1310,24 +1337,19 @@ pg_xml_init(PgXmlStrictness strictness)
 	 * Also, install an entity loader to prevent unwanted fetches of external
 	 * files and URLs.
 	 */
-	errcxt->saved_entityfunc = xmlGetExternalEntityLoader();
-	xmlSetExternalEntityLoader(xmlPgEntityLoader);
+	if (!multithreaded)
+	{
+		errcxt->saved_entityfunc = xmlGetExternalEntityLoader();
+		xmlSetExternalEntityLoader(xmlPgEntityLoader);
+	}
 
 	/*
-	 * Threaded-runtime tripwire: libxml's structured-error handler and entity
-	 * loader we just installed are OS-thread-local (per carrier), and this
-	 * pg_xml_init/pg_xml_done span holds them across libxml work.  If a future
-	 * change ever introduces a fiber yield inside that span, a cooperative
-	 * switch (or a work-steal after a park) could run a sibling session on this
-	 * carrier -- or resume us on a different carrier -- with the wrong handler
-	 * installed.  Bracket the span with XtcPgNoStealEnter: in assert carrier
-	 * builds the park choke points assert the affine depth is zero, so such a
-	 * yield trips the instant it becomes reachable.  Paired with the
-	 * XtcPgNoStealLeave at the end of pg_xml_done (every pg_xml_init has a
-	 * matching pg_xml_done on both normal and error paths).  No-op in process /
-	 * non-carrier / non-assert builds -- byte-for-byte unchanged.
+	 * libxml keeps the structured error handler in a thread-local.  A fiber
+	 * can park inside this span (a catalog lookup can wait on an LWLock), and
+	 * another session's fiber may run on the thread meanwhile, so record the
+	 * context on the backend; xml_resume_hook puts it back after every park.
 	 */
-	XtcPgNoStealEnter();
+	*PgCurrentLibxmlErrcxtRef() = errcxt;
 
 	return errcxt;
 }
@@ -1373,7 +1395,9 @@ pg_xml_done(PgXmlErrorContext *errcxt, bool isError)
 
 	/* Restore the saved handlers */
 	xmlSetStructuredErrorFunc(errcxt->saved_errcxt, errcxt->saved_errfunc);
-	xmlSetExternalEntityLoader(errcxt->saved_entityfunc);
+	if (!multithreaded)
+		xmlSetExternalEntityLoader(errcxt->saved_entityfunc);
+	*PgCurrentLibxmlErrcxtRef() = errcxt->prev;
 
 	/*
 	 * Mark the struct as invalid, just in case somebody somehow manages to
@@ -1384,9 +1408,25 @@ pg_xml_done(PgXmlErrorContext *errcxt, bool isError)
 	/* Release memory */
 	pfree(errcxt->err_buf.data);
 	pfree(errcxt);
+}
 
-	/* Close the no-steal tripwire span opened in pg_xml_init (see there). */
-	XtcPgNoStealLeave();
+/*
+ * xml_resume_hook --- reinstall this backend's libxml error handler
+ *
+ * Runs after a fiber resumes from a park, with the backend's own roots
+ * current.  The thread may have run another session meanwhile, which left its
+ * own handler, or none, in libxml's thread-local; put ours back.
+ */
+static void
+xml_resume_hook(void)
+{
+	PgXmlErrorContext *errcxt;
+
+	if (CurrentPgBackend == NULL)
+		return;
+	errcxt = (PgXmlErrorContext *) *PgCurrentLibxmlErrcxtRef();
+	if (errcxt != NULL)
+		xmlSetStructuredErrorFunc(errcxt, xml_errorHandler);
 }
 
 /*

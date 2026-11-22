@@ -282,6 +282,8 @@ PgRuntimeSaveCurrentWork(PgCurrentWorkSnapshot *snap)
 	snap->execution = CurrentPgExecution;
 }
 
+PG_GLOBAL_RUNTIME PgRuntimeResumeHook pg_runtime_resume_hook = NULL;
+
 void
 PgRuntimeRestoreCurrentWork(const PgCurrentWorkSnapshot *snap)
 {
@@ -289,6 +291,8 @@ PgRuntimeRestoreCurrentWork(const PgCurrentWorkSnapshot *snap)
 	PgRuntimeSetCurrentWork(snap->runtime, snap->carrier, snap->backend,
 							snap->session, snap->connection, snap->execution,
 							true);
+	if (pg_runtime_resume_hook != NULL)
+		pg_runtime_resume_hook();
 }
 
 /*
@@ -319,6 +323,8 @@ PgRuntimeRestoreCurrentWorkLazy(const PgCurrentWorkSnapshot *snap)
 	PgRuntimeSetCurrentWork(snap->runtime, snap->carrier, snap->backend,
 							snap->session, snap->connection, snap->execution,
 							false);
+	if (pg_runtime_resume_hook != NULL)
+		pg_runtime_resume_hook();
 }
 
 void

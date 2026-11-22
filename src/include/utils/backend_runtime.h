@@ -633,6 +633,7 @@ typedef struct PgBackendUtilityState
 	int			num_counter;
 	MemoryContext format_cache_context;
 	MemoryContext libxml_context;
+	void	   *libxml_errcxt;	/* active PgXmlErrorContext, or NULL */
 	HTAB	   *missing_attr_cache;
 } PgBackendUtilityState;
 
@@ -2547,6 +2548,7 @@ extern int *PgCurrentNumNUMCacheRef(void);
 extern int *PgCurrentNUMCounterRef(void);
 extern MemoryContext PgCurrentFormatCacheMemoryContext(void);
 extern MemoryContext *PgCurrentLibxmlContextRef(void);
+extern void **PgCurrentLibxmlErrcxtRef(void);
 extern HTAB **PgCurrentMissingAttrCacheRef(void);
 extern int *PgCurrentParallelWorkerNumberRef(void);
 extern volatile sig_atomic_t *PgCurrentParallelMessagePendingRef(void);
@@ -3024,6 +3026,15 @@ typedef struct PgCurrentWorkSnapshot
 	PgConnection *connection;
 	PgExecution *execution;
 } PgCurrentWorkSnapshot;
+
+/*
+ * Called with the backend's own roots current after every restore of a
+ * snapshot taken on a fiber, so per-thread library state that belongs to the
+ * backend can be put back on the thread the fiber now runs on.  libxml's error
+ * handler is the user: it lives in a thread-local of libxml's.
+ */
+typedef void (*PgRuntimeResumeHook) (void);
+extern PGDLLIMPORT PgRuntimeResumeHook pg_runtime_resume_hook;
 
 extern void PgRuntimeSaveCurrentWork(PgCurrentWorkSnapshot *snap);
 extern void PgRuntimeRestoreCurrentWork(const PgCurrentWorkSnapshot *snap);

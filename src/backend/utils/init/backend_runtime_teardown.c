@@ -831,6 +831,7 @@ PgBackendResetUtilityClosedState(PgBackendUtilityState *utility)
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(utility->format_cache_context);
 
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(utility->libxml_context);
+	utility->libxml_errcxt = NULL;
 
 	PG_RUNTIME_DESTROY_HASH(utility->missing_attr_cache);
 
