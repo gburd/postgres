@@ -38,6 +38,7 @@
 
 #include <ctype.h>
 
+#include "access/amapi.h"
 #include "access/genam.h"
 #include "access/sysattr.h"
 #include "catalog/pg_type.h"
@@ -718,13 +719,14 @@ copy_paths(List *paths)
  * and how to compare two values of the column at those parts.  The answer is
  * worked out from the index's definition, as stored by CREATE INDEX: the
  * support functions of the accessors in its expressions and predicate say
- * which parts they read (SupportRequestSubattr).  It is cached in the
- * index's relcache entry.
+ * which parts they read (SupportRequestSubattr), and for a column the index
+ * stores directly its access method may say which parts its entries are
+ * made from (amsubattrreads), typically from the index's options.  It is
+ * cached in the index's relcache entry.
  *
  * A column is described only if every use of it is understood and every
  * use names the same comparison; the returned list holds an
- * IndexSubattrReads for each such column.  A column the index stores
- * directly, as a key or included column, is read as a whole.
+ * IndexSubattrReads for each such column.
  */
 List *
 RelationGetIndexSubattrReads(Relation indexRel)
@@ -758,6 +760,7 @@ RelationGetIndexSubattrReads(Relation indexRel)
 	{
 		AttrNumber	attnum = attidx + FirstLowInvalidHeapAttributeNumber;
 		SubattrWalk reads = {1, attnum, true, NIL};
+		bool		stored = false;
 
 		if (attnum <= 0)
 			continue;
@@ -765,10 +768,33 @@ RelationGetIndexSubattrReads(Relation indexRel)
 		read_walker((Node *) exprs, &reads);
 		read_walker((Node *) pred, &reads);
 
-		/* a column the index stores directly is read as a whole */
-		for (int k = 0; k < index->indnatts; k++)
-			if (index->indkey.values[k] == attnum)
+		/*
+		 * A column the index stores directly is read as a whole, unless its
+		 * access method says which parts its entries are made from.  An index
+		 * that can return the column in index-only scans stores all of it.
+		 */
+		for (int k = 0; reads.known && k < index->indnatts; k++)
+		{
+			List	   *paths = NIL;
+			SubattrCompareFunc compare = NULL;
+
+			if (index->indkey.values[k] != attnum)
+				continue;
+			if (indexRel->rd_indam->amsubattrreads == NULL ||
+				index->indisexclusion ||
+				index_can_return(indexRel, k + 1) ||
+				!indexRel->rd_indam->amsubattrreads(indexRel, k + 1, &paths,
+													&compare) ||
+				paths == NIL || compare == NULL ||
+				(reads.paths != NIL && compare != reads.compare))
+			{
 				reads.known = false;
+				break;
+			}
+			reads.compare = compare;
+			reads.paths = list_concat(reads.paths, paths);
+			stored = true;
+		}
 
 		if (reads.known && !reads.compare_mixed && reads.compare != NULL &&
 			reads.paths != NIL)
@@ -780,6 +806,7 @@ RelationGetIndexSubattrReads(Relation indexRel)
 			r->attnum = attnum;
 			r->paths = copy_paths(reads.paths);
 			r->compare = reads.compare;
+			r->stored = stored;
 			result = lappend(result, r);	/* in rd_indexcxt too */
 			MemoryContextSwitchTo(tmpcxt);
 		}

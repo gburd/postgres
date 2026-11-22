@@ -127,6 +127,7 @@ hashhandler(PG_FUNCTION_ARGS)
 		.amtranslatestrategy = hashtranslatestrategy,
 		.amtranslatecmptype = hashtranslatecmptype,
 		.amcomparedatums = hashcomparedatums,
+		.amsubattrreads = NULL,
 	};
 
 	PG_RETURN_POINTER(&amroutine);

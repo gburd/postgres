@@ -181,8 +181,9 @@ typedef struct IndexAmRoutine
     amtranslate_strategy_function amtranslatestrategy;  /* can be NULL */
     amtranslate_cmptype_function amtranslatecmptype;    /* can be NULL */
 
-    /* interface function to support HOT updates */
+    /* interface functions to support HOT updates */
     amcomparedatums_function amcomparedatums;    /* can be NULL */
+    amsubattrreads_function amsubattrreads;    /* can be NULL */
 } IndexAmRoutine;
 </programlisting>
   </para>
@@ -966,6 +967,43 @@ amcomparedatums (Relation indexRelation,
    exclusion constraint, whose check needs the values themselves.  If <structfield>amcomparedatums</structfield> is
    <literal>NULL</literal>, a change to a column that the index stores
    always needs new index entries.
+  </para>
+
+  <para>
+<programlisting>
+bool
+amsubattrreads (Relation indexRelation,
+                int attnum,
+                List **paths,
+                bool (**compare) (Datum oldval, Datum newval,
+                                  List *paths, void **cache));
+</programlisting>
+   Do the entries index column <parameter>attnum</parameter> (counting from
+   1), which stores a table column directly, depend only on some parts of the
+   column's value?  If so, set <parameter>*paths</parameter> to those parts,
+   as a list of paths of <structname>SubattrPathElem</structname> (see
+   <filename>nodes/supportnodes.h</filename>), and
+   <parameter>*compare</parameter> to a function that compares two values of
+   the column's type at given parts, as
+   <literal>SupportRequestSubattr</literal> describes, and return
+   <literal>true</literal>.  An access method whose index on a whole document
+   indexes one path of it, named in the index's options, as a document
+   store's might, answers from those options: CREATE INDEX stores them, and
+   the answer is cached in the index's relcache entry.  It is asked again
+   after <command>ALTER INDEX</command> changes the index's storage
+   parameters; nothing else may change the answer.
+  </para>
+
+  <para>
+   During <command>UPDATE</command>, when the old and new values of the
+   column compare the same at every one of those parts, the index keeps its
+   entries without being asked anything else; when they do not,
+   <function>amcomparedatums</function> is asked if there is one.  So the
+   answer must be exact: entries that depend on any part the paths do not
+   name can be left out of date.  The function is not called for a column
+   the index can return in index-only scans, nor for the index of an
+   exclusion constraint.  Return <literal>false</literal> when the entries
+   may depend on the whole value.
   </para>
 
  </sect1>

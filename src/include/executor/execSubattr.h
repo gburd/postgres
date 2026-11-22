@@ -25,6 +25,7 @@ typedef struct IndexSubattrReads
 	AttrNumber	attnum;			/* the table's column */
 	List	   *paths;			/* List of List of SubattrPathElem */
 	SubattrCompareFunc compare;
+	bool		stored;			/* described by amsubattrreads */
 } IndexSubattrReads;
 
 extern Bitmapset *ExecSubattrProveUntouched(ResultRelInfo *resultRelInfo,

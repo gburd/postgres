@@ -17,3 +17,8 @@ CREATE OPERATOR CLASS int4_ops
 DEFAULT FOR TYPE int4 USING dummy_index_am AS
   OPERATOR 1 = (int4, int4),
   FUNCTION 1 hashint4(int4);
+
+CREATE OPERATOR CLASS jsonb_ops
+DEFAULT FOR TYPE jsonb USING dummy_index_am AS
+  OPERATOR 1 = (jsonb, jsonb),
+  FUNCTION 1 jsonb_hash(jsonb);

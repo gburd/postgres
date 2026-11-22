@@ -2355,6 +2355,14 @@ RelationReloadIndexInfo(Relation relation)
 	if (relation->rd_options)
 		pfree(relation->rd_options);
 	RelationParseRelOptions(relation, pg_class_tuple);
+
+	/*
+	 * The access method may answer amsubattrreads from the reloptions, so
+	 * work it out again.  The old answer stays in rd_indexcxt: a running
+	 * UPDATE may still be reading it.
+	 */
+	relation->rd_subattrreads = NIL;
+	relation->rd_subattrreadsvalid = false;
 	/* done with pg_class tuple */
 	heap_freetuple(pg_class_tuple);
 	/* We must recalculate physical address in case it changed */
@@ -5378,7 +5386,9 @@ RelationGetIndexPredicate(Relation relation)
  *	INDEX_ATTR_BITMAP_COMPARABLE	Columns that non-summarizing indexes
  *									reference directly only if their
  *									access method can compare entries
- *									(amcomparedatums), less key and replica
+ *									(amcomparedatums) or say which parts
+ *									of a value they depend on
+ *									(amsubattrreads), less key and replica
  *									identity columns
  *
  * Attribute numbers are offset by FirstLowInvalidHeapAttributeNumber so that
@@ -5579,7 +5589,8 @@ restart:
 					else
 						plainattrs = bms_add_member(plainattrs,
 													attrnum - FirstLowInvalidHeapAttributeNumber);
-					if (indexDesc->rd_indam->amcomparedatums != NULL &&
+					if ((indexDesc->rd_indam->amcomparedatums != NULL ||
+						 indexDesc->rd_indam->amsubattrreads != NULL) &&
 						!indexDesc->rd_index->indisexclusion &&
 						!index_can_return(indexDesc, i + 1))
 						cmpattrs = bms_add_member(cmpattrs,

@@ -156,6 +156,7 @@ blhandler(PG_FUNCTION_ARGS)
 		.amtranslatestrategy = NULL,
 		.amtranslatecmptype = NULL,
 		.amcomparedatums = NULL,
+		.amsubattrreads = NULL,
 	};
 
 	PG_RETURN_POINTER(&amroutine);

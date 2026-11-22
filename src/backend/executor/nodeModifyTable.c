@@ -731,12 +731,14 @@ GiveUpRecord(GiveUpEntry *entry, bool unaffected)
  * Does the i'th index read the same of the old and the new row, judging by
  * the comparisons its columns' types provide (RelationGetIndexSubattrReads())?
  * "mine" are the changed attributes it uses; each must be described, and
- * not null in either row.  If so the index's datums are the same and it
- * keeps its entries, without its expressions or predicate being evaluated.
+ * not null in either row.  If so the index keeps its entries, without its
+ * expressions or predicate being evaluated.  *checkable says whether the
+ * index's datums must then be the same: not for a column the index stores
+ * directly, whose access method says which parts its entries depend on.
  */
 static bool
 IndexReadsUnchanged(ResultRelInfo *resultRelInfo, int i, Bitmapset *mine,
-					UpdateRows *rows, EState *estate)
+					UpdateRows *rows, EState *estate, bool *checkable)
 {
 	List	   *reads;
 	TupleTableSlot *old_eval = NULL;
@@ -744,6 +746,7 @@ IndexReadsUnchanged(ResultRelInfo *resultRelInfo, int i, Bitmapset *mine,
 	int			attidx = -1;
 	bool		result = true;
 
+	*checkable = true;
 	reads = RelationGetIndexSubattrReads(resultRelInfo->ri_IndexRelationDescs[i]);
 	if (reads == NIL)
 		return false;
@@ -774,6 +777,8 @@ IndexReadsUnchanged(ResultRelInfo *resultRelInfo, int i, Bitmapset *mine,
 			result = false;
 			break;
 		}
+		if (r->stored)
+			*checkable = false;
 
 		if (old_eval == NULL)
 			old_eval = OldRowForEvaluation(resultRelInfo, rows, estate);
@@ -818,6 +823,7 @@ IndexUnaffected(ResultRelInfo *resultRelInfo, int i, Bitmapset *mine,
 	bool		proven = false;
 	GiveUpEntry *giveup;
 	bool		unaffected;
+	bool		checkable;
 
 	if (resultRelInfo->ri_IndexUntouchedAttrs != NULL &&
 		bms_is_subset(mine, resultRelInfo->ri_IndexUntouchedAttrs[i]))
@@ -863,10 +869,12 @@ IndexUnaffected(ResultRelInfo *resultRelInfo, int i, Bitmapset *mine,
 	 * differ as parts of the column can give one result through an
 	 * expression), so evaluate it.
 	 */
-	if (IndexReadsUnchanged(resultRelInfo, i, mine, rows, estate))
+	if (IndexReadsUnchanged(resultRelInfo, i, mine, rows, estate,
+							&checkable))
 	{
 #ifdef USE_ASSERT_CHECKING
-		if (IndexEntryChanges(resultRelInfo, i,
+		if (checkable &&
+			IndexEntryChanges(resultRelInfo, i,
 							  resultRelInfo->ri_IndexRelationDescs[i],
 							  indexInfo, mine, rows, estate))
 			elog(ERROR, "index \"%s\" compared unchanged by UPDATE, but its entry changed",

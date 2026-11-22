@@ -19,6 +19,8 @@
 #include "catalog/pg_type.h"
 #include "commands/vacuum.h"
 #include "nodes/pathnodes.h"
+#include "nodes/supportnodes.h"
+#include "utils/jsonb.h"
 #include "utils/rel.h"
 
 PG_MODULE_MAGIC;
@@ -282,6 +284,33 @@ dicomparedatums(Relation index, IndexInfo *indexInfo, int attnum,
 }
 
 /*
+ * Which parts of a column's value do the entries depend on?  For testing
+ * the executor's use of amsubattrreads, as a document store's index on a
+ * whole document might answer from its options: with option_string_null
+ * set, a jsonb column's entries are made only from the top-level member it
+ * names.  The dummy index stores nothing, so the answer is not checked
+ * against anything.
+ */
+static bool
+disubattrreads(Relation index, int attnum, List **paths,
+			   SubattrCompareFunc *compare)
+{
+	DummyIndexOptions *opts = (DummyIndexOptions *) index->rd_options;
+	SubattrPathElem *e;
+
+	if (opts == NULL || opts->option_string_null_offset == 0 ||
+		TupleDescAttr(RelationGetDescr(index), attnum - 1)->atttypid != JSONBOID)
+		return false;
+
+	e = palloc0_object(SubattrPathElem);
+	e->kind = SUBATTR_ELEM_KEY;
+	e->key = pstrdup((char *) opts + opts->option_string_null_offset);
+	*paths = list_make1(list_make1(e));
+	*compare = jsonb_subattr_compare;
+	return true;
+}
+
+/*
  * Validator for index AM.
  */
 static bool
@@ -379,6 +408,7 @@ dihandler(PG_FUNCTION_ARGS)
 		.aminitparallelscan = NULL,
 		.amparallelrescan = NULL,
 		.amcomparedatums = dicomparedatums,
+		.amsubattrreads = disubattrreads,
 	};
 
 	PG_RETURN_POINTER(&amroutine);

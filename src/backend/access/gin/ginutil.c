@@ -92,6 +92,7 @@ ginhandler(PG_FUNCTION_ARGS)
 		.aminitparallelscan = NULL,
 		.amparallelrescan = NULL,
 		.amcomparedatums = gincomparedatums,
+		.amsubattrreads = NULL,
 	};
 
 	PG_RETURN_POINTER(&amroutine);

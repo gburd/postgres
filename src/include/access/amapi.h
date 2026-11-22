@@ -116,6 +116,17 @@ typedef bool (*amcomparedatums_function) (Relation indexRelation,
 										  int16 typlen, bool typbyval,
 										  Datum oldValue, Datum newValue);
 
+/*
+ * which parts of a column's value do an index column's entries depend on?
+ * *compare gets a SubattrCompareFunc (see nodes/supportnodes.h)
+ */
+typedef bool (*amsubattrreads_function) (Relation indexRelation, int attnum,
+										 List **paths,
+										 bool (**compare) (Datum oldval,
+														   Datum newval,
+														   List *paths,
+														   void **cache));
+
 /* build new index */
 typedef IndexBuildResult *(*ambuild_function) (Relation heapRelation,
 											   Relation indexRelation,
@@ -333,6 +344,7 @@ typedef struct IndexAmRoutine
 
 	/* interface function to support HOT updates */
 	amcomparedatums_function amcomparedatums;	/* can be NULL */
+	amsubattrreads_function amsubattrreads; /* can be NULL */
 } IndexAmRoutine;
 
 
