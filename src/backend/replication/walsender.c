@@ -1701,6 +1701,17 @@ WalSndWriteData(LogicalDecodingContext *ctx, XLogRecPtr lsn, TransactionId xid,
 static void
 WalSndHandleConfigReload(void)
 {
+	/*
+	 * A threaded WAL sender gets the postmaster's last-cycle request (SIGUSR2
+	 * in fork mode) as the WAKEUP_STOP interrupt, which CHECK_FOR_INTERRUPTS()
+	 * turns into WakeupStopPending.  Every caller runs it just before this.
+	 */
+	if (WakeupStopPending)
+	{
+		WakeupStopPending = false;
+		got_SIGUSR2 = true;
+	}
+
 	if (!ConfigReloadPending)
 		return;
 
@@ -3248,6 +3259,7 @@ InitWalSenderSlot(void)
 			 * Found a free slot. Reserve it for us.
 			 */
 			walsnd->pid = MyProcPid;
+			walsnd->procno = MyProcNumber;
 			walsnd->state = WALSNDSTATE_STARTUP;
 			walsnd->sentPtr = InvalidXLogRecPtr;
 			walsnd->needreload = false;
@@ -4203,15 +4215,21 @@ WalSndInitStopping(void)
 	{
 		WalSnd	   *walsnd = &WalSndCtl->walsnds[i];
 		pid_t		pid;
+		ProcNumber	procno;
 
 		SpinLockAcquire(&walsnd->mutex);
 		pid = walsnd->pid;
+		procno = walsnd->procno;
 		SpinLockRelease(&walsnd->mutex);
 
 		if (pid == 0)
 			continue;
 
-		SendProcSignal(pid, PROCSIG_WALSND_INIT_STOPPING, INVALID_PROC_NUMBER);
+		/*
+		 * Address the slot by ProcNumber: under multithreading every WAL
+		 * sender's pid is the server's, so a pid alone names none of them.
+		 */
+		SendProcSignal(pid, PROCSIG_WALSND_INIT_STOPPING, procno);
 	}
 }
 

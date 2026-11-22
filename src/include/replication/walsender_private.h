@@ -18,6 +18,7 @@
 #include "nodes/replnodes.h"
 #include "replication/syncrep.h"
 #include "storage/condition_variable.h"
+#include "storage/procnumber.h"
 #include "storage/shmem.h"
 #include "storage/spin.h"
 #include "utils/global_lifetime.h"
@@ -42,6 +43,7 @@ typedef enum WalSndState
 typedef struct WalSnd
 {
 	pid_t		pid;			/* this walsender's PID, or 0 if not active */
+	ProcNumber	procno;			/* its ProcNumber, valid while pid != 0 */
 
 	WalSndState state;			/* this walsender's state */
 	XLogRecPtr	sentPtr;		/* WAL has been sent up to this point */

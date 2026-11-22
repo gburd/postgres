@@ -4078,7 +4078,8 @@ thread_child_signal_interrupt(PMChild *pmchild, int signal,
 				*interrupt = PG_BACKEND_INTERRUPT_STARTUP_PROMOTE;
 				return true;
 			}
-			if (pmchild->bkend_type == B_ARCHIVER)
+			if (pmchild->bkend_type == B_ARCHIVER ||
+				pmchild->bkend_type == B_WAL_SENDER)
 			{
 				*interrupt = PG_BACKEND_INTERRUPT_WAKEUP_STOP;
 				return true;
