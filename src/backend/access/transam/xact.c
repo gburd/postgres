@@ -2956,9 +2956,12 @@ AbortTransaction(void)
 	/*
 	 * Re-enable signals, in case we got here by longjmp'ing out of a signal
 	 * handler.  We do this fairly early in the sequence so that the timeout
-	 * infrastructure will be functional if needed while aborting.
+	 * infrastructure will be functional if needed while aborting.  A threaded
+	 * backend shares its OS thread with others and takes no process signals:
+	 * the postmaster thread handles those, so leave this thread's mask alone.
 	 */
-	sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
+	if (!PgRuntimeIsThreadBacked(CurrentPgRuntime))
+		sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
 
 	/*
 	 * check the current transaction state
@@ -5420,9 +5423,12 @@ AbortSubTransaction(void)
 	/*
 	 * Re-enable signals, in case we got here by longjmp'ing out of a signal
 	 * handler.  We do this fairly early in the sequence so that the timeout
-	 * infrastructure will be functional if needed while aborting.
+	 * infrastructure will be functional if needed while aborting.  A threaded
+	 * backend shares its OS thread with others and takes no process signals:
+	 * the postmaster thread handles those, so leave this thread's mask alone.
 	 */
-	sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
+	if (!PgRuntimeIsThreadBacked(CurrentPgRuntime))
+		sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
 
 	/*
 	 * check the current transaction state
