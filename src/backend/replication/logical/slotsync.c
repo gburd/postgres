@@ -1387,14 +1387,7 @@ slotsync_reread_config(void)
 
 	ConfigReloadPending = false;
 
-	/*
-	 * Thread-backed slot sync workers and threaded SQL callers share GUC
-	 * storage with the postmaster, which owns parsing and applying config
-	 * files for the shared address space.  They only need to observe the
-	 * updated shared values here.
-	 */
-	if (!threaded_runtime)
-		ProcessConfigFile(PGC_SIGHUP);
+	ProcessConfigFile(PGC_SIGHUP);
 
 	conninfo_changed = strcmp(old_primary_conninfo, PrimaryConnInfo) != 0;
 	primary_slotname_changed = strcmp(old_primary_slotname, PrimarySlotName) != 0;

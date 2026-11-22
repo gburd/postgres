@@ -326,14 +326,7 @@ ProcessMainLoopInterrupts(void)
 	{
 		ConfigReloadPending = false;
 
-		/*
-		 * Thread-backed workers share GUC storage with the postmaster, which
-		 * owns parsing and applying config files for the shared address space.
-		 * They only need to observe the updated shared values.
-		 */
-		if (CurrentPgRuntime == NULL ||
-			CurrentPgRuntime->kind == PG_RUNTIME_PROCESS)
-			ProcessConfigFile(PGC_SIGHUP);
+		ProcessConfigFile(PGC_SIGHUP);
 	}
 
 	if (ShutdownRequestPending)

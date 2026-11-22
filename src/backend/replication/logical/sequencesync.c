@@ -88,19 +88,11 @@ typedef enum CopySeqResult
 
 #define seqinfos (PgCurrentLogicalReplicationState()->seqinfos)
 
-static bool
-SequenceSyncWorkerThreadedRuntime(void)
-{
-	return PgRuntimeIsThreadBacked(CurrentPgRuntime);
-}
-
 static void
 ProcessSequenceSyncConfigReload(void)
 {
 	ConfigReloadPending = false;
-
-	if (!SequenceSyncWorkerThreadedRuntime())
-		ProcessConfigFile(PGC_SIGHUP);
+	ProcessConfigFile(PGC_SIGHUP);
 }
 
 /*

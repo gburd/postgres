@@ -929,15 +929,7 @@ ProcessPgArchInterrupts(void)
 							 loaded_archive_library : XLogArchiveLibrary);
 		ConfigReloadPending = false;
 
-		/*
-		 * Thread-backed workers share GUC storage with the postmaster.  The
-		 * postmaster performs the actual config reload, so the archiver only
-		 * needs to observe the updated shared values and restart if the loaded
-		 * archive module no longer matches.
-		 */
-		if (CurrentPgRuntime == NULL ||
-			CurrentPgRuntime->kind == PG_RUNTIME_PROCESS)
-			ProcessConfigFile(PGC_SIGHUP);
+		ProcessConfigFile(PGC_SIGHUP);
 
 		if (XLogArchiveLibrary[0] != '\0' && XLogArchiveCommand[0] != '\0')
 			ereport(ERROR,

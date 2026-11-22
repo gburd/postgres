@@ -847,9 +847,7 @@ ProcessAutoVacLauncherInterrupts(void)
 		int			autovacuum_max_workers_prev = autovacuum_max_workers;
 
 		ConfigReloadPending = false;
-		if (CurrentPgRuntime == NULL ||
-			CurrentPgRuntime->kind == PG_RUNTIME_PROCESS)
-			ProcessConfigFile(PGC_SIGHUP);
+		ProcessConfigFile(PGC_SIGHUP);
 
 		/* shutdown requested in config file? */
 		if (!AutoVacuumingActive())

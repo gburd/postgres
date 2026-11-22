@@ -1530,8 +1530,7 @@ ApplyLauncherMain(Datum main_arg)
 		if (ConfigReloadPending)
 		{
 			ConfigReloadPending = false;
-			if (!threaded_launcher)
-				ProcessConfigFile(PGC_SIGHUP);
+			ProcessConfigFile(PGC_SIGHUP);
 		}
 	}
 

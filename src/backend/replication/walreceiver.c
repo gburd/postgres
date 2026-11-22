@@ -546,8 +546,7 @@ WalReceiverMain(const void *startup_data, size_t startup_data_len)
 				if (ConfigReloadPending)
 				{
 					ConfigReloadPending = false;
-					if (!threaded_receiver)
-						ProcessConfigFile(PGC_SIGHUP);
+					ProcessConfigFile(PGC_SIGHUP);
 					/* recompute wakeup times */
 					now = GetCurrentTimestamp();
 					for (int i = 0; i < NUM_WALRCV_WAKEUPS; ++i)
