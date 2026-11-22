@@ -596,6 +596,17 @@ GUCThreadedBackendReplayActive(bool is_reload)
 		CurrentPgCarrier->kind == PG_CARRIER_THREAD;
 }
 
+/* Is a threaded backend applying a config-file value? */
+static bool
+GUCThreadedBackendFileReload(GucSource source)
+{
+	return source == PGC_S_FILE &&
+		multithreaded &&
+		IsUnderPostmaster &&
+		CurrentPgCarrier != NULL &&
+		CurrentPgCarrier->kind == PG_CARRIER_THREAD;
+}
+
 static bool
 GUCRecordHasAssignHook(const struct config_generic *record)
 {
@@ -5625,15 +5636,19 @@ set_config_with_handle_internal(const char *name, config_handle *handle,
 #define newval (newval_union.stringval)
 
 				/*
-				 * Threaded backends can replay another process's non-default
-				 * GUCs into a copied GUC table.  If a string GUC still points
-				 * at process-global backing storage, do not replace that
-				 * global with a string allocated in this session's GUC
-				 * context.  Ordinary SET processing must still assign
-				 * custom and extension GUCs.
+				 * A threaded backend must never point a string GUC's
+				 * process-global variable at a string allocated in its own
+				 * session's GUC context: the session frees that context when
+				 * it ends, and every other session reads the same global.
+				 * That can happen when a backend replays another process's
+				 * non-default GUCs into its copied GUC table, or when it
+				 * rereads the config file on SIGHUP, which the postmaster
+				 * thread already applies to the shared values.  Ordinary SET
+				 * processing must still assign custom and extension GUCs.
 				 */
 				assign_variable =
-					!GUCThreadedBackendReplayActive(is_reload) ||
+					!(GUCThreadedBackendReplayActive(is_reload) ||
+					  GUCThreadedBackendFileReload(source)) ||
 					PgCurrentOrEarlySessionOwnsPointer(GUC_VARIABLE_STRING(record));
 
 				if (value)
