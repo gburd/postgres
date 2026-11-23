@@ -24,6 +24,7 @@
 #include "postmaster/interrupt.h"
 #include "replication/logicalworker.h"
 #include "replication/slotsync.h"
+#include "replication/walsender.h"
 #include "storage/ipc.h"
 #include "storage/latch.h"
 #include "storage/proc.h"
@@ -306,6 +307,9 @@ PgCurrentBackendApplyInterrupts(void)
 	 */
 	if (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_STARTUP_PROMOTE))
 		PgCurrentRecoveryState()->startup_promote_signaled = true;
+
+	if (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_WALSND_INIT_STOPPING))
+		HandleWalSndInitStopping();
 }
 
 /*

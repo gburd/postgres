@@ -4004,7 +4004,13 @@ HandleWalSndInitStopping(void)
 	 * standby, and then exit gracefully.
 	 */
 	if (!replication_active)
-		kill(MyProcPid, SIGTERM);
+	{
+		/* A thread's pid is the whole server's; die through the mailbox. */
+		if (PgRuntimeIsThreadBacked(CurrentPgRuntime))
+			RaiseInterrupt(PG_BACKEND_INTERRUPT_PROC_DIE);
+		else
+			kill(MyProcPid, SIGTERM);
+	}
 	else
 		got_STOPPING = true;
 

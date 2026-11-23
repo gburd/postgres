@@ -386,9 +386,6 @@ ConsumeBackendInterruptsFromProcSignal(int *sender_pid, int *sender_uid)
 		SpinLockRelease(&slot->pss_mutex);
 	}
 
-	if (CheckProcSignal(PROCSIG_WALSND_INIT_STOPPING))
-		HandleWalSndInitStopping();
-
 	return pending;
 }
 
@@ -573,7 +570,8 @@ ProcSignalReasonToBackendInterrupt(ProcSignalReason reason,
 			*interrupt_type = PG_BACKEND_INTERRUPT_RECOVERY_CONFLICT;
 			return true;
 		case PROCSIG_WALSND_INIT_STOPPING:
-			return false;
+			*interrupt_type = PG_BACKEND_INTERRUPT_WALSND_INIT_STOPPING;
+			return true;
 	}
 
 	return false;
