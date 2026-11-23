@@ -76,6 +76,11 @@ extern bool check_locale(int category, const char *locale, char **canonname);
 extern bool pg_locale_lock(void);
 extern void pg_locale_unlock(bool locked);
 extern char *pg_perm_setlocale(int category, const char *locale);
+extern bool pg_thread_locale_init(const char *collate, const char *ctype,
+								  int *failed_category);
+extern void pg_thread_locale_set_messages(const char *name);
+extern void pg_thread_locale_install(void);
+extern void pg_thread_locale_release(PgSessionLocaleState *state);
 
 /*
  * Return the POSIX lconv struct (contains number/money formatting

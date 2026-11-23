@@ -92,6 +92,7 @@ tests += {
       't/031_orc_supervision.pl',
       't/032_promote_while_paused.pl',
       't/033_shell_commands.pl',
+      't/034_database_locale.pl',
     ],
   },
 }

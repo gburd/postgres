@@ -1303,6 +1303,7 @@ PgSessionResetLocaleClosedState(PgSession *session)
 		PgCloseIcuConverter(session->locale.icu_converter);
 		session->locale.icu_converter = NULL;
 	}
+	pg_thread_locale_release(&session->locale);
 }
 
 static void

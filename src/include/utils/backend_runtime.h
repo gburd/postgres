@@ -1973,6 +1973,7 @@ typedef struct PgSessionLocaleState
 	Oid			last_collation_cache_oid;
 	void	   *last_collation_cache_locale;
 	void	   *icu_converter;
+	void	   *thread_locale;	/* locale_t for the database, or NULL */
 } PgSessionLocaleState;
 
 typedef struct PgRuntimeServerGUCState

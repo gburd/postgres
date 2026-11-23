@@ -124,3 +124,8 @@ CREATE FUNCTION test_backend_runtime_wait_fd_control()
 	RETURNS pg_catalog.text
 	AS 'MODULE_PATHNAME', 'test_backend_runtime_wait_fd_control'
 	LANGUAGE C;
+
+CREATE FUNCTION test_backend_runtime_ctype_probe(pg_catalog.int4)
+	RETURNS pg_catalog.text
+	AS 'MODULE_PATHNAME', 'test_backend_runtime_ctype_probe'
+	LANGUAGE C STRICT;

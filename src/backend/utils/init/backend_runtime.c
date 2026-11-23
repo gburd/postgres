@@ -92,6 +92,7 @@
 #include "utils/memutils.h"
 #include "utils/pgstat_internal.h"
 #include "utils/plancache.h"
+#include "utils/pg_locale.h"
 #include "utils/ps_status.h"
 #include "utils/resowner.h"
 #include "utils/rls.h"
@@ -291,6 +292,7 @@ PgRuntimeRestoreCurrentWork(const PgCurrentWorkSnapshot *snap)
 	PgRuntimeSetCurrentWork(snap->runtime, snap->carrier, snap->backend,
 							snap->session, snap->connection, snap->execution,
 							true);
+	pg_thread_locale_install();
 	if (pg_runtime_resume_hook != NULL)
 		pg_runtime_resume_hook();
 }
@@ -323,6 +325,7 @@ PgRuntimeRestoreCurrentWorkLazy(const PgCurrentWorkSnapshot *snap)
 	PgRuntimeSetCurrentWork(snap->runtime, snap->carrier, snap->backend,
 							snap->session, snap->connection, snap->execution,
 							false);
+	pg_thread_locale_install();
 	if (pg_runtime_resume_hook != NULL)
 		pg_runtime_resume_hook();
 }
@@ -482,6 +485,8 @@ PgRuntimeResetThreadForNewBackend(void)
 	PgRuntimeClearHotCurrentCells();
 	PgRuntimeClearHotFieldPointers();
 	PgSessionResetEarlyFallbackForNewBackend();
+	/* Drop the locale of the fiber that last ran on this thread. */
+	pg_thread_locale_install();
 }
 
 void

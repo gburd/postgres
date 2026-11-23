@@ -592,11 +592,139 @@ void
 assign_locale_messages(const char *newval, void *extra)
 {
 	/*
+	 * A threaded backend keeps its messages locale in its own thread locale,
+	 * so that setting lc_messages does not change it for every session.
+	 */
+	if (PgRuntimeIsThreadBacked(CurrentPgRuntime))
+	{
+		pg_thread_locale_set_messages(newval);
+		return;
+	}
+
+	/*
 	 * LC_MESSAGES category does not exist everywhere, but accept it anyway.
 	 * We ignore failure, as per comment above.
 	 */
 #ifdef LC_MESSAGES
 	(void) pg_perm_setlocale(LC_MESSAGES, newval);
+#endif
+}
+
+/*
+ * Per-session thread locale for threaded backends.
+ *
+ * A process backend sets LC_COLLATE and LC_CTYPE for its database, and
+ * LC_MESSAGES for lc_messages, with setlocale().  Threaded backends share one
+ * process, so instead each session builds a locale_t holding those categories
+ * and makes it current with uselocale() on whatever thread the session runs.
+ * Code that calls the locale-dependent libc functions without an explicit
+ * locale (isspace(), strerror(), gettext(), ...) then behaves as it would in
+ * a process backend.
+ *
+ * Several backend fibers take turns on one carrier thread, and uselocale() is
+ * per thread, so pg_thread_locale_install() must run every time a fiber
+ * resumes.  The wait seams do that through PgRuntimeRestoreCurrentWork().  A
+ * fiber never migrates between threads, so the locale is never current on two
+ * threads at once.
+ */
+
+#ifdef HAVE_USELOCALE
+static bool
+pg_thread_locale_apply(int mask, const char *name)
+{
+	PgSessionLocaleState *state = PgCurrentLocaleState();
+	locale_t	loc;
+
+	loc = newlocale(mask, name, (locale_t) state->thread_locale);
+	if (loc == (locale_t) 0)
+		return false;
+	state->thread_locale = loc;
+	return true;
+}
+#endif
+
+/*
+ * Build the calling session's thread locale for its database and install it.
+ * Returns false, with *failed_category set, if a locale name is not usable.
+ */
+bool
+pg_thread_locale_init(const char *collate, const char *ctype,
+					  int *failed_category)
+{
+#ifdef HAVE_USELOCALE
+	PgSessionLocaleState *state = PgCurrentLocaleState();
+
+	Assert(state->thread_locale == NULL);
+
+	/* Start from the server's settings for the categories we don't set. */
+	state->thread_locale = duplocale(LC_GLOBAL_LOCALE);
+	if (state->thread_locale == NULL)
+		ereport(FATAL,
+				(errcode(ERRCODE_OUT_OF_MEMORY),
+				 errmsg("out of memory")));
+
+	if (!pg_thread_locale_apply(LC_COLLATE_MASK, collate))
+	{
+		*failed_category = LC_COLLATE;
+		return false;
+	}
+	if (!pg_thread_locale_apply(LC_CTYPE_MASK, ctype))
+	{
+		*failed_category = LC_CTYPE;
+		return false;
+	}
+	if (locale_messages != NULL && locale_messages[0] != '\0')
+		pg_thread_locale_set_messages(locale_messages);
+	pg_thread_locale_install();
+	return true;
+#else
+	ereport(FATAL,
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+			 errmsg("threaded backend mode requires uselocale()")));
+	return false;
+#endif
+}
+
+/*
+ * Change LC_MESSAGES in the calling session's thread locale.  Before the
+ * session has one, its messages follow the server's setting.  Failure keeps
+ * the old value, as assign_locale_messages() does in a process backend.
+ */
+void
+pg_thread_locale_set_messages(const char *name)
+{
+#if defined(HAVE_USELOCALE) && defined(LC_MESSAGES)
+	if (PgCurrentLocaleState()->thread_locale == NULL)
+		return;
+	if (pg_thread_locale_apply(LC_MESSAGES_MASK, name))
+		pg_thread_locale_install();
+#endif
+}
+
+/* Make the current session's thread locale the calling thread's locale. */
+void
+pg_thread_locale_install(void)
+{
+#ifdef HAVE_USELOCALE
+	void	   *loc = PgCurrentLocaleState()->thread_locale;
+
+	uselocale(loc != NULL ? (locale_t) loc : LC_GLOBAL_LOCALE);
+#endif
+}
+
+/* Free a session's thread locale, first uninstalling it if current. */
+void
+pg_thread_locale_release(PgSessionLocaleState *state)
+{
+#ifdef HAVE_USELOCALE
+	locale_t	loc = (locale_t) state->thread_locale;
+
+	if (loc == (locale_t) 0)
+		return;
+	if (uselocale((locale_t) 0) == loc)
+		uselocale(LC_GLOBAL_LOCALE);
+	freelocale(loc);
+	state->thread_locale = NULL;
 #endif
 }
 

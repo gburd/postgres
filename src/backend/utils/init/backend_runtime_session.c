@@ -1932,6 +1932,7 @@ PgSessionInitializeLocaleState(PgSessionLocaleState *locale)
 	locale->last_collation_cache_oid = InvalidOid;
 	locale->last_collation_cache_locale = NULL;
 	locale->icu_converter = NULL;
+	locale->thread_locale = NULL;
 	locale->initialized = true;
 }
 

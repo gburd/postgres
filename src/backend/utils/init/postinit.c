@@ -460,42 +460,33 @@ CheckMyDatabase(const char *name, bool am_superuser,
 	datum = SysCacheGetAttrNotNull(DATABASEOID, tup, Anum_pg_database_datctype);
 	ctype = TextDatumGetCString(datum);
 
-	if (pg_perm_setlocale(LC_COLLATE, collate) == NULL)
+	if (threaded_backend)
+	{
+		int			failed_category;
+
+		if (!pg_thread_locale_init(collate, ctype, &failed_category))
+		{
+			if (failed_category == LC_COLLATE)
+				ereport(FATAL,
+						(errmsg("database locale is incompatible with operating system"),
+						 errdetail("The database was initialized with LC_COLLATE \"%s\", "
+								   " which is not recognized by setlocale().", collate),
+						 errhint("Recreate the database with another locale or install the missing locale.")));
+			ereport(FATAL,
+					(errmsg("database locale is incompatible with operating system"),
+					 errdetail("The database was initialized with LC_CTYPE \"%s\", "
+							   " which is not recognized by setlocale().", ctype),
+					 errhint("Recreate the database with another locale or install the missing locale.")));
+		}
+
+		SetMessageEncoding(GetDatabaseEncoding());
+	}
+	else if (pg_perm_setlocale(LC_COLLATE, collate) == NULL)
 		ereport(FATAL,
 				(errmsg("database locale is incompatible with operating system"),
 				 errdetail("The database was initialized with LC_COLLATE \"%s\", "
 						   " which is not recognized by setlocale().", collate),
 				 errhint("Recreate the database with another locale or install the missing locale.")));
-
-	if (threaded_backend)
-	{
-		const char *current_ctype;
-		char		current_ctype_buf[LOCALE_NAME_BUFLEN];
-		bool		locale_locked;
-		bool		locale_matches;
-
-		locale_locked = pg_locale_lock();
-		current_ctype = setlocale(LC_CTYPE, NULL);
-		if (current_ctype != NULL)
-			strlcpy(current_ctype_buf, current_ctype,
-					sizeof(current_ctype_buf));
-		else
-			strlcpy(current_ctype_buf, "(null)", sizeof(current_ctype_buf));
-		locale_matches = (current_ctype != NULL &&
-						  strcmp(current_ctype, ctype) == 0);
-		pg_locale_unlock(locale_locked);
-
-		if (!locale_matches)
-			ereport(FATAL,
-					(errmsg("database locale is incompatible with threaded backend mode"),
-					 errdetail("The process LC_CTYPE is \"%s\", but database \"%s\" requires LC_CTYPE \"%s\".",
-							   current_ctype_buf,
-							   name,
-							   ctype),
-					 errhint("Threaded backend mode currently requires databases to use the postmaster's process LC_CTYPE.")));
-
-		SetMessageEncoding(GetDatabaseEncoding());
-	}
 	else if (pg_perm_setlocale(LC_CTYPE, ctype) == NULL)
 		ereport(FATAL,
 				(errmsg("database locale is incompatible with operating system"),

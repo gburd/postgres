@@ -1534,3 +1534,24 @@ test_backend_runtime_wait_fd_error(PG_FUNCTION_ARGS)
 	PG_RETURN_NULL();
 #endif
 }
+
+PG_FUNCTION_INFO_V1(test_backend_runtime_ctype_probe);
+
+/*
+ * Report what the calling thread's libc locale says about LC_CTYPE, through
+ * calls that take no explicit locale.  A session whose thread locale is not
+ * installed reports the server's process LC_CTYPE instead of its database's.
+ * The optional sleep parks the fiber first, so another session can run on
+ * the same thread in between.
+ */
+Datum
+test_backend_runtime_ctype_probe(PG_FUNCTION_ARGS)
+{
+	int32		sleep_ms = PG_GETARG_INT32(0);
+
+	if (sleep_ms > 0)
+		pg_usleep(sleep_ms * 1000L);
+
+	PG_RETURN_TEXT_P(cstring_to_text(psprintf("mb_cur_max=%d",
+											  (int) MB_CUR_MAX)));
+}
