@@ -605,13 +605,9 @@ test_execution_reset_closed_state(PG_FUNCTION_ARGS)
 		fake_execution.replication_scratch.apply_error_context_stack =
 			&fake_error_context;
 		fake_execution.replication_scratch.apply_message_context =
-			AllocSetContextCreate(TopMemoryContext,
-								  "test apply message context",
-								  ALLOCSET_SMALL_SIZES);
+			(MemoryContext) &fake_portal;
 		fake_execution.replication_scratch.logical_streaming_context =
-			AllocSetContextCreate(TopMemoryContext,
-								  "test logical streaming context",
-								  ALLOCSET_SMALL_SIZES);
+			(MemoryContext) &fake_portal;
 		fake_execution.guc_error.check_errcode_value = 1;
 		fake_execution.guc_error.check_errmsg_string = (char *) "msg";
 		fake_execution.guc_error.format_errnumber = 2;

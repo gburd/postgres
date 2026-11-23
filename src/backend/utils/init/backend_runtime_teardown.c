@@ -456,8 +456,11 @@ PgExecutionResetReplicationScratchClosedState(PgExecutionReplicationScratchState
 
 	EventTriggerResetQueryStateStack(&replication_scratch->event_trigger_query_state);
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(replication_scratch->event_trigger_context);
-	PG_RUNTIME_DELETE_MEMORY_CONTEXT(replication_scratch->apply_message_context);
-	PG_RUNTIME_DELETE_MEMORY_CONTEXT(replication_scratch->logical_streaming_context);
+	/*
+	 * ApplyMessageContext and LogicalStreamingContext are children of
+	 * ApplyContext, which backend reset deletes before execution reset runs.
+	 * The reinitialization below forgets them.
+	 */
 	PgExecutionInitializeReplicationScratchState(replication_scratch);
 }
 
@@ -559,11 +562,13 @@ PgBackendResetLogicalReplicationClosedState(PgBackend *backend)
 		logical_replication->logrep_worker_walrcv_conn = NULL;
 	}
 
-	if (logical_replication->stream_fd != NULL)
-	{
-		BufFileClose(logical_replication->stream_fd);
-		logical_replication->stream_fd = NULL;
-	}
+	/*
+	 * The streamed-transaction BufFile lives in LogicalStreamingContext or
+	 * TopTransactionContext, and fd.c owns its files: transaction abort or
+	 * process exit closes them.  Closing it here touched freed memory and
+	 * already-closed files.
+	 */
+	logical_replication->stream_fd = NULL;
 
 	/*
 	 * copy_table() allocates copybuf in the transaction's memory context and
@@ -1105,25 +1110,17 @@ PgSessionResetLogicalReplicationClosedState(PgSession *session)
 {
 	Assert(session != NULL);
 
-	if (session->logical_replication.logical_rep_relmap_context != NULL)
-	{
-		PG_RUNTIME_DELETE_MEMORY_CONTEXT(session->logical_replication.logical_rep_relmap_context);
-		session->logical_replication.logical_rep_relmap = NULL;
-	}
-	else if (session->logical_replication.logical_rep_relmap != NULL)
-	{
-		PG_RUNTIME_DESTROY_HASH(session->logical_replication.logical_rep_relmap);
-	}
-
-	if (session->logical_replication.logical_rep_partmap_context != NULL)
-	{
-		PG_RUNTIME_DELETE_MEMORY_CONTEXT(session->logical_replication.logical_rep_partmap_context);
-		session->logical_replication.logical_rep_partmap = NULL;
-	}
-	else if (session->logical_replication.logical_rep_partmap != NULL)
-	{
-		PG_RUNTIME_DESTROY_HASH(session->logical_replication.logical_rep_partmap);
-	}
+	/*
+	 * The relation and partition map contexts are children of
+	 * CacheMemoryContext, and the maps live in them.  The catalog_lookup
+	 * bucket has already deleted CacheMemoryContext, and with it these, so
+	 * only forget the pointers.  Deleting them again pushed the freed headers
+	 * onto the AllocSet context freelist a second time.
+	 */
+	session->logical_replication.logical_rep_relmap_context = NULL;
+	session->logical_replication.logical_rep_relmap = NULL;
+	session->logical_replication.logical_rep_partmap_context = NULL;
+	session->logical_replication.logical_rep_partmap = NULL;
 
 	/*
 	 * pgoutput builds its relation sync hash in CacheMemoryContext, which the
