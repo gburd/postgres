@@ -43,6 +43,7 @@
 #include "libpq/libpq-be.h"
 #include "libpq/pqsignal.h"
 #include "miscadmin.h"
+#include "nodes/queryjumble.h"
 #include "pgtime.h"
 #include "postmaster/autovacuum.h"
 #include "postmaster/bgworker_internals.h"
@@ -80,7 +81,6 @@
 #include "utils/timestamp.h"
 
 #ifdef FORKEXEC_BACKEND
-#include "nodes/queryjumble.h"
 #include "portability/instr_time.h"
 #include "storage/pg_shmem.h"
 #include "storage/spin.h"
@@ -225,6 +225,7 @@ typedef struct BackendThreadStart
 	ClientSocket client_sock;
 	pg_tz	   *startup_session_timezone;
 	pg_tz	   *startup_log_timezone;
+	bool		startup_query_id_enabled;
 	pg_atomic_uint32 launch_registered;
 
 	/*
@@ -755,6 +756,7 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 	}
 	thread_start->startup_session_timezone = session_timezone;
 	thread_start->startup_log_timezone = log_timezone;
+	thread_start->startup_query_id_enabled = query_id_enabled;
 	pg_atomic_init_u32(&thread_start->launch_registered, 0);
 	pg_atomic_init_u32(&thread_start->exit_claimed, 0);
 	pg_atomic_init_u32(&thread_start->start_claimed, 0);
@@ -1001,6 +1003,7 @@ backend_thread_entry(void *arg)
 	IsUnderPostmaster = true;
 	session_timezone = thread_start->startup_session_timezone;
 	log_timezone = thread_start->startup_log_timezone;
+	query_id_enabled = thread_start->startup_query_id_enabled;
 
 	InitializeWaitEventSupport();
 	InitProcessLocalLatch();
