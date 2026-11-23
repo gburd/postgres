@@ -445,3 +445,5 @@ request_message	PgBackend	logical_replication	publisher_status_request_message	P
 has_subtables	PgBackend	logical_replication	sync_has_subtables	PgCurrentLogicalReplicationState	src/backend/replication/logical/syncutils.c	FetchRelationStates() function-static cached result
 has_subsequences_non_ready	PgBackend	logical_replication	sync_has_subsequences_non_ready	PgCurrentLogicalReplicationState	src/backend/replication/logical/syncutils.c	FetchRelationStates() function-static cached result
 last_start_times	PgBackend	logical_replication	tablesync_last_start_times	PgCurrentLogicalReplicationState	src/backend/replication/logical/tablesync.c	ProcessSyncingTablesForApply() function-static hash in the backend TopMemoryContext, which owns its storage
+InRecovery	PgBackend	recovery	in_recovery	PgCurrentRecoveryState	src/backend/access/transam/xlogutils.c	this backend is replaying WAL; set only by the startup process, so under multithreading no other backend sees it true
+standbyState	PgBackend	recovery	standby_state	PgCurrentRecoveryState	src/backend/access/transam/xlogutils.c	the startup process hot-standby state; STANDBY_DISABLED (0) in every other backend

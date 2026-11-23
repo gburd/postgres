@@ -44,13 +44,11 @@ PG_GLOBAL_RUNTIME bool ignore_invalid_pages = false;
  * process you're running in, use RecoveryInProgress() but only after shared
  * memory startup and lock initialization.
  *
- * This is updated from xlog.c and xlogrecovery.c, but lives here because
- * it's mostly read by WAL redo functions.
+ * This is updated from xlog.c and xlogrecovery.c, and mostly read by WAL
+ * redo functions.  Like standbyState, it is per-backend state (see
+ * xlogutils.h), so under multithreading only the startup process's copy is
+ * ever true.
  */
-PG_GLOBAL_RUNTIME bool InRecovery = false;
-
-/* Are we in Hot Standby mode? Only valid in startup process, see xlogutils.h */
-PG_GLOBAL_RUNTIME HotStandbyState standbyState = STANDBY_DISABLED;
 
 /*
  * During XLOG replay, we may see XLOG records for incremental updates of

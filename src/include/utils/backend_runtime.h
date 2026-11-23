@@ -464,6 +464,8 @@ typedef struct PgBackendRecoveryState
 	volatile sig_atomic_t got_standby_delay_timeout;
 	volatile sig_atomic_t got_standby_lock_timeout;
 	int			standby_wait_us;
+	bool		in_recovery;	/* InRecovery: startup process only */
+	int			standby_state;	/* standbyState, a HotStandbyState */
 } PgBackendRecoveryState;
 
 typedef struct PgBackendMaintenanceWorkerState
