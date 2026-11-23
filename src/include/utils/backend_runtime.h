@@ -369,6 +369,7 @@ typedef struct PgBackendLogicalReplicationState
 	volatile sig_atomic_t parallel_apply_message_pending;
 	WalReceiverConn *logrep_worker_walrcv_conn;
 	Subscription *my_subscription;
+	char	   *my_subscription_conninfo;	/* in ApplyContext */
 	bool		my_subscription_valid;
 	bool		origin_cleanup_registered;
 	LogicalRepWorker *my_logical_rep_worker;
@@ -401,6 +402,15 @@ typedef struct PgBackendLogicalReplicationState
 	ParallelApplyWorkerInfo *stream_apply_worker;
 	List	   *parallel_apply_subxactlist;
 	MemoryContext parallel_apply_message_context;
+	/* send_feedback() state; reply_message lives in ApplyContext */
+	StringInfo	feedback_reply_message;
+	TimestampTz feedback_send_time;
+	XLogRecPtr	feedback_last_recvpos;
+	XLogRecPtr	feedback_last_writepos;
+	StringInfo	publisher_status_request_message;	/* in ApplyContext */
+	bool		sync_has_subtables;
+	bool		sync_has_subsequences_non_ready;
+	HTAB	   *tablesync_last_start_times;
 } PgBackendLogicalReplicationState;
 
 typedef struct PgBackendXLogWriteResult

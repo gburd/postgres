@@ -469,7 +469,6 @@ typedef struct RetainDeadTuplesData
 /* per stream context for streaming transactions */
 #define LogicalStreamingContext (*PgCurrentLogicalStreamingContextRef())
 
-char	   *MySubscriptionConninfo = NULL;
 #define MySubscriptionValid \
 	(PgCurrentLogicalReplicationState()->my_subscription_valid)
 
@@ -4365,11 +4364,10 @@ LogicalRepApplyLoop(XLogRecPtr last_received)
 static void
 send_feedback(XLogRecPtr recvpos, bool force, bool requestReply)
 {
-	static StringInfo reply_message = NULL;
-	static TimestampTz send_time = 0;
-
-	static XLogRecPtr last_recvpos = InvalidXLogRecPtr;
-	static XLogRecPtr last_writepos = InvalidXLogRecPtr;
+#define reply_message (PgCurrentLogicalReplicationState()->feedback_reply_message)
+#define send_time (PgCurrentLogicalReplicationState()->feedback_send_time)
+#define last_recvpos (PgCurrentLogicalReplicationState()->feedback_last_recvpos)
+#define last_writepos (PgCurrentLogicalReplicationState()->feedback_last_writepos)
 
 	XLogRecPtr	writepos;
 	XLogRecPtr	flushpos;
@@ -4445,6 +4443,10 @@ send_feedback(XLogRecPtr recvpos, bool force, bool requestReply)
 		last_writepos = writepos;
 	if (flushpos > last_flushpos)
 		last_flushpos = flushpos;
+#undef reply_message
+#undef send_time
+#undef last_recvpos
+#undef last_writepos
 }
 
 /*
@@ -4584,7 +4586,8 @@ get_candidate_xid(RetainDeadTuplesData *rdt_data)
 static void
 request_publisher_status(RetainDeadTuplesData *rdt_data)
 {
-	static StringInfo request_message = NULL;
+#define request_message \
+	(PgCurrentLogicalReplicationState()->publisher_status_request_message)
 
 	if (!request_message)
 	{
@@ -4615,6 +4618,7 @@ request_publisher_status(RetainDeadTuplesData *rdt_data)
 	 * Skip calling maybe_advance_nonremovable_xid() since further transition
 	 * is possible only once we receive the publisher status message.
 	 */
+#undef request_message
 }
 
 /*

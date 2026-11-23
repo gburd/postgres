@@ -963,6 +963,10 @@ PgBackendAdoptEarlyLogicalReplicationState(PgBackend *backend)
 	Assert(early_backend_logical_replication.my_parallel_shared == NULL);
 	Assert(early_backend_logical_replication.logrep_worker_walrcv_conn == NULL);
 	Assert(early_backend_logical_replication.my_subscription == NULL);
+	Assert(early_backend_logical_replication.my_subscription_conninfo == NULL);
+	Assert(early_backend_logical_replication.feedback_reply_message == NULL);
+	Assert(early_backend_logical_replication.publisher_status_request_message == NULL);
+	Assert(early_backend_logical_replication.tablesync_last_start_times == NULL);
 	Assert(early_backend_logical_replication.my_logical_rep_worker == NULL);
 	Assert(early_backend_logical_replication.on_commit_wakeup_workers_subids ==
 		   NIL);

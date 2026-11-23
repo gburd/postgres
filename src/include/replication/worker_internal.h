@@ -268,7 +268,8 @@ extern ErrorContextCallback **PgCurrentApplyErrorContextStackRef(void);
 	(PgCurrentLogicalReplicationState()->logrep_worker_walrcv_conn)
 
 /* Worker and subscription objects. */
-extern PGDLLIMPORT char *MySubscriptionConninfo;
+#define MySubscriptionConninfo \
+	(PgCurrentLogicalReplicationState()->my_subscription_conninfo)
 #define MySubscription (PgCurrentLogicalReplicationState()->my_subscription)
 #define MyLogicalRepWorker \
 	(PgCurrentLogicalReplicationState()->my_logical_rep_worker)

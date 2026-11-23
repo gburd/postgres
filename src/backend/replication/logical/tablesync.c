@@ -370,7 +370,8 @@ ProcessSyncingTablesForApply(XLogRecPtr current_lsn)
 		Oid			relid;
 		TimestampTz last_start_time;
 	};
-	static HTAB *last_start_times = NULL;
+#define last_start_times \
+	(PgCurrentLogicalReplicationState()->tablesync_last_start_times)
 	ListCell   *lc;
 	bool		started_tx;
 	bool		should_exit = false;
@@ -615,6 +616,7 @@ ProcessSyncingTablesForApply(XLogRecPtr current_lsn)
 
 		PgBackendExit(0);
 	}
+#undef last_start_times
 }
 
 /*

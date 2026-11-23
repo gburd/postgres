@@ -617,12 +617,22 @@ PgBackendResetLogicalReplicationClosedState(PgBackend *backend)
 	logical_replication->parallel_apply_txn_hash = NULL;
 	logical_replication->parallel_apply_worker_pool = NIL;
 	logical_replication->parallel_apply_subxactlist = NIL;
+	logical_replication->feedback_reply_message = NULL;
+	logical_replication->feedback_send_time = 0;
+	logical_replication->feedback_last_recvpos = InvalidXLogRecPtr;
+	logical_replication->feedback_last_writepos = InvalidXLogRecPtr;
+	logical_replication->publisher_status_request_message = NULL;
+	logical_replication->sync_has_subtables = false;
+	logical_replication->sync_has_subsequences_non_ready = false;
+	/* Allocated in the backend's TopMemoryContext, freed with it at exit. */
+	logical_replication->tablesync_last_start_times = NULL;
 
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(logical_replication->apply_context);
 
 	dlist_init(&logical_replication->lsn_mapping);
 	logical_replication->my_parallel_shared = NULL;
 	logical_replication->my_subscription = NULL;
+	logical_replication->my_subscription_conninfo = NULL;
 	logical_replication->my_subscription_valid = false;
 	logical_replication->my_logical_rep_worker = NULL;
 	logical_replication->on_commit_wakeup_workers_subids = NIL;

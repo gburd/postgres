@@ -207,11 +207,13 @@ FetchRelationStates(bool *has_pending_subtables,
 					bool *started_tx)
 {
 	/*
-	 * has_subtables and has_subsequences_non_ready are declared as static,
+	 * has_subtables and has_subsequences_non_ready persist across calls,
 	 * since the same value can be used until the system table is invalidated.
 	 */
-	static bool has_subtables = false;
-	static bool has_subsequences_non_ready = false;
+#define has_subtables \
+	(PgCurrentLogicalReplicationState()->sync_has_subtables)
+#define has_subsequences_non_ready \
+	(PgCurrentLogicalReplicationState()->sync_has_subsequences_non_ready)
 
 	*started_tx = false;
 
@@ -280,4 +282,6 @@ FetchRelationStates(bool *has_pending_subtables,
 
 	if (has_pending_subsequences)
 		*has_pending_subsequences = has_subsequences_non_ready;
+#undef has_subtables
+#undef has_subsequences_non_ready
 }
