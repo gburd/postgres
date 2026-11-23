@@ -377,7 +377,18 @@ _bt_getroot(Relation rel, Relation heaprel, int access)
 		Assert(rootblkno != P_NONE);
 		rootlevel = metad->btm_fastlevel;
 
-		rootbuf = _bt_getbuf(rel, rootblkno, BT_READ);
+		/*
+		 * Every descent of this index reads this one block, and every backend
+		 * reads the same buffer, so pinning it is a cross-CPU atomic on a
+		 * shared cache line.  If we hold a base pin on it from earlier in
+		 * this transaction we can pin it again from backend-local state and
+		 * skip the buffer mapping table.
+		 */
+		rootbuf = GetXactPinnedBlock(rel, MAIN_FORKNUM, rootblkno);
+		if (BufferIsValid(rootbuf))
+			LockBuffer(rootbuf, BT_READ);
+		else
+			rootbuf = _bt_getbuf(rel, rootblkno, BT_READ);
 		rootpage = BufferGetPage(rootbuf);
 		rootopaque = BTPageGetOpaque(rootpage);
 
@@ -393,7 +404,18 @@ _bt_getroot(Relation rel, Relation heaprel, int access)
 			P_LEFTMOST(rootopaque) &&
 			P_RIGHTMOST(rootopaque))
 		{
-			/* OK, accept cached page as the root */
+			/*
+			 * OK, accept cached page as the root.  Offer it for a base pin so
+			 * that the next descent in this transaction can find it locally.
+			 *
+			 * Only internal pages: VACUUM takes a cleanup lock on every leaf,
+			 * a cleanup lock requires being the sole pinner, and a base pin
+			 * would block it forever.  A one-page index has no root
+			 * contention to relieve in any case.
+			 */
+			if (!P_ISLEAF(rootopaque))
+				PinBlockForXact(rel, MAIN_FORKNUM, rootblkno, rootbuf);
+
 			return rootbuf;
 		}
 		_bt_relbuf(rel, rootbuf);
