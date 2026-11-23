@@ -532,7 +532,7 @@ pg_stat_get_activity(PG_FUNCTION_ARGS)
 				 * For an auxiliary process, retrieve process info from
 				 * AuxiliaryProcs stored in shared-memory.
 				 */
-				proc = AuxiliaryPidGetProc(beentry->st_procpid);
+				proc = AuxiliarySignalPidGetProc(beentry->st_procpid);
 			}
 
 			/*
@@ -906,7 +906,7 @@ pg_stat_get_backend_wait_event_type(PG_FUNCTION_ARGS)
 	{
 		proc = BackendSignalPidGetProc(beentry->st_procpid);
 		if (!proc)
-			proc = AuxiliaryPidGetProc(beentry->st_procpid);
+			proc = AuxiliarySignalPidGetProc(beentry->st_procpid);
 		if (proc)
 			wait_event_type = pgstat_get_wait_event_type(proc->wait_event_info);
 	}
@@ -933,7 +933,7 @@ pg_stat_get_backend_wait_event(PG_FUNCTION_ARGS)
 	{
 		proc = BackendSignalPidGetProc(beentry->st_procpid);
 		if (!proc)
-			proc = AuxiliaryPidGetProc(beentry->st_procpid);
+			proc = AuxiliarySignalPidGetProc(beentry->st_procpid);
 		if (proc)
 			wait_event = pgstat_get_wait_event(proc->wait_event_info);
 	}
@@ -2192,7 +2192,7 @@ pg_stat_reset_backend_stats(PG_FUNCTION_ARGS)
 
 	/* This could be an auxiliary process */
 	if (!proc)
-		proc = AuxiliaryPidGetProc(backend_pid);
+		proc = AuxiliarySignalPidGetProc(backend_pid);
 
 	if (!proc)
 		PG_RETURN_VOID();
