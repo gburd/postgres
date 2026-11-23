@@ -1497,6 +1497,8 @@ typedef struct PgSessionLogicalReplicationState
 	HTAB	   *logical_rep_partmap;
 	bool		pgoutput_publications_valid;
 	HTAB	   *pgoutput_relation_sync_cache;
+	bool		pgoutput_publication_callback_registered;
+	bool		pgoutput_relation_callbacks_registered;
 	int			syncing_relations_state;
 } PgSessionLogicalReplicationState;
 
@@ -2594,6 +2596,8 @@ extern MemoryContext *PgCurrentLogicalRepPartMapContextRef(void);
 extern HTAB **PgCurrentLogicalRepPartMapRef(void);
 extern bool *PgCurrentPgOutputPublicationsValidRef(void);
 extern HTAB **PgCurrentPgOutputRelationSyncCacheRef(void);
+extern bool *PgCurrentPgOutputPublicationCallbackRegisteredRef(void);
+extern bool *PgCurrentPgOutputRelationCallbacksRegisteredRef(void);
 extern int *PgCurrentLogicalRepSyncingRelationsStateRef(void);
 extern bool *PgCurrentAllowAlterSystemRef(void);
 extern bool *PgCurrentRowSecurityRef(void);

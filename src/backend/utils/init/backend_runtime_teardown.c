@@ -1131,6 +1131,8 @@ PgSessionResetLogicalReplicationClosedState(PgSession *session)
 	 */
 	session->logical_replication.pgoutput_relation_sync_cache = NULL;
 	session->logical_replication.pgoutput_publications_valid = false;
+	session->logical_replication.pgoutput_publication_callback_registered = false;
+	session->logical_replication.pgoutput_relation_callbacks_registered = false;
 	session->logical_replication.syncing_relations_state = 0;
 }
 

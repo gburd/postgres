@@ -112,24 +112,9 @@ log_statement = 'all'
 	my $allowed = $b->query(q{SELECT slot_name FROM
 		pg_create_logical_replication_slot('guc_owner_slot', 'pgoutput', true);
 		\echo :SQLSTATE});
-	if ($mode eq 'off')
-	{
-		is($allowed, "guc_owner_slot\n00000",
-			"$label: replication role can use its allowed plugin")
-		  or diag($b->{stderr});
-	}
-	else
-	{
-		# Policy allows pgoutput, but its process-only guard must still reject
-		# it. Phase 16/19 owns module admission/fallback, not this owner fix.
-		is($allowed, 'XX000', "$label: allowed plugin reaches loader guard");
-		like($b->{stderr},
-			qr/ERROR:  library "[^"\r\n]*pgoutput[^"\r\n]*" is not supported in the threaded backend runtime\r?$/m,
-			"$label: pgoutput is rejected by the threaded loader");
-		like($b->{stderr},
-			qr/DETAIL:  The active backend model is "[^"\r\n]+", but the library is process-only\.\r?$/m,
-			"$label: rejection identifies the process-only boundary");
-	}
+	is($allowed, "guc_owner_slot\n00000",
+		"$label: replication role can use its allowed plugin")
+	  or diag($b->{stderr});
 	$b->{stderr} = '';
 	if ($allowed eq "guc_owner_slot\n00000")
 	{

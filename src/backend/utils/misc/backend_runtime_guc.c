@@ -578,6 +578,18 @@ PgCurrentPgOutputRelationSyncCacheRef(void)
 	return &PgCurrentSessionLogicalReplicationState()->pgoutput_relation_sync_cache;
 }
 
+bool *
+PgCurrentPgOutputPublicationCallbackRegisteredRef(void)
+{
+	return &PgCurrentSessionLogicalReplicationState()->pgoutput_publication_callback_registered;
+}
+
+bool *
+PgCurrentPgOutputRelationCallbacksRegisteredRef(void)
+{
+	return &PgCurrentSessionLogicalReplicationState()->pgoutput_relation_callbacks_registered;
+}
+
 int *
 PgCurrentLogicalRepSyncingRelationsStateRef(void)
 {
