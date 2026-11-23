@@ -178,6 +178,7 @@ extern void PostmasterChildUnpublishLogicalBackend(PMChild *pmchild);
 extern bool PostmasterChildRaiseThreadInterrupt(PMChild *pmchild,
 												int interrupt);
 extern bool PostmasterChildWakeThreadBackend(PMChild *pmchild);
+extern bool PostmasterChildSigtermRequestsShutdown(PMChild *pmchild);
 extern void PostmasterChildPublishLogicalStartupComplete(PMChild *pmchild,
 														 struct Latch *postmaster_latch);
 extern bool PostmasterChildHasStartupComplete(PMChild *pmchild);

@@ -230,6 +230,8 @@ autoprewarm_main(Datum main_arg)
 		pqsignal(SIGHUP, SignalHandlerForConfigReload);
 		pqsignal(SIGUSR1, procsignal_sigusr1_handler);
 	}
+	else
+		SetShutdownRequestOnSigterm();
 	BackgroundWorkerUnblockSignals();
 
 	/* Create (if necessary) and attach to our shared memory area. */

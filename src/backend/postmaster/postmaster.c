@@ -4062,7 +4062,10 @@ thread_child_signal_interrupt(PMChild *pmchild, int signal,
 			}
 			if (pmchild->bkend_type == B_BG_WORKER)
 			{
-				*interrupt = PG_BACKEND_INTERRUPT_SHUTDOWN_REQUEST;
+				/* bgworker.c installs die() unless the worker overrides it */
+				*interrupt = PostmasterChildSigtermRequestsShutdown(pmchild) ?
+					PG_BACKEND_INTERRUPT_SHUTDOWN_REQUEST :
+					PG_BACKEND_INTERRUPT_PROC_DIE;
 				return true;
 			}
 			if (pmchild->bkend_type == B_STARTUP)

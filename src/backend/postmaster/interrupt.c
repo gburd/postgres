@@ -392,6 +392,18 @@ SignalHandlerForCrashExit(SIGNAL_ARGS)
  * ShutdownRequestPending should be checked at a convenient place within the
  * main loop, or else the main loop should call ProcessMainLoopInterrupts.
  */
+/*
+ * Threaded equivalent of pqsignal(SIGTERM, SignalHandlerForShutdownRequest)
+ * for a background worker.  A threaded worker installs no signal handlers;
+ * the postmaster turns its SIGTERM into a logical interrupt, PROC_DIE as for
+ * die() unless the worker has called this.
+ */
+void
+SetShutdownRequestOnSigterm(void)
+{
+	CurrentPgBackend->core.sigterm_requests_shutdown = true;
+}
+
 void
 SignalHandlerForShutdownRequest(SIGNAL_ARGS)
 {

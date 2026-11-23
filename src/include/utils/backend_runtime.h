@@ -222,6 +222,8 @@ typedef struct PgBackendCoreState
 	ProcessingMode mode;
 	bool		ignore_system_indexes;
 	pg_prng_state global_prng_state;
+	/* SIGTERM means SignalHandlerForShutdownRequest(), not die() */
+	volatile sig_atomic_t sigterm_requests_shutdown;
 } PgBackendCoreState;
 
 typedef struct PgBackendCommandState

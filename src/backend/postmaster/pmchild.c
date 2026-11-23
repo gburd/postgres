@@ -443,6 +443,22 @@ PostmasterChildRaiseThreadInterrupt(PMChild *pmchild,
 	return raised;
 }
 
+/* Has this threaded child asked for SIGTERM to mean a shutdown request? */
+bool
+PostmasterChildSigtermRequestsShutdown(PMChild *pmchild)
+{
+	bool		result = false;
+
+	Assert(PostmasterChildHasLogicalBackendPublication(pmchild));
+
+	PMChildLogicalBackendLock();
+	if (pmchild->logical_backend != NULL)
+		result = pmchild->logical_backend->core.sigterm_requests_shutdown;
+	PMChildLogicalBackendUnlock();
+
+	return result;
+}
+
 bool
 PostmasterChildWakeThreadBackend(PMChild *pmchild)
 {

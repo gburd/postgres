@@ -106,6 +106,8 @@ pg_stash_advice_worker_main(Datum main_arg)
 		pqsignal(SIGHUP, SignalHandlerForConfigReload);
 		pqsignal(SIGUSR1, procsignal_sigusr1_handler);
 	}
+	else
+		SetShutdownRequestOnSigterm();
 	BackgroundWorkerUnblockSignals();
 
 	/* Log a debug message */
