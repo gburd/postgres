@@ -42,7 +42,8 @@ typedef enum WalSndState
  */
 typedef struct WalSnd
 {
-	pid_t		pid;			/* this walsender's PID, or 0 if not active */
+	pid_t		pid;			/* this walsender's signal pid (see
+								 * pg_backend_pid()), or 0 if not active */
 	ProcNumber	procno;			/* its ProcNumber, valid while pid != 0 */
 
 	WalSndState state;			/* this walsender's state */

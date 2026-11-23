@@ -1105,7 +1105,7 @@ replorigin_session_reset_internal(void)
 	 * origin. This avoids clearing the first process's PID when any other
 	 * session releases the origin.
 	 */
-	if (session_replication_state->acquired_by == MyProcPid)
+	if (session_replication_state->acquired_by == PgCurrentBackendSignalPid())
 		session_replication_state->acquired_by = 0;
 
 	session_replication_state->refcount--;
@@ -1269,7 +1269,7 @@ replorigin_session_setup(ReplOriginId node, int acquired_by)
 
 	if (acquired_by == 0)
 	{
-		session_replication_state->acquired_by = MyProcPid;
+		session_replication_state->acquired_by = PgCurrentBackendSignalPid();
 		Assert(session_replication_state->refcount == 0);
 	}
 	else
@@ -1312,7 +1312,7 @@ replorigin_session_reset(void)
 	 * system handles this safely (as happens if the first session exits
 	 * without calling reset), it is best to avoid doing so.
 	 */
-	if (session_replication_state->acquired_by == MyProcPid &&
+	if (session_replication_state->acquired_by == PgCurrentBackendSignalPid() &&
 		session_replication_state->refcount > 1)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),

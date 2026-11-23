@@ -983,7 +983,7 @@ ParallelApplyWorkerMain(Datum main_arg)
 	 * The parallel apply worker doesn't need to monopolize this replication
 	 * origin which was already acquired by its leader process.
 	 */
-	replorigin_session_setup(originid, MyLogicalRepWorker->leader_pid);
+	replorigin_session_setup(originid, MyLogicalRepWorker->leader_signal_pid);
 	replorigin_xact_state.origin = originid;
 	CommitTransactionCommand();
 

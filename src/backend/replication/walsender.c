@@ -3258,7 +3258,7 @@ InitWalSenderSlot(void)
 			/*
 			 * Found a free slot. Reserve it for us.
 			 */
-			walsnd->pid = MyProcPid;
+			walsnd->pid = PgCurrentBackendSignalPid();
 			walsnd->procno = MyProcNumber;
 			walsnd->state = WALSNDSTATE_STARTUP;
 			walsnd->sentPtr = InvalidXLogRecPtr;
@@ -4231,10 +4231,6 @@ WalSndInitStopping(void)
 		if (pid == 0)
 			continue;
 
-		/*
-		 * Address the slot by ProcNumber: under multithreading every WAL
-		 * sender's pid is the server's, so a pid alone names none of them.
-		 */
 		SendProcSignal(pid, PROCSIG_WALSND_INIT_STOPPING, procno);
 	}
 }
