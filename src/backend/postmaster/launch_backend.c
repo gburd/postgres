@@ -934,6 +934,9 @@ backend_thread_entry(void *arg)
 	backend_thread_set_current_start(thread_start);
 	backend_thread_wait_until_registered(thread_start);
 #ifdef USE_XTC_CARRIER
+	/* Name the fiber by its child type in xtc_dump and the debugger. */
+	(void) xtc_proc_set_label(PostmasterChildName(thread_start->child_type));
+
 	/*
 	 * Mark that the fiber body actually began running.  The postmaster's
 	 * launcher-cancel orphan reap (ReapOrphanedThreadedWorker) only targets a
