@@ -28,6 +28,7 @@
 #include "storage/lwlock.h"
 #include "storage/shmem.h"
 #include "storage/spin.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/guc.h"
 #include "utils/injection_point.h"
@@ -35,7 +36,11 @@
 #include "utils/tuplestore.h"
 #include "utils/wait_event.h"
 
-PG_MODULE_MAGIC;
+PG_MODULE_MAGIC_EXT(
+					.name = "injection_points",
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_SAFE
+);
 
 /* Maximum number of waits usable in injection points at once */
 #define INJ_MAX_WAIT	8
@@ -46,10 +51,36 @@ PG_MODULE_MAGIC;
 #define INJ_WAIT_MAX_US			100000	/* 100ms */
 
 /*
- * List of injection points stored in TopMemoryContext attached
- * locally to this process.
+ * Per-backend state.  Under multithreading backends share this library's
+ * statics, so what each backend tracks lives in its private state instead.
  */
-static List *inj_list_local = NIL;
+typedef struct InjectionPointsBackendState
+{
+	/* Injection points in TopMemoryContext attached locally to this backend */
+	List	   *list_local;
+
+	/* Do injection points attached in this backend run only in it? */
+	bool		local;
+
+	/*
+	 * Shared state as mapped by this backend.  When the module is not
+	 * preloaded each backend maps the DSM segment itself, and that mapping
+	 * goes away when the backend exits, so the pointer cannot be shared.
+	 */
+	struct InjectionPointSharedState *state;
+} InjectionPointsBackendState;
+
+static InjectionPointsBackendState *
+injection_points_backend_state(void)
+{
+	return (InjectionPointsBackendState *)
+		PgBackendEnsureExtensionPrivateState("injection_points.backend",
+											 sizeof(InjectionPointsBackendState),
+											 NULL);
+}
+
+#define inj_list_local (injection_points_backend_state()->list_local)
+#define injection_point_local (injection_points_backend_state()->local)
 
 /*
  * Shared state information for injection points.
@@ -69,8 +100,16 @@ typedef struct InjectionPointSharedState
 	char		name[INJ_MAX_WAIT][INJ_NAME_MAXLEN];
 } InjectionPointSharedState;
 
-/* Pointer to shared-memory state. */
-static InjectionPointSharedState *inj_state = NULL;
+/*
+ * Shared state in the main shared memory segment, set at startup when the
+ * module is preloaded and the same for every backend.  Otherwise each backend
+ * maps the DSM segment itself; see InjectionPointsBackendState.
+ */
+static PG_GLOBAL_SHMEM InjectionPointSharedState *inj_shmem_state = NULL;
+
+#define inj_state \
+	(inj_shmem_state != NULL ? inj_shmem_state : \
+	 injection_points_backend_state()->state)
 
 extern PGDLLEXPORT void injection_error(const char *name,
 										const void *private_data,
@@ -81,9 +120,6 @@ extern PGDLLEXPORT void injection_notice(const char *name,
 extern PGDLLEXPORT void injection_wait(const char *name,
 									   const void *private_data,
 									   void *arg);
-
-/* track if injection points attached in this process are linked to it */
-static bool injection_point_local = false;
 
 static void injection_shmem_request(void *arg);
 static void injection_shmem_init(void *arg);
@@ -113,7 +149,7 @@ injection_shmem_request(void *arg)
 {
 	ShmemRequestStruct(.name = "injection_points",
 					   .size = sizeof(InjectionPointSharedState),
-					   .ptr = (void **) &inj_state,
+					   .ptr = (void **) &inj_shmem_state,
 		);
 }
 
@@ -124,7 +160,7 @@ injection_shmem_init(void *arg)
 	 * First time through, so initialize.  This is shared with the dynamic
 	 * initialization using a DSM.
 	 */
-	injection_point_init_state(inj_state, NULL);
+	injection_point_init_state(inj_shmem_state, NULL);
 }
 
 /*
@@ -138,10 +174,11 @@ injection_init_shmem(void)
 	if (inj_state != NULL)
 		return;
 
-	inj_state = GetNamedDSMSegment("injection_points",
-								   sizeof(InjectionPointSharedState),
-								   injection_point_init_state,
-								   &found, NULL);
+	injection_points_backend_state()->state =
+		GetNamedDSMSegment("injection_points",
+						   sizeof(InjectionPointSharedState),
+						   injection_point_init_state,
+						   &found, NULL);
 }
 
 /*
@@ -154,9 +191,9 @@ static bool
 injection_point_allowed(const InjectionPointCondition *condition,
 						const char *arg)
 {
-	/* Does not match the condition PID? */
-	if ((condition->type & INJ_CONDITION_PID) &&
-		MyProcPid != condition->pid)
+	/* Does not match the condition backend? */
+	if ((condition->type & INJ_CONDITION_PROC) &&
+		MyProcNumber != condition->procno)
 		return false;
 
 	/* Does not match the condition string? */
@@ -345,8 +382,8 @@ injection_points_attach(PG_FUNCTION_ARGS)
 
 	if (injection_point_local)
 	{
-		condition.type |= INJ_CONDITION_PID;
-		condition.pid = MyProcPid;
+		condition.type |= INJ_CONDITION_PROC;
+		condition.procno = MyProcNumber;
 	}
 
 	if (str)

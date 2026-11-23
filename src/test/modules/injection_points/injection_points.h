@@ -21,7 +21,7 @@
 typedef enum InjectionPointConditionType
 {
 	INJ_CONDITION_NONE = 0,		/* no restrictions to apply */
-	INJ_CONDITION_PID = 1 << 0, /* PID restriction */
+	INJ_CONDITION_PROC = 1 << 0,	/* backend restriction */
 	INJ_CONDITION_STRING = 1 << 1,	/* string to compare with arg */
 } InjectionPointConditionType;
 
@@ -30,8 +30,11 @@ typedef struct InjectionPointCondition
 	/* Type of the condition */
 	InjectionPointConditionType type;
 
-	/* ID of the process where the injection point is allowed to run */
-	int			pid;
+	/*
+	 * ProcNumber of the backend where the injection point is allowed to run.
+	 * Threaded backends share one pid, so the pid cannot name one of them.
+	 */
+	int			procno;
 
 	/* String to compare with an argument at runtime */
 	char		str[INJ_DATA_MAXLEN];
