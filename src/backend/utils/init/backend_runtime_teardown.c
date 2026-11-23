@@ -475,10 +475,17 @@ PgBackendResetWalSenderClosedState(PgBackendWalSenderState *walsender)
 	 * below.  Only the interrupted-mid-stream case reaches here with the cell
 	 * still set; the normal logical exit path already freed it and NULLed the
 	 * cell (StartLogicalReplication).
+	 *
+	 * FreeDecodingContext() also cleans up the slot's spill files, which needs
+	 * MyReplicationSlot.  By the time a backend exit gets here, the slot's
+	 * before_shmem_exit callback has usually released it; then deleting the
+	 * parent context below is all the freeing there is to do, as in a process
+	 * backend that simply exits.
 	 */
 	if (walsender->logical_decoding_ctx != NULL)
 	{
-		FreeDecodingContext(walsender->logical_decoding_ctx);
+		if (MyReplicationSlot != NULL)
+			FreeDecodingContext(walsender->logical_decoding_ctx);
 		walsender->logical_decoding_ctx = NULL;
 		walsender->xlogreader = NULL;
 	}
@@ -558,12 +565,12 @@ PgBackendResetLogicalReplicationClosedState(PgBackend *backend)
 		logical_replication->stream_fd = NULL;
 	}
 
-	if (logical_replication->copybuf != NULL)
-	{
-		PgBackendResetStringInfo(logical_replication->copybuf);
-		pfree(logical_replication->copybuf);
-		logical_replication->copybuf = NULL;
-	}
+	/*
+	 * copy_table() allocates copybuf in the transaction's memory context and
+	 * points its data at libpq's receive buffer, so by now both are gone or
+	 * owned elsewhere.  Forget the pointer; there is nothing to free.
+	 */
+	logical_replication->copybuf = NULL;
 
 	if (logical_replication->subxact_data.subxacts != NULL)
 	{
@@ -595,13 +602,16 @@ PgBackendResetLogicalReplicationClosedState(PgBackend *backend)
 		logical_replication->slotsync_observed_primary_slotname = NULL;
 	}
 
-	PG_RUNTIME_DESTROY_HASH(logical_replication->parallel_apply_txn_hash);
-
-	PG_RUNTIME_LIST_FREE(logical_replication->on_commit_wakeup_workers_subids);
-	PG_RUNTIME_LIST_FREE(logical_replication->table_states_not_ready);
-	PG_RUNTIME_LIST_FREE(logical_replication->seqinfos);
-	PG_RUNTIME_LIST_FREE(logical_replication->parallel_apply_worker_pool);
-	PG_RUNTIME_LIST_FREE(logical_replication->parallel_apply_subxactlist);
+	/*
+	 * None of these own their storage.  The parallel-apply hash, worker pool,
+	 * and sequence list live in ApplyContext, deleted just below; the
+	 * table-state list lives in CacheMemoryContext, which session reset has
+	 * already deleted; the wakeup and subxact lists live in
+	 * TopTransactionContext.  Forget the pointers.
+	 */
+	logical_replication->parallel_apply_txn_hash = NULL;
+	logical_replication->parallel_apply_worker_pool = NIL;
+	logical_replication->parallel_apply_subxactlist = NIL;
 
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(logical_replication->apply_context);
 
@@ -1115,7 +1125,11 @@ PgSessionResetLogicalReplicationClosedState(PgSession *session)
 		PG_RUNTIME_DESTROY_HASH(session->logical_replication.logical_rep_partmap);
 	}
 
-	PG_RUNTIME_DESTROY_HASH(session->logical_replication.pgoutput_relation_sync_cache);
+	/*
+	 * pgoutput builds its relation sync hash in CacheMemoryContext, which the
+	 * catalog_lookup bucket has already deleted, so only forget the pointer.
+	 */
+	session->logical_replication.pgoutput_relation_sync_cache = NULL;
 	session->logical_replication.pgoutput_publications_valid = false;
 	session->logical_replication.syncing_relations_state = 0;
 }

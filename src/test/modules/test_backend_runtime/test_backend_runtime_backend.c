@@ -862,22 +862,19 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	logical_replication->my_subscription_valid = true;
 	logical_replication->my_logical_rep_worker =
 		(LogicalRepWorker *) &fake_backend;
-	logical_replication->on_commit_wakeup_workers_subids = list_make1_int(1);
-	logical_replication->copybuf = makeStringInfo();
-	appendStringInfoString(logical_replication->copybuf, "copy");
-	logical_replication->table_states_not_ready = list_make1_int(2);
-	logical_replication->seqinfos = list_make1_int(3);
+	logical_replication->on_commit_wakeup_workers_subids = (List *) &fake_backend;
+	logical_replication->copybuf = (StringInfo) &fake_backend;
+	logical_replication->table_states_not_ready = (List *) &fake_backend;
+	logical_replication->seqinfos = (List *) &fake_backend;
 	logical_replication->slotsync_observed_primary_conninfo =
 		pstrdup("conninfo");
 	logical_replication->slotsync_observed_primary_slotname =
 		pstrdup("slotname");
-	logical_replication->parallel_apply_txn_hash =
-		hash_create("test parallel apply txn hash", 8, &hash_ctl,
-					HASH_ELEM | HASH_BLOBS);
-	logical_replication->parallel_apply_worker_pool = list_make1_int(4);
+	logical_replication->parallel_apply_txn_hash = (HTAB *) &fake_backend;
+	logical_replication->parallel_apply_worker_pool = (List *) &fake_backend;
 	logical_replication->stream_apply_worker =
 		(ParallelApplyWorkerInfo *) &fake_backend;
-	logical_replication->parallel_apply_subxactlist = list_make1_int(5);
+	logical_replication->parallel_apply_subxactlist = (List *) &fake_backend;
 	logical_replication->parallel_apply_message_context =
 		AllocSetContextCreate(TopMemoryContext,
 							  "test parallel apply message context",
