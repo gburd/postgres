@@ -447,3 +447,9 @@ has_subsequences_non_ready	PgBackend	logical_replication	sync_has_subsequences_n
 last_start_times	PgBackend	logical_replication	tablesync_last_start_times	PgCurrentLogicalReplicationState	src/backend/replication/logical/tablesync.c	ProcessSyncingTablesForApply() function-static hash in the backend TopMemoryContext, which owns its storage
 InRecovery	PgBackend	recovery	in_recovery	PgCurrentRecoveryState	src/backend/access/transam/xlogutils.c	this backend is replaying WAL; set only by the startup process, so under multithreading no other backend sees it true
 standbyState	PgBackend	recovery	standby_state	PgCurrentRecoveryState	src/backend/access/transam/xlogutils.c	the startup process hot-standby state; STANDBY_DISABLED (0) in every other backend
+sendTime	PgBackend	walsender	update_progress_send_time	PgCurrentWalSenderState	src/backend/replication/walsender.c	WalSndUpdateProgress() function-static last keepalive time; scalar reset with the bucket
+RecentFlushPtr	PgBackend	walsender	wait_recent_flush_ptr	PgCurrentWalSenderState	src/backend/replication/walsender.c	WalSndWaitForWal() function-static cached flush LSN; scalar reset with the bucket
+prevWritePtr	PgBackend	walsender	reply_prev_write_ptr	PgCurrentWalSenderState	src/backend/replication/walsender.c	ProcessStandbyReplyMessage() function-static previous write LSN; scalar reset with the bucket
+prevFlushPtr	PgBackend	walsender	reply_prev_flush_ptr	PgCurrentWalSenderState	src/backend/replication/walsender.c	ProcessStandbyReplyMessage() function-static previous flush LSN; scalar reset with the bucket
+prevApplyPtr	PgBackend	walsender	reply_prev_apply_ptr	PgCurrentWalSenderState	src/backend/replication/walsender.c	ProcessStandbyReplyMessage() function-static previous apply LSN; scalar reset with the bucket
+flushPtr	PgBackend	walsender	logical_flush_ptr	PgCurrentWalSenderState	src/backend/replication/walsender.c	XLogSendLogical() function-static cached flush LSN; scalar reset with the bucket

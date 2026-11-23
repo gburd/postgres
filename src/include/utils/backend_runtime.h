@@ -301,6 +301,13 @@ typedef struct PgBackendWalSenderState
 	LogicalDecodingContext *logical_decoding_ctx;
 	MemoryContext replication_cmd_context;
 	LagTracker *lag_tracker;
+	/* function-local statics in walsender.c, one copy per WAL sender */
+	TimestampTz update_progress_send_time;
+	XLogRecPtr	wait_recent_flush_ptr;
+	XLogRecPtr	reply_prev_write_ptr;
+	XLogRecPtr	reply_prev_flush_ptr;
+	XLogRecPtr	reply_prev_apply_ptr;
+	XLogRecPtr	logical_flush_ptr;
 } PgBackendWalSenderState;
 
 #define PG_BACKEND_WALRCV_NUM_WAKEUPS 4

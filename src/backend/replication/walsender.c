@@ -1792,7 +1792,7 @@ static void
 WalSndUpdateProgress(LogicalDecodingContext *ctx, XLogRecPtr lsn, TransactionId xid,
 					 bool skipped_xact)
 {
-	static TimestampTz sendTime = 0;
+#define sendTime (PgCurrentWalSenderState()->update_progress_send_time)
 	TimestampTz now = GetCurrentTimestamp();
 	bool		pending_writes = false;
 	bool		end_xact = ctx->end_xact;
@@ -1847,6 +1847,7 @@ WalSndUpdateProgress(LogicalDecodingContext *ctx, XLogRecPtr lsn, TransactionId 
 						   now >= TimestampTzPlusMilliseconds(last_reply_timestamp,
 															  wal_sender_timeout / 2)))
 		ProcessPendingWrites();
+#undef sendTime
 }
 
 /*
@@ -1943,7 +1944,7 @@ WalSndWaitForWal(XLogRecPtr loc)
 {
 	int			wakeEvents;
 	uint32		wait_event = 0;
-	static XLogRecPtr RecentFlushPtr = InvalidXLogRecPtr;
+#define RecentFlushPtr (PgCurrentWalSenderState()->wait_recent_flush_ptr)
 	TimestampTz last_flush = 0;
 
 	/*
@@ -2109,6 +2110,7 @@ WalSndWaitForWal(XLogRecPtr loc)
 	/* reactivate latch so WalSndLoop knows to continue */
 	SetLatch(MyLatch);
 	return RecentFlushPtr;
+#undef RecentFlushPtr
 }
 
 /*
@@ -2570,9 +2572,9 @@ ProcessStandbyReplyMessage(void)
 	TimestampTz now;
 	TimestampTz replyTime;
 
-	static XLogRecPtr prevWritePtr = InvalidXLogRecPtr;
-	static XLogRecPtr prevFlushPtr = InvalidXLogRecPtr;
-	static XLogRecPtr prevApplyPtr = InvalidXLogRecPtr;
+#define prevWritePtr (PgCurrentWalSenderState()->reply_prev_write_ptr)
+#define prevFlushPtr (PgCurrentWalSenderState()->reply_prev_flush_ptr)
+#define prevApplyPtr (PgCurrentWalSenderState()->reply_prev_apply_ptr)
 
 	/* the caller already consumed the msgtype byte */
 	writePtr = pq_getmsgint64(&reply_message);
@@ -2661,6 +2663,9 @@ ProcessStandbyReplyMessage(void)
 		else
 			PhysicalConfirmReceivedLocation(flushPtr);
 	}
+#undef prevWritePtr
+#undef prevFlushPtr
+#undef prevApplyPtr
 }
 
 /* compute new replication slot xmin horizon if needed */
@@ -3718,11 +3723,10 @@ XLogSendLogical(void)
 
 	/*
 	 * We'll use the current flush point to determine whether we've caught up.
-	 * This variable is static in order to cache it across calls.  Caching is
-	 * helpful because GetFlushRecPtr() needs to acquire a heavily-contended
-	 * spinlock.
+	 * It is cached across calls, per WAL sender, because GetFlushRecPtr()
+	 * needs to acquire a heavily-contended spinlock.
 	 */
-	static XLogRecPtr flushPtr = InvalidXLogRecPtr;
+#define flushPtr (PgCurrentWalSenderState()->logical_flush_ptr)
 
 	/*
 	 * Don't know whether we've caught up yet. We'll set WalSndCaughtUp to
@@ -3792,6 +3796,7 @@ XLogSendLogical(void)
 		walsnd->sentPtr = local_sent_ptr;
 		SpinLockRelease(&walsnd->mutex);
 	}
+#undef flushPtr
 }
 
 /*

@@ -520,6 +520,12 @@ PgBackendResetWalSenderClosedState(PgBackendWalSenderState *walsender)
 		pfree(walsender->lag_tracker);
 		walsender->lag_tracker = NULL;
 	}
+	walsender->update_progress_send_time = 0;
+	walsender->wait_recent_flush_ptr = InvalidXLogRecPtr;
+	walsender->reply_prev_write_ptr = InvalidXLogRecPtr;
+	walsender->reply_prev_flush_ptr = InvalidXLogRecPtr;
+	walsender->reply_prev_apply_ptr = InvalidXLogRecPtr;
+	walsender->logical_flush_ptr = InvalidXLogRecPtr;
 }
 
 static void
