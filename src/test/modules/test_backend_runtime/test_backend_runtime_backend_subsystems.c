@@ -1591,10 +1591,8 @@ test_backend_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 	saved_backend = CurrentPgBackend;
 	MemSet(&fake_backend1, 0, sizeof(fake_backend1));
 	MemSet(&fake_backend2, 0, sizeof(fake_backend2));
-	fake_backend1.replication.sync_rep_wait_mode = SYNC_REP_NO_WAIT;
 	fake_backend1.replication.walreceiver_recv_file = -1;
 	fake_backend1.replication.walreceiver_primary_has_standby_xmin = true;
-	fake_backend2.replication.sync_rep_wait_mode = SYNC_REP_NO_WAIT;
 	fake_backend2.replication.walreceiver_recv_file = -1;
 	fake_backend2.replication.walreceiver_primary_has_standby_xmin = true;
 
@@ -1604,7 +1602,6 @@ test_backend_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 		replication1 = PgCurrentReplicationState();
 		replication1->my_replication_slot =
 			(ReplicationSlot *) &fake_backend1;
-		replication1->sync_rep_wait_mode = SYNC_REP_WAIT_FLUSH;
 		replication1->walreceiver_conn = (WalReceiverConn *) &fake_backend1;
 		replication1->walreceiver_recv_file = 101;
 		replication1->walreceiver_recv_file_tli = 102;
@@ -1618,7 +1615,6 @@ test_backend_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 		PgSetCurrentBackend(&fake_backend2);
 		replication2 = PgCurrentReplicationState();
 		ok = ok && replication2->my_replication_slot == NULL;
-		ok = ok && replication2->sync_rep_wait_mode == SYNC_REP_NO_WAIT;
 		ok = ok && replication2->walreceiver_conn == NULL;
 		ok = ok && replication2->walreceiver_recv_file == -1;
 		ok = ok && replication2->walreceiver_recv_file_tli == 0;
@@ -1631,7 +1627,6 @@ test_backend_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 
 		replication2->my_replication_slot =
 			(ReplicationSlot *) &fake_backend2;
-		replication2->sync_rep_wait_mode = SYNC_REP_WAIT_APPLY;
 		replication2->walreceiver_conn = (WalReceiverConn *) &fake_backend2;
 		replication2->walreceiver_recv_file = 201;
 		replication2->walreceiver_recv_file_tli = 202;
@@ -1646,7 +1641,6 @@ test_backend_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 		replication1 = PgCurrentReplicationState();
 		ok = ok && replication1->my_replication_slot ==
 			(ReplicationSlot *) &fake_backend1;
-		ok = ok && replication1->sync_rep_wait_mode == SYNC_REP_WAIT_FLUSH;
 		ok = ok && replication1->walreceiver_conn ==
 			(WalReceiverConn *) &fake_backend1;
 		ok = ok && replication1->walreceiver_recv_file == 101;
@@ -1664,7 +1658,6 @@ test_backend_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 		replication2 = PgCurrentReplicationState();
 		ok = ok && replication2->my_replication_slot ==
 			(ReplicationSlot *) &fake_backend2;
-		ok = ok && replication2->sync_rep_wait_mode == SYNC_REP_WAIT_APPLY;
 		ok = ok && replication2->walreceiver_conn ==
 			(WalReceiverConn *) &fake_backend2;
 		ok = ok && replication2->walreceiver_recv_file == 201;

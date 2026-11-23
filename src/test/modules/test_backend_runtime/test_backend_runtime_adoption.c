@@ -31,7 +31,7 @@ test_thread_install_adopts_backend_fallback_state(PG_FUNCTION_ARGS)
 	{
 		PgSetCurrentBackend(NULL);
 		PgCurrentWalSenderState()->is_walsender = true;
-		PgCurrentReplicationState()->sync_rep_wait_mode = 101;
+		PgCurrentReplicationState()->walreceiver_recv_file_tli = 101;
 		PgCurrentLogicalReplicationState()->slotsync_sleep_ms = 102;
 		PgCurrentLogicalReplicationState()->origin_cleanup_registered = true;
 		PgCurrentXLogState()->local_xlog_insert_allowed = 103;
@@ -55,7 +55,7 @@ test_thread_install_adopts_backend_fallback_state(PG_FUNCTION_ARGS)
 		PgBackendAdoptEarlyState(&state.logical.backend);
 
 		ok = ok && state.logical.backend.walsender.is_walsender;
-		ok = ok && state.logical.backend.replication.sync_rep_wait_mode == 101;
+		ok = ok && state.logical.backend.replication.walreceiver_recv_file_tli == 101;
 		ok = ok && state.logical.backend.logical_replication.slotsync_sleep_ms == 102;
 		ok = ok && state.logical.backend.logical_replication.origin_cleanup_registered;
 		ok = ok && dlist_is_empty(&state.logical.backend.logical_replication.lsn_mapping);
@@ -76,7 +76,7 @@ test_thread_install_adopts_backend_fallback_state(PG_FUNCTION_ARGS)
 			state.logical.backend.interrupt_holdoffs.interrupt_holdoff_count == 109;
 
 		ok = ok && !PgCurrentWalSenderState()->is_walsender;
-		ok = ok && PgCurrentReplicationState()->sync_rep_wait_mode == -1;
+		ok = ok && PgCurrentReplicationState()->walreceiver_recv_file_tli == 0;
 		ok = ok && !PgCurrentLogicalReplicationState()->origin_cleanup_registered;
 		ok = ok && PgCurrentLogicalReplicationState()->slotsync_sleep_ms ==
 			PG_BACKEND_SLOTSYNC_INITIAL_SLEEP_MS;

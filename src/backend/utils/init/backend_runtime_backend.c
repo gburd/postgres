@@ -112,7 +112,6 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackend early_backend_fallback = {
 		.mode = InitProcessing
 	},
 	.replication = {
-		.sync_rep_wait_mode = -1,
 		.walreceiver_recv_file = -1,
 		.walreceiver_primary_has_standby_xmin = true
 	},
@@ -914,7 +913,6 @@ PgBackendInitializeReplicationState(PgBackendReplicationState *replication)
 	Assert(replication != NULL);
 
 	MemSet(replication, 0, sizeof(*replication));
-	replication->sync_rep_wait_mode = -1;
 	replication->walreceiver_recv_file = -1;
 	replication->walreceiver_primary_has_standby_xmin = true;
 }

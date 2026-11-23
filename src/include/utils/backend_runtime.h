@@ -314,7 +314,6 @@ typedef struct PgBackendWalReceiverLogstreamResult
 typedef struct PgBackendReplicationState
 {
 	ReplicationSlot *my_replication_slot;
-	int			sync_rep_wait_mode;
 	WalReceiverConn *walreceiver_conn;
 	int			walreceiver_recv_file;
 	TimeLineID	walreceiver_recv_file_tli;

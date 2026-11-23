@@ -97,7 +97,29 @@ PG_GLOBAL_RUNTIME char *SyncRepStandbyNames;
 static PG_GLOBAL_RUNTIME bool announce_next_takeover = true;
 
 PG_GLOBAL_RUNTIME SyncRepConfigData *SyncRepConfig = NULL;
-#define SyncRepWaitMode (PgCurrentReplicationState()->sync_rep_wait_mode)
+/*
+ * Upstream caches the wait mode in a global that assign_synchronous_commit()
+ * keeps in step with synchronous_commit.  A per-backend cache would miss the
+ * postmaster's assignment, which forked children inherit, so derive it from
+ * the session's synchronous_commit where it is needed.
+ */
+static int
+SyncRepWaitModeFor(int sync_commit)
+{
+	switch (sync_commit)
+	{
+		case SYNCHRONOUS_COMMIT_REMOTE_WRITE:
+			return SYNC_REP_WAIT_WRITE;
+		case SYNCHRONOUS_COMMIT_REMOTE_FLUSH:
+			return SYNC_REP_WAIT_FLUSH;
+		case SYNCHRONOUS_COMMIT_REMOTE_APPLY:
+			return SYNC_REP_WAIT_APPLY;
+		default:
+			return SYNC_REP_NO_WAIT;
+	}
+}
+
+#define SyncRepWaitMode SyncRepWaitModeFor(synchronous_commit)
 
 static void SyncRepQueueInsert(int mode);
 static void SyncRepCancelWait(void);
@@ -1131,19 +1153,5 @@ assign_synchronous_standby_names(const char *newval, void *extra)
 void
 assign_synchronous_commit(int newval, void *extra)
 {
-	switch (newval)
-	{
-		case SYNCHRONOUS_COMMIT_REMOTE_WRITE:
-			SyncRepWaitMode = SYNC_REP_WAIT_WRITE;
-			break;
-		case SYNCHRONOUS_COMMIT_REMOTE_FLUSH:
-			SyncRepWaitMode = SYNC_REP_WAIT_FLUSH;
-			break;
-		case SYNCHRONOUS_COMMIT_REMOTE_APPLY:
-			SyncRepWaitMode = SYNC_REP_WAIT_APPLY;
-			break;
-		default:
-			SyncRepWaitMode = SYNC_REP_NO_WAIT;
-			break;
-	}
+	/* SyncRepWaitMode is derived from synchronous_commit when used. */
 }
