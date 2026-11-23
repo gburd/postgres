@@ -1310,6 +1310,23 @@ AuxiliaryPidGetProc(int pid)
 }
 
 /*
+ * GetPGProcSignalPid -- the SQL-visible pid of the backend that owns proc.
+ *
+ * This is what pg_backend_pid() returns in that backend, and what
+ * pg_stat_activity shows.  In process mode it is proc->pid.  A thread-backed
+ * backend shares the server's OS pid, so it is known by its backend id
+ * instead.
+ */
+int
+GetPGProcSignalPid(PGPROC *proc)
+{
+	if (proc->pid == PostmasterPid && proc->backendId != 0)
+		return (int) proc->backendId;
+
+	return proc->pid;
+}
+
+/*
  * AuxiliarySignalPidGetProc -- get PGPROC for an auxiliary process given its
  * SQL-visible signal target ID.
  *

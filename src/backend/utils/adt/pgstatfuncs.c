@@ -40,15 +40,6 @@
 
 #define HAS_PGSTAT_PERMISSIONS(role)	 (has_privs_of_role(GetUserId(), ROLE_PG_READ_ALL_STATS) || has_privs_of_role(GetUserId(), role))
 
-static int
-PgStatProcSignalPid(PGPROC *proc)
-{
-	if (proc->pid == PostmasterPid && proc->backendId != 0)
-		return (int) proc->backendId;
-
-	return proc->pid;
-}
-
 #define PG_STAT_GET_RELENTRY_INT64(stat)						\
 Datum															\
 CppConcat(pg_stat_get_,stat)(PG_FUNCTION_ARGS)					\
@@ -557,9 +548,9 @@ pg_stat_get_activity(PG_FUNCTION_ARGS)
 				 * leaves the field as NULL for the leader of a parallel group
 				 * or the leader of parallel apply workers.
 				 */
-				if (leader && PgStatProcSignalPid(leader) != beentry->st_procpid)
+				if (leader && GetPGProcSignalPid(leader) != beentry->st_procpid)
 				{
-					values[29] = Int32GetDatum(PgStatProcSignalPid(leader));
+					values[29] = Int32GetDatum(GetPGProcSignalPid(leader));
 					nulls[29] = false;
 				}
 				else if (beentry->st_backendType == B_BG_WORKER)

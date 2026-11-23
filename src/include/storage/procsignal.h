@@ -76,6 +76,7 @@ extern int	SendProcSignal(pid_t pid, ProcSignalReason reason,
 extern int	SendBackendInterrupt(int backend_pid,
 								 PgBackendInterruptType interrupt_type,
 								 int sender_pid, int sender_uid);
+extern void TerminateBackendByProc(struct PGPROC *proc);
 extern bool ProcSignalBackendInterruptsPending(void);
 extern PgBackendInterruptMask ConsumeBackendInterruptsFromProcSignal(int *sender_pid,
 																	 int *sender_uid);

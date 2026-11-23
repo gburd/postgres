@@ -3808,7 +3808,7 @@ CountOtherDBBackends(Oid databaseId, int *nbackends, int *nprepared)
 	ProcArrayStruct *arrayP = procArray;
 
 #define MAXAUTOVACPIDS	10		/* max autovacs to SIGTERM per iteration */
-	int			autovac_pids[MAXAUTOVACPIDS];
+	PGPROC	   *autovac_procs[MAXAUTOVACPIDS];
 
 	/*
 	 * Retry up to 50 times with 100ms between attempts (max 5s total). Can be
@@ -3853,7 +3853,7 @@ CountOtherDBBackends(Oid databaseId, int *nbackends, int *nprepared)
 				(*nbackends)++;
 				if ((statusFlags & PROC_IS_AUTOVACUUM) &&
 					nautovacs < MAXAUTOVACPIDS)
-					autovac_pids[nautovacs++] = proc->pid;
+					autovac_procs[nautovacs++] = proc;
 			}
 		}
 
@@ -3869,7 +3869,7 @@ CountOtherDBBackends(Oid databaseId, int *nbackends, int *nprepared)
 		 * block kill() inside the kernel...
 		 */
 		for (index = 0; index < nautovacs; index++)
-			(void) kill(autovac_pids[index], SIGTERM);	/* ignore any error */
+			TerminateBackendByProc(autovac_procs[index]);
 
 		/*
 		 * Terminate all background workers for this database, if they have
@@ -3899,7 +3899,7 @@ void
 TerminateOtherDBBackends(Oid databaseId)
 {
 	ProcArrayStruct *arrayP = procArray;
-	List	   *pids = NIL;
+	List	   *procs = NIL;
 	int			nprepared = 0;
 	int			i;
 
@@ -3916,7 +3916,7 @@ TerminateOtherDBBackends(Oid databaseId)
 			continue;
 
 		if (proc->pid != 0)
-			pids = lappend_int(pids, proc->pid);
+			procs = lappend_int(procs, pgprocno);
 		else
 			nprepared++;
 	}
@@ -3933,7 +3933,7 @@ TerminateOtherDBBackends(Oid databaseId)
 								  nprepared,
 								  nprepared)));
 
-	if (pids)
+	if (procs)
 	{
 		ListCell   *lc;
 
@@ -3953,12 +3953,11 @@ TerminateOtherDBBackends(Oid databaseId)
 		 * "PID %d is not a PostgreSQL server process", because for us already
 		 * finished session is not a problem.
 		 */
-		foreach(lc, pids)
+		foreach(lc, procs)
 		{
-			int			pid = lfirst_int(lc);
-			PGPROC	   *proc = BackendPidGetProc(pid);
+			PGPROC	   *proc = GetPGProcByNumber(lfirst_int(lc));
 
-			if (proc != NULL)
+			if (proc->pid != 0)
 			{
 				PGPROC	   *leader = proc->lockGroupLeader;
 				Oid			roleId = proc->roleId;
@@ -3999,12 +3998,16 @@ TerminateOtherDBBackends(Oid databaseId)
 		 * race condition possibility seems too unlikely to worry about.  See
 		 * pg_signal_backend.
 		 */
-		foreach(lc, pids)
+		foreach(lc, procs)
 		{
-			int			pid = lfirst_int(lc);
-			PGPROC	   *proc = BackendPidGetProc(pid);
+			PGPROC	   *proc = GetPGProcByNumber(lfirst_int(lc));
+			pid_t		pid = proc->pid;
 
-			if (proc != NULL)
+			if (pid == 0)
+				continue;
+			if (pid == PostmasterPid && proc->backendId != 0)
+				TerminateBackendByProc(proc);
+			else
 			{
 				/*
 				 * If we have setsid(), signal the backend's whole process

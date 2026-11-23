@@ -357,6 +357,29 @@ SendBackendInterrupt(int backend_pid, PgBackendInterruptType interrupt_type,
 	return -1;
 }
 
+/*
+ * TerminateBackendByProc
+ *		Ask the backend that owns proc to exit, as SIGTERM would.
+ *
+ * A thread-backed backend shares the server's OS pid, so kill() on proc->pid
+ * would terminate the whole server.  Raise PROC_DIE in its mailbox instead.
+ * The caller must hold whatever lock keeps proc's identity stable, or accept
+ * the usual race of signalling a pid that has just exited.
+ */
+void
+TerminateBackendByProc(PGPROC *proc)
+{
+	pid_t		pid = proc->pid;
+
+	if (pid == 0)
+		return;
+	if (pid == PostmasterPid && proc->backendId != 0)
+		(void) PgBackendSendInterruptById(proc->backendId,
+										  PG_BACKEND_INTERRUPT_PROC_DIE,
+										  MyProcPid, getuid());
+	else
+		(void) kill(pid, SIGTERM);
+}
 
 PgBackendInterruptMask
 ConsumeBackendInterruptsFromProcSignal(int *sender_pid, int *sender_uid)
