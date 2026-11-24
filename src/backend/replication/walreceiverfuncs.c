@@ -28,6 +28,7 @@
 #include "replication/walreceiver.h"
 #include "storage/pmsignal.h"
 #include "storage/proc.h"
+#include "storage/procsignal.h"
 #include "storage/shmem.h"
 #include "storage/subsystems.h"
 #include "utils/timestamp.h"
@@ -232,14 +233,14 @@ ShutdownWalRcv(void)
 		ConditionVariableBroadcast(&walrcv->walRcvStoppedCV);
 
 	/*
-	 * Signal walreceiver process if it was still running. A thread-backed WAL
-	 * receiver shares the postmaster PID, so wake its latch and let it observe
-	 * WALRCV_STOPPING instead of sending SIGTERM to the whole server runtime.
+	 * Signal walreceiver process if it was still running.  A thread-backed WAL
+	 * receiver shares the server's pid, so raise PROC_DIE in its mailbox, which
+	 * ends it exactly as SIGTERM ends a process one.
 	 */
 	if (walrcv_threaded)
 	{
 		if (walrcv_proc != INVALID_PROC_NUMBER)
-			SetLatch(&GetPGProcByNumber(walrcv_proc)->procLatch);
+			TerminateBackendByProc(GetPGProcByNumber(walrcv_proc));
 	}
 	else if (walrcvpid != 0)
 		kill(walrcvpid, SIGTERM);
