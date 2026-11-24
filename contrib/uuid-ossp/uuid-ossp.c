@@ -105,7 +105,8 @@ do { \
 
 PG_MODULE_MAGIC_EXT(
 					.name = "uuid-ossp",
-					.version = PG_VERSION
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_SAFE
 );
 
 PG_FUNCTION_INFO_V1(uuid_nil);

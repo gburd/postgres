@@ -26,7 +26,8 @@
 
 PG_MODULE_MAGIC_EXT(
 					.name = "pg_surgery",
-					.version = PG_VERSION
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_SAFE
 );
 
 /* Options to forcefully change the state of a heap tuple. */
