@@ -253,6 +253,22 @@ ProcessStartupProcInterrupts(void)
 	 */
 	StartupProcApplyLogicalInterrupts();
 
+	/*
+	 * A threaded startup process's interrupts may have been consumed by a
+	 * CHECK_FOR_INTERRUPTS() in a wait, which sets the generic flags rather
+	 * than this process's own.  Fold them in.
+	 */
+	if (ConfigReloadPending)
+	{
+		ConfigReloadPending = false;
+		got_SIGHUP = true;
+	}
+	if (ShutdownRequestPending)
+	{
+		ShutdownRequestPending = false;
+		shutdown_requested = true;
+	}
+
 	if (got_SIGHUP)
 	{
 		got_SIGHUP = false;

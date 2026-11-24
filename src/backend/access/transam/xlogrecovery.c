@@ -504,7 +504,18 @@ InitWalRecovery(ControlFileData *ControlFile, bool *wasShutdown_ptr,
 	 * recovery, if required.
 	 */
 	if (ArchiveRecoveryRequested)
+	{
 		OwnLatch(&XLogRecoveryCtl->recoveryWakeupLatch);
+
+		/*
+		 * The startup process waits on this latch, not on MyLatch.  In process
+		 * mode its signal handlers call WakeupRecovery(); a threaded startup
+		 * process gets its interrupts through the backend mailbox, so point
+		 * the mailbox's wakeup at this latch while it is the one waited on.
+		 */
+		PgBackendSetInterruptLatch(CurrentPgBackend,
+								   &XLogRecoveryCtl->recoveryWakeupLatch);
+	}
 
 	/*
 	 * Set the WAL reading processor now, as it will be needed when reading
@@ -1625,7 +1636,10 @@ ShutdownWalRecovery(void)
 	 * it, but let's do it for the sake of tidiness.
 	 */
 	if (ArchiveRecoveryRequested)
+	{
+		PgBackendSetInterruptLatch(CurrentPgBackend, MyLatch);
 		DisownLatch(&XLogRecoveryCtl->recoveryWakeupLatch);
+	}
 }
 
 /*
