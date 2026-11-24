@@ -20,7 +20,11 @@
 #include "utils/builtins.h"
 #include "utils/pg_lsn.h"
 
-PG_MODULE_MAGIC;
+PG_MODULE_MAGIC_EXT(
+					.name = "test_wait_lsn",
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_SAFE
+);
 
 PG_FUNCTION_INFO_V1(test_wait_lsn_wakeup);
 PG_FUNCTION_INFO_V1(test_wait_lsn_waiter_is_registered);
@@ -78,7 +82,7 @@ test_wait_lsn_waiter_is_registered(PG_FUNCTION_ARGS)
 	PGPROC	   *proc;
 
 	LWLockAcquire(ProcArrayLock, LW_SHARED);
-	proc = BackendPidGetProcWithLock(pid);
+	proc = BackendSignalPidGetProcWithLock(pid);
 
 	if (proc != NULL)
 	{
