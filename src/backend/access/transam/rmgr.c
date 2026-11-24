@@ -30,6 +30,7 @@
 #include "access/multixact.h"
 #include "access/nbtxlog.h"
 #include "access/spgxlog.h"
+#include "access/undo_xlog.h"
 #include "access/xact.h"
 #include "catalog/storage_xlog.h"
 #include "commands/dbcommands_xlog.h"
@@ -38,6 +39,7 @@
 #include "replication/decode.h"
 #include "replication/message.h"
 #include "replication/origin.h"
+#include "storage/fileops.h"
 #include "storage/standby.h"
 #include "utils/relmapper.h"
 /* IWYU pragma: end_keep */

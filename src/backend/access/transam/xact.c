@@ -26,7 +26,11 @@
 #include "access/subtrans.h"
 #include "access/transam.h"
 #include "access/twophase.h"
+#include "access/undo_xlog.h"
+#include "access/undolog.h"
+#include "access/undorecord.h"
 #include "access/xact.h"
+#include "access/xactundo.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
 #include "access/xlogrecovery.h"
@@ -55,6 +59,7 @@
 #include "storage/aio_subsys.h"
 #include "storage/condition_variable.h"
 #include "storage/fd.h"
+#include "storage/fileops.h"
 #include "storage/lmgr.h"
 #include "storage/md.h"
 #include "storage/predicate.h"
@@ -418,6 +423,37 @@ IsAbortedTransactionBlockState(void)
 	return false;
 }
 
+
+/*
+ *	EnterInlineUndoApplyState / LeaveInlineUndoApplyState
+ *
+ * AtAbort_XactUndo() may apply UNDO records synchronously in this backend
+ * while AbortTransaction() has already set s->state = TRANS_ABORT but has
+ * not yet torn down the relcache, locks, or resource owner.  UNDO appliers
+ * (e.g. a table AM's undo-apply callback) need to open relations, which trips
+ * Assert(IsTransactionState()) because TRANS_ABORT is not TRANS_INPROGRESS.
+ *
+ * These helpers temporarily present TRANS_INPROGRESS for the duration of the
+ * inline apply.  This is safe because all backing resources are still live at
+ * this point in the abort sequence; only the state enum has advanced.  The
+ * caller MUST pair Enter/Leave (use PG_TRY/PG_FINALLY) so the real abort state
+ * is always restored before the rest of AbortTransaction() proceeds.
+ */
+int
+EnterInlineUndoApplyState(void)
+{
+	TransactionState s = CurrentTransactionState;
+	int			saved = (int) s->state;
+
+	s->state = TRANS_INPROGRESS;
+	return saved;
+}
+
+void
+LeaveInlineUndoApplyState(int saved)
+{
+	CurrentTransactionState->state = (TransState) saved;
+}
 
 /*
  *	GetTopTransactionId
@@ -1814,6 +1850,8 @@ RecordTransactionAbort(bool isSubXact)
 	TransactionId *children;
 	TimestampTz xact_time;
 	bool		replorigin;
+	char	   *fileops;
+	uint32		fileops_len;
 
 	/*
 	 * If we haven't been assigned an XID, nobody will care whether we aborted
@@ -1832,9 +1870,9 @@ RecordTransactionAbort(bool isSubXact)
 	/*
 	 * We have a valid XID, so we should write an ABORT record for it.
 	 *
-	 * We do not flush XLOG to disk here, since the default assumption after a
-	 * crash would be that we aborted, anyway.  For the same reason, we don't
-	 * need to worry about interlocking against checkpoint start.
+	 * An ordinary abort need not flush WAL: a crash treats it as a loser.
+	 * FILEOPS inverses, however, must follow a durable abort decision, with
+	 * checkpoint start delayed until their filesystem effects are synced.
 	 */
 
 	/*
@@ -1856,6 +1894,10 @@ RecordTransactionAbort(bool isSubXact)
 	nchildren = xactGetCommittedChildren(&children);
 	ndroppedstats = pgstat_get_transactional_drops(false, &droppedstats);
 
+	FileOpsGetAbortData(&fileops, &fileops_len);
+	if (fileops_len)
+		FileOpsBeginAbort();
+
 	/* XXX do we really need a critical section here? */
 	START_CRIT_SECTION();
 
@@ -1872,7 +1914,7 @@ RecordTransactionAbort(bool isSubXact)
 					   nrels, rels,
 					   ndroppedstats, droppedstats,
 					   MyXactFlags, InvalidTransactionId,
-					   NULL);
+					   NULL, fileops, fileops_len);
 
 	if (replorigin)
 		/* Move LSNs forward for this replication origin */
@@ -1901,7 +1943,25 @@ RecordTransactionAbort(bool isSubXact)
 	 */
 	TransactionIdAbortTree(xid, nchildren, children);
 
+	if (fileops_len)
+		XLogFlush(XactLastRecEnd);
 	END_CRIT_SECTION();
+
+	if (fileops_len)
+	{
+		PG_TRY();
+		{
+			INJECTION_POINT("fileops-abort-after-flush", NULL);
+			FileOpsApplyAbort(fileops, fileops_len);
+		}
+		PG_FINALLY();
+		{
+			FileOpsEndAbort();
+		}
+		PG_END_TRY();
+	}
+	if (fileops)
+		pfree(fileops);
 
 	/* Compute latestXid while we have the child XIDs handy */
 	latestXid = TransactionIdLatest(xid, nchildren, children);
@@ -2464,6 +2524,9 @@ CommitTransaction(void)
 	CallXactCallbacks(is_parallel_worker ? XACT_EVENT_PARALLEL_COMMIT
 					  : XACT_EVENT_COMMIT);
 
+	/* Clean up transaction undo state (free per-persistence record sets) */
+	AtCommit_XactUndo();
+
 	CurrentResourceOwner = NULL;
 	ResourceOwnerRelease(TopTransactionResourceOwner,
 						 RESOURCE_RELEASE_BEFORE_LOCKS,
@@ -2508,6 +2571,7 @@ CommitTransaction(void)
 	 * attempt to access affected files.
 	 */
 	smgrDoPendingDeletes(true);
+	FileOpsDoPendingOps(true);
 
 	/*
 	 * Send out notification signals to other backends (and do other
@@ -2796,6 +2860,7 @@ PrepareTransaction(void)
 	PostPrepare_Inval();
 
 	PostPrepare_smgr();
+	PostPrepare_FileOps();
 
 	PostPrepare_MultiXact(fxid);
 
@@ -2833,6 +2898,16 @@ PrepareTransaction(void)
 	AtEOXact_LogicalRepWorkers(false);
 	AtEOXact_LogicalCtl();
 	pgstat_report_xact_timestamp(0);
+
+	/*
+	 * Drop this backend's references to the transaction's cluster-wide UNDO
+	 * record sets.  Ownership passed to the 2PC state (undo_batch_lsn) in
+	 * EndPrepare; the record sets live in TopTransactionContext, which
+	 * AtCommit_Memory() destroys just below, so the backend-private pointers
+	 * must be dropped first (otherwise AtProcExit_XactUndo frees freed
+	 * memory).
+	 */
+	AtPrepare_XactUndo();
 
 	CurrentResourceOwner = NULL;
 	ResourceOwnerDelete(TopTransactionResourceOwner);
@@ -2979,6 +3054,22 @@ AbortTransaction(void)
 	s->parallelChildXact = false;	/* should be false already */
 
 	/*
+	 * Apply the transaction's UNDO, except FILEOPS: its inverses ride in the
+	 * abort record (RecordTransactionAbort), so that a standby and crash
+	 * recovery apply them too.  The generic chain is for crash losers.
+	 */
+	FileOpsSkipUndo = true;
+	PG_TRY();
+	{
+		AtAbort_XactUndo();
+	}
+	PG_FINALLY();
+	{
+		FileOpsSkipUndo = false;
+	}
+	PG_END_TRY();
+
+	/*
 	 * do abort processing
 	 */
 	AfterTriggerEndXact(false); /* 'false' means it's abort */
@@ -3045,7 +3136,9 @@ AbortTransaction(void)
 		ResourceOwnerRelease(TopTransactionResourceOwner,
 							 RESOURCE_RELEASE_AFTER_LOCKS,
 							 false, true);
+
 		smgrDoPendingDeletes(false);
+		FileOpsDoPendingOps(false);
 
 		AtEOXact_GUC(false, 1);
 		AtEOXact_SPI(false);
@@ -5262,6 +5355,7 @@ CommitSubTransaction(void)
 	AtEOSubXact_TypeCache();
 	AtEOSubXact_Inval(true);
 	AtSubCommit_smgr();
+	AtSubCommit_FileOps();
 
 	/*
 	 * The only lock we actually release here is the subtransaction XID lock.
@@ -5453,6 +5547,7 @@ AbortSubTransaction(void)
 							 RESOURCE_RELEASE_AFTER_LOCKS,
 							 false, false);
 		AtSubAbort_smgr();
+		AtSubAbort_FileOps();
 
 		AtEOXact_GUC(false, s->gucNestLevel);
 		AtEOSubXact_SPI(false, s->subTransactionId);
@@ -6092,7 +6187,8 @@ XactLogAbortRecord(TimestampTz abort_time,
 				   int nrels, RelFileLocator *rels,
 				   int ndroppedstats, xl_xact_stats_item *droppedstats,
 				   int xactflags, TransactionId twophase_xid,
-				   const char *twophase_gid)
+				   const char *twophase_gid,
+				   const char *fileops, uint32 fileops_len)
 {
 	xl_xact_abort xlrec;
 	xl_xact_xinfo xl_xinfo;
@@ -6107,7 +6203,7 @@ XactLogAbortRecord(TimestampTz abort_time,
 
 	Assert(CritSectionCount > 0);
 
-	xl_xinfo.xinfo = 0;
+	xl_xinfo.xinfo = fileops_len ? XACT_XINFO_HAS_FILEOPS : 0;
 
 	/* decide between a plain and 2pc abort */
 	if (!TransactionIdIsValid(twophase_xid))
@@ -6219,6 +6315,12 @@ XactLogAbortRecord(TimestampTz abort_time,
 
 	if (xl_xinfo.xinfo & XACT_XINFO_HAS_ORIGIN)
 		XLogRegisterData(&xl_origin, sizeof(xl_xact_origin));
+
+	if (fileops_len)
+	{
+		XLogRegisterData(&fileops_len, sizeof(fileops_len));
+		XLogRegisterData(fileops, fileops_len);
+	}
 
 	/* Include the replication origin */
 	XLogSetRecordFlags(XLOG_INCLUDE_ORIGIN);
@@ -6441,6 +6543,13 @@ xact_redo_abort(xl_xact_parsed_abort *parsed, TransactionId xid,
 						   false /* backward */ , false /* WAL */ );
 	}
 
+	if (parsed->fileops_len)
+	{
+		XLogFlush(lsn);
+		INJECTION_POINT("fileops-abort-after-flush", NULL);
+		FileOpsApplyAbort(parsed->fileops, parsed->fileops_len);
+	}
+
 	/* Make sure files supposed to be dropped are dropped */
 	if (parsed->nrels > 0)
 	{
@@ -6478,6 +6587,11 @@ xact_redo(XLogReaderState *record)
 		ParseCommitRecord(XLogRecGetInfo(record), xlrec, &parsed);
 		xact_redo_commit(&parsed, XLogRecGetXid(record),
 						 record->EndRecPtr, XLogRecGetOrigin(record));
+
+		/*
+		 * Remove from UNDO recovery tracking; committed, no rollback needed
+		 */
+		UndoRecoveryRemoveXid(XLogRecGetXid(record));
 	}
 	else if (info == XLOG_XACT_COMMIT_PREPARED)
 	{
@@ -6492,6 +6606,9 @@ xact_redo(XLogReaderState *record)
 		LWLockAcquire(TwoPhaseStateLock, LW_EXCLUSIVE);
 		PrepareRedoRemove(parsed.twophase_xid, false);
 		LWLockRelease(TwoPhaseStateLock);
+
+		/* Remove from UNDO recovery tracking */
+		UndoRecoveryRemoveXid(parsed.twophase_xid);
 	}
 	else if (info == XLOG_XACT_ABORT)
 	{
@@ -6501,6 +6618,13 @@ xact_redo(XLogReaderState *record)
 		ParseAbortRecord(XLogRecGetInfo(record), xlrec, &parsed);
 		xact_redo_abort(&parsed, XLogRecGetXid(record),
 						record->EndRecPtr, XLogRecGetOrigin(record));
+
+		/*
+		 * Remove from UNDO recovery tracking; abort record present means the
+		 * UNDO rollback was already completed (or will be handled by the
+		 * abort record's own redo logic).
+		 */
+		UndoRecoveryRemoveXid(XLogRecGetXid(record));
 	}
 	else if (info == XLOG_XACT_ABORT_PREPARED)
 	{
@@ -6515,12 +6639,21 @@ xact_redo(XLogReaderState *record)
 		LWLockAcquire(TwoPhaseStateLock, LW_EXCLUSIVE);
 		PrepareRedoRemove(parsed.twophase_xid, false);
 		LWLockRelease(TwoPhaseStateLock);
+
+		/* Remove from UNDO recovery tracking */
+		UndoRecoveryRemoveXid(parsed.twophase_xid);
 	}
 	else if (info == XLOG_XACT_PREPARE)
 	{
+		xl_xact_prepare *xlrec = (xl_xact_prepare *) XLogRecGetData(record);
+
 		/*
 		 * Store xid and start/end pointers of the WAL record in TwoPhaseState
 		 * gxact entry.
+		 *
+		 * NB: xl_xact_prepare includes last_batch_lsn[NUndoPersistenceLevels]
+		 * for UNDO chain tracking across 2PC boundaries, which extended the
+		 * on-disk struct and required an XLOG_PAGE_MAGIC bump.
 		 */
 		LWLockAcquire(TwoPhaseStateLock, LW_EXCLUSIVE);
 		PrepareRedoAdd(InvalidFullTransactionId,
@@ -6529,6 +6662,21 @@ xact_redo(XLogReaderState *record)
 					   record->EndRecPtr,
 					   XLogRecGetOrigin(record));
 		LWLockRelease(TwoPhaseStateLock);
+
+		/*
+		 * Restore UNDO recovery tracking for the prepared transaction. The
+		 * UNDO chain LSNs were saved in the prepare record so that if the
+		 * server crashes after PREPARE but before COMMIT/ROLLBACK PREPARED,
+		 * recovery can still find and roll back UNDO records.
+		 */
+		for (int j = 0; j < NUndoPersistenceLevels; j++)
+		{
+			if (!XLogRecPtrIsInvalid(xlrec->last_batch_lsn[j]))
+				UndoRecoveryTrackBatch(xlrec->xid,
+									   xlrec->last_batch_lsn[j],
+									   InvalidXLogRecPtr,
+									   (UndoPersistenceLevel) j);
+		}
 	}
 	else if (info == XLOG_XACT_ASSIGNMENT)
 	{

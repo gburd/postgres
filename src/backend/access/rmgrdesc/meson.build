@@ -6,6 +6,7 @@ rmgr_desc_sources = files(
   'clogdesc.c',
   'committsdesc.c',
   'dbasedesc.c',
+  'fileopsdesc.c',
   'genericdesc.c',
   'gindesc.c',
   'gistdesc.c',
@@ -22,6 +23,7 @@ rmgr_desc_sources = files(
   'spgdesc.c',
   'standbydesc.c',
   'tblspcdesc.c',
+  'undodesc.c',
   'xactdesc.c',
   'xlogdesc.c',
 )

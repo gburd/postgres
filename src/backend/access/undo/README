@@ -1,0 +1,100 @@
+UNDO for PostgreSQL
+===================
+
+This directory implements a cluster-wide UNDO engine: a way for a
+transaction to record how to reverse a change it has made, so that the
+change is reversed if the transaction rolls back, or if a crash leaves it
+in progress.  The first consumer is FILEOPS, the transactional filesystem
+operations in storage/file/fileops.c; see storage/file/README.
+
+Records and chains
+------------------
+
+A consumer writes UNDO through xactundo.c.  PrepareXactUndoData() appends a
+record (an UndoRecordHeader, undorecord.h, and an opaque payload) to the
+transaction's UndoRecordSet for the record's persistence level, and
+InsertXactUndoData() writes the set as one XLOG_UNDO_BATCH WAL record,
+inside the critical section of the consumer's own WAL record.  There are no
+UNDO files: the records live in the WAL stream.
+
+Each batch carries the LSN of the transaction's previous batch
+(xl_undo_batch.chain_prev), so a transaction's UNDO forms a chain from its
+newest batch back to its first.  Every record carries the top-level xid,
+even one written by a subtransaction.  urec_rmid names the UNDO resource
+manager that applies the record (undormgr.h); consumers register theirs
+through access/undormgrlist.h, and the engine never interprets a payload.
+
+A record is applied by handing it to its resource manager's rm_undo
+callback.  The engine keeps no "already applied" marker, and the same
+record can be applied more than once, so a callback must leave alone an
+object that no longer shows the record's effect.  A callback must not
+write WAL, since redo of XLOG_UNDO_ROLLBACK (below) calls it.
+
+Rollback
+--------
+
+AbortTransaction() calls AtAbort_XactUndo(), which walks the chain from its
+newest batch, applying each batch's records newest first
+(ApplyUndoChainFromWAL(), undoapply.c).  A subtransaction abort applies only
+the batches written since the subtransaction started, and a subtransaction
+commit hands its chain to the parent.  ROLLBACK PREPARED applies the chain
+whose head PREPARE saved in the 2PC state.
+
+A consumer decides how its rollback reaches a standby.  FILEOPS carries its
+inverses in the abort record and applies them from there, so the
+transaction-abort walk skips its records (FileOpsSkipUndo).
+
+Crash recovery
+--------------
+
+During redo, each XLOG_UNDO_BATCH record registers its transaction in an
+in-memory table (undo_xlog.c), and the transaction's commit or abort
+record removes it.  Redo starts at the checkpoint's redo pointer, so it
+replays none of the batches written before it; each online checkpoint
+therefore writes an XLOG_UNDO_INFLIGHT record listing the chain heads of
+the transactions in progress (LogXactUndoInflight()), which redo adds to
+the table.  InsertXactUndoData() holds off the checkpoint's redo-pointer
+phase while it inserts a batch and publishes its chain head, so no batch
+can fall between the two.
+
+What remains in the table at the end of redo, apart from prepared
+transactions, are the transactions the crash left in progress.
+StartupXLOG() calls UndoRecoveryRollBack() once WAL is writable, just
+before the end-of-recovery checkpoint or record.  For each such loser it
+applies the UNDO records, newest first, then writes an XLOG_UNDO_ROLLBACK
+record carrying the records that applied, and forgets the loser.  Redo of
+that record applies the same records again and forgets the loser too.  So
+a standby rolls the loser back at the same point in the WAL as the primary
+did, without reading the loser's chain (which a restartpoint may already
+have removed), and a later recovery never reverts it a second time.
+
+A crash before the rollback record reaches disk leaves the loser tracked,
+and the next recovery rolls it back again.  A record whose callback fails
+is left out of the rollback record, so the change it describes stays in
+place everywhere, and the summary at the end of the undo phase says how
+many records could not be applied.
+
+Recovery applies only PERMANENT records: temporary relations do not
+survive a restart, and unlogged ones are reset to their init forks.
+
+WAL retention
+-------------
+
+Each backend publishes the LSN of its current transaction's first UNDO
+batch in a shared slot (undolog.c), and a prepared transaction's chain
+head is kept in its 2PC state.  KeepLogSeg() keeps WAL from the oldest of
+them onward, so a long-running or long-prepared transaction that wrote
+UNDO holds back WAL removal until it ends, much as a replication slot
+does.
+
+Files
+-----
+
+    undo.c          shared memory set-up and per-backend initialization
+    undolog.c       per-backend first-batch LSN slots for WAL retention
+    undorecord.c    UndoRecordHeader and UndoRecordSet
+    undoinsert.c    writing an UndoRecordSet as an XLOG_UNDO_BATCH record
+    xactundo.c      per-transaction UNDO, the checkpoint in-flight record
+    undoapply.c     online rollback: walking a chain and applying it
+    undo_xlog.c     RM_UNDO_ID redo, the recovery undo phase, batch reads
+    undormgr.c      UNDO resource manager registry
