@@ -119,6 +119,14 @@ foreach my $i (0 .. 10 * $PostgreSQL::Test::Utils::timeout_default)
 }
 is($checkpoint_complete, 1, 'restart point has completed');
 
+# The rest kills one backend to force a crash restart, which needs
+# per-backend processes; a multithreaded server fail-stops instead.
+if (!$node_standby->backends_are_processes)
+{
+	done_testing();
+	exit;
+}
+
 # Kill with SIGKILL, forcing all the backends to restart.
 my $psql_timeout = IPC::Run::timer(3600);
 my ($killme_stdin, $killme_stdout, $killme_stderr) = ('', '', '');

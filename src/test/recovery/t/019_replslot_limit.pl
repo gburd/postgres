@@ -310,122 +310,134 @@ $node_primary3->append_conf(
 	max_slot_wal_keep_size = 1MB
 	));
 $node_primary3->start;
-$node_primary3->safe_psql('postgres',
-	"SELECT pg_create_physical_replication_slot('rep3')");
-# Take backup
-$backup_name = 'my_backup';
-$node_primary3->backup($backup_name);
-# Create standby
-my $node_standby3 = PostgreSQL::Test::Cluster->new('standby_3');
-$node_standby3->init_from_backup($node_primary3, $backup_name,
-	has_streaming => 1);
-$node_standby3->append_conf('postgresql.conf', "primary_slot_name = 'rep3'");
-$node_standby3->start;
-$node_primary3->wait_for_catchup($node_standby3);
 
-my $senderpid;
-
-# We've seen occasional cases where multiple walsender pids are still active
-# at this point, apparently just due to process shutdown being slow. To avoid
-# spurious failures, retry a couple times.
-my $i = 0;
-while (1)
+# SIGSTOP needs the walsender and walreceiver in processes of their own.
+SKIP:
 {
-	my ($stdout, $stderr);
-
-	$senderpid = $node_primary3->safe_psql('postgres',
-		"SELECT pid FROM pg_stat_activity WHERE backend_type = 'walsender'");
-
-	last if $senderpid =~ qr/^[0-9]+$/;
-
-	diag "multiple walsenders active in iteration $i";
-
-	# show information about all active connections
-	$node_primary3->psql(
-		'postgres',
-		"\\a\\t\nSELECT * FROM pg_stat_activity",
-		stdout => \$stdout,
-		stderr => \$stderr);
-	diag $stdout, $stderr;
-
-	if ($i++ == 10 * $PostgreSQL::Test::Utils::timeout_default)
+	if (!$node_primary3->backends_are_processes)
 	{
-		# An immediate shutdown may hide evidence of a locking bug. If
-		# retrying didn't resolve the issue, shut down in fast mode.
-		$node_primary3->stop('fast');
-		$node_standby3->stop('fast');
-		die "could not determine walsender pid, can't continue";
+		$node_primary3->stop;
+		skip 'walsender and walreceiver are not OS processes in a multithreaded server',
+		  4;
 	}
 
-	usleep(100_000);
-}
+	$node_primary3->safe_psql('postgres',
+		"SELECT pg_create_physical_replication_slot('rep3')");
+	# Take backup
+	$backup_name = 'my_backup';
+	$node_primary3->backup($backup_name);
+	# Create standby
+	my $node_standby3 = PostgreSQL::Test::Cluster->new('standby_3');
+	$node_standby3->init_from_backup($node_primary3, $backup_name,
+		has_streaming => 1);
+	$node_standby3->append_conf('postgresql.conf', "primary_slot_name = 'rep3'");
+	$node_standby3->start;
+	$node_primary3->wait_for_catchup($node_standby3);
 
-like($senderpid, qr/^[0-9]+$/, "have walsender pid $senderpid");
+	my $senderpid;
 
-my $receiverpid = $node_standby3->safe_psql('postgres',
-	"SELECT pid FROM pg_stat_activity WHERE backend_type = 'walreceiver'");
-like($receiverpid, qr/^[0-9]+$/, "have walreceiver pid $receiverpid");
-
-$logstart = -s $node_primary3->logfile;
-# freeze walsender and walreceiver. Slot will still be active, but walreceiver
-# won't get anything anymore.
-kill 'STOP', $senderpid, $receiverpid;
-$node_primary3->advance_wal(2);
-
-# Run CHECKPOINT in the background.  It is expected to reach slot
-# invalidation, signal the stopped walsender, and then wait until the
-# walsender releases the slot.
-my $checkpoint = $node_primary3->background_psql('postgres');
-$checkpoint->query_until(
-	qr/starting_checkpoint/, q(
-	\echo starting_checkpoint
-	CHECKPOINT;
-));
-
-my $msg_logged = 0;
-my $max_attempts = $PostgreSQL::Test::Utils::timeout_default;
-while ($max_attempts-- >= 0)
-{
-	if ($node_primary3->log_contains(
-			"terminating process $senderpid to release replication slot \"rep3\"",
-			$logstart))
+	# We've seen occasional cases where multiple walsender pids are still active
+	# at this point, apparently just due to process shutdown being slow. To avoid
+	# spurious failures, retry a couple times.
+	my $i = 0;
+	while (1)
 	{
-		$msg_logged = 1;
-		last;
+		my ($stdout, $stderr);
+
+		$senderpid = $node_primary3->safe_psql('postgres',
+			"SELECT pid FROM pg_stat_activity WHERE backend_type = 'walsender'");
+
+		last if $senderpid =~ qr/^[0-9]+$/;
+
+		diag "multiple walsenders active in iteration $i";
+
+		# show information about all active connections
+		$node_primary3->psql(
+			'postgres',
+			"\\a\\t\nSELECT * FROM pg_stat_activity",
+			stdout => \$stdout,
+			stderr => \$stderr);
+		diag $stdout, $stderr;
+
+		if ($i++ == 10 * $PostgreSQL::Test::Utils::timeout_default)
+		{
+			# An immediate shutdown may hide evidence of a locking bug. If
+			# retrying didn't resolve the issue, shut down in fast mode.
+			$node_primary3->stop('fast');
+			$node_standby3->stop('fast');
+			die "could not determine walsender pid, can't continue";
+		}
+
+		usleep(100_000);
 	}
-	sleep 1;
-}
-ok($msg_logged, "walsender termination logged");
 
-# Now let the walsender continue; slot should be killed now.
-# (Must not let walreceiver run yet; otherwise the standby could start another
-# one before the slot can be killed)
-kill 'CONT', $senderpid;
-$node_primary3->poll_query_until('postgres',
-	"SELECT wal_status FROM pg_replication_slots WHERE slot_name = 'rep3'",
-	"lost")
-  or die "timed out waiting for slot to be lost";
-$checkpoint->quit;
+	like($senderpid, qr/^[0-9]+$/, "have walsender pid $senderpid");
 
-$msg_logged = 0;
-$max_attempts = $PostgreSQL::Test::Utils::timeout_default;
-while ($max_attempts-- >= 0)
-{
-	if ($node_primary3->log_contains(
-			'invalidating obsolete replication slot "rep3"', $logstart))
+	my $receiverpid = $node_standby3->safe_psql('postgres',
+		"SELECT pid FROM pg_stat_activity WHERE backend_type = 'walreceiver'");
+	like($receiverpid, qr/^[0-9]+$/, "have walreceiver pid $receiverpid");
+
+	$logstart = -s $node_primary3->logfile;
+	# freeze walsender and walreceiver. Slot will still be active, but walreceiver
+	# won't get anything anymore.
+	kill 'STOP', $senderpid, $receiverpid;
+	$node_primary3->advance_wal(2);
+
+	# Run CHECKPOINT in the background.  It is expected to reach slot
+	# invalidation, signal the stopped walsender, and then wait until the
+	# walsender releases the slot.
+	my $checkpoint = $node_primary3->background_psql('postgres');
+	$checkpoint->query_until(
+		qr/starting_checkpoint/, q(
+		\echo starting_checkpoint
+		CHECKPOINT;
+	));
+
+	my $msg_logged = 0;
+	my $max_attempts = $PostgreSQL::Test::Utils::timeout_default;
+	while ($max_attempts-- >= 0)
 	{
-		$msg_logged = 1;
-		last;
+		if ($node_primary3->log_contains(
+				"terminating process $senderpid to release replication slot \"rep3\"",
+				$logstart))
+		{
+			$msg_logged = 1;
+			last;
+		}
+		sleep 1;
 	}
-	sleep 1;
+	ok($msg_logged, "walsender termination logged");
+
+	# Now let the walsender continue; slot should be killed now.
+	# (Must not let walreceiver run yet; otherwise the standby could start another
+	# one before the slot can be killed)
+	kill 'CONT', $senderpid;
+	$node_primary3->poll_query_until('postgres',
+		"SELECT wal_status FROM pg_replication_slots WHERE slot_name = 'rep3'",
+		"lost")
+	  or die "timed out waiting for slot to be lost";
+	$checkpoint->quit;
+
+	$msg_logged = 0;
+	$max_attempts = $PostgreSQL::Test::Utils::timeout_default;
+	while ($max_attempts-- >= 0)
+	{
+		if ($node_primary3->log_contains(
+				'invalidating obsolete replication slot "rep3"', $logstart))
+		{
+			$msg_logged = 1;
+			last;
+		}
+		sleep 1;
+	}
+	ok($msg_logged, "slot invalidation logged");
+
+	# Now let the walreceiver continue, so that the node can be stopped cleanly
+	kill 'CONT', $receiverpid;
+
+	$node_primary3->stop;
+	$node_standby3->stop;
 }
-ok($msg_logged, "slot invalidation logged");
-
-# Now let the walreceiver continue, so that the node can be stopped cleanly
-kill 'CONT', $receiverpid;
-
-$node_primary3->stop;
-$node_standby3->stop;
 
 # =============================================================================
 # Testcase start: Check inactive_since property of the streaming standby's slot

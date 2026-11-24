@@ -32,6 +32,12 @@ compute_query_id = 'regress'
 
 $node->start();
 
+if (!$node->backends_are_processes)
+{
+	plan skip_all =>
+	  'crash restart needs per-backend processes; a multithreaded server fail-stops';
+}
+
 # by default PostgreSQL::Test::Cluster doesn't restart after a crash
 $node->safe_psql(
 	'postgres', q[

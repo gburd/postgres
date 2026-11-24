@@ -105,6 +105,17 @@ note "removing the conflicting shmem ...";
 $gnat_conflict_shm->remove if $gnat_conflict_shm;
 log_ipcs();
 
+# The rest needs a backend that outlives its postmaster.  A multithreaded
+# server's backends are fibers in the postmaster's process, so they die
+# with it.
+$gnat->start;
+my $backends_are_processes = $gnat->backends_are_processes;
+$gnat->stop;
+if (!$backends_are_processes)
+{
+	plan skip_all => 'backends are not processes in a multithreaded server';
+}
+
 # Scenarios involving no postmaster.pid, dead postmaster, and a live backend.
 # Use a regress.c function to emulate the responsiveness of a backend working
 # through a CPU-intensive task.

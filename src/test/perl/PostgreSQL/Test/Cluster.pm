@@ -3111,6 +3111,25 @@ sub log_contains
 
 =pod
 
+=item $node->backends_are_processes()
+
+Returns true if the running node gives each backend its own OS process, so
+that a test can signal a single backend through the pid it reports.  A
+multithreaded node runs backends as fibers in the postmaster's process; its
+reported pids are not OS process ids, and a crash fail-stops the whole
+server instead of restarting it.
+
+=cut
+
+sub backends_are_processes
+{
+	my ($self) = @_;
+
+	return $self->safe_psql('postgres', 'SHOW multithreaded') ne 'on';
+}
+
+=pod
+
 =item $node->run_log(...)
 
 Runs a shell command like PostgreSQL::Test::Utils::run_log, but with connection parameters set

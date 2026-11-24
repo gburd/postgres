@@ -31,6 +31,12 @@ restore_command = '"$perlbin" "$FindBin::RealBin/wait_for_shutdown" "$logfile" $
 });
 $node->start;
 
+if (!$node->backends_are_processes)
+{
+	plan skip_all =>
+	  'crash restart needs per-backend processes; a multithreaded server fail-stops';
+}
+
 # Stop the background writer.
 $node->poll_query_until(
 	'postgres',

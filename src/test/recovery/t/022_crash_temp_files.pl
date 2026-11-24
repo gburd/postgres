@@ -21,6 +21,12 @@ my $node = PostgreSQL::Test::Cluster->new('node_crash');
 $node->init();
 $node->start();
 
+if (!$node->backends_are_processes)
+{
+	plan skip_all =>
+	  'crash restart needs per-backend processes; a multithreaded server fail-stops';
+}
+
 # By default, PostgreSQL::Test::Cluster doesn't restart after crash
 # Reduce work_mem to generate temporary file with a few number of rows
 $node->safe_psql(
