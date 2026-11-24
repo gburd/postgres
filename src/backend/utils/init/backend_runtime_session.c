@@ -1826,6 +1826,12 @@ PgSessionInitializeOptimizerState(PgSessionOptimizerState *optimizer)
 	optimizer->planner_extension_names = NULL;
 	optimizer->planner_extension_names_assigned = 0;
 	optimizer->planner_extension_names_allocated = 0;
+	optimizer->explain_extension_names = NULL;
+	optimizer->explain_extension_names_assigned = 0;
+	optimizer->explain_extension_names_allocated = 0;
+	optimizer->explain_extension_options = NULL;
+	optimizer->explain_extension_options_assigned = 0;
+	optimizer->explain_extension_options_allocated = 0;
 	optimizer->opr_proof_cache_hash = NULL;
 }
 

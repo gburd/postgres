@@ -1420,6 +1420,11 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 	fake_session.optimizer.planner_extension_names[0] = "test";
 	fake_session.optimizer.planner_extension_names_assigned = 1;
 	fake_session.optimizer.planner_extension_names_allocated = 1;
+	fake_session.optimizer.explain_extension_names =
+		(const char **) palloc(sizeof(char *));
+	fake_session.optimizer.explain_extension_names[0] = "test";
+	fake_session.optimizer.explain_extension_names_assigned = 1;
+	fake_session.optimizer.explain_extension_names_allocated = 1;
 	fake_session.optimizer.opr_proof_cache_hash =
 		hash_create("test operator proof cache", 8, &hash_ctl,
 					HASH_ELEM | HASH_BLOBS);
@@ -1573,6 +1578,9 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && fake_session.optimizer.planner_extension_names == NULL;
 	ok = ok && fake_session.optimizer.planner_extension_names_assigned == 0;
 	ok = ok && fake_session.optimizer.planner_extension_names_allocated == 0;
+	ok = ok && fake_session.optimizer.explain_extension_names == NULL;
+	ok = ok && fake_session.optimizer.explain_extension_names_assigned == 0;
+	ok = ok && fake_session.optimizer.explain_extension_names_allocated == 0;
 	ok = ok && fake_session.optimizer.opr_proof_cache_hash == NULL;
 	ok = ok && fake_session.locale.locale_time_context == NULL;
 	ok = ok && fake_session.locale.localized_abbrev_days_values[0] == NULL;

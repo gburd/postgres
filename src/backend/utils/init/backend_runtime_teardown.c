@@ -1285,6 +1285,20 @@ PgSessionResetOptimizerClosedState(PgSession *session)
 	}
 	session->optimizer.planner_extension_names_assigned = 0;
 	session->optimizer.planner_extension_names_allocated = 0;
+	if (session->optimizer.explain_extension_names != NULL)
+	{
+		pfree(session->optimizer.explain_extension_names);
+		session->optimizer.explain_extension_names = NULL;
+	}
+	session->optimizer.explain_extension_names_assigned = 0;
+	session->optimizer.explain_extension_names_allocated = 0;
+	if (session->optimizer.explain_extension_options != NULL)
+	{
+		pfree(session->optimizer.explain_extension_options);
+		session->optimizer.explain_extension_options = NULL;
+	}
+	session->optimizer.explain_extension_options_assigned = 0;
+	session->optimizer.explain_extension_options_allocated = 0;
 	PG_RUNTIME_DESTROY_HASH(session->optimizer.opr_proof_cache_hash);
 }
 

@@ -36,26 +36,37 @@
 #include "commands/defrem.h"
 #include "commands/explain.h"
 #include "commands/explain_state.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/guc.h"
 
 /* Hook to perform additional EXPLAIN options validation */
 PG_GLOBAL_RUNTIME explain_validate_options_hook_type explain_validate_options_hook = NULL;
 
-typedef struct
+typedef struct ExplainExtensionOption
 {
 	const char *option_name;
 	ExplainOptionHandler option_handler;
 	ExplainOptionGUCCheckHandler guc_check_handler;
 } ExplainExtensionOption;
 
-static PG_GLOBAL_RUNTIME const char **ExplainExtensionNameArray = NULL;
-static PG_GLOBAL_RUNTIME int ExplainExtensionNamesAssigned = 0;
-static PG_GLOBAL_RUNTIME int ExplainExtensionNamesAllocated = 0;
+/*
+ * Extensions register their IDs and options from _PG_init(), which a threaded
+ * runtime runs once per session, so the registries are per session.
+ */
+#define ExplainExtensionNameArray \
+	(PgCurrentSessionOptimizerState()->explain_extension_names)
+#define ExplainExtensionNamesAssigned \
+	(PgCurrentSessionOptimizerState()->explain_extension_names_assigned)
+#define ExplainExtensionNamesAllocated \
+	(PgCurrentSessionOptimizerState()->explain_extension_names_allocated)
 
-static PG_GLOBAL_RUNTIME ExplainExtensionOption *ExplainExtensionOptionArray = NULL;
-static PG_GLOBAL_RUNTIME int ExplainExtensionOptionsAssigned = 0;
-static PG_GLOBAL_RUNTIME int ExplainExtensionOptionsAllocated = 0;
+#define ExplainExtensionOptionArray \
+	(PgCurrentSessionOptimizerState()->explain_extension_options)
+#define ExplainExtensionOptionsAssigned \
+	(PgCurrentSessionOptimizerState()->explain_extension_options_assigned)
+#define ExplainExtensionOptionsAllocated \
+	(PgCurrentSessionOptimizerState()->explain_extension_options_allocated)
 
 /*
  * Create a new ExplainState struct initialized with default options.

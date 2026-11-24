@@ -1943,6 +1943,12 @@ typedef struct PgSessionOptimizerState
 	const char **planner_extension_names;
 	int			planner_extension_names_assigned;
 	int			planner_extension_names_allocated;
+	const char **explain_extension_names;
+	int			explain_extension_names_assigned;
+	int			explain_extension_names_allocated;
+	struct ExplainExtensionOption *explain_extension_options;
+	int			explain_extension_options_assigned;
+	int			explain_extension_options_allocated;
 	HTAB	   *opr_proof_cache_hash;
 } PgSessionOptimizerState;
 
