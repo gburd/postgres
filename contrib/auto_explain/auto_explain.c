@@ -66,6 +66,7 @@ typedef struct AutoExplainRuntimeState
 	ExecutorRun_hook_type prev_ExecutorRun;
 	ExecutorFinish_hook_type prev_ExecutorFinish;
 	ExecutorEnd_hook_type prev_ExecutorEnd;
+	bool		hooks_installed;
 } AutoExplainRuntimeState;
 
 typedef struct AutoExplainSessionState
@@ -410,7 +411,12 @@ _PG_init(void)
 
 	MarkGUCPrefixReserved("auto_explain");
 
-	/* Install hooks. */
+	/*
+	 * Install hooks.  The hooks are process-wide, and a threaded runtime runs
+	 * _PG_init() again in every session, so install them only once.
+	 */
+	if (auto_explain_runtime_state()->hooks_installed)
+		return;
 	prev_ExecutorStart = ExecutorStart_hook;
 	ExecutorStart_hook = explain_ExecutorStart;
 	prev_ExecutorRun = ExecutorRun_hook;
@@ -419,6 +425,7 @@ _PG_init(void)
 	ExecutorFinish_hook = explain_ExecutorFinish;
 	prev_ExecutorEnd = ExecutorEnd_hook;
 	ExecutorEnd_hook = explain_ExecutorEnd;
+	auto_explain_runtime_state()->hooks_installed = true;
 }
 
 /*

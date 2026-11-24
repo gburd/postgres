@@ -42,6 +42,7 @@ typedef struct PgPlanAdviceExplainRuntimeState
 {
 	explain_per_plan_hook_type prev_explain_per_plan;
 	int			es_extension_id;
+	bool		hooks_installed;
 } PgPlanAdviceExplainRuntimeState;
 
 static PgPlanAdviceExplainRuntimeState *
@@ -165,10 +166,16 @@ _PG_init(void)
 								   pg_plan_advice_explain_option_handler,
 								   GUCCheckBooleanExplainOption);
 
-	/* Install hooks */
+	/*
+	 * Install hooks.  The hooks are process-wide, and a threaded runtime runs
+	 * _PG_init() again in every session, so install them only once.
+	 */
+	if (pg_plan_advice_explain_runtime_state()->hooks_installed)
+		return;
 	pgpa_planner_install_hooks();
 	prev_explain_per_plan = explain_per_plan_hook;
 	explain_per_plan_hook = pg_plan_advice_explain_per_plan_hook;
+	pg_plan_advice_explain_runtime_state()->hooks_installed = true;
 }
 
 /*
