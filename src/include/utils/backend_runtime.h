@@ -459,6 +459,10 @@ typedef struct PgBackendXLogState
 typedef struct PgBackendRecoveryState
 {
 	volatile sig_atomic_t startup_got_sighup;
+	/* walreceiver settings the startup process last acted on; in TopMemoryContext */
+	char	   *startup_seen_conninfo;
+	char	   *startup_seen_slotname;
+	bool		startup_seen_temp_slot;
 	volatile sig_atomic_t startup_shutdown_requested;
 	volatile sig_atomic_t startup_promote_signaled;
 	volatile sig_atomic_t startup_in_restore_command;

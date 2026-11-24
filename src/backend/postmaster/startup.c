@@ -162,6 +162,30 @@ StartupProcApplyLogicalInterrupts(void)
 }
 
 /*
+ * Record the walreceiver settings this threaded startup process is acting on,
+ * for StartupRereadConfig() to compare against.  A process backend keeps its
+ * own copy of the settings, so it needs no record.
+ */
+static void
+StartupRememberWalReceiverSettings(void)
+{
+	PgBackendRecoveryState *recovery = PgCurrentRecoveryState();
+
+	if (!PgRuntimeIsThreadBacked(CurrentPgRuntime))
+		return;
+
+	if (recovery->startup_seen_conninfo != NULL)
+		pfree(recovery->startup_seen_conninfo);
+	if (recovery->startup_seen_slotname != NULL)
+		pfree(recovery->startup_seen_slotname);
+	recovery->startup_seen_conninfo =
+		MemoryContextStrdup(TopMemoryContext, PrimaryConnInfo);
+	recovery->startup_seen_slotname =
+		MemoryContextStrdup(TopMemoryContext, PrimarySlotName);
+	recovery->startup_seen_temp_slot = wal_receiver_create_temp_slot;
+}
+
+/*
  * Re-read the config file.
  *
  * If one of the critical walreceiver options has changed, request the startup
@@ -170,14 +194,35 @@ StartupProcApplyLogicalInterrupts(void)
 static void
 StartupRereadConfig(void)
 {
-	char	   *conninfo = pstrdup(PrimaryConnInfo);
-	char	   *slotname = pstrdup(PrimarySlotName);
-	bool		tempSlot = wal_receiver_create_temp_slot;
+	PgBackendRecoveryState *recovery = PgCurrentRecoveryState();
+	char	   *conninfo;
+	char	   *slotname;
+	bool		tempSlot;
 	bool		conninfoChanged;
 	bool		slotnameChanged;
 	bool		tempSlotChanged = false;
 
+	/*
+	 * Under multithreading these settings are process-global, and the
+	 * postmaster thread has already applied the new values by the time this
+	 * process rereads the file, so compare against what this process last
+	 * acted on instead.  It records them at startup.
+	 */
+	if (recovery->startup_seen_conninfo != NULL)
+	{
+		conninfo = pstrdup(recovery->startup_seen_conninfo);
+		slotname = pstrdup(recovery->startup_seen_slotname);
+		tempSlot = recovery->startup_seen_temp_slot;
+	}
+	else
+	{
+		conninfo = pstrdup(PrimaryConnInfo);
+		slotname = pstrdup(PrimarySlotName);
+		tempSlot = wal_receiver_create_temp_slot;
+	}
+
 	ProcessConfigFile(PGC_SIGHUP);
+	StartupRememberWalReceiverSettings();
 
 	conninfoChanged = strcmp(conninfo, PrimaryConnInfo) != 0;
 	slotnameChanged = strcmp(slotname, PrimarySlotName) != 0;
@@ -293,6 +338,8 @@ StartupProcessMain(const void *startup_data, size_t startup_data_len)
 	/*
 	 * Register timeouts needed for standby mode
 	 */
+	StartupRememberWalReceiverSettings();
+
 	RegisterTimeout(STANDBY_DEADLOCK_TIMEOUT, StandbyDeadLockHandler);
 	RegisterTimeout(STANDBY_TIMEOUT, StandbyTimeoutHandler);
 	RegisterTimeout(STANDBY_LOCK_TIMEOUT, StandbyLockTimeoutHandler);

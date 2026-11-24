@@ -454,3 +454,6 @@ prevFlushPtr	PgBackend	walsender	reply_prev_flush_ptr	PgCurrentWalSenderState	sr
 prevApplyPtr	PgBackend	walsender	reply_prev_apply_ptr	PgCurrentWalSenderState	src/backend/replication/walsender.c	ProcessStandbyReplyMessage() function-static previous apply LSN; scalar reset with the bucket
 flushPtr	PgBackend	walsender	logical_flush_ptr	PgCurrentWalSenderState	src/backend/replication/walsender.c	XLogSendLogical() function-static cached flush LSN; scalar reset with the bucket
 cached_tupdesc	PgBackend	logical_replication	conflict_local_tupdesc	PgCurrentLogicalReplicationState	src/backend/replication/logical/conflict.c	build_local_conflicts_tupledesc() function-static blessed descriptor in CacheMemoryContext; reset only forgets the pointer
+startup_seen_conninfo	PgBackend	recovery	startup_seen_conninfo	PgCurrentRecoveryState	src/backend/postmaster/startup.c	primary_conninfo the threaded startup process last acted on, in its TopMemoryContext; reset only forgets it
+startup_seen_slotname	PgBackend	recovery	startup_seen_slotname	PgCurrentRecoveryState	src/backend/postmaster/startup.c	primary_slot_name the threaded startup process last acted on, in its TopMemoryContext
+startup_seen_temp_slot	PgBackend	recovery	startup_seen_temp_slot	PgCurrentRecoveryState	src/backend/postmaster/startup.c	wal_receiver_create_temp_slot the threaded startup process last acted on
