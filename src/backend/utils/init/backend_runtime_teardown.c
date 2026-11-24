@@ -632,6 +632,8 @@ PgBackendResetLogicalReplicationClosedState(PgBackend *backend)
 	logical_replication->sync_has_subsequences_non_ready = false;
 	/* Allocated in the backend's TopMemoryContext, freed with it at exit. */
 	logical_replication->tablesync_last_start_times = NULL;
+	/* In CacheMemoryContext, which session reset has already deleted. */
+	logical_replication->conflict_local_tupdesc = NULL;
 
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(logical_replication->apply_context);
 

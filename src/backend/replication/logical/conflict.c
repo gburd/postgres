@@ -1157,7 +1157,7 @@ build_index_key_json(EState *estate, Relation localrel,
 static TupleDesc
 build_local_conflicts_tupledesc(void)
 {
-	static TupleDesc cached_tupdesc = NULL;
+#define cached_tupdesc (PgCurrentLogicalReplicationState()->conflict_local_tupdesc)
 
 	if (cached_tupdesc == NULL)
 	{
@@ -1186,6 +1186,7 @@ build_local_conflicts_tupledesc(void)
 	}
 
 	return cached_tupdesc;
+#undef cached_tupdesc
 }
 
 /*

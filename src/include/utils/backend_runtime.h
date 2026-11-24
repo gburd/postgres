@@ -419,6 +419,7 @@ typedef struct PgBackendLogicalReplicationState
 	bool		sync_has_subtables;
 	bool		sync_has_subsequences_non_ready;
 	HTAB	   *tablesync_last_start_times;
+	struct TupleDescData *conflict_local_tupdesc;	/* in CacheMemoryContext */
 } PgBackendLogicalReplicationState;
 
 typedef struct PgBackendXLogWriteResult
