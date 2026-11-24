@@ -129,14 +129,12 @@ PG_GLOBAL_SHMEM NON_EXEC_STATIC ProcSignalHeader *ProcSignal = NULL;
 		PgCurrentProcSignalSlotHotRef, CurrentPgBackend, \
 		PgCurrentProcSignalSlotRef))
 
-static bool ProcSignalReasonToBackendInterrupt(ProcSignalReason reason,
-											   PgBackendInterruptType *interrupt_type);
+static PgBackendInterruptType ProcSignalReasonToBackendInterrupt(ProcSignalReason reason);
 static bool ProcSignalSlotMatchesTarget(volatile ProcSignalSlot *slot,
 										pid_t pid,
 										bool allow_process_pid_match);
 static bool ProcSignalSlotUsesBackendInterrupts(volatile ProcSignalSlot *slot,
 												pid_t pid);
-static void WakeProcSignalSlot(int procNumber);
 static bool CheckProcSignal(ProcSignalReason reason);
 static void CleanupProcSignalState(int status, Datum arg);
 static void ResetProcSignalBarrierBits(uint32 flags);
@@ -438,7 +436,6 @@ int
 SendProcSignal(pid_t pid, ProcSignalReason reason, ProcNumber procNumber)
 {
 	volatile ProcSignalSlot *slot;
-	PgBackendInterruptType interrupt_type;
 
 	if (procNumber != INVALID_PROC_NUMBER)
 	{
@@ -452,19 +449,13 @@ SendProcSignal(pid_t pid, ProcSignalReason reason, ProcNumber procNumber)
 
 			if (ProcSignalSlotUsesBackendInterrupts(slot, pid))
 			{
-				if (ProcSignalReasonToBackendInterrupt(reason, &interrupt_type))
-				{
-					SpinLockRelease(&slot->pss_mutex);
-					if (PgBackendSendInterruptById(backend_id, interrupt_type, 0, 0))
-						return 0;
-					errno = ESRCH;
-					return -1;
-				}
-
-				slot->pss_signalFlags[reason] = true;
 				SpinLockRelease(&slot->pss_mutex);
-				WakeProcSignalSlot(procNumber);
-				return 0;
+				if (PgBackendSendInterruptById(backend_id,
+											   ProcSignalReasonToBackendInterrupt(reason),
+											   0, 0))
+					return 0;
+				errno = ESRCH;
+				return -1;
 			}
 
 			/* Atomically set the proper flag */
@@ -497,19 +488,13 @@ SendProcSignal(pid_t pid, ProcSignalReason reason, ProcNumber procNumber)
 
 				if (ProcSignalSlotUsesBackendInterrupts(slot, pid))
 				{
-					if (ProcSignalReasonToBackendInterrupt(reason, &interrupt_type))
-					{
-						SpinLockRelease(&slot->pss_mutex);
-						if (PgBackendSendInterruptById(backend_id, interrupt_type, 0, 0))
-							return 0;
-						errno = ESRCH;
-						return -1;
-					}
-
-					slot->pss_signalFlags[reason] = true;
 					SpinLockRelease(&slot->pss_mutex);
-					WakeProcSignalSlot(i);
-					return 0;
+					if (PgBackendSendInterruptById(backend_id,
+												   ProcSignalReasonToBackendInterrupt(reason),
+												   0, 0))
+						return 0;
+					errno = ESRCH;
+					return -1;
 				}
 
 				/* Atomically set the proper flag */
@@ -559,56 +544,39 @@ ProcSignalSlotUsesBackendInterrupts(volatile ProcSignalSlot *slot, pid_t pid)
 		(pid == PostmasterPid || slot->pss_backendId == (PgBackendId) pid);
 }
 
-static bool
-ProcSignalReasonToBackendInterrupt(ProcSignalReason reason,
-								   PgBackendInterruptType *interrupt_type)
+/*
+ * Map a procsignal reason to the backend interrupt that delivers it to a
+ * threaded backend.  Every reason has one.
+ */
+static PgBackendInterruptType
+ProcSignalReasonToBackendInterrupt(ProcSignalReason reason)
 {
 	switch (reason)
 	{
 		case PROCSIG_CATCHUP_INTERRUPT:
-			*interrupt_type = PG_BACKEND_INTERRUPT_CATCHUP;
-			return true;
+			return PG_BACKEND_INTERRUPT_CATCHUP;
 		case PROCSIG_NOTIFY_INTERRUPT:
-			*interrupt_type = PG_BACKEND_INTERRUPT_NOTIFY;
-			return true;
+			return PG_BACKEND_INTERRUPT_NOTIFY;
 		case PROCSIG_PARALLEL_MESSAGE:
-			*interrupt_type = PG_BACKEND_INTERRUPT_PARALLEL_MESSAGE;
-			return true;
+			return PG_BACKEND_INTERRUPT_PARALLEL_MESSAGE;
 		case PROCSIG_BARRIER:
-			*interrupt_type = PG_BACKEND_INTERRUPT_PROC_SIGNAL_BARRIER;
-			return true;
+			return PG_BACKEND_INTERRUPT_PROC_SIGNAL_BARRIER;
 		case PROCSIG_LOG_MEMORY_CONTEXT:
-			*interrupt_type = PG_BACKEND_INTERRUPT_LOG_MEMORY_CONTEXT;
-			return true;
+			return PG_BACKEND_INTERRUPT_LOG_MEMORY_CONTEXT;
 		case PROCSIG_PARALLEL_APPLY_MESSAGE:
-			*interrupt_type = PG_BACKEND_INTERRUPT_PARALLEL_APPLY_MESSAGE;
-			return true;
+			return PG_BACKEND_INTERRUPT_PARALLEL_APPLY_MESSAGE;
 		case PROCSIG_SLOTSYNC_MESSAGE:
-			*interrupt_type = PG_BACKEND_INTERRUPT_SLOT_SYNC_MESSAGE;
-			return true;
+			return PG_BACKEND_INTERRUPT_SLOT_SYNC_MESSAGE;
 		case PROCSIG_REPACK_MESSAGE:
-			*interrupt_type = PG_BACKEND_INTERRUPT_REPACK_MESSAGE;
-			return true;
+			return PG_BACKEND_INTERRUPT_REPACK_MESSAGE;
 		case PROCSIG_RECOVERY_CONFLICT:
-			*interrupt_type = PG_BACKEND_INTERRUPT_RECOVERY_CONFLICT;
-			return true;
+			return PG_BACKEND_INTERRUPT_RECOVERY_CONFLICT;
 		case PROCSIG_WALSND_INIT_STOPPING:
-			*interrupt_type = PG_BACKEND_INTERRUPT_WALSND_INIT_STOPPING;
-			return true;
+			return PG_BACKEND_INTERRUPT_WALSND_INIT_STOPPING;
 	}
 
-	return false;
-}
-
-static void
-WakeProcSignalSlot(int procNumber)
-{
-	/*
-	 * Normal backend, background-worker, walsender, and auxiliary slots have
-	 * a real PGPROC latch. Prepared-transaction dummy slots do not.
-	 */
-	if (procNumber >= 0 && procNumber < FIRST_PREPARED_XACT_PROC_NUMBER)
-		SetLatch(&GetPGProcByNumber(procNumber)->procLatch);
+	elog(PANIC, "invalid procsignal reason %d", (int) reason);
+	pg_unreachable();
 }
 
 /*
