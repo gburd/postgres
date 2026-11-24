@@ -42,6 +42,7 @@
 #include "common/pg_parse_lsn.h"
 #include "pgstat.h"
 #include "storage/fd.h"
+#include "utils/backend_runtime.h"
 #include "utils/wait_event.h"
 
 /*
@@ -339,7 +340,8 @@ writeTimeLineHistory(TimeLineID newTLI, TimeLineID parentTLI,
 	/*
 	 * Write into a temp file name.
 	 */
-	snprintf(tmppath, MAXPGPATH, XLOGDIR "/xlogtemp.%d", (int) getpid());
+	snprintf(tmppath, MAXPGPATH, XLOGDIR "/xlogtemp.%d",
+			 PgCurrentBackendSignalPid());
 
 	unlink(tmppath);
 
@@ -491,7 +493,8 @@ writeTimeLineHistoryFile(TimeLineID tli, const char *content, size_t size)
 	/*
 	 * Write into a temp file name.
 	 */
-	snprintf(tmppath, MAXPGPATH, XLOGDIR "/xlogtemp.%d", (int) getpid());
+	snprintf(tmppath, MAXPGPATH, XLOGDIR "/xlogtemp.%d",
+			 PgCurrentBackendSignalPid());
 
 	unlink(tmppath);
 

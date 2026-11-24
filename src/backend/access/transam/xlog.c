@@ -3350,7 +3350,8 @@ XLogFileInitInternal(XLogSegNo logsegno, TimeLineID logtli,
 	 */
 	elog(DEBUG2, "creating and filling new WAL file");
 
-	snprintf(tmppath, MAXPGPATH, XLOGDIR "/xlogtemp.%d", (int) getpid());
+	snprintf(tmppath, MAXPGPATH, XLOGDIR "/xlogtemp.%d",
+			 PgCurrentBackendSignalPid());
 
 	unlink(tmppath);
 
@@ -3561,7 +3562,8 @@ XLogFileCopy(TimeLineID destTLI, XLogSegNo destsegno,
 	/*
 	 * Copy into a temp file name.
 	 */
-	snprintf(tmppath, MAXPGPATH, XLOGDIR "/xlogtemp.%d", (int) getpid());
+	snprintf(tmppath, MAXPGPATH, XLOGDIR "/xlogtemp.%d",
+			 PgCurrentBackendSignalPid());
 
 	unlink(tmppath);
 

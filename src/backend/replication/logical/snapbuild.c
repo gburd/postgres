@@ -1623,7 +1623,7 @@ SnapBuildSerialize(SnapBuild *builder, XLogRecPtr lsn)
 	/* to make sure only we will write to this tempfile, include pid */
 	sprintf(tmppath, "%s/%X-%X.snap.%d.tmp",
 			PG_LOGICAL_SNAPSHOTS_DIR,
-			LSN_FORMAT_ARGS(lsn), MyProcPid);
+			LSN_FORMAT_ARGS(lsn), PgCurrentBackendSignalPid());
 
 	/*
 	 * Unlink temporary file if it already exists, needs to have been before a

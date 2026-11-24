@@ -6796,14 +6796,14 @@ write_relcache_init_file(bool shared)
 	if (shared)
 	{
 		snprintf(tempfilename, sizeof(tempfilename), "global/%s.%d",
-				 RELCACHE_INIT_FILENAME, MyProcPid);
+				 RELCACHE_INIT_FILENAME, PgCurrentBackendSignalPid());
 		snprintf(finalfilename, sizeof(finalfilename), "global/%s",
 				 RELCACHE_INIT_FILENAME);
 	}
 	else
 	{
 		snprintf(tempfilename, sizeof(tempfilename), "%s/%s.%d",
-				 DatabasePath, RELCACHE_INIT_FILENAME, MyProcPid);
+				 DatabasePath, RELCACHE_INIT_FILENAME, PgCurrentBackendSignalPid());
 		snprintf(finalfilename, sizeof(finalfilename), "%s/%s",
 				 DatabasePath, RELCACHE_INIT_FILENAME);
 	}

@@ -27,7 +27,9 @@
 #include "common/file_utils.h"
 #include "common/hashfn.h"
 #include "miscadmin.h"
+#include "port/atomics.h"
 #include "storage/fileset.h"
+#include "utils/backend_runtime.h"
 
 static void FileSetPath(char *path, FileSet *fileset, Oid tablespace);
 static void FilePath(char *path, FileSet *fileset, const char *name);
@@ -51,11 +53,11 @@ static Oid	ChooseTablespace(const FileSet *fileset, const char *name);
 void
 FileSetInit(FileSet *fileset)
 {
-	static uint32 counter = 0;
+	/* shared by threaded backends; the pid keeps their sets apart */
+	static pg_atomic_uint32 counter;
 
-	fileset->creator_pid = MyProcPid;
-	fileset->number = counter;
-	counter = (counter + 1) % INT_MAX;
+	fileset->creator_pid = PgCurrentBackendSignalPid();
+	fileset->number = pg_atomic_fetch_add_u32(&counter, 1) % INT_MAX;
 
 	/* Capture the tablespace OIDs so that all backends agree on them. */
 	PrepareTempTablespaces();
