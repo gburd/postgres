@@ -495,6 +495,7 @@ CommitTimestampShared
 CommonEntry
 CommonTableExpr
 CompactAttribute
+CompareCache
 CompareScalarsContext
 CompareType
 CompiledExprState
@@ -1144,6 +1145,8 @@ GistSplitUnion
 GistSplitVector
 GistTsVectorOptions
 GistVacState
+GiveUpEntry
+GiveUpKey
 GlobalChannelEntry
 GlobalChannelKey
 GlobalTransaction
@@ -1330,6 +1333,7 @@ IndexScanInstrumentation
 IndexScanState
 IndexStateFlagsAction
 IndexStmt
+IndexSubattrReads
 IndexTuple
 IndexTupleData
 IndexUniqueCheck
@@ -1514,6 +1518,7 @@ JsonbIteratorToken
 JsonbPair
 JsonbParseState
 JsonbSubWorkspace
+JsonbSubattrCache
 JsonbValue
 JumbleState
 JunkFilter
@@ -1821,6 +1826,8 @@ NestLoopState
 NestPath
 NewColumnValue
 NewConstraint
+NewIndexDatums
+NewIndexDatumsState
 NextSampleBlock_function
 NextSampleTuple_function
 NextValueExpr
@@ -3028,6 +3035,11 @@ SubXactCallback
 SubXactCallbackItem
 SubXactEvent
 SubXactInfo
+SubattrCompareFunc
+SubattrPathElem
+SubattrPathElemKind
+SubattrRequestKind
+SubattrWalk
 SubqueryScan
 SubqueryScanPath
 SubqueryScanState
@@ -3051,6 +3063,7 @@ SupportRequestRows
 SupportRequestSelectivity
 SupportRequestSimplify
 SupportRequestSimplifyAggref
+SupportRequestSubattr
 SupportRequestWFuncMonotonic
 Syn
 SyncOps
@@ -3324,6 +3337,7 @@ UnlistenStmt
 UnresolvedTup
 UnresolvedTupData
 UpdateContext
+UpdateRows
 UpdateStmt
 UpgradeTask
 UpgradeTaskProcessCB
@@ -3539,6 +3553,7 @@ XmlExpr
 XmlExprOp
 XmlOptionType
 XmlSerialize
+XmlSubattrCache
 XmlTableBuilderData
 YYLTYPE
 YYSTYPE
@@ -3574,6 +3589,7 @@ ambuildempty_function
 ambuildphasename_function
 ambulkdelete_function
 amcanreturn_function
+amcomparedatums_function
 amcostestimate_function
 amendscan_function
 amestimateparallelscan_function

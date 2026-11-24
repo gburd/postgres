@@ -16,8 +16,12 @@
 #include "access/amapi.h"
 #include "access/reloptions.h"
 #include "catalog/index.h"
+#include "catalog/pg_type.h"
 #include "commands/vacuum.h"
 #include "nodes/pathnodes.h"
+#include "nodes/supportnodes.h"
+#include "utils/jsonb.h"
+#include "utils/rel.h"
 
 PG_MODULE_MAGIC;
 
@@ -245,6 +249,68 @@ dioptions(Datum reloptions, bool validate)
 }
 
 /*
+ * amcanreturn: with option_ternary_1 set to true, claim that every column
+ * can be returned, so that amcomparedatums is not asked about it.
+ * (The index cannot actually be scanned.)
+ */
+static bool
+dicanreturn(Relation index, int attno)
+{
+	DummyIndexOptions *opts = (DummyIndexOptions *) index->rd_options;
+
+	return opts != NULL && opts->option_ternary_1 == PG_TERNARY_TRUE;
+}
+
+/*
+ * Would newValue give the same entries as oldValue?  The dummy index stores
+ * nothing, so any answer is correct.  For testing the executor's use of
+ * amcomparedatums: with option_real set to 1, int4 values that are equal
+ * modulo option_int count as giving the same entries.  option_int may be
+ * set as low as -10; below 2 there is no useful modulus (0 would divide by
+ * zero, 1 would make every value equal), so nothing counts as the same.
+ */
+static bool
+dicomparedatums(Relation index, IndexInfo *indexInfo, int attnum,
+				Oid typid, int16 typlen, bool typbyval,
+				Datum oldValue, Datum newValue)
+{
+	DummyIndexOptions *opts = (DummyIndexOptions *) index->rd_options;
+
+	if (opts == NULL || opts->option_real != 1 || opts->option_int < 2 ||
+		typid != INT4OID)
+		return false;
+	return DatumGetInt32(oldValue) % opts->option_int ==
+		DatumGetInt32(newValue) % opts->option_int;
+}
+
+/*
+ * Which parts of a column's value do the entries depend on?  For testing
+ * the executor's use of amsubattrreads, as a document store's index on a
+ * whole document might answer from its options: with option_string_null
+ * set, a jsonb column's entries are made only from the top-level member it
+ * names.  The dummy index stores nothing, so the answer is not checked
+ * against anything.
+ */
+static bool
+disubattrreads(Relation index, int attnum, List **paths,
+			   SubattrCompareFunc *compare)
+{
+	DummyIndexOptions *opts = (DummyIndexOptions *) index->rd_options;
+	SubattrPathElem *e;
+
+	if (opts == NULL || opts->option_string_null_offset == 0 ||
+		TupleDescAttr(RelationGetDescr(index), attnum - 1)->atttypid != JSONBOID)
+		return false;
+
+	e = palloc0_object(SubattrPathElem);
+	e->kind = SUBATTR_ELEM_KEY;
+	e->key = pstrdup((char *) opts + opts->option_string_null_offset);
+	*paths = list_make1(list_make1(e));
+	*compare = jsonb_subattr_compare;
+	return true;
+}
+
+/*
  * Validator for index AM.
  */
 static bool
@@ -324,7 +390,7 @@ dihandler(PG_FUNCTION_ARGS)
 		.aminsert = diinsert,
 		.ambulkdelete = dibulkdelete,
 		.amvacuumcleanup = divacuumcleanup,
-		.amcanreturn = NULL,
+		.amcanreturn = dicanreturn,
 		.amcostestimate = dicostestimate,
 		.amgettreeheight = NULL,
 		.amoptions = dioptions,
@@ -341,6 +407,8 @@ dihandler(PG_FUNCTION_ARGS)
 		.amestimateparallelscan = NULL,
 		.aminitparallelscan = NULL,
 		.amparallelrescan = NULL,
+		.amcomparedatums = dicomparedatums,
+		.amsubattrreads = disubattrreads,
 	};
 
 	PG_RETURN_POINTER(&amroutine);

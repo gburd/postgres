@@ -13,6 +13,7 @@
 #define __JSONB_H__
 
 #include "lib/stringinfo.h"
+#include "nodes/pg_list.h"
 #include "utils/array.h"
 #include "utils/numeric.h"
 
@@ -426,6 +427,8 @@ extern int	compareJsonbContainers(JsonbContainer *a, JsonbContainer *b);
 extern JsonbValue *findJsonbValueFromContainer(JsonbContainer *container,
 											   uint32 flags,
 											   JsonbValue *key);
+extern bool jsonb_subattr_compare(Datum oldval, Datum newval,
+								  List *paths, void **cache);
 extern JsonbValue *getKeyJsonValueFromContainer(JsonbContainer *container,
 												const char *keyVal, int keyLen,
 												JsonbValue *res);

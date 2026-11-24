@@ -112,6 +112,8 @@ gisthandler(PG_FUNCTION_ARGS)
 		.amparallelrescan = NULL,
 		.amtranslatestrategy = NULL,
 		.amtranslatecmptype = gisttranslatecmptype,
+		.amcomparedatums = NULL,
+		.amsubattrreads = NULL,
 	};
 
 	PG_RETURN_POINTER(&amroutine);

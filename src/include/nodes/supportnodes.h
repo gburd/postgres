@@ -445,4 +445,100 @@ typedef struct SupportRequestModifyInPlace
 	int			paramid;		/* ID of Param(s) representing variable */
 } SupportRequestModifyInPlace;
 
+/*
+ * The SupportRequestSubattr request lets the executor learn, without running
+ * anything, which parts of a structured value (a jsonb document, an array,
+ * an extension's own document type) a function call reads or may change.
+ * The executor uses the answers to skip work when an UPDATE cannot change
+ * what an index stores.  A wrong answer can leave an index without an entry
+ * for a row, so a support function must answer only what it can guarantee,
+ * and otherwise decline by returning NULL.
+ *
+ * A part is named by a path: a List of SubattrPathElem, from the outermost
+ * level in.  An empty path (NIL) names the whole value.
+ *
+ * The support function sets "source" to the index in "args" of the argument
+ * the call reads (SUBATTR_READ) or copies from (SUBATTR_MODIFY).  It may
+ * rely on the values of other arguments only if they are Consts; the
+ * executor replaces external Params by Consts holding their values before
+ * asking.  If the answer depends on anything else, decline.
+ *
+ * SUBATTR_READ: the call's result is computed only from the parts of
+ * args[source] named in "paths", and from its other arguments.  A call may
+ * name several paths.  Set "subvalue" if the call has a single path and
+ * returns exactly the part that path names, as a value of a type whose parts
+ * are named the same way (jsonb's -> does; ->> returns text and does not),
+ * so that reading a part of the result reads the part at the combined path.
+ *
+ * SUBATTR_MODIFY: the call returns args[source] changed at most at the
+ * parts named in "paths": every other part reads the same, byte for byte,
+ * through any SUBATTR_READ call.  A change that moves other parts, as
+ * inserting into or deleting from an array moves later elements, must name
+ * them: SUBATTR_ELEM_ANY_POSITION names every element of an array.  If the
+ * source argument is null, or the result is null, the executor does not
+ * rely on the answer.
+ *
+ * Two paths are taken to name overlapping parts unless, at some depth, both
+ * have an element and those elements cannot name the same part: two
+ * different keys that do not both read as integers ("1" and "01" may name
+ * the same array element), two different positions, or a position or
+ * SUBATTR_ELEM_ANY_POSITION against a key that does not read as an integer.
+ * A path overlaps every path it is a prefix of.  A SUBATTR_ELEM_OPAQUE
+ * element names a part of the value in a way only its type understands (an
+ * XPath expression, say); it overlaps every element.
+ *
+ * SUBATTR_READ answers may also set "compare" to a function that compares
+ * two values of args[source]'s type at given paths.  The executor uses it
+ * when an UPDATE changes a value as a whole, as SET doc = $1 does, so that
+ * nothing about the SET expression is known: if the old and new values read
+ * the same at every path an index reads, the index keeps its entries without
+ * its expressions being evaluated.  The function must return true only if
+ * every SUBATTR_READ call that names the type's paths would return the same
+ * datum, byte for byte, for the two values.  It is called with neither
+ * value null.  *cache is NULL the first time it is called for a row and
+ * column; it may keep state there, allocated in CurrentMemoryContext, which
+ * lasts for the row, for later calls on the same two values.  Every call in
+ * a chain of accessors over one column must name the same function, or none
+ * is used.
+ */
+typedef enum SubattrPathElemKind
+{
+	SUBATTR_ELEM_KEY,			/* object member by name */
+	SUBATTR_ELEM_POSITION,		/* array element by position */
+	SUBATTR_ELEM_ANY_POSITION,	/* any array element */
+	SUBATTR_ELEM_OPAQUE,		/* a part the type names; key describes it */
+} SubattrPathElemKind;
+
+typedef struct SubattrPathElem
+{
+	SubattrPathElemKind kind;
+	char	   *key;			/* SUBATTR_ELEM_KEY: null-terminated name;
+								 * SUBATTR_ELEM_OPAQUE: the type's description */
+	int			position;		/* SUBATTR_ELEM_POSITION */
+} SubattrPathElem;
+
+typedef enum SubattrRequestKind
+{
+	SUBATTR_READ,
+	SUBATTR_MODIFY,
+} SubattrRequestKind;
+
+typedef bool (*SubattrCompareFunc) (Datum oldval, Datum newval,
+									List *paths, void **cache);
+
+typedef struct SupportRequestSubattr
+{
+	NodeTag		type;
+
+	SubattrRequestKind kind;	/* what the executor asks */
+	Oid			funcid;			/* PG_PROC OID of the target function */
+	List	   *args;			/* arguments to the function */
+
+	/* Set by the support function before returning the request: */
+	int			source;			/* index into args of the value read/copied */
+	List	   *paths;			/* List of List of SubattrPathElem */
+	bool		subvalue;		/* SUBATTR_READ: returns the part at paths */
+	SubattrCompareFunc compare; /* SUBATTR_READ: compares at paths, or NULL */
+} SupportRequestSubattr;
+
 #endif							/* SUPPORTNODES_H */

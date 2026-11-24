@@ -4304,4 +4304,32 @@ supportfn(internal) returns internal
     To create such conditions, the support function must implement
     the <literal>SupportRequestIndexCondition</literal> request type.
    </para>
+
+   <para>
+    For functions that read part of a structured value, such as a member of a
+    document, or that return a copy of a structured value with some parts
+    changed, the executor can use a description of which parts are read or
+    changed.  When an <command>UPDATE</command> changes a column only through
+    such functions, and every expression index and partial-index predicate
+    that uses the column reads only other parts of it, the executor knows
+    without evaluating them that the update leaves those indexes unaffected
+    (see <xref linkend="storage-hot"/>).  To describe a call, the support
+    function must implement the <literal>SupportRequestSubattr</literal>
+    request type.  Its answer must be exact for every value the call could be
+    given: an answer that omits a part the call reads or changes can cause
+    index entries to be missing.
+   </para>
+
+   <para>
+    An answer for a function that reads part of a value can also name a
+    function that compares two values of its type at given parts.  The
+    executor uses it when an <command>UPDATE</command> writes a column as a
+    whole, so that nothing about the new value's origin is known: if the old
+    and new values compare the same at every part an index's expressions and
+    predicate read, the index keeps its entries without being evaluated.
+    The definitions of the indexes are read once and cached.
+    <type>jsonb</type> compares documents by key, arrays by element, and
+    <function>xpath</function> by evaluating each XPath expression on the two
+    documents, parsing each document once.
+   </para>
   </sect1>

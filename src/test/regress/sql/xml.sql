@@ -724,3 +724,22 @@ SELECT xmltext('  ');
 SELECT xmltext('foo `$_-+?=*^%!|/\()[]{}');
 SELECT xmltext('foo & <"bar">');
 SELECT xmltext('x'|| '<P>73</P>'::xml || .42 || true || 'j'::char);
+
+-- An UPDATE that writes an XML document as a whole is HOT when the parts
+-- its xpath() expression indexes read are the same in the old and the new
+-- document.  Each document is parsed once for all the indexes.
+CREATE TABLE xml_hot (id int PRIMARY KEY, x xml) WITH (fillfactor = 50);
+CREATE INDEX xml_hot_k ON xml_hot (((xpath('/r/k/text()', x))[1]::text));
+CREATE INDEX xml_hot_j ON xml_hot (((xpath('/r/j/text()', x))[1]::text));
+INSERT INTO xml_hot
+  SELECT g, ('<r><k>' || g || '</k><j>' || g || '</j><v>0</v></r>')::xml
+    FROM generate_series(1, 10) g;
+SELECT pg_stat_force_next_flush();
+UPDATE xml_hot SET x = regexp_replace(x::text, '<v>0</v>', '<v>1</v>')::xml;
+UPDATE xml_hot SET x = regexp_replace(x::text, '<k>', '<k>9')::xml WHERE id <= 3;
+SELECT pg_stat_force_next_flush();
+SELECT n_tup_upd, n_tup_hot_upd FROM pg_stat_user_tables WHERE relname = 'xml_hot';
+SET enable_seqscan = off;
+SELECT id FROM xml_hot WHERE (xpath('/r/k/text()', x))[1]::text = '91';
+RESET enable_seqscan;
+DROP TABLE xml_hot;

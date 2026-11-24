@@ -164,6 +164,12 @@ typedef struct RelationData
 	Bitmapset  *rd_idattr;		/* included in replica identity index */
 	Bitmapset  *rd_hotblockingattr; /* cols blocking HOT update */
 	Bitmapset  *rd_summarizedattr;	/* cols indexed by summarizing indexes */
+	Bitmapset  *rd_indexedattr; /* cols referenced by any index */
+	Bitmapset  *rd_exprattr;	/* cols non-summarizing indexes reference only
+								 * via expressions or as partial indexes */
+	Bitmapset  *rd_cmpattr;		/* cols indexed directly only by indexes with
+								 * amcomparedatums, less key and replica
+								 * identity cols */
 
 	PublicationDesc *rd_pubdesc;	/* publication descriptor, or NULL */
 
@@ -227,6 +233,13 @@ typedef struct RelationData
 	 * rd_amcache = NULL.
 	 */
 	void	   *rd_amcache;		/* available for use by index/table AM */
+
+	/*
+	 * For an index: the parts of its table's columns it reads, built by
+	 * RelationGetIndexSubattrReads() in rd_indexcxt when first asked for.
+	 */
+	List	   *rd_subattrreads;
+	bool		rd_subattrreadsvalid;
 
 	/*
 	 * foreign-table support

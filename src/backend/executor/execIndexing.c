@@ -113,7 +113,9 @@
 #include "catalog/index.h"
 #include "executor/executor.h"
 #include "nodes/nodeFuncs.h"
+#include "optimizer/optimizer.h"
 #include "storage/lmgr.h"
+#include "utils/datum.h"
 #include "utils/injection_point.h"
 #include "utils/lsyscache.h"
 #include "utils/multirangetypes.h"
@@ -140,11 +142,17 @@ static bool check_exclusion_or_unique_constraint(Relation heap, Relation index,
 static bool index_recheck_constraint(Relation index, const Oid *constr_procs,
 									 const Datum *existing_values, const bool *existing_isnull,
 									 const Datum *new_values);
-static bool index_unchanged_by_update(ResultRelInfo *resultRelInfo,
-									  EState *estate, IndexInfo *indexInfo,
-									  Relation indexRelation);
-static bool index_expression_changed_walker(Node *node,
-											Bitmapset *allUpdatedCols);
+static bool FormIndexDatumForRow(ResultRelInfo *resultRelInfo, int i,
+								 bool reuse, TupleTableSlot *slot,
+								 EState *estate, Datum *values, bool *isnull);
+static bool check_exclusion_for_insert(Relation heapRelation,
+									   Relation indexRelation,
+									   IndexInfo *indexInfo,
+									   ItemPointer tupleid,
+									   const Datum *values, const bool *isnull,
+									   EState *estate, bool applyNoDupErr);
+static bool index_unchanged_by_update(IndexInfo *indexInfo,
+									  const Bitmapset *modified_idx_attrs);
 static void ExecWithoutOverlapsNotEmpty(Relation rel, NameData attname, Datum attval,
 										char typtype, Oid atttypid);
 
@@ -270,6 +278,96 @@ ExecCloseIndices(ResultRelInfo *resultRelInfo)
 	 */
 }
 
+/*
+ * Does the i'th index get an entry for the row in slot, and with which
+ * datums?  If the index is partial and the row does not satisfy its
+ * predicate, return false.  Otherwise form the datums into values and
+ * isnull, and return true.
+ *
+ * With reuse, slot must hold the new row of the UPDATE that
+ * ExecUpdateModifiedIdxAttrs() decided last: what that found out about
+ * this index for the row, if anything, is used instead of evaluating the
+ * index's predicate and expressions again.
+ */
+static bool
+FormIndexDatumForRow(ResultRelInfo *resultRelInfo, int i, bool reuse,
+					 TupleTableSlot *slot, EState *estate,
+					 Datum *values, bool *isnull)
+{
+	IndexInfo  *indexInfo = resultRelInfo->ri_IndexRelationInfo[i];
+	ExprContext *econtext = GetPerTupleExprContext(estate);
+	NewIndexDatums *nid = NULL;
+
+	if (reuse && resultRelInfo->ri_NewIndexDatums != NULL)
+		nid = &resultRelInfo->ri_NewIndexDatums[i];
+
+	if (nid != NULL && nid->state == NEWIDX_OUTSIDE)
+	{
+		Assert(indexInfo->ii_Predicate != NIL);
+		return false;
+	}
+	if (nid != NULL && nid->state == NEWIDX_DATUMS)
+	{
+		memcpy(values, nid->values,
+			   sizeof(Datum) * indexInfo->ii_NumIndexAttrs);
+		memcpy(isnull, nid->isnull,
+			   sizeof(bool) * indexInfo->ii_NumIndexAttrs);
+#ifdef USE_ASSERT_CHECKING
+		{
+			Datum		check_values[INDEX_MAX_KEYS];
+			bool		check_isnull[INDEX_MAX_KEYS];
+			ListCell   *expr = list_head(indexInfo->ii_Expressions);
+
+			/* the saved datums must be what evaluating would give */
+			econtext->ecxt_scantuple = slot;
+			if (indexInfo->ii_Predicate != NIL)
+			{
+				if (indexInfo->ii_PredicateState == NULL)
+					indexInfo->ii_PredicateState =
+						ExecPrepareQual(indexInfo->ii_Predicate, estate);
+				Assert(ExecQual(indexInfo->ii_PredicateState, econtext));
+			}
+			FormIndexDatum(indexInfo, slot, estate,
+						   check_values, check_isnull);
+			for (int k = 0; k < indexInfo->ii_NumIndexAttrs; k++)
+			{
+				AttrNumber	attnum = indexInfo->ii_IndexAttrNumbers[k];
+				Oid			typid;
+				int16		typlen;
+				bool		typbyval;
+
+				if (attnum != 0)
+					typid = TupleDescAttr(RelationGetDescr(resultRelInfo->ri_RelationDesc),
+										  attnum - 1)->atttypid;
+				else
+				{
+					typid = exprType(lfirst(expr));
+					expr = lnext(indexInfo->ii_Expressions, expr);
+				}
+				get_typlenbyval(typid, &typlen, &typbyval);
+				Assert(check_isnull[k] == isnull[k]);
+				Assert(isnull[k] ||
+					   datumIsEqual(check_values[k], values[k],
+									typbyval, typlen));
+			}
+		}
+#endif
+		return true;
+	}
+
+	econtext->ecxt_scantuple = slot;
+	if (indexInfo->ii_Predicate != NIL)
+	{
+		if (indexInfo->ii_PredicateState == NULL)
+			indexInfo->ii_PredicateState =
+				ExecPrepareQual(indexInfo->ii_Predicate, estate);
+		if (!ExecQual(indexInfo->ii_PredicateState, econtext))
+			return false;
+	}
+	FormIndexDatum(indexInfo, slot, estate, values, isnull);
+	return true;
+}
+
 /* ----------------------------------------------------------------
  *		ExecInsertIndexTuples
  *
@@ -284,9 +382,11 @@ ExecCloseIndices(ResultRelInfo *resultRelInfo)
  *		'update_indexes' to TU_All).  Receiving this hint makes
  *		us consider if we should pass down the 'indexUnchanged'
  *		hint in turn.  That's something that we figure out for
- *		each index_insert() call iff EIIT_IS_UPDATE is set.
- *		(When that flag is not set we already know not to pass the
- *		hint to any index.)
+ *		each index_insert() call iff EIIT_IS_UPDATE is set, from
+ *		'modified_idx_attrs', the indexed attributes the update
+ *		changed (see ExecUpdateModifiedIdxAttrs()).  (When that
+ *		flag is not set we already know not to pass the hint to
+ *		any index, and 'modified_idx_attrs' is ignored.)
  *
  *		If EIIT_ONLY_SUMMARIZING is set, an equivalent optimization to
  *		HOT has been applied and any updated columns are indexed
@@ -312,6 +412,7 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 					  EState *estate,
 					  uint32 flags,
 					  TupleTableSlot *slot,
+					  const Bitmapset *modified_idx_attrs,
 					  List *arbiterIndexes,
 					  bool *specConflict)
 {
@@ -376,36 +477,15 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 		if ((flags & EIIT_ONLY_SUMMARIZING) && !indexInfo->ii_Summarizing)
 			continue;
 
-		/* Check for partial index */
-		if (indexInfo->ii_Predicate != NIL)
-		{
-			ExprState  *predicate;
-
-			/*
-			 * If predicate state not set up yet, create it (in the estate's
-			 * per-query context)
-			 */
-			predicate = indexInfo->ii_PredicateState;
-			if (predicate == NULL)
-			{
-				predicate = ExecPrepareQual(indexInfo->ii_Predicate, estate);
-				indexInfo->ii_PredicateState = predicate;
-			}
-
-			/* Skip this index-update if the predicate isn't satisfied */
-			if (!ExecQual(predicate, econtext))
-				continue;
-		}
-
 		/*
-		 * FormIndexDatum fills in its values and isnull parameters with the
-		 * appropriate values for the column(s) of the index.
+		 * Skip a partial index whose predicate the row does not satisfy, and
+		 * form the index's datums for the row.  For an UPDATE, these may be
+		 * known already.
 		 */
-		FormIndexDatum(indexInfo,
-					   slot,
-					   estate,
-					   values,
-					   isnull);
+		if (!FormIndexDatumForRow(resultRelInfo, i,
+								  (flags & EIIT_NEW_DATUMS) != 0,
+								  slot, estate, values, isnull))
+			continue;
 
 		/* Check whether to apply noDupErr to this index */
 		applyNoDupErr = (flags & EIIT_NO_DUPE_ERROR) &&
@@ -441,10 +521,8 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 		 * consider if the 'indexUnchanged' = true hint should be passed.
 		 */
 		indexUnchanged = ((flags & EIIT_IS_UPDATE) &&
-						  index_unchanged_by_update(resultRelInfo,
-													estate,
-													indexInfo,
-													indexRelation));
+						  index_unchanged_by_update(indexInfo,
+													modified_idx_attrs));
 
 		satisfiesConstraint =
 			index_insert(indexRelation, /* index relation */
@@ -471,33 +549,10 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 		 * need to preserve the prior state of satisfiesConstraint.
 		 */
 		if (indexInfo->ii_ExclusionOps != NULL)
-		{
-			bool		violationOK;
-			CEOUC_WAIT_MODE waitMode;
-
-			if (applyNoDupErr)
-			{
-				violationOK = true;
-				waitMode = CEOUC_LIVELOCK_PREVENTING_WAIT;
-			}
-			else if (!indexRelation->rd_index->indimmediate)
-			{
-				violationOK = true;
-				waitMode = CEOUC_NOWAIT;
-			}
-			else
-			{
-				violationOK = false;
-				waitMode = CEOUC_WAIT;
-			}
-
 			satisfiesConstraint =
-				check_exclusion_or_unique_constraint(heapRelation,
-													 indexRelation, indexInfo,
-													 tupleid, values, isnull,
-													 estate, false,
-													 waitMode, violationOK, NULL);
-		}
+				check_exclusion_for_insert(heapRelation, indexRelation,
+										   indexInfo, tupleid, values, isnull,
+										   estate, applyNoDupErr);
 
 		if ((checkUnique == UNIQUE_CHECK_PARTIAL ||
 			 indexInfo->ii_ExclusionOps != NULL) &&
@@ -511,6 +566,135 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 			 */
 			result = lappend_oid(result, RelationGetRelid(indexRelation));
 			if (indexRelation->rd_index->indimmediate && specConflict)
+				*specConflict = true;
+		}
+	}
+
+	return result;
+}
+
+/*
+ * Check the exclusion constraint of indexRelation for a tuple whose entry has
+ * just been inserted, or whose entries are those an earlier version of the
+ * row had (a HOT update; see ExecCheckHotExclusion()).  Returns false if the
+ * constraint may be violated and the caller is to recheck it later.
+ *
+ * If the constraint is deferred, check now anyway, but don't throw error on
+ * violation or wait for a conclusive outcome from a concurrent insertion;
+ * the caller queues a recheck event.  Similarly, noDupErr callers
+ * (speculative inserters) will recheck later, and wait for a conclusive
+ * outcome then.
+ */
+static bool
+check_exclusion_for_insert(Relation heapRelation, Relation indexRelation,
+						   IndexInfo *indexInfo, ItemPointer tupleid,
+						   const Datum *values, const bool *isnull,
+						   EState *estate, bool applyNoDupErr)
+{
+	bool		violationOK;
+	CEOUC_WAIT_MODE waitMode;
+
+	if (applyNoDupErr)
+	{
+		violationOK = true;
+		waitMode = CEOUC_LIVELOCK_PREVENTING_WAIT;
+	}
+	else if (!indexRelation->rd_index->indimmediate)
+	{
+		violationOK = true;
+		waitMode = CEOUC_NOWAIT;
+	}
+	else
+	{
+		violationOK = false;
+		waitMode = CEOUC_WAIT;
+	}
+
+	return check_exclusion_or_unique_constraint(heapRelation, indexRelation,
+												indexInfo, tupleid,
+												values, isnull, estate, false,
+												waitMode, violationOK, NULL);
+}
+
+/* ----------------------------------------------------------------
+ *		ExecCheckHotExclusion
+ *
+ *		After an UPDATE that inserted no index entries (a HOT update),
+ *		check the exclusion constraints that ExecUpdateModifiedIdxAttrs()
+ *		noted in ri_HotExclusionCheck: those whose index keeps the old row's
+ *		entries although a value it is built from changed.  Only
+ *		constraints checked immediately are noted; see IndexDatumsDiffer().
+ *
+ *		The check is the one ExecInsertIndexTuples() makes after inserting
+ *		an entry, with the new row's values, and it is right for the same
+ *		reasons.  The access method said the new values give the same
+ *		entries as the old, so every index scan that would find the entry
+ *		the new row would get finds the old row's entries, which lead to
+ *		the new row through the HOT chain; they were inserted before the
+ *		new row existed, earlier than the new entry would have been.  A
+ *		transaction that inserts a conflicting row concurrently either
+ *		inserted its entry before our check, and our check finds it and
+ *		waits for it, or checks after we updated the row, and finds the old
+ *		entries.  A scan with a non-MVCC snapshot, as the check uses,
+ *		returns every member of the HOT chain those lead to: the old
+ *		version, which our update deleted, and the new one, which it
+ *		inserted, both in progress.  So the inserter compares its value with
+ *		the new row's too, and waits for us if they conflict.
+ *
+ *		Like ExecInsertIndexTuples(), this returns the OIDs of indexes whose
+ *		constraint may be violated when EIIT_NO_DUPE_ERROR is given, and
+ *		honors arbiterIndexes.  specConflict is set as there.
+ * ----------------------------------------------------------------
+ */
+List *
+ExecCheckHotExclusion(ResultRelInfo *resultRelInfo, EState *estate,
+					  uint32 flags, TupleTableSlot *slot,
+					  List *arbiterIndexes, bool *specConflict)
+{
+	ItemPointer tupleid = &slot->tts_tid;
+	Relation	heapRelation = resultRelInfo->ri_RelationDesc;
+	ExprContext *econtext;
+	List	   *result = NIL;
+	int			i = -1;
+
+	if (bms_is_empty(resultRelInfo->ri_HotExclusionCheck))
+		return NIL;
+	Assert(ItemPointerIsValid(tupleid));
+
+	econtext = GetPerTupleExprContext(estate);
+	econtext->ecxt_scantuple = slot;
+
+	while ((i = bms_next_member(resultRelInfo->ri_HotExclusionCheck, i)) >= 0)
+	{
+		Relation	indexRelation = resultRelInfo->ri_IndexRelationDescs[i];
+		IndexInfo  *indexInfo = resultRelInfo->ri_IndexRelationInfo[i];
+		Datum		values[INDEX_MAX_KEYS];
+		bool		isnull[INDEX_MAX_KEYS];
+		bool		applyNoDupErr;
+
+		Assert(indexInfo->ii_ExclusionOps != NULL);
+		Assert(indexRelation->rd_index->indimmediate);
+
+		/*
+		 * ExecUpdateModifiedIdxAttrs() only notes an index the row is in, so
+		 * a partial index's predicate holds, and has the row's datums.
+		 */
+		if (!FormIndexDatumForRow(resultRelInfo, i, true, slot, estate,
+								  values, isnull))
+			elog(ERROR, "row outside the predicate of index \"%s\"",
+				 RelationGetRelationName(indexRelation));
+
+		applyNoDupErr = (flags & EIIT_NO_DUPE_ERROR) &&
+			(arbiterIndexes == NIL ||
+			 list_member_oid(arbiterIndexes,
+							 indexRelation->rd_index->indexrelid));
+
+		if (!check_exclusion_for_insert(heapRelation, indexRelation, indexInfo,
+										tupleid, values, isnull, estate,
+										applyNoDupErr))
+		{
+			result = lappend_oid(result, RelationGetRelid(indexRelation));
+			if (specConflict)
 				*specConflict = true;
 		}
 	}
@@ -1039,145 +1223,48 @@ index_recheck_constraint(Relation index, const Oid *constr_procs,
  *
  * When the executor performs an UPDATE that requires a new round of index
  * tuples, determine if we should pass 'indexUnchanged' = true hint for one
- * single index.
+ * single index: whether the update changed none of the attributes that the
+ * index's keys are formed from.  modified_idx_attrs are the indexed
+ * attributes that this row's update changed.
  */
 static bool
-index_unchanged_by_update(ResultRelInfo *resultRelInfo, EState *estate,
-						  IndexInfo *indexInfo, Relation indexRelation)
+index_unchanged_by_update(IndexInfo *indexInfo,
+						  const Bitmapset *modified_idx_attrs)
 {
-	Bitmapset  *updatedCols;
-	Bitmapset  *extraUpdatedCols;
-	Bitmapset  *allUpdatedCols;
-	bool		hasexpression = false;
-	List	   *idxExprs;
-
 	/*
-	 * Check cache first
-	 */
-	if (indexInfo->ii_CheckedUnchanged)
-		return indexInfo->ii_IndexUnchanged;
-	indexInfo->ii_CheckedUnchanged = true;
-
-	/*
-	 * Check for indexed attribute overlap with updated columns.
+	 * The attributes the keys are formed from are the same for every row, so
+	 * collect them once.  Only key columns count.  A change to a non-key
+	 * column within an INCLUDE index should not be counted here.  Non-key
+	 * column values are opaque payload state to the index AM, a little like
+	 * an extra table TID.  An indexed expression is taken to have changed if
+	 * any column it uses changed (INCLUDE columns cannot be expressions).
 	 *
-	 * Only do this for key columns.  A change to a non-key column within an
-	 * INCLUDE index should not be counted here.  Non-key column values are
-	 * opaque payload state to the index AM, a little like an extra table TID.
-	 *
-	 * Note that row-level BEFORE triggers won't affect our behavior, since
-	 * they don't affect the updatedCols bitmaps generally.  It doesn't seem
-	 * worth the trouble of checking which attributes were changed directly.
-	 */
-	updatedCols = ExecGetUpdatedCols(resultRelInfo, estate);
-	extraUpdatedCols = ExecGetExtraUpdatedCols(resultRelInfo, estate);
-	for (int attr = 0; attr < indexInfo->ii_NumIndexKeyAttrs; attr++)
-	{
-		int			keycol = indexInfo->ii_IndexAttrNumbers[attr];
-
-		if (keycol <= 0)
-		{
-			/*
-			 * Skip expressions for now, but remember to deal with them later
-			 * on
-			 */
-			hasexpression = true;
-			continue;
-		}
-
-		if (bms_is_member(keycol - FirstLowInvalidHeapAttributeNumber,
-						  updatedCols) ||
-			bms_is_member(keycol - FirstLowInvalidHeapAttributeNumber,
-						  extraUpdatedCols))
-		{
-			/* Changed key column -- don't hint for this index */
-			indexInfo->ii_IndexUnchanged = false;
-			return false;
-		}
-	}
-
-	/*
-	 * When we get this far and index has no expressions, return true so that
-	 * index_insert() call will go on to pass 'indexUnchanged' = true hint.
-	 *
-	 * The _absence_ of an indexed key attribute that overlaps with updated
-	 * attributes (in addition to the total absence of indexed expressions)
-	 * shows that the index as a whole is logically unchanged by UPDATE.
-	 */
-	if (!hasexpression)
-	{
-		indexInfo->ii_IndexUnchanged = true;
-		return true;
-	}
-
-	/*
-	 * Need to pass only one bms to expression_tree_walker helper function.
-	 * Avoid allocating memory in common case where there are no extra cols.
-	 */
-	if (!extraUpdatedCols)
-		allUpdatedCols = updatedCols;
-	else
-		allUpdatedCols = bms_union(updatedCols, extraUpdatedCols);
-
-	/*
-	 * We have to work slightly harder in the event of indexed expressions,
-	 * but the principle is the same as before: try to find columns (Vars,
-	 * actually) that overlap with known-updated columns.
-	 *
-	 * If we find any matching Vars, don't pass hint for index.  Otherwise
-	 * pass hint.
-	 */
-	idxExprs = RelationGetIndexExpressions(indexRelation);
-	hasexpression = index_expression_changed_walker((Node *) idxExprs,
-													allUpdatedCols);
-	list_free(idxExprs);
-	if (extraUpdatedCols)
-		bms_free(allUpdatedCols);
-
-	if (hasexpression)
-	{
-		indexInfo->ii_IndexUnchanged = false;
-		return false;
-	}
-
-	/*
 	 * Deliberately don't consider index predicates.  We should even give the
 	 * hint when result rel's "updated tuple" has no corresponding index
 	 * tuple, which is possible with a partial index (provided the usual
 	 * conditions are met).
 	 */
-	indexInfo->ii_IndexUnchanged = true;
-	return true;
-}
-
-/*
- * Indexed expression helper for index_unchanged_by_update().
- *
- * Returns true when Var that appears within allUpdatedCols located.
- */
-static bool
-index_expression_changed_walker(Node *node, Bitmapset *allUpdatedCols)
-{
-	if (node == NULL)
-		return false;
-
-	if (IsA(node, Var))
+	if (!indexInfo->ii_KeyAttrsValid)
 	{
-		Var		   *var = (Var *) node;
+		MemoryContext oldcxt = MemoryContextSwitchTo(indexInfo->ii_Context);
+		Bitmapset  *keyattrs = NULL;
 
-		if (bms_is_member(var->varattno - FirstLowInvalidHeapAttributeNumber,
-						  allUpdatedCols))
+		for (int attr = 0; attr < indexInfo->ii_NumIndexKeyAttrs; attr++)
 		{
-			/* Var was updated -- indicates that we should not hint */
-			return true;
-		}
+			int			keycol = indexInfo->ii_IndexAttrNumbers[attr];
 
-		/* Still haven't found a reason to not pass the hint */
-		return false;
+			if (keycol != 0)
+				keyattrs = bms_add_member(keyattrs,
+										  keycol - FirstLowInvalidHeapAttributeNumber);
+		}
+		pull_varattnos((Node *) indexInfo->ii_Expressions, 1, &keyattrs);
+		MemoryContextSwitchTo(oldcxt);
+
+		indexInfo->ii_KeyAttrs = keyattrs;
+		indexInfo->ii_KeyAttrsValid = true;
 	}
 
-	return expression_tree_walker(node, index_expression_changed_walker,
-								  allUpdatedCols);
+	return !bms_overlap(indexInfo->ii_KeyAttrs, modified_idx_attrs);
 }
 
 /*
