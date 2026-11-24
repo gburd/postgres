@@ -17,7 +17,11 @@
 #include "lib/bloomfilter.h"
 #include "miscadmin.h"
 
-PG_MODULE_MAGIC;
+PG_MODULE_MAGIC_EXT(
+					.name = "test_bloomfilter",
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_SAFE
+);
 
 /* Fits decimal representation of PG_INT64_MIN + 2 bytes: */
 #define MAX_ELEMENT_BYTES		21

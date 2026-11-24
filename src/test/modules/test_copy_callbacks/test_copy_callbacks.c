@@ -19,7 +19,11 @@
 #include "fmgr.h"
 #include "utils/rel.h"
 
-PG_MODULE_MAGIC;
+PG_MODULE_MAGIC_EXT(
+					.name = "test_copy_callbacks",
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_SAFE
+);
 
 static void
 to_cb(void *data, int len)

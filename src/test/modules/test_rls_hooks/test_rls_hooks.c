@@ -26,7 +26,11 @@
 #include "utils/rel.h"
 #include "utils/relcache.h"
 
-PG_MODULE_MAGIC;
+PG_MODULE_MAGIC_EXT(
+					.name = "test_rls_hooks",
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_SAFE
+);
 
 /* Install hooks */
 void

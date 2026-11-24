@@ -20,7 +20,11 @@
 #include "utils/array.h"
 #include "utils/builtins.h"
 
-PG_MODULE_MAGIC;
+PG_MODULE_MAGIC_EXT(
+					.name = "test_regex",
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_SAFE
+);
 
 
 /* all the options of interest for regex functions */

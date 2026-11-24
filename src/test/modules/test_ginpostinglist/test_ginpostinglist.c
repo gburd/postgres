@@ -17,7 +17,11 @@
 #include "access/htup_details.h"
 #include "fmgr.h"
 
-PG_MODULE_MAGIC;
+PG_MODULE_MAGIC_EXT(
+					.name = "test_ginpostinglist",
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_SAFE
+);
 
 PG_FUNCTION_INFO_V1(test_ginpostinglist);
 

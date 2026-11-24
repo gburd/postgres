@@ -19,7 +19,11 @@
 #include "utils/freepage.h"
 #include "utils/resowner.h"
 
-PG_MODULE_MAGIC;
+PG_MODULE_MAGIC_EXT(
+					.name = "test_dsa",
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_SAFE
+);
 
 static void
 init_tranche(void *ptr, void *arg)

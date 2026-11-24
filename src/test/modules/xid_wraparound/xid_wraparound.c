@@ -19,7 +19,11 @@
 #include "storage/proc.h"
 #include "utils/xid8.h"
 
-PG_MODULE_MAGIC;
+PG_MODULE_MAGIC_EXT(
+					.name = "xid_wraparound",
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_SAFE
+);
 
 static int64 consume_xids_shortcut(void);
 static FullTransactionId consume_xids_common(FullTransactionId untilxid, uint64 nxids);

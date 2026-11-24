@@ -19,7 +19,11 @@
 #include "utils/injection_point.h"
 #include "utils/wait_event.h"
 
-PG_MODULE_MAGIC;
+PG_MODULE_MAGIC_EXT(
+					.name = "test_checksums",
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_SAFE
+);
 
 extern PGDLLEXPORT void dc_delay_barrier(const char *name, const void *private_data, void *arg);
 

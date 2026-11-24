@@ -23,7 +23,11 @@
 #define LEN_NO_TAIL(vectortype) (2 * sizeof(vectortype))
 #define LEN_WITH_TAIL(vectortype) (LEN_NO_TAIL(vectortype) + 3)
 
-PG_MODULE_MAGIC;
+PG_MODULE_MAGIC_EXT(
+					.name = "test_lfind",
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_SAFE
+);
 
 /* workhorse for test_lfind8 */
 static void

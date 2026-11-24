@@ -29,7 +29,11 @@
 #include "utils/builtins.h"
 #include "utils/timestamp.h"
 
-PG_MODULE_MAGIC;
+PG_MODULE_MAGIC_EXT(
+					.name = "test_bitmapset",
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_SAFE
+);
 
 /* Bitmapset API functions in order of appearance in bitmapset.c */
 PG_FUNCTION_INFO_V1(test_bms_make_singleton);

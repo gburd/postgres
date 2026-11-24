@@ -29,7 +29,11 @@
 #include "utils/snapmgr.h"
 #include "utils/tuplestore.h"
 
-PG_MODULE_MAGIC;
+PG_MODULE_MAGIC_EXT(
+					.name = "test_indexscan",
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_SAFE
+);
 
 PG_FUNCTION_INFO_V1(index_scan_tids);
 Datum
