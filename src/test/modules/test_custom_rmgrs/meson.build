@@ -25,6 +25,11 @@ tests += {
   'name': 'test_custom_rmgrs',
   'sd': meson.current_source_dir(),
   'bd': meson.current_build_dir(),
+  'pytest': {
+    'tests': [
+      'pyt/test_001_basic.py',
+    ],
+  },
   'tap': {
     'tests': [
       't/001_basic.pl',

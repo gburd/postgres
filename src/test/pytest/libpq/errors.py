@@ -1,0 +1,160 @@
+# Copyright (c) 2025, PostgreSQL Global Development Group
+
+"""Exception classes for libpq errors.
+
+``LibpqError`` carries the PostgreSQL diagnostic fields (SQLSTATE, severity,
+detail, hint, ...) when libpq reports them. It is the lowest layer of the
+framework's SQL-error hierarchy; ``pypg.PgSqlError`` is an alias for it, so
+catching either name works and the layering (libpq below pypg) is preserved
+without a circular import.
+"""
+
+from __future__ import annotations
+
+from typing import Optional
+
+
+class LibpqError(RuntimeError):
+    """A SQL/libpq operation failed, carrying PostgreSQL diagnostic fields.
+
+    ``sqlstate`` and the convenience ``sqlstate_class`` (its first two
+    characters) are the stable, locale-independent way to assert on a specific
+    error condition.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        sqlstate: Optional[str] = None,
+        severity: Optional[str] = None,
+        primary: Optional[str] = None,
+        detail: Optional[str] = None,
+        hint: Optional[str] = None,
+        schema_name: Optional[str] = None,
+        table_name: Optional[str] = None,
+        column_name: Optional[str] = None,
+        datatype_name: Optional[str] = None,
+        constraint_name: Optional[str] = None,
+        position: Optional[int] = None,
+        context: Optional[str] = None,
+    ):
+        super().__init__(message)
+        self.sqlstate = sqlstate
+        self.severity = severity
+        self.primary = primary
+        self.detail = detail
+        self.hint = hint
+        self.schema_name = schema_name
+        self.table_name = table_name
+        self.column_name = column_name
+        self.datatype_name = datatype_name
+        self.constraint_name = constraint_name
+        self.position = position
+        self.context = context
+
+    @property
+    def sqlstate_class(self) -> Optional[str]:
+        """The two-character SQLSTATE class, or None if no SQLSTATE is set."""
+        if self.sqlstate and len(self.sqlstate) >= 2:
+            return self.sqlstate[:2]
+        return None
+
+
+# Named subclasses for the SQLSTATEs tests most often assert on, so a test can
+# write ``with pytest.raises(QueryCanceled):`` instead of catching the generic
+# LibpqError and then checking ``.sqlstate``. Each maps to its five-character
+# SQLSTATE; for_sqlstate() picks the right class when an error is raised.
+class SyntaxErrorState(LibpqError):
+    """42601 -- syntax_error. (Trailing underscore avoids the builtin.)"""
+
+
+class UndefinedTable(LibpqError):
+    """42P01 -- undefined_table."""
+
+
+class UndefinedColumn(LibpqError):
+    """42703 -- undefined_column."""
+
+
+class InsufficientPrivilege(LibpqError):
+    """42501 -- insufficient_privilege."""
+
+
+class UniqueViolation(LibpqError):
+    """23505 -- unique_violation."""
+
+
+class ForeignKeyViolation(LibpqError):
+    """23503 -- foreign_key_violation."""
+
+
+class NotNullViolation(LibpqError):
+    """23502 -- not_null_violation."""
+
+
+class CheckViolation(LibpqError):
+    """23514 -- check_violation."""
+
+
+class SerializationFailure(LibpqError):
+    """40001 -- serialization_failure."""
+
+
+class DeadlockDetected(LibpqError):
+    """40P01 -- deadlock_detected."""
+
+
+class QueryCanceled(LibpqError):
+    """57014 -- query_canceled."""
+
+
+class AdminShutdown(LibpqError):
+    """57P01 -- admin_shutdown."""
+
+
+class CrashShutdown(LibpqError):
+    """57P02 -- crash_shutdown."""
+
+
+class CannotConnectNow(LibpqError):
+    """57P03 -- cannot_connect_now."""
+
+
+class ReadOnlySqlTransaction(LibpqError):
+    """25006 -- read_only_sql_transaction."""
+
+
+class ObjectInUse(LibpqError):
+    """55006 -- object_in_use."""
+
+
+# SQLSTATE -> exception subclass. Anything not listed raises a plain LibpqError.
+_SQLSTATE_EXCEPTIONS = {
+    "42601": SyntaxErrorState,
+    "42P01": UndefinedTable,
+    "42703": UndefinedColumn,
+    "42501": InsufficientPrivilege,
+    "23505": UniqueViolation,
+    "23503": ForeignKeyViolation,
+    "23502": NotNullViolation,
+    "23514": CheckViolation,
+    "40001": SerializationFailure,
+    "40P01": DeadlockDetected,
+    "57014": QueryCanceled,
+    "57P01": AdminShutdown,
+    "57P02": CrashShutdown,
+    "57P03": CannotConnectNow,
+    "25006": ReadOnlySqlTransaction,
+    "55006": ObjectInUse,
+}
+
+
+def for_sqlstate(sqlstate: Optional[str]) -> type:
+    """Return the LibpqError subclass for *sqlstate*, or LibpqError itself.
+
+    Used when raising a SQL error so callers can match on the specific
+    condition (e.g. ``pytest.raises(QueryCanceled)``) while still catching the
+    base LibpqError/PgSqlError when they want any failure.
+    """
+    return _SQLSTATE_EXCEPTIONS.get(sqlstate or "", LibpqError)

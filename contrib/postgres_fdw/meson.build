@@ -48,6 +48,12 @@ tests += {
     ],
     'regress_args': ['--load-extension=postgres_fdw'],
   },
+  'pytest': {
+    'tests': [
+      'pyt/test_001_auth_scram.py',
+      'pyt/test_010_subscription.py',
+    ],
+  },
   'tap': {
     'tests': [
       't/001_auth_scram.pl',

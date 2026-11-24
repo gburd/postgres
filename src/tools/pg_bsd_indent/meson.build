@@ -38,4 +38,9 @@ tests += {
       't/001_pg_bsd_indent.pl',
     ],
   },
+  'pytest': {
+    'tests': [
+      'pyt/test_001_pg_bsd_indent.py',
+    ],
+  },
 }

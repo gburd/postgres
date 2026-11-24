@@ -80,6 +80,15 @@ tests += {
       't/030_pager.pl',
     ],
   },
+  'pytest': {
+    'env': {'with_readline': readline.found() ? 'yes' : 'no'},
+    'tests': [
+      'pyt/test_001_basic.py',
+      'pyt/test_010_tab_completion.py',
+      'pyt/test_020_cancel.py',
+      'pyt/test_030_pager.py',
+    ],
+  },
 }
 
 subdir('po', if_found: libintl)

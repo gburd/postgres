@@ -55,6 +55,22 @@ tests += {
   'name': 'pg_upgrade',
   'sd': meson.current_source_dir(),
   'bd': meson.current_build_dir(),
+  'pytest': {
+    'env': {
+      'TEST_EXT_LIB': test_ext.full_path(),
+    },
+    'tests': [
+      'pyt/test_001_basic.py',
+      'pyt/test_002_pg_upgrade.py',
+      'pyt/test_003_logical_slots.py',
+      'pyt/test_004_subscription.py',
+      'pyt/test_005_char_signedness.py',
+      'pyt/test_006_transfer_modes.py',
+      'pyt/test_007_multixact_conversion.py',
+      'pyt/test_008_extension_control_path.py',
+    ],
+    'deps': [test_ext],
+  },
   'tap': {
     'env': {
       'with_icu': icu.found() ? 'yes' : 'no',
