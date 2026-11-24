@@ -41,6 +41,8 @@ typedef struct BloomBlutilsRuntimeState
 
 	/* parse table for fillRelOptions */
 	relopt_parse_elt relopt_tab[INDEX_MAX_KEYS + 1];
+
+	bool		relopts_registered;
 } BloomBlutilsRuntimeState;
 
 static BloomBlutilsRuntimeState *
@@ -72,6 +74,14 @@ _PG_init(void)
 	int			i;
 	char		buf[16];
 
+	/*
+	 * The reloption kinds are process-wide and limited in number, and a
+	 * threaded runtime runs _PG_init() again in every session, so register
+	 * them only once.
+	 */
+	if (bloom_blutils_runtime_state()->relopts_registered)
+		return;
+
 	bl_relopt_kind = add_reloption_kind();
 
 	/* Option for length of signature */
@@ -92,13 +102,12 @@ _PG_init(void)
 						  DEFAULT_BLOOM_BITS, 1, MAX_BLOOM_BITS,
 						  AccessExclusiveLock);
 		bl_relopt_tab[i + 1].optname =
-			MemoryContextStrdup(PgRuntimeGetOwnedMemoryContext(
-									PgCurrentBloomContextRef(),
-									"bloom relation options"),
+			MemoryContextStrdup(PgCurrentRuntimeExtensionModuleMemoryContext(),
 								buf);
 		bl_relopt_tab[i + 1].opttype = RELOPT_TYPE_INT;
 		bl_relopt_tab[i + 1].offset = offsetof(BloomOptions, bitSize[0]) + sizeof(int) * i;
 	}
+	bloom_blutils_runtime_state()->relopts_registered = true;
 }
 
 /*

@@ -24,7 +24,11 @@
 #include "utils/pg_lsn.h"
 #include "varatt.h"
 
-PG_MODULE_MAGIC;
+PG_MODULE_MAGIC_EXT(
+					.name = "test_custom_rmgrs",
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_SAFE
+);
 
 /*
  * test_custom_rmgrs WAL record message.
@@ -68,7 +72,14 @@ _PG_init(void)
 	/*
 	 * In order to create our own custom resource manager, we have to be
 	 * loaded via shared_preload_libraries. Otherwise, registration will fail.
+	 *
+	 * A threaded backend runs _PG_init() again in each session, and the
+	 * resource manager table is process-wide, so the postmaster's
+	 * registration is the only one.
 	 */
+	if (IsUnderPostmaster && RmgrIdExists(RM_TESTCUSTOMRMGRS_ID))
+		return;
+
 	RegisterCustomRmgr(RM_TESTCUSTOMRMGRS_ID, &testcustomrmgrs_rmgr);
 }
 

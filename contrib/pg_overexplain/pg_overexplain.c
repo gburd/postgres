@@ -24,7 +24,8 @@
 
 PG_MODULE_MAGIC_EXT(
 					.name = "pg_overexplain",
-					.version = PG_VERSION
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_SAFE
 );
 
 typedef struct
@@ -67,6 +68,7 @@ typedef struct PgOverexplainRuntimeState
 	int			es_extension_id;
 	explain_per_node_hook_type prev_explain_per_node_hook;
 	explain_per_plan_hook_type prev_explain_per_plan_hook;
+	bool		hooks_installed;
 } PgOverexplainRuntimeState;
 
 static PgOverexplainRuntimeState *
@@ -100,11 +102,18 @@ _PG_init(void)
 								   overexplain_range_table_handler,
 								   GUCCheckBooleanExplainOption);
 
-	/* Use the per-node and per-plan hooks to make our options do something. */
+	/*
+	 * Use the per-node and per-plan hooks to make our options do something.
+	 * The hooks are process-wide, and a threaded runtime runs _PG_init()
+	 * again in every session, so install them only once.
+	 */
+	if (overexplain_runtime_state()->hooks_installed)
+		return;
 	prev_explain_per_node_hook = explain_per_node_hook;
 	explain_per_node_hook = overexplain_per_node_hook;
 	prev_explain_per_plan_hook = explain_per_plan_hook;
 	explain_per_plan_hook = overexplain_per_plan_hook;
+	overexplain_runtime_state()->hooks_installed = true;
 }
 
 /*
