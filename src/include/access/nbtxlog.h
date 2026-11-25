@@ -156,9 +156,23 @@ typedef struct xl_btree_split
 	OffsetNumber firstrightoff; /* first origpage item on rightpage */
 	OffsetNumber newitemoff;	/* new item's offset */
 	uint16		postingoff;		/* offset inside orig posting tuple */
+	uint8		flags;			/* XLH_SPLIT_* prefix compression flags */
 } xl_btree_split;
 
-#define SizeOfBtreeSplit	(offsetof(xl_btree_split, postingoff) + sizeof(uint16))
+#define SizeOfBtreeSplit	(offsetof(xl_btree_split, flags) + sizeof(uint8))
+
+/*
+ * xl_btree_split flags for prefix-compressed (BTP_PREFIX) leaves.  When the
+ * original page was coded, firstrightoff and newitemoff are offsets into its
+ * decoded item sequence, which has no prefix directory, so data items start
+ * at BTPageGetPrefixOff; redo decodes the original page to rebuild the left
+ * half.  Redo lays out a coded left half with _bt_prefix_form_page from those
+ * items, exactly as the primary did.  A coded right half arrives as its coded
+ * items, directory included, and only needs the page flag set.
+ */
+#define XLH_SPLIT_ORIG_CODED	0x01
+#define XLH_SPLIT_LEFT_CODED	0x02
+#define XLH_SPLIT_RIGHT_CODED	0x04
 
 /*
  * When page is deduplicated, consecutive groups of tuples with equal keys are
