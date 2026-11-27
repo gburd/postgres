@@ -1,0 +1,123 @@
+{
+  "provider": "bedrock",
+  "model": "anthropic.claude-sonnet-4-5-20251101",
+  "bedrock_model_id": "anthropic.claude-sonnet-4-5-20251101-v1:0",
+  "bedrock_region": "us-east-1",
+  "max_tokens_per_request": 4096,
+  "max_tokens_per_file": 100000,
+  "max_file_size_lines": 5000,
+  "max_chunk_size_lines": 500,
+  "review_mode": "full",
+
+  "skip_paths": [
+    "*.svg",
+    "*.png",
+    "*.jpg",
+    "*.jpeg",
+    "*.gif",
+    "*.pdf",
+    "*.ico",
+    "*.woff",
+    "*.woff2",
+    "*.ttf",
+    "*.eot",
+    "src/test/regress/expected/*",
+    "src/test/regress/output/*",
+    "contrib/test_decoding/expected/*",
+    "src/pl/plpgsql/src/expected/*",
+    "*.po",
+    "*.pot",
+    "*.mo",
+    "src/backend/catalog/postgres.bki",
+    "src/include/catalog/schemapg.h",
+    "src/backend/utils/fmgrtab.c",
+    "configure",
+    "config/*",
+    "*.tar.gz",
+    "*.zip"
+  ],
+
+  "file_type_patterns": {
+    "c_code": ["*.c", "*.h"],
+    "sql": ["*.sql"],
+    "documentation": ["*.md", "*.rst", "*.txt", "doc/**/*"],
+    "build_system": ["Makefile", "meson.build", "*.mk", "GNUmakefile*"],
+    "perl": ["*.pl", "*.pm"],
+    "python": ["*.py"],
+    "yaml": ["*.yml", "*.yaml"]
+  },
+
+  "cost_limits": {
+    "max_per_pr_dollars": 15.0,
+    "max_per_month_dollars": 200.0,
+    "alert_threshold_dollars": 150.0,
+    "estimated_cost_per_1k_input_tokens": 0.003,
+    "estimated_cost_per_1k_output_tokens": 0.015
+  },
+
+  "auto_labels": {
+    "security-concern": [
+      "security issue",
+      "vulnerability",
+      "SQL injection",
+      "buffer overflow",
+      "injection",
+      "use after free",
+      "memory corruption",
+      "race condition"
+    ],
+    "performance-concern": [
+      "O(n²)",
+      "O(n^2)",
+      "inefficient",
+      "performance",
+      "slow",
+      "optimize",
+      "bottleneck",
+      "unnecessary loop"
+    ],
+    "needs-tests": [
+      "missing test",
+      "no test coverage",
+      "untested",
+      "should add test",
+      "consider adding test"
+    ],
+    "needs-docs": [
+      "undocumented",
+      "missing documentation",
+      "needs comment",
+      "should document",
+      "unclear purpose"
+    ],
+    "memory-management": [
+      "memory leak",
+      "missing pfree",
+      "memory context",
+      "palloc without pfree",
+      "resource leak"
+    ],
+    "concurrency-issue": [
+      "deadlock",
+      "lock ordering",
+      "race condition",
+      "thread safety",
+      "concurrent access"
+    ]
+  },
+
+  "review_settings": {
+    "post_line_comments": true,
+    "post_summary_comment": true,
+    "update_existing_comments": true,
+    "collapse_minor_issues": false,
+    "min_confidence_to_post": 0.7
+  },
+
+  "rate_limiting": {
+    "max_requests_per_minute": 50,
+    "max_concurrent_requests": 5,
+    "retry_attempts": 3,
+    "retry_delay_ms": 1000
+  }
+}
